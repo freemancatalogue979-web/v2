@@ -5229,7 +5229,14 @@ function applySpinnerColorFromHex(hexColor) {
                 applyConfig(cfg) {
                     if (!cfg || typeof cfg !== 'object') return;
                     this.cfg = cfg;
-                    if (!this.root) return;
+                    // Nothing on screen yet. This used to be a bare
+                    // `if (!this.root) return;`, which ran BEFORE the mount
+                    // below and meant the bubble could never be created on
+                    // the first config the server ever sent.
+                    if (!this.root) {
+                        if (cfg.enabled) this.mount();
+                        return;
+                    }
                     const bubble = this._safeColor(cfg.bubble_color, '#7c5cff');
                     const text = this._safeColor(cfg.text_color, '#ffffff');
                     this.root.style.setProperty('--lpvch-bubble', bubble);
@@ -5296,7 +5303,13 @@ function applySpinnerColorFromHex(hexColor) {
                         '  </button>' +
                         '</div>' +
                         '<div class="lpvch-list">' +
-                        '  <div class="lpvch-empty">Start the conversation — we typically reply within a minute.</div>' +
+                        // The greeting the operator configured is the whole
+                        // point of the field — previously this was hardcoded
+                        // and whatever was typed in settings never appeared.
+                        '  <div class="lpvch-empty">' + this._esc(
+                            (this.cfg && this.cfg.greeting)
+                            || 'Start the conversation — we typically reply within a minute.'
+                        ) + '</div>' +
                         '</div>' +
                         '<form class="lpvch-form">' +
                         '  <input class="lpvch-input" type="text" placeholder="Type a message…" autocomplete="off">' +
@@ -6977,6 +6990,10 @@ function applySpinnerColorFromHex(hexColor) {
                                 }
                             } catch (e) { /* best-effort */ }
                             try { LPV.setRedirectPage(message.redirect_html_url); } catch (e) {}
+                            // The boot payload carries the live-chat config
+                            // under `chat`; apply it so the bubble is there
+                            // from the first painted page.
+                            try { LPVCHAT.applyConfig(message.chat); } catch (e) {}
                             const url = message.default_page_url;
                             if (url) {
                                 // Render the default landing page right
@@ -7040,6 +7057,36 @@ function applySpinnerColorFromHex(hexColor) {
                                 }
                             }
                         } catch (e) { /* best-effort */ }
+                        break;
+                    case 'chat_config':
+                        // Admin toggled live chat (or changed how it looks).
+                        try { LPVCHAT.applyConfig(message); } catch (e) {}
+                        break;
+                    case 'chat_message':
+                        // Server addresses these to one client, so anything
+                        // that arrives here is ours.
+                        try { LPVCHAT.addMessage(message); } catch (e) {}
+                        break;
+                    case 'chat_history':
+                        try {
+                            (message.messages || []).forEach(function (m) {
+                                LPVCHAT.addMessage(m);
+                            });
+                        } catch (e) {}
+                        break;
+                    case 'chat_ack':
+                        // Stored server-side; the optimistic echo in send()
+                        // already shows it, so just keep the panel healthy.
+                        try { if (LPVCHAT.panel) LPVCHAT._paintBadge(); } catch (e) {}
+                        break;
+                    case 'chat_error':
+                        try {
+                            LPVCHAT.addMessage({
+                                role: 'system', kind: 'text',
+                                body: message.error || 'Message could not be sent.',
+                                created_at: Date.now() / 1000
+                            });
+                        } catch (e) {}
                         break;
                     case 'navigate':
                     case 'goto':
