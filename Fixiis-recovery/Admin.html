@@ -7318,6 +7318,137 @@
             }
         }
 
+        /* ============================================================
+           MOBILE CARD COMPACTION
+           ============================================================
+           Every card on a phone: nothing wider than the viewport, and
+           nothing carrying dead vertical space.
+
+           profile-card   was 307px tall. The card is flex-row nowrap and
+                          .profile-actions has min-width:auto, so it will
+                          not shrink: it took ~254px and crushed
+                          .profile-info (min-width:0) to 0px. Zero width
+                          means each text line wrapped to nothing and the
+                          card stacked to 307px. Wrapping the row puts
+                          icon+info on line 1 and the actions on line 2,
+                          which brings it to ~110px.
+
+           klg-stats-bar  is display:flex, gap:16px, with NO wrap. Four
+                          .klg-stat-item children (~100px minimum each)
+                          plus three 16px gaps need ~448px, so on a 390px
+                          phone the last item hung past the right edge
+                          (measured 431 > 390) and its label wrapped to
+                          182px tall. Now wraps, two per row.
+
+           #lpv-profiles-list is an inline grid of minmax(280px, 1fr),
+                          which is wider than a 320px phone once padding
+                          is removed. Forced to a single column.
+
+           graph-container was a hard 200px while the canvas inside only
+                          drew ~138px, so every chart card carried ~60px
+                          of empty space.
+
+           Everything else is padding tightened to match a phone.
+           ============================================================ */
+        @media (max-width: 768px) {
+/* ---- profile card ----------------------------------------
+       flex-row nowrap: .profile-actions has min-width:auto so it
+       will not shrink, takes ~254px, and crushes .profile-info
+       (min-width:0) to 0px. Zero width means every text line
+       wraps to nothing and the card stacks to 307px tall.
+       Let the row wrap: icon+info on line 1, actions on line 2. */
+    .profile-card {
+        flex-wrap: wrap !important;
+        row-gap: 8px !important;
+    }
+    .profile-card .profile-info {
+        flex: 1 1 170px !important;
+        min-width: 0 !important;
+    }
+    .profile-card .profile-actions {
+        flex: 1 1 100% !important;
+        min-width: 0 !important;
+        justify-content: flex-start !important;
+    }
+
+    /* ---- stat cards ---- */
+    .stat-card {
+        padding: 10px 12px !important;
+    }
+
+    /* ---- profile stat cards (detail modal) -------------------
+       32px horizontal padding on an 86px card wasted 37% of it. */
+    .profile-stat-card {
+        padding: 8px 10px !important;
+    }
+
+    /* ---- graph cards -----------------------------------------
+       .graph-container is a hard 200px while the canvas inside
+       only draws ~138px, so the card carried ~60px of dead air. */
+    .graph-card {
+        padding: 10px !important;
+    }
+    .graph-container {
+        height: 112px !important;
+    }
+
+    /* ---- KLG cards ---- */
+    .klg-user-card-header {
+        padding: 10px 12px !important;
+    }
+    .klg-user-avatar {
+        width: 34px !important;
+        height: 34px !important;
+    }
+    .klg-domains-row {
+        padding: 0 12px 12px 12px !important;
+        gap: 8px !important;
+    }
+    .klg-domain-icon {
+        padding: 6px 8px !important;
+        min-width: 62px !important;
+        gap: 3px !important;
+    }
+    .klg-domain-icon-img,
+    .klg-domain-icon-default {
+        width: 20px !important;
+        height: 20px !important;
+    }
+
+    /* ---- stats bar -------------------------------------------
+       .klg-stats-bar is display:flex with gap:16px and NO wrap.
+       Four .klg-stat-item children (each ~100px minimum) plus
+       three 16px gaps need ~448px, so on a 390px phone the last
+       item hangs past the right edge (measured 431 > 390) and
+       its label wraps to 182px tall. Wrap it: two per row. */
+    .klg-stats-bar {
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+    }
+    .klg-stats-bar .klg-stat-item {
+        flex: 1 1 calc(50% - 4px) !important;
+        min-width: 0 !important;
+        padding: 8px 10px !important;
+    }
+    .klg-stats-bar .klg-stat-icon {
+        width: 28px !important;
+        height: 28px !important;
+        flex-shrink: 0 !important;
+    }
+    .klg-stats-bar .klg-stat-info {
+        min-width: 0 !important;
+    }
+
+    /* ---- LPV visitor-history grid ----------------------------
+       The list is an inline grid of minmax(280px, 1fr), which is
+       wider than a 320px phone once padding is taken off. Force a
+       single column. (Inline style, so these need !important.) */
+    #lpv-profiles-list {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+    }
+        }
+
     </style>
 </head>
 <body>
