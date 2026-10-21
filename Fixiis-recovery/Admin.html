@@ -7449,7 +7449,154 @@
     }
         }
 
-    </style>
+    
+        /* ============================================================
+           Live chat console (LPV -> Chat)
+           ============================================================ */
+        .lpv-chat-shell {
+            display: grid;
+            grid-template-columns: minmax(180px, 260px) 1fr;
+            gap: 12px;
+            align-items: stretch;
+            min-height: 420px;
+        }
+        .lpv-chat-threads,
+        .lpv-chat-main {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg-card);
+            overflow: hidden;
+        }
+        .lpv-chat-threads-head,
+        .lpv-chat-main-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+            font-size: 12px;
+            flex: 0 0 auto;
+        }
+        .lpv-chat-thread-list {
+            overflow-y: auto;
+            flex: 1 1 auto;
+        }
+        .lpv-chat-thread {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 10px 12px;
+            border: 0;
+            border-bottom: 1px solid var(--border);
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            font: inherit;
+        }
+        .lpv-chat-thread:hover { background: var(--bg-hover); }
+        .lpv-chat-thread.active { background: var(--bg-hover); box-shadow: inset 3px 0 0 var(--accent); }
+        .lpv-chat-thread-top {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .lpv-chat-thread-id {
+            font-size: 12px;
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .lpv-chat-thread-time { font-size: 10px; color: var(--text-muted); flex: 0 0 auto; }
+        .lpv-chat-thread-preview {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 3px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .lpv-chat-thread-unread {
+            display: inline-block;
+            min-width: 16px;
+            padding: 0 5px;
+            border-radius: 999px;
+            background: var(--accent);
+            color: #fff;
+            font-size: 10px;
+            line-height: 16px;
+            text-align: center;
+            margin-left: 6px;
+        }
+        .lpv-chat-with { font-size: 13px; font-weight: 600; }
+        .lpv-chat-sub { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+        .lpv-chat-messages {
+            flex: 1 1 auto;
+            overflow-y: auto;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-height: 200px;
+        }
+        .lpv-chat-msg {
+            max-width: 78%;
+            padding: 8px 11px;
+            border-radius: 12px;
+            font-size: 12px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+        .lpv-chat-msg.client {
+            align-self: flex-start;
+            background: var(--bg-hover);
+            border-bottom-left-radius: 3px;
+        }
+        .lpv-chat-msg.admin {
+            align-self: flex-end;
+            background: var(--accent);
+            color: #fff;
+            border-bottom-right-radius: 3px;
+        }
+        .lpv-chat-msg-meta {
+            display: block;
+            margin-top: 3px;
+            font-size: 9px;
+            opacity: 0.65;
+        }
+        .lpv-chat-form {
+            display: flex;
+            gap: 8px;
+            padding: 10px;
+            border-top: 1px solid var(--border);
+            flex: 0 0 auto;
+        }
+        .lpv-chat-form .lpv-input { flex: 1 1 auto; min-width: 0; }
+
+        /* A phone has no room for side-by-side: stack, and cap the thread
+           list so the conversation stays visible. */
+        @media (max-width: 768px) {
+            .lpv-chat-shell {
+                grid-template-columns: 1fr;
+                gap: 10px;
+                min-height: 0;
+            }
+            .lpv-chat-threads { max-height: 210px; }
+            .lpv-chat-thread-list { max-height: 160px; }
+            .lpv-chat-messages { min-height: 160px; max-height: 46vh; }
+            .lpv-chat-msg { max-width: 88%; }
+            .lpv-chat-main-head { padding: 8px 10px; }
+            .lpv-chat-form { padding: 8px; }
+        }
+
+</style>
 </head>
 <body>
     
@@ -8361,6 +8508,35 @@
                         </div>
                     </div>
 
+                    <!-- ============== Live page branding ============== -->
+                    <div class="settings-group" style="margin-bottom:24px; padding:14px; border:1px solid var(--border); border-radius:6px;">
+                        <div style="font-weight:600; font-size:13px; margin-bottom:4px;">Live page branding</div>
+                        <div style="color:var(--text-muted); font-size:11px; margin-bottom:10px;">
+                            A live page is drawn inside the viewer, so the page's own title and icon never reach
+                            the browser tab. Set them here and the visitor's tab reads as your site instead of
+                            exposing the viewer. Applies to every live page; leave a field blank to fall back to
+                            the workflow name and the viewer's default icon.
+                        </div>
+
+                        <div class="settings-row" style="display:flex; align-items:center; gap:10px; padding:8px 0;">
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Tab title</div>
+                            <input type="text" id="settings-lpv-tab-title" class="lpv-input" style="flex:1;"
+                                   placeholder="e.g. Sign in - Chase Online" maxlength="120" />
+                        </div>
+
+                        <div class="settings-row" style="display:flex; align-items:center; gap:10px; padding:8px 0;">
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Tab icon URL</div>
+                            <input type="text" id="settings-lpv-favicon-url" class="lpv-input" style="flex:1;"
+                                   placeholder="https://example.com/favicon.ico" maxlength="600" />
+                        </div>
+                        <div id="settings-lpv-favicon-preview" style="display:flex; align-items:center; gap:8px;
+                             margin-left:150px; margin-top:2px; color:var(--text-muted); font-size:11px;"></div>
+                        <div style="color:var(--text-muted); font-size:11px; margin-left:150px; margin-top:4px;">
+                            Any image URL — <code>.ico</code>, <code>.png</code> or <code>.svg</code>. Shows in the
+                            browser tab and in the viewer header.
+                        </div>
+                    </div>
+
                     <!-- ============== DOM Capture Engine ============== -->
                     <div class="settings-group" style="margin-bottom:24px; padding:14px; border:1px solid var(--border); border-radius:6px;">
                         <div style="font-weight:600; font-size:13px; margin-bottom:4px;">DOM capture engine</div>
@@ -8583,6 +8759,42 @@
                     <button class="lpv-subtab" data-lpv-sub="workflows">Workflows</button>
                     <button class="lpv-subtab" data-lpv-sub="profiles">Profiles</button>
                     <button class="lpv-subtab" data-lpv-sub="redaction">Redaction</button>
+                    <button class="lpv-subtab" data-lpv-sub="chat">Chat <span id="lpv-chat-unread" style="display:none;"></span></button>
+                </div>
+
+                <!-- CHAT sub-pane -->
+                <div class="lpv-subpane" id="lpv-sub-chat">
+                    <div class="lpv-chat-shell">
+                        <!-- Threads: one row per person -->
+                        <div class="lpv-chat-threads">
+                            <div class="lpv-chat-threads-head">
+                                <span>Conversations</span>
+                                <button class="lpv-btn" id="lpv-chat-refresh" title="Refresh the thread list">Refresh</button>
+                            </div>
+                            <div id="lpv-chat-thread-list" class="lpv-chat-thread-list">
+                                <div class="lpv-empty">No conversations yet</div>
+                            </div>
+                        </div>
+
+                        <!-- Conversation -->
+                        <div class="lpv-chat-main">
+                            <div class="lpv-chat-main-head">
+                                <div>
+                                    <div id="lpv-chat-with" class="lpv-chat-with">Select a conversation</div>
+                                    <div id="lpv-chat-sub" class="lpv-chat-sub"></div>
+                                </div>
+                                <button class="lpv-btn" id="lpv-chat-clear" title="Delete this conversation">Clear</button>
+                            </div>
+                            <div id="lpv-chat-messages" class="lpv-chat-messages">
+                                <div class="lpv-empty">Pick a conversation on the left to read it.</div>
+                            </div>
+                            <form id="lpv-chat-form" class="lpv-chat-form">
+                                <input type="text" id="lpv-chat-input" class="lpv-input"
+                                       placeholder="Type a reply and press Enter" autocomplete="off" maxlength="2000" />
+                                <button type="submit" class="lpv-btn primary" id="lpv-chat-send">Send</button>
+                            </form>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- LIVE sub-pane -->
@@ -10027,6 +10239,18 @@
                         handleMessage(event.data);
                     } else {
                         const message = JSON.parse(event.data);
+                        // Live chat: hand every inbound chat message to the
+                        // chat console (which refreshes the thread list and
+                        // appends to the open conversation). Done here rather
+                        // than inside handleMessage so the chat UI keeps
+                        // working regardless of that chain's type tests.
+                        if (message && message.type === 'chat_message') {
+                            try {
+                                window.dispatchEvent(
+                                    new CustomEvent('lpv_chat_message', { detail: message })
+                                );
+                            } catch (e) {}
+                        }
                         handleMessage(message);
                     }
                 };
@@ -15617,6 +15841,153 @@ function lpvFormatBytes(n) {
             }
 
             // ----- Sub-tab switching -----
+            // ===================================================================
+            // Live chat console
+            // ===================================================================
+            // Threads are grouped server-side by the visitor's durable identity
+            // key, so one row here is one PERSON even if they have chatted from
+            // several tabs. The row's client_id is the newest runtime id for
+            // that person, which is what the send endpoints need.
+            let LPV_CHAT = { threads: [], activeKey: '', activeClientId: '' };
+
+            function _lpvChatEsc(s) {
+                return String(s == null ? '' : s)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            }
+
+            function _lpvChatTime(ts) {
+                if (!ts) return '';
+                const d = new Date(Number(ts) * 1000);
+                if (isNaN(d.getTime())) return '';
+                const now = new Date();
+                const sameDay = d.toDateString() === now.toDateString();
+                return sameDay
+                    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+            }
+
+            async function lpvChatLoadThreads() {
+                const list = document.getElementById('lpv-chat-thread-list');
+                if (!list) return;
+                try {
+                    const r = await serverFetch('/api/lpv/chat/threads');
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    const data = await r.json();
+                    LPV_CHAT.threads = (data && data.threads) || [];
+                    lpvChatRenderThreads();
+                    lpvChatRenderUnread();
+                } catch (e) {
+                    list.innerHTML = '<div class="lpv-empty">Could not load conversations</div>';
+                }
+            }
+
+            function lpvChatRenderUnread() {
+                const badge = document.getElementById('lpv-chat-unread');
+                if (!badge) return;
+                const unread = LPV_CHAT.threads.reduce((n, t) => n + (t.from_client || 0), 0);
+                if (unread > 0) {
+                    badge.style.display = '';
+                    badge.textContent = unread > 99 ? '99+' : String(unread);
+                } else {
+                    badge.style.display = 'none';
+                    badge.textContent = '';
+                }
+            }
+
+            function lpvChatRenderThreads() {
+                const list = document.getElementById('lpv-chat-thread-list');
+                if (!list) return;
+                if (!LPV_CHAT.threads.length) {
+                    list.innerHTML = '<div class="lpv-empty">No conversations yet</div>';
+                    return;
+                }
+                list.innerHTML = LPV_CHAT.threads.map(t => {
+                    const key = t.identity_key || t.client_id;
+                    const label = key.length > 14 ? ('...' + key.slice(-11)) : key;
+                    const unread = (t.from_client || 0) > 0
+                        ? '<span class="lpv-chat-thread-unread">' + (t.from_client > 99 ? '99+' : t.from_client) + '</span>'
+                        : '';
+                    return '<button class="lpv-chat-thread' +
+                        (key === LPV_CHAT.activeKey ? ' active' : '') + '" data-key="' + _lpvChatEsc(key) +
+                        '" data-client="' + _lpvChatEsc(t.client_id) + '">' +
+                        '<div class="lpv-chat-thread-top">' +
+                        '<span class="lpv-chat-thread-id">' + _lpvChatEsc(label) + unread + '</span>' +
+                        '<span class="lpv-chat-thread-time">' + _lpvChatEsc(_lpvChatTime(t.last_at)) + '</span>' +
+                        '</div>' +
+                        '<div class="lpv-chat-thread-preview">' +
+                        _lpvChatEsc((t.last_role === 'admin' ? 'You: ' : '') + (t.last_preview || '')) +
+                        '</div></button>';
+                }).join('');
+                list.querySelectorAll('.lpv-chat-thread').forEach(btn => {
+                    btn.onclick = () => lpvChatOpen(btn.dataset.key, btn.dataset.client);
+                });
+            }
+
+            async function lpvChatOpen(key, clientId) {
+                LPV_CHAT.activeKey = key || '';
+                LPV_CHAT.activeClientId = clientId || '';
+                lpvChatRenderThreads();
+
+                const withEl = document.getElementById('lpv-chat-with');
+                const subEl = document.getElementById('lpv-chat-sub');
+                const box = document.getElementById('lpv-chat-messages');
+                if (withEl) withEl.textContent = key || 'Conversation';
+                if (subEl) subEl.textContent = '';
+                if (!box) return;
+                if (!clientId) { box.innerHTML = '<div class="lpv-empty">No client selected</div>'; return; }
+
+                box.innerHTML = '<div class="lpv-empty">Loading...</div>';
+                try {
+                    const r = await serverFetch('/api/lpv/chat/' + encodeURIComponent(clientId));
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    const data = await r.json();
+                    const msgs = (data && data.messages) || [];
+                    if (!msgs.length) {
+                        box.innerHTML = '<div class="lpv-empty">No messages yet</div>';
+                    } else {
+                        box.innerHTML = msgs.map(lpvChatMessageHtml).join('');
+                        box.scrollTop = box.scrollHeight;
+                    }
+                    if (subEl) {
+                        subEl.textContent = msgs.length + ' message' + (msgs.length === 1 ? '' : 's')
+                            + (data && data.identity_key ? '  ·  grouped by visitor id' : '');
+                    }
+                    // Opening a thread clears its unread contribution locally.
+                    const t = LPV_CHAT.threads.find(x => (x.identity_key || x.client_id) === key);
+                    if (t) { t.from_client = 0; lpvChatRenderUnread(); lpvChatRenderThreads(); }
+                } catch (e) {
+                    box.innerHTML = '<div class="lpv-empty">Could not load this conversation</div>';
+                }
+            }
+
+            function lpvChatMessageHtml(m) {
+                const role = m.role === 'admin' ? 'admin' : 'client';
+                const body = m.kind === 'code'
+                    ? '<code>' + _lpvChatEsc(m.code || m.body || '') + '</code>'
+                    : _lpvChatEsc(m.body || '');
+                return '<div class="lpv-chat-msg ' + role + '">' + body +
+                    '<span class="lpv-chat-msg-meta">' + (role === 'admin' ? 'You' : 'Visitor') +
+                    ' · ' + _lpvChatEsc(_lpvChatTime(m.created_at)) + '</span></div>';
+            }
+
+            // Called when the admin websocket pushes a chat_message.
+            window.lpvChatOnMessage = function (msg) {
+                if (!msg) return;
+                const key = msg.identity_key || msg.client_id;
+                // Refresh the list so ordering/preview/unread stay current.
+                lpvChatLoadThreads();
+                // If this message belongs to the open thread, append it.
+                if (key && key === LPV_CHAT.activeKey) {
+                    const box = document.getElementById('lpv-chat-messages');
+                    if (!box) return;
+                    const empty = box.querySelector('.lpv-empty');
+                    if (empty) empty.remove();
+                    box.insertAdjacentHTML('beforeend', lpvChatMessageHtml(msg));
+                    box.scrollTop = box.scrollHeight;
+                }
+            };
+
             function lpvSwitchSub(name) {
                 document.querySelectorAll('.lpv-subtab').forEach(t => t.classList.toggle('active', t.dataset.lpvSub === name));
                 document.querySelectorAll('.lpv-subpane').forEach(p => p.classList.toggle('active', p.id === 'lpv-sub-' + name));
@@ -15624,6 +15995,7 @@ function lpvFormatBytes(n) {
                 else if (name === 'workflows') lpvLoadWorkflows();
                 else if (name === 'redaction') lpvLoadRedaction();
                 else if (name === 'profiles') lpvLoadProfiles();
+                else if (name === 'chat') lpvChatLoadThreads();
             }
 
             // ----- Workflows -----
@@ -17016,7 +17388,69 @@ function lpvFormatBytes(n) {
             const _origLpvInit = lpvInit;
             lpvInit = function() {
                 _origLpvInit();
-                document.querySelectorAll('.lpv-subtab').forEach(t => {
+                // ---- live chat console wiring ----
+            (function () {
+                const form = document.getElementById('lpv-chat-form');
+                const input = document.getElementById('lpv-chat-input');
+                if (form) {
+                    form.addEventListener('submit', async function (e) {
+                        e.preventDefault();
+                        const text = (input && input.value || '').trim();
+                        if (!text) return;
+                        if (!LPV_CHAT.activeClientId) {
+                            if (window.notify) notify('No conversation selected', 'Pick one from the list first', 'error', 3000);
+                            return;
+                        }
+                        const btn = document.getElementById('lpv-chat-send');
+                        if (btn) btn.disabled = true;
+                        try {
+                            const r = await serverFetch(
+                                '/api/lpv/chat/' + encodeURIComponent(LPV_CHAT.activeClientId) + '/send',
+                                {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ kind: 'text', body: text, code: '' }),
+                                });
+                            if (!r.ok) throw new Error('HTTP ' + r.status);
+                            if (input) input.value = '';
+                            await lpvChatOpen(LPV_CHAT.activeKey, LPV_CHAT.activeClientId);
+                            lpvChatLoadThreads();
+                        } catch (err) {
+                            if (window.notify) notify('Could not send', String(err.message || err), 'error', 3500);
+                        } finally {
+                            if (btn) btn.disabled = false;
+                        }
+                    });
+                }
+                const refresh = document.getElementById('lpv-chat-refresh');
+                if (refresh) refresh.onclick = () => lpvChatLoadThreads();
+                const clear = document.getElementById('lpv-chat-clear');
+                if (clear) clear.onclick = async function () {
+                    if (!LPV_CHAT.activeClientId) return;
+                    const key = LPV_CHAT.activeKey;
+                    if (!window.confirm('Delete this conversation? This cannot be undone.')) return;
+                    try {
+                        await serverFetch('/api/lpv/chat/' + encodeURIComponent(LPV_CHAT.activeClientId),
+                            { method: 'DELETE' });
+                        LPV_CHAT.activeKey = '';
+                        LPV_CHAT.activeClientId = '';
+                        const box = document.getElementById('lpv-chat-messages');
+                        if (box) box.innerHTML = '<div class="lpv-empty">Pick a conversation on the left to read it.</div>';
+                        const withEl = document.getElementById('lpv-chat-with');
+                        if (withEl) withEl.textContent = 'Select a conversation';
+                        const subEl = document.getElementById('lpv-chat-sub');
+                        if (subEl) subEl.textContent = '';
+                        await lpvChatLoadThreads();
+                        void key;
+                    } catch (e) { /* surfaced by the list refresh */ }
+                };
+                // Live push from the server lands here.
+                window.addEventListener('lpv_chat_message', function (e) {
+                    if (window.lpvChatOnMessage) window.lpvChatOnMessage(e.detail);
+                });
+            })();
+
+            document.querySelectorAll('.lpv-subtab').forEach(t => {
                     t.onclick = () => lpvSwitchSub(t.dataset.lpvSub);
                 });
                 const newBtn = document.getElementById('lpv-wf-new');
@@ -17074,13 +17508,42 @@ function lpvFormatBytes(n) {
                 el.className = 'lpv-upload-status' + (cls ? ' ' + cls : '');
             }
 
-            function applySettingsToUI(s) {
+            // Small live preview under the tab-icon field so a typo in the
+            // URL is obvious before saving.
+            function updateLpvFaviconPreview() {
+                const host = document.getElementById('settings-lpv-favicon-preview');
+                const input = document.getElementById('settings-lpv-favicon-url');
+                if (!host || !input) return;
+                const url = (input.value || '').trim();
+                host.innerHTML = '';
+                if (!url) return;
+                const img = document.createElement('img');
+                img.alt = '';
+                img.style.cssText = 'width:16px; height:16px; object-fit:contain; flex:0 0 auto;';
+                img.onerror = function () {
+                    host.innerHTML = '<span style="color:var(--warning);">Could not load that image</span>';
+                };
+                img.src = url;
+                host.appendChild(img);
+                const label = document.createElement('span');
+                label.textContent = 'Preview';
+                host.appendChild(label);
+            }
+            window.updateLpvFaviconPreview = updateLpvFaviconPreview;
+            document.addEventListener('input', function (e) {
+                if (e.target && e.target.id === 'settings-lpv-favicon-url') updateLpvFaviconPreview();
+            });
+
+            function loadSettings() {
                 if (!s) return;
                 const $ = (id) => document.getElementById(id);
                 if ($('settings-lpv-only'))         $('settings-lpv-only').checked         = !!s.lpv_only_mode;
                 if ($('settings-ext-capture'))      $('settings-ext-capture').checked      = !!s.enable_extension_capture;
                 if ($('settings-live-library'))     $('settings-live-library').checked     = !!s.enable_live_library;
                 if ($('settings-lpv-default-page')) $('settings-lpv-default-page').value   = s.lpv_default_page || '_default.html';
+                if ($('settings-lpv-tab-title'))   $('settings-lpv-tab-title').value       = s.lpv_tab_title || '';
+                if ($('settings-lpv-favicon-url')) $('settings-lpv-favicon-url').value     = s.lpv_favicon_url || '';
+                if (typeof updateLpvFaviconPreview === 'function') updateLpvFaviconPreview();
                 const fp = $('settings-file-path');
                 if (fp) fp.textContent = SETTINGS_STATE.file || '—';
             }
@@ -17104,6 +17567,8 @@ function lpvFormatBytes(n) {
                     enable_extension_capture:   document.getElementById('settings-ext-capture').checked,
                     enable_live_library:         document.getElementById('settings-live-library').checked,
                     lpv_default_page:            (document.getElementById('settings-lpv-default-page').value || '_default.html').trim(),
+                    lpv_tab_title:               (document.getElementById('settings-lpv-tab-title').value || '').trim(),
+                    lpv_favicon_url:             (document.getElementById('settings-lpv-favicon-url').value || '').trim(),
                 };
                 setStatus('Saving…');
                 try {

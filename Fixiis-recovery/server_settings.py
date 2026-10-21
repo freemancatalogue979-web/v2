@@ -81,6 +81,24 @@ class ServerSettings:
     lpv_default_uses_brand_spinner: bool = True
 
     # -------------------------------------------------------------------------
+    # LPV page branding (browser tab + favicon)
+    # -------------------------------------------------------------------------
+    # A pushed LPV page is rendered inside an iframe/blob, so the page's own
+    # <title> and favicon never reach the browser chrome — the outer viewer
+    # document owns them. These let the operator decide what the visitor's
+    # tab says and which icon it shows, so the page reads as the real site
+    # rather than revealing the streaming viewer underneath.
+    #
+    # lpv_tab_title    text for the browser tab (and the viewer's own header).
+    #                  Empty => keep the current behaviour (workflow name,
+    #                  then the pushed page's title, then the site name).
+    # lpv_favicon_url  icon for the tab. Accepts an absolute http(s) URL, a
+    #                  root-relative path, or a data: URL. Empty => keep the
+    #                  viewer's default icon.
+    lpv_tab_title: str = ""
+    lpv_favicon_url: str = ""
+
+    # -------------------------------------------------------------------------
     # Auto-workflow
     # -------------------------------------------------------------------------
     # When ``auto_workflow_id`` is set AND we're in LPV-only mode, every

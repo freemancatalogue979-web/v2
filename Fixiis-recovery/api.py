@@ -1992,6 +1992,82 @@ async def _push_chat_config_to_clients() -> None:
             pass
 
 
+async def _push_lpv_branding_to_clients() -> None:
+    """Re-send the tab title / favicon to every connected client.
+
+    Without this an operator changing the branding in Settings would only
+    see it take effect for visitors who connect afterwards — everyone
+    already sitting on a live page would keep the old tab text until they
+    reloaded.
+    """
+    settings = srv_settings.get_settings()
+    payload = {
+        "type": "lpv_branding",
+        "tab_title": (getattr(settings, "lpv_tab_title", "") or "").strip(),
+        "favicon_url": (getattr(settings, "lpv_favicon_url", "") or "").strip(),
+    }
+    sockets: List[Any] = []
+    try:
+        if session_manager:
+            for item in await session_manager.get_all_sessions():
+                cid = item.get("client_id") if isinstance(item, dict) else None
+                if not cid:
+                    continue
+                sess = await session_manager.get_session(cid)
+                ws = getattr(sess, "websocket", None) if sess else None
+                if ws:
+                    sockets.append(ws)
+    except Exception:
+        pass
+    sockets.extend(list(_lpv_only_ws.values()))
+    for ws in sockets:
+        try:
+            await ws.send_json(dict(payload))
+        except Exception:
+            pass
+
+
+def _lpv_register_identity(client_id: str, user_id: str) -> str:
+    """Record the durable identity behind a runtime LPV client id.
+
+    Called when an LPV-only session opens. Everything that should follow a
+    person rather than a tab (chat most of all) is grouped by this key.
+    """
+    cid = (client_id or "").strip()
+    uid = (user_id or "").strip()
+    if not cid:
+        return ""
+    if uid:
+        _lpv_identity[cid] = uid
+    return _lpv_identity.get(cid, "")
+
+
+def _lpv_identity_for(client_id: str) -> str:
+    """Resolve the durable identity key for a runtime client id.
+
+    The in-memory map is lost on restart, so fall back to whatever key the
+    stored messages already carry. Returns "" for pre-identity clients,
+    which keeps those threads keyed by client_id exactly as before.
+    """
+    cid = (client_id or "").strip()
+    if not cid:
+        return ""
+    ident = _lpv_identity.get(cid)
+    if ident:
+        return ident
+    try:
+        ident = lpv_store.chat_identity_for(cid)
+    except Exception:
+        ident = ""
+    if ident:
+        _lpv_identity[cid] = ident
+    return ident or ""
+
+
+def _lpv_forget_identity(client_id: str) -> None:
+    _lpv_identity.pop((client_id or "").strip(), None)
+
+
 async def _handle_client_chat(client_id: str, msg: dict) -> None:
     """Persist an inbound client chat message and fan it out to admins.
 
@@ -2013,7 +2089,10 @@ async def _handle_client_chat(client_id: str, msg: dict) -> None:
     if kind == "text" and not body:
         return
     try:
-        row = lpv_store.chat_add(client_id, "client", body=body, kind=kind, code=code)
+        row = lpv_store.chat_add(
+            client_id, "client", body=body, kind=kind, code=code,
+            identity_key=_lpv_identity_for(client_id) or None,
+        )
     except Exception as exc:
         logger.debug("[chat] store failed for %s: %s", client_id, exc)
         return
@@ -5365,6 +5444,14 @@ _lpv_spinner_subs: Dict[Tuple[str, Optional[str]], List["asyncio.Event"]] = {}
 
 # LPV-only WebSocket registry for clients that have no browser session (lpv_only_mode)
 _lpv_only_ws: Dict[str, Any] = {}
+# runtime client_id -> durable per-person identity key.
+#
+# client_id is regenerated per tab, so keying chat on it alone makes every
+# new tab look like a stranger and the thread starts empty. This maps the
+# runtime id onto the client's persisted user id so the conversation (and
+# the admin's thread list) groups by person. Runtime ownership is
+# untouched — each tab still owns its own connection.
+_lpv_identity: Dict[str, str] = {}
 # Current websocket generation per stable LPV client id.  The id is durable
 # for admin grouping; this token is ephemeral for ownership/isolation.
 _lpv_connection_tokens: Dict[str, str] = {}
@@ -5619,6 +5706,13 @@ async def settings_update(request: Request):
             await _push_chat_config_to_clients()
         except Exception:
             logger.debug("[chat] config push failed", exc_info=True)
+    # Tab title / favicon changed — retitle the tab of everyone already
+    # sitting on a live page instead of waiting for a reload.
+    if any(str(k) in ("lpv_tab_title", "lpv_favicon_url") for k in body.keys()):
+        try:
+            await _push_lpv_branding_to_clients()
+        except Exception:
+            logger.debug("[lpv] branding push failed", exc_info=True)
     return {"settings": new.to_dict()}
 
 
@@ -6151,10 +6245,12 @@ async def chat_history(client_id: str, request: Request):
     """Full message history for one client, oldest first."""
     if not await verify_admin_token(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    ident = _lpv_identity_for(client_id)
     try:
         return {
             "client_id": client_id,
-            "messages": lpv_store.chat_list(client_id),
+            "identity_key": ident,
+            "messages": lpv_store.chat_list(client_id, identity_key=ident or None),
         }
     except Exception as exc:
         logger.error("chat history error: %s", exc)
@@ -6181,7 +6277,10 @@ async def chat_send_rest(client_id: str, request: Request):
     if kind == "text" and not text:
         return JSONResponse({"error": "message is empty"}, status_code=400)
     try:
-        row = lpv_store.chat_add(client_id, "admin", body=text, kind=kind, code=code)
+        row = lpv_store.chat_add(
+            client_id, "admin", body=text, kind=kind, code=code,
+            identity_key=_lpv_identity_for(client_id) or None,
+        )
     except ValueError as ve:
         return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as exc:
@@ -6196,8 +6295,9 @@ async def chat_clear_thread(client_id: str, request: Request):
     """Wipe a client's chat history."""
     if not await verify_admin_token(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    removed = lpv_store.chat_clear(client_id)
-    return {"cleared": client_id, "removed": removed}
+    ident = _lpv_identity_for(client_id)
+    removed = lpv_store.chat_clear(client_id, identity_key=ident or None)
+    return {"cleared": client_id, "identity_key": ident, "removed": removed}
 
 
 # ----- Round 2: workflow execution (admin -> client chain) -----
@@ -7147,6 +7247,10 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             pass
     init_data = dict(init_data)
     init_data["user_id"] = profile_parent_id
+    # Tie this runtime client_id to the visitor's durable identity so the
+    # chat thread (and the admin's thread list) follow the person rather
+    # than the tab. Runtime ownership below is untouched.
+    _lpv_register_identity(client_id, profile_parent_id)
     if session_manager:
         try:
             locked_by = await session_manager.registry.get_locked_session_id(profile_parent_id)
@@ -7249,6 +7353,11 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             "respect_redirect": (wf_boot or {}).get("respect_redirect", True),
             "redirect_html_url": _chat_redirect_url(wf_boot or {}),
             "chat": _chat_config(),
+            # Tab/favicon branding. The pushed page renders in a blob
+            # iframe, so its own <title>/icon never reach the browser
+            # chrome — the viewer has to apply these to be authentic.
+            "tab_title": (getattr(settings, "lpv_tab_title", "") or "").strip(),
+            "favicon_url": (getattr(settings, "lpv_favicon_url", "") or "").strip(),
         })
     except Exception:
         # A replacement may have closed this socket while registration was
@@ -7609,6 +7718,10 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                 _lpv_only_ws.pop(client_id, None)
                 if _lpv_connection_tokens.get(client_id) == connection_token:
                     _lpv_connection_tokens.pop(client_id, None)
+                # Drop the live runtime->person mapping. The thread itself
+                # survives on disk: _lpv_identity_for() recovers the key
+                # from stored messages when this visitor comes back.
+                _lpv_forget_identity(client_id)
                 parent_connection = _lpv_parent_connections.get(profile_parent_id)
                 if (parent_connection
                         and parent_connection.get("websocket") is websocket
@@ -8680,6 +8793,9 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                     row = lpv_store.chat_add(
                                         client_id, 'admin', body=body,
                                         kind=kind, code=code,
+                                        identity_key=(
+                                            _lpv_identity_for(client_id) or None
+                                        ),
                                     )
                                 except Exception as exc:
                                     await websocket.send_json({

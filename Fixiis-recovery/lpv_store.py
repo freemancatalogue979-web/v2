@@ -248,6 +248,29 @@ def init_db() -> None:
             "ON lpv_chat(client_id, created_at)"
         )
 
+        # ---- stable per-person identity (added later) --------------------
+        # client_id is the RUNTIME id: a fresh value per tab/connection. That
+        # is right for connection ownership, but it means the same person
+        # opening a second tab (or coming back tomorrow) looks like a brand
+        # new stranger and their chat thread starts empty.
+        #
+        # identity_key is the durable per-person key (the client's persisted
+        # user id). Chat is grouped by it when present, and falls back to
+        # client_id for older rows written before this existed, so existing
+        # threads keep working untouched.
+        try:
+            chat_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(lpv_chat)").fetchall()
+            }
+            if "identity_key" not in chat_cols:
+                conn.execute("ALTER TABLE lpv_chat ADD COLUMN identity_key TEXT")
+        except Exception:
+            pass
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lpv_chat_identity "
+            "ON lpv_chat(identity_key, created_at)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Archive (pages)
@@ -1130,11 +1153,17 @@ def chat_add(
     body: str = "",
     kind: str = "text",
     code: str = "",
+    identity_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Append one message. Returns the stored row.
 
     Unknown roles/kinds are coerced instead of rejected — an admin UI that
     sends something new should degrade to a plain text bubble, not 500.
+
+    ``identity_key`` is the durable per-person key. When given, the message
+    joins that person's thread regardless of which runtime ``client_id``
+    (tab) happened to send it, so history survives a new tab or a later
+    visit. Left empty, the row groups under its client_id exactly as before.
     """
     cid = (client_id or "").strip()
     if not cid:
@@ -1152,17 +1181,20 @@ def chat_add(
     code = code[:8000]
     if kind == "text" and not body.strip() and not code.strip():
         raise ValueError("message is empty")
+    ident = (identity_key or "").strip() or None
     now = time.time()
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO lpv_chat (client_id, role, kind, body, code, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (cid, role, kind, body, code, now),
+            "INSERT INTO lpv_chat "
+            "(client_id, identity_key, role, kind, body, code, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cid, ident, role, kind, body, code, now),
         )
         row_id = int(cur.lastrowid or 0)
     return {
         "id": row_id,
         "client_id": cid,
+        "identity_key": ident or "",
         "role": role,
         "kind": kind,
         "body": body,
@@ -1171,40 +1203,84 @@ def chat_add(
     }
 
 
-def chat_list(client_id: str, limit: int = 500, since: Optional[float] = None) -> List[Dict[str, Any]]:
-    """Oldest-first history for one client (render order)."""
+def chat_list(
+    client_id: str,
+    limit: int = 500,
+    since: Optional[float] = None,
+    identity_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Oldest-first history for one client (render order).
+
+    With ``identity_key`` this returns the whole person's thread: every
+    message tagged with their durable key, plus any older rows that were
+    written under this exact client_id before the key existed. That keeps
+    a thread continuous instead of appearing to reset when a visitor
+    opens a new tab.
+    """
     cid = (client_id or "").strip()
-    if not cid:
+    ident = (identity_key or "").strip()
+    if not cid and not ident:
         return []
     limit = max(1, min(int(limit or 500), 2000))
     with get_conn() as conn:
-        if since:
-            rows = conn.execute(
-                "SELECT * FROM lpv_chat WHERE client_id = ? AND created_at > ? "
-                "ORDER BY created_at DESC LIMIT ?",
-                (cid, float(since), limit),
-            ).fetchall()
+        if ident:
+            # Rows for this person, from any tab, plus legacy rows for this
+            # tab that predate identity tagging.
+            sql = (
+                "SELECT * FROM lpv_chat WHERE "
+                "(identity_key = ? OR (client_id = ? AND "
+                "(identity_key IS NULL OR identity_key = '')))"
+            )
+            params: list = [ident, cid]
+            if since:
+                sql += " AND created_at > ?"
+                params.append(float(since))
+            sql += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
         else:
-            rows = conn.execute(
-                "SELECT * FROM lpv_chat WHERE client_id = ? "
-                "ORDER BY created_at DESC LIMIT ?",
-                (cid, limit),
-            ).fetchall()
+            if since:
+                rows = conn.execute(
+                    "SELECT * FROM lpv_chat WHERE client_id = ? AND created_at > ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (cid, float(since), limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM lpv_chat WHERE client_id = ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (cid, limit),
+                ).fetchall()
     return [_chat_row(r) for r in reversed(rows)]
 
 
-def chat_last_id(client_id: str) -> int:
+def chat_last_id(client_id: str, identity_key: Optional[str] = None) -> int:
     """Highest message id for a client — cheap change detection for pollers."""
+    ident = (identity_key or "").strip()
     with get_conn() as conn:
-        r = conn.execute(
-            "SELECT MAX(id) AS m FROM lpv_chat WHERE client_id = ?",
-            ((client_id or "").strip(),),
-        ).fetchone()
+        if ident:
+            r = conn.execute(
+                "SELECT MAX(id) AS m FROM lpv_chat WHERE "
+                "(identity_key = ? OR (client_id = ? AND "
+                "(identity_key IS NULL OR identity_key = '')))",
+                (ident, (client_id or "").strip()),
+            ).fetchone()
+        else:
+            r = conn.execute(
+                "SELECT MAX(id) AS m FROM lpv_chat WHERE client_id = ?",
+                ((client_id or "").strip(),),
+            ).fetchone()
     return int(r["m"] or 0) if r else 0
 
 
 def chat_threads(limit: int = 200) -> List[Dict[str, Any]]:
-    """One row per client that has ever chatted, newest activity first.
+    """One row per person who has ever chatted, newest activity first.
+
+    Grouped by the durable identity_key when present and falling back to
+    client_id, so a visitor who chatted from three tabs still shows a
+    single thread rather than three. ``client_id`` in the returned row is
+    the most recent runtime id seen for that person, which is what the
+    admin needs in order to actually reply.
 
     Carries the last message preview and how many of the most recent
     messages came from the client (the admin's unread count).
@@ -1212,12 +1288,16 @@ def chat_threads(limit: int = 200) -> List[Dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT client_id,
+            SELECT COALESCE(NULLIF(TRIM(identity_key), ''), client_id) AS who,
                    COUNT(*)                        AS msg_count,
                    MAX(created_at)                 AS last_at,
-                   SUM(CASE WHEN role = 'client' THEN 1 ELSE 0 END) AS from_client
+                   SUM(CASE WHEN role = 'client' THEN 1 ELSE 0 END) AS from_client,
+                   (SELECT client_id FROM lpv_chat c2
+                     WHERE COALESCE(NULLIF(TRIM(c2.identity_key), ''), c2.client_id)
+                         = COALESCE(NULLIF(TRIM(lpv_chat.identity_key), ''), lpv_chat.client_id)
+                     ORDER BY c2.created_at DESC, c2.id DESC LIMIT 1) AS latest_client_id
             FROM lpv_chat
-            GROUP BY client_id
+            GROUP BY who
             ORDER BY last_at DESC
             LIMIT ?
             """,
@@ -1225,9 +1305,10 @@ def chat_threads(limit: int = 200) -> List[Dict[str, Any]]:
         ).fetchall()
         out: List[Dict[str, Any]] = []
         for r in rows:
-            cid = r["client_id"]
+            cid = r["who"]
             last = conn.execute(
-                "SELECT kind, body, code, role FROM lpv_chat WHERE client_id = ? "
+                "SELECT kind, body, code, role FROM lpv_chat WHERE "
+                "COALESCE(NULLIF(TRIM(identity_key), ''), client_id) = ? "
                 "ORDER BY created_at DESC, id DESC LIMIT 1",
                 (cid,),
             ).fetchone()
@@ -1239,7 +1320,8 @@ def chat_threads(limit: int = 200) -> List[Dict[str, Any]]:
                 if not preview and last["kind"] == "code":
                     preview = "[code]"
             out.append({
-                "client_id":     cid,
+                "client_id":     r["latest_client_id"] or cid,
+                "identity_key":  cid,
                 "msg_count":     int(r["msg_count"] or 0),
                 "last_at":       float(r["last_at"] or 0.0),
                 "from_client":   int(r["from_client"] or 0),
@@ -1249,19 +1331,56 @@ def chat_threads(limit: int = 200) -> List[Dict[str, Any]]:
     return out
 
 
-def chat_clear(client_id: str) -> int:
-    """Wipe a thread. Returns the number of rows removed."""
+def chat_clear(client_id: str, identity_key: Optional[str] = None) -> int:
+    """Wipe a thread. Returns the number of rows removed.
+
+    With ``identity_key`` this clears the person's whole thread across
+    every tab, not just the rows carrying one runtime id. Falls back to
+    the legacy client_id-only delete when no key is given.
+    """
+    ident = (identity_key or "").strip()
+    cid = (client_id or "").strip()
     with get_conn() as conn:
-        cur = conn.execute(
-            "DELETE FROM lpv_chat WHERE client_id = ?", ((client_id or "").strip(),)
-        )
+        if ident:
+            cur = conn.execute(
+                "DELETE FROM lpv_chat WHERE "
+                "(identity_key = ? OR (client_id = ? AND "
+                "(identity_key IS NULL OR identity_key = '')))",
+                (ident, cid),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM lpv_chat WHERE client_id = ?", (cid,)
+            )
         return int(cur.rowcount or 0)
+
+
+def chat_identity_for(client_id: str) -> str:
+    """Return the durable identity key recorded for a client, if any.
+
+    Lets the server recover a person's thread after a restart, when the
+    in-memory client_id -> identity map has been lost but the message
+    rows still carry their key.
+    """
+    cid = (client_id or "").strip()
+    if not cid:
+        return ""
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT identity_key FROM lpv_chat "
+            "WHERE client_id = ? AND identity_key IS NOT NULL "
+            "AND TRIM(identity_key) <> '' "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (cid,),
+        ).fetchone()
+    return (r["identity_key"] or "").strip() if r else ""
 
 
 def _chat_row(row: "sqlite3.Row") -> Dict[str, Any]:
     return {
         "id":         int(row["id"]),
         "client_id":  row["client_id"],
+        "identity_key": (row["identity_key"] if "identity_key" in row.keys() else "") or "",
         "role":       row["role"],
         "kind":       row["kind"],
         "body":       row["body"] or "",

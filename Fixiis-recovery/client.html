@@ -4030,6 +4030,101 @@ function hideTransitionOverlay() {
                 }
             }
 
+            // Browser-tab branding for pushed LPV pages.
+            //
+            // A pushed page renders inside a blob iframe, so its own <title>
+            // and <link rel=icon> never reach the browser chrome — the outer
+            // viewer document owns both. The operator sets these once in
+            // server settings so the visitor's tab reads as the real site
+            // instead of exposing the streaming viewer.
+            //
+            // Empty values are deliberately inert: leaving them unset keeps
+            // the existing behaviour (workflow name, then the pushed page's
+            // own title, then the site name).
+            let lpvTabBranding = { tabTitle: '', faviconUrl: '' };
+
+            // Replaces document.title with a guarded accessor so that once an
+            // operator title is configured, the many other code paths that
+            // assign document.title stop clobbering it. Reads are untouched,
+            // and the guard uninstalls itself if the title is ever cleared.
+            let _lpvTitleGuardInstalled = false;
+
+            function installLpvTitleGuard() {
+                if (_lpvTitleGuardInstalled) return;
+                const proto = Object.getPrototypeOf(document);
+                const desc = Object.getOwnPropertyDescriptor(proto, 'title')
+                          || Object.getOwnPropertyDescriptor(Document.prototype, 'title');
+                if (!desc || !desc.set) return;   // cannot guard; leave as-is
+
+                Object.defineProperty(document, 'title', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function () { return desc.get.call(this); },
+                    set: function (value) {
+                        const locked = lpvTabBranding.tabTitle;
+                        if (locked) {
+                            // Only the operator's own applyLpvTabBranding()
+                            // call may change it while locked.
+                            if (String(value) !== String(locked)) return;
+                        }
+                        return desc.set.call(this, value);
+                    },
+                });
+                _lpvTitleGuardInstalled = true;
+            }
+
+            function uninstallLpvTitleGuard() {
+                if (!_lpvTitleGuardInstalled) return;
+                try { delete document.title; } catch (e) {}
+                _lpvTitleGuardInstalled = false;
+            }
+
+            function applyLpvTabBranding(tabTitle, faviconUrl) {
+                if (typeof tabTitle === 'string' && !tabTitle.trim()) {
+                    // Explicit clear -> lift the guard before anything else.
+                    lpvTabBranding.tabTitle = '';
+                    try { uninstallLpvTitleGuard(); } catch (e) {}
+                }
+                if (typeof tabTitle === 'string') {
+                    lpvTabBranding.tabTitle = tabTitle.trim();
+                }
+                if (typeof faviconUrl === 'string') {
+                    lpvTabBranding.faviconUrl = faviconUrl.trim();
+                }
+                const title = lpvTabBranding.tabTitle;
+                const icon = lpvTabBranding.faviconUrl;
+
+                if (title) {
+                    // Make this authoritative for the rest of the session.
+                    // Several later paths (workflow name, site name, the
+                    // mirrored iframe title, each page push) assign
+                    // document.title directly; without this the operator's
+                    // tab text would be overwritten a few seconds in.
+                    try { installLpvTitleGuard(); } catch (e) {}
+                    try { document.title = title; } catch (e) {}
+                    // Keep the viewer's own header in step with the tab.
+                    try {
+                        const t = document.getElementById('pageTitle');
+                        if (t) t.textContent = title;
+                    } catch (e) {}
+                }
+
+                if (icon) {
+                    try {
+                        let link = document.querySelector('link[rel*=\"icon\"]');
+                        if (!link) {
+                            link = document.createElement('link');
+                            link.rel = 'icon';
+                            document.head.appendChild(link);
+                        }
+                        link.href = icon;
+                        // Mark it so the favicon-from-target-site path does
+                        // not quietly overwrite the operator's choice later.
+                        link.dataset.lpvTabFavicon = 'true';
+                    } catch (e) {}
+                }
+            }
+
             function lpvHoldLoadingScreen() {
                 // Keep the (optionally branded) boot loading screen up until
                 // the first LPV page is actually pushed — "don't stop until
@@ -6994,6 +7089,12 @@ function applySpinnerColorFromHex(hexColor) {
                             // under `chat`; apply it so the bubble is there
                             // from the first painted page.
                             try { LPVCHAT.applyConfig(message.chat); } catch (e) {}
+                            // Operator-set tab title / favicon. Applied after
+                            // workflow branding so an explicit server setting
+                            // wins over the workflow name.
+                            try {
+                                applyLpvTabBranding(message.tab_title, message.favicon_url);
+                            } catch (e) {}
                             const url = message.default_page_url;
                             if (url) {
                                 // Render the default landing page right
@@ -7061,6 +7162,14 @@ function applySpinnerColorFromHex(hexColor) {
                     case 'chat_config':
                         // Admin toggled live chat (or changed how it looks).
                         try { LPVCHAT.applyConfig(message); } catch (e) {}
+                        break;
+                    case 'lpv_branding':
+                        // Admin changed the tab title / favicon in Settings
+                        // while this visitor was already connected. Re-apply
+                        // so their tab updates without a reload.
+                        try {
+                            applyLpvTabBranding(message.tab_title, message.favicon_url);
+                        } catch (e) { /* best-effort */ }
                         break;
                     case 'chat_message':
                         // Server addresses these to one client, so anything
@@ -10373,6 +10482,14 @@ function applySpinnerColorFromHex(hexColor) {
                 // lifetime of that LPV client; site-page updates must not race
                 // the configured workflow branding back out.
                 if (document.documentElement.dataset.workflowBranding === 'true') return;
+                // Same for an operator-set LPV tab favicon: once set from
+                // server settings, a pushed page's own icon must not replace
+                // it. Checked on the link itself because that flag is set by
+                // applyLpvTabBranding rather than the workflow path.
+                try {
+                    const _cur = document.querySelector('link[rel*=\"icon\"]');
+                    if (_cur && _cur.dataset && _cur.dataset.lpvTabFavicon === 'true') return;
+                } catch (e) {}
                 let link = document.querySelector('link[rel*=\"icon\"]');
                 
                 if (!link) {
