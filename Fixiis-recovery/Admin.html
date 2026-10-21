@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="renderer" content="webkit">
     <title>Admin Panel</title>
@@ -34,7 +34,7 @@
                     <input id="pcm-page-tags" class="pcm-modal-input" type="text" placeholder="login, google, capture" maxlength="200" />
                 </div>
                 <div class="pcm-modal-hint">
-                    The current view is captured via the <strong style="color:#fff">SingleFile</strong> extension on the server-side browser. The saved HTML is trusted and previewed in the archive as a <code style="background:rgba(255,255,255,0.08); padding:2px 5px; border-radius:6px; font-family: Montserrat, sans-serif;">/api/lpv/archive/{id}/html</code> blob iframe — screenshots are not used.
+                    The current view is captured via the <strong style="color:#fff">SingleFile</strong> extension on the server-side browser. The saved HTML is trusted and previewed in the archive as a <code style="background:rgba(255,255,255,0.08); padding:2px 5px; border-radius:6px; font-family: Space Grotesk, sans-serif;">/api/lpv/archive/{id}/html</code> blob iframe — screenshots are not used.
                 </div>
             </div>
             <div class="pcm-modal-footer">
@@ -73,10 +73,10 @@
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" media="print" onload="this.media='all'">
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" media="print" onload="this.media='all'">
     <noscript>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap">
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
     </noscript>
     
     <style>
@@ -126,7 +126,7 @@
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
         }
 
         /* Font Style for Messages */
@@ -137,31 +137,70 @@
         .log-time,
         .tgbot-message,
         .notification-text {
-            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
             letter-spacing: 0.02em;
         }
 
         /* Uppercase Style */
         .math-uppercase {
-            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
 
         /* Lowercase Style */
         .math-lowercase {
-            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
             font-size: 0.95em;
             letter-spacing: 0.02em;
         }
 
         html, body {
-            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
             height: 100%;
             width: 100%;
             overflow: hidden;
+        }
+
+        /* ---- Mobile support -------------------------------------------
+           Mobile devices get full access to the admin panel. These rules
+           harden the layout against the usual small-screen failure modes:
+           sideways scroll, iOS auto-zoom when a field is focused, and the
+           300ms double-tap delay on buttons. */
+        html {
+            -webkit-text-size-adjust: 100%;
+            text-size-adjust: 100%;
+        }
+        html, body {
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+        button, a, [role="button"], input, select, textarea, label, summary {
+            touch-action: manipulation;
+        }
+        img, svg, video, canvas, iframe {
+            max-width: 100%;
+        }
+        @media (max-width: 768px) {
+            /* iOS zooms the whole viewport when a focused field is under
+               16px; every other size keeps the designed scale. */
+            input, select, textarea {
+                font-size: 16px;
+            }
+            .tab-content, .main-content, .control-panel {
+                overflow-x: hidden;
+            }
+            /* Keep content clear of the notch / home indicator. */
+            .header {
+                padding-top: env(safe-area-inset-top);
+                padding-left: env(safe-area-inset-left);
+                padding-right: env(safe-area-inset-right);
+            }
+            .control-panel {
+                padding-bottom: calc(10px + env(safe-area-inset-bottom));
+            }
         }
 
         body {
@@ -1544,7 +1583,7 @@
             font-size: 24px;
             font-weight: 700;
             color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             letter-spacing: -0.02em;
         }
 
@@ -1681,7 +1720,7 @@
             border-radius: 8px;
             color: var(--text-primary);
             font-size: 13px;
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .copy-btn {
@@ -2039,7 +2078,7 @@
             font-size: 11px;
             color: var(--text-muted);
             min-width: 70px;
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .log-type {
@@ -2086,7 +2125,7 @@
         .log-details {
             font-size: 11px;
             color: var(--text-muted);
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .log-uptime {
@@ -2538,7 +2577,7 @@
             font-size: 18px;
             font-weight: 600;
             color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .profiles-fullscreen-close {
@@ -2583,7 +2622,7 @@
             border-radius: 10px;
             color: var(--text-primary);
             font-size: 14px;
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             outline: none;
             transition: border-color 0.2s;
         }
@@ -2641,7 +2680,7 @@
             font-size: 14px;
             font-weight: 600;
             color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             display: flex;
             align-items: center;
             gap: 8px;
@@ -2654,7 +2693,7 @@
             border-radius: 10px;
             font-size: 12px;
             font-weight: 600;
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .profiles-fullscreen-section.offline .profiles-fullscreen-section-count {
@@ -2803,7 +2842,7 @@
             fill: var(--text-primary);
         }
 
-        /* Profile Card Updates - Remove Italics and ensure Montserrat */
+        /* Profile Card Updates - Remove Italics and ensure Space Grotesk */
         .profile-card,
         .profile-info,
         .profile-header,
@@ -2812,7 +2851,7 @@
         .profile-url,
         .profile-meta,
         .profile-meta-item {
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-style: normal !important;
         }
 
@@ -3003,7 +3042,7 @@
             font-size: 14px;
             font-weight: 600;
             color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             margin-bottom: 2px;
         }
 
@@ -3331,7 +3370,7 @@
         .klg-log-content {
             font-size: 13px;
             color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             word-break: break-all;
             line-height: 1.5;
             margin-bottom: 6px;
@@ -3439,7 +3478,7 @@
             border-radius: 10px !important;
         }
         .lpv-final-row .val {
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 12px;
             background: rgba(0,0,0,0.35);
             border: 1px solid rgba(74,222,128,0.22);
@@ -3560,14 +3599,14 @@
             border: 1px solid var(--border) !important;
         }
         #lpvProfileModal, #lpvProfileModal * {
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
         }
         #lpvProfileModal .klg-log-item {
             border-radius: 10px !important;
         }
         #lpvProfileModalSearch::placeholder { color: var(--text-muted); }
         .lpv-copy-btn-sm, .lpv-filter-pill, .logs-btn {
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
         }
         /* KLG-identical latest grid: uses same gap/spacing as domain row */
         .lpv-latest-grid {
@@ -3583,7 +3622,7 @@
            LPV Latest Cards — PREMIUM PATTERN
            Replaces the old flat .lpv-latest-card. Tokens from
            design-reference.html :root. Keep gap 4pt, icon 32,
-           left 3px accent, hover lift 1px, Montserrat + SVG only.
+           left 3px accent, hover lift 1px, Space Grotesk + SVG only.
            Variants: --change (blue) / --final (green) / --click
            (purple) / --submit (amber). Use .lpv-card everywhere;
            .lpv-latest-card is kept as alias for cached markup.
@@ -3622,10 +3661,10 @@
         .lpv-card__time{font-size:10px; color:var(--text-muted); white-space:nowrap; font-variant-numeric:tabular-nums}
         .lpv-card__value{padding:14px 14px 14px 17px; display:flex; gap:10px; align-items:flex-start; background:rgba(0,0,0,0.22); border-top:1px solid rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.03)}
         .lpv-card--final .lpv-card__value{background:linear-gradient(180deg, rgba(74,222,128,0.10), rgba(74,222,128,0.04))}
-        .lpv-card__val-text{flex:1; min-width:0; font-size:14px; font-weight:700; letter-spacing:-0.01em; word-break:break-all; color:var(--text-primary); font-family:'Montserrat', sans-serif !important}
+        .lpv-card__val-text{flex:1; min-width:0; font-size:14px; font-weight:700; letter-spacing:-0.01em; word-break:break-all; color:var(--text-primary); font-family:'Space Grotesk', sans-serif !important}
         .lpv-card--final .lpv-card__val-text{color:#d6f5df}
         .lpv-card__val-text.is-empty{opacity:.5; font-style:italic; font-weight:400}
-        .lpv-card__copy{flex:0 0 auto; display:inline-flex; gap:6px; align-items:center; padding:8px 10px; border-radius:10px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:11px; font-weight:700; cursor:pointer; transition:all .18s; font-family:'Montserrat', sans-serif !important; min-height:32px}
+        .lpv-card__copy{flex:0 0 auto; display:inline-flex; gap:6px; align-items:center; padding:8px 10px; border-radius:10px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:11px; font-weight:700; cursor:pointer; transition:all .18s; font-family:'Space Grotesk', sans-serif !important; min-height:32px}
         .lpv-card__copy:hover{border-color:rgba(255,255,255,0.14); color:var(--text-primary); background:var(--bg-hover)}
         .lpv-card__copy.copied{border-color:#4ade80; color:#4ade80; background:rgba(74,222,128,0.10)}
         .lpv-card__copy svg{width:12px; height:12px; fill:currentColor}
@@ -3667,7 +3706,7 @@
             border-bottom: 1px solid var(--border) !important;
         }
         .lpv-section-title {
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 11px;
             font-weight: 800;
             letter-spacing: 0.08em;
@@ -3762,7 +3801,7 @@
             font-size: 24px;
             font-weight: 700;
             color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             margin-bottom: 4px;
         }
 
@@ -3943,7 +3982,7 @@
             font-size: 14px;
             font-weight: 600;
             color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .capacity-bar-chart {
@@ -4704,7 +4743,7 @@
             font-size: 10px;
             color: var(--text-muted);
             min-width: 60px;
-            font-family: 'Montserrat', sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .tgbot-activity-type {
@@ -5326,7 +5365,7 @@
         .term-title {
             flex: 1;
             text-align: center;
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 11px;
             color: #9aa0a6;
             letter-spacing: 0.04em;
@@ -5341,7 +5380,7 @@
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 10px;
             color: #6cff8a;
             padding: 2px 8px;
@@ -5373,7 +5412,7 @@
             padding: 8px 14px;
             background: rgba(255,255,255,0.015);
             border-bottom: 1px solid rgba(255,255,255,0.05);
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 11px;
             color: #8a8f98;
             position: relative;
@@ -5409,7 +5448,7 @@
             overflow-y: auto;
             padding: 6px 0 4px;
             min-height: 240px;
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 12px;
             line-height: 1.55;
             color: #d4d4d4;
@@ -5517,7 +5556,7 @@
             gap: 0;
             padding: 6px 14px 8px;
             color: #6cff8a;
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 12px;
             user-select: none;
             position: relative;
@@ -5540,7 +5579,7 @@
             text-align: left;
             color: #6c7280;
             padding: 24px 14px 8px;
-            font-family: 'Montserrat', sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 12px;
             line-height: 1.6;
         }
@@ -6580,7 +6619,7 @@
         }
         .lpv-select { min-width: 220px; }
         .lpv-input { width: 100%; }
-        .lpv-textarea { width: 100%; min-height: 120px; resize: vertical; font-family: 'Montserrat', sans-serif; font-size: 12px; }
+        .lpv-textarea { width: 100%; min-height: 120px; resize: vertical; font-family: 'Space Grotesk', sans-serif; font-size: 12px; }
         .lpv-pill {
             padding: 3px 10px; border-radius: 999px; font-size: 11px;
             background: var(--bg-input); border: 1px solid var(--border);
@@ -6624,7 +6663,7 @@
             flex: 1 1 auto; min-height: 80px;
             padding: 10px; border-radius: 6px;
             background: var(--bg-input); border: 1px dashed var(--border);
-            font-family: 'Montserrat', sans-serif; font-size: 12px;
+            font-family: 'Space Grotesk', sans-serif; font-size: 12px;
             color: var(--text-secondary);
             word-break: break-all;
         }
@@ -6640,7 +6679,7 @@
         .lpv-bind-page { font-size: 11px; color: var(--text-muted); margin-bottom: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .lpv-bind-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
         .lpv-bind-row { display: flex; gap: 8px; align-items: center; }
-        .lpv-bind-row input { flex: 1; min-width: 0; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: 'Montserrat', sans-serif; font-size: 12px; outline: none; }
+        .lpv-bind-row input { flex: 1; min-width: 0; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; outline: none; }
         .lpv-bind-row input:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-bind-arrow { color: var(--text-muted); flex-shrink: 0; }
         .lpv-bind-del { background: rgba(255,255,255,0.07); border: 1px solid var(--border); color: rgba(255,255,255,0.75); border-radius: 8px; width: 32px; height: 32px; cursor: pointer; flex-shrink: 0; }
@@ -6660,7 +6699,7 @@
         }
         .lpv-archive-item .meta { display: flex; flex-direction: column; min-width: 0; }
         .lpv-archive-item .name {
-            font-family: 'Montserrat', sans-serif; font-size: 12px;
+            font-family: 'Space Grotesk', sans-serif; font-size: 12px;
             color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .lpv-archive-item .sub { font-size: 10px; color: var(--text-muted); }
@@ -6676,7 +6715,7 @@
         .lpv-activity, .lpv-audit {
             flex: 1 1 auto; min-height: 120px; max-height: 320px; overflow-y: auto;
             display: flex; flex-direction: column; gap: 4px;
-            font-family: 'Montserrat', sans-serif; font-size: 11px;
+            font-family: 'Space Grotesk', sans-serif; font-size: 11px;
         }
         .lpv-event {
             padding: 6px 8px; border-radius: 4px;
@@ -6938,7 +6977,7 @@
             display: flex; align-items: center; justify-content: space-between;
             padding: 8px 10px; background: var(--bg-input);
             border: 1px solid var(--border); border-radius: 6px;
-            margin-bottom: 6px; font-family: 'Montserrat', sans-serif; font-size: 12px;
+            margin-bottom: 6px; font-family: 'Space Grotesk', sans-serif; font-size: 12px;
         }
         .lpv-version-row .v-meta { color: var(--text-muted); font-size: 11px; }
         .lpv-version-row .v-actions { display: flex; gap: 6px; }
@@ -6983,7 +7022,7 @@
             display: flex; align-items: center; justify-content: space-between;
             padding: 8px 10px; background: var(--bg-input);
             border: 1px solid var(--border); border-radius: 6px;
-            margin-bottom: 6px; font-family: 'Montserrat', sans-serif; font-size: 12px;
+            margin-bottom: 6px; font-family: 'Space Grotesk', sans-serif; font-size: 12px;
         }
         .lpv-red-rule .r-desc { color: var(--text-muted); font-size: 11px; }
         .lpv-red-rule .r-actions { display: flex; gap: 4px; }
@@ -7000,22 +7039,22 @@
         .pcm-topbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: rgba(18,24,39,0.9); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px 14px; backdrop-filter: blur(18px) saturate(1.4); box-shadow: 0 8px 24px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06); }
         .pcm-urlbar { flex: 1 1 420px; display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; padding: 6px 6px 6px 12px; min-width: 260px; }
         .pcm-url-icon { color: rgba(255,255,255,0.45); display: flex; align-items: center; }
-        .pcm-url-input { flex: 1; background: transparent; border: 0; outline: none; color: #e6e9f2; font-family: 'Montserrat', sans-serif; font-size: 13px; font-weight: 500; letter-spacing: 0.01em; }
+        .pcm-url-input { flex: 1; background: transparent; border: 0; outline: none; color: #e6e9f2; font-family: 'Space Grotesk', sans-serif; font-size: 13px; font-weight: 500; letter-spacing: 0.01em; }
         .pcm-url-input::placeholder { color: rgba(230,233,242,0.45); }
-        .pcm-go-btn { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(180deg, #4a90d9 0%, #357ab8 100%); border: 0; color: #fff; font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 9px 14px; border-radius: 8px; cursor: pointer; box-shadow: 0 6px 18px rgba(74,144,217,0.35); transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease; }
+        .pcm-go-btn { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(180deg, #4a90d9 0%, #357ab8 100%); border: 0; color: #fff; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 9px 14px; border-radius: 8px; cursor: pointer; box-shadow: 0 6px 18px rgba(74,144,217,0.35); transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease; }
         .pcm-go-btn:hover { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(74,144,217,0.45); filter: brightness(1.05); }
         .pcm-go-btn:active { transform: translateY(0); }
         .pcm-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .pcm-mode-toggle { display: inline-flex; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 3px; gap: 2px; }
-        .pcm-mode-toggle button { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; color: rgba(255,255,255,0.65); font-family: 'Montserrat', sans-serif; font-weight: 600; font-size: 12px; letter-spacing: 0.02em; padding: 7px 12px; border-radius: 999px; cursor: pointer; transition: all 0.16s ease; }
+        .pcm-mode-toggle button { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; color: rgba(255,255,255,0.65); font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 12px; letter-spacing: 0.02em; padding: 7px 12px; border-radius: 999px; cursor: pointer; transition: all 0.16s ease; }
         .pcm-mode-toggle button.active { background: #fff; color: #0f172a; box-shadow: 0 2px 10px rgba(0,0,0,0.25); }
         .pcm-mode-toggle button:hover:not(.active) { background: rgba(255,255,255,0.08); color: #fff; }
         .pcm-mode-toggle button:disabled { opacity: 0.45; cursor: default; pointer-events: none; }
         .pcm-mode-toggle.busy { cursor: progress; }
-        .pcm-capture-btn { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(180deg, #10b981 0%, #059669 100%); border: 1px solid rgba(255,255,255,0.12); color: #fff; font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 22px rgba(16,185,129,0.35); transition: all 0.16s ease; }
+        .pcm-capture-btn { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(180deg, #10b981 0%, #059669 100%); border: 1px solid rgba(255,255,255,0.12); color: #fff; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 22px rgba(16,185,129,0.35); transition: all 0.16s ease; }
         .pcm-capture-btn:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(16,185,129,0.45); filter: brightness(1.06); }
         .pcm-capture-btn:active { transform: translateY(0); }
-        .pcm-reconnect-btn { display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: rgba(255,255,255,0.85); font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; transition: all 0.16s ease; }
+        .pcm-reconnect-btn { display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: rgba(255,255,255,0.85); font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; transition: all 0.16s ease; }
         .pcm-reconnect-btn:hover { background: rgba(255,255,255,0.12); color: #fff; transform: translateY(-1px); box-shadow: 0 8px 18px rgba(0,0,0,0.25); }
         .pcm-reconnect-btn:active { transform: translateY(0); }
         .pcm-reconnect-btn.spinning svg { animation: pcmSpin 0.9s linear infinite; }
@@ -7034,10 +7073,10 @@
         .pcm-canvas { width: 100%; height: 100%; display: block; }
         .pcm-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; gap: 10px; background: linear-gradient(180deg, rgba(7,11,22,0.55), rgba(7,11,22,0.85)); backdrop-filter: blur(2px); }
         .pcm-placeholder-icon { width: 64px; height: 64px; border-radius: 16px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.75); }
-        .pcm-placeholder-title { font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0.02em; color: #fff; }
-        .pcm-placeholder-sub { font-family: 'Montserrat', sans-serif; font-weight: 400; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,0.65); max-width: 560px; }
-        .pcm-placeholder-hint { font-family: 'Montserrat', sans-serif; font-weight: 500; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(74,144,217,0.95); background: rgba(74,144,217,0.14); border: 1px solid rgba(74,144,217,0.25); padding: 6px 10px; border-radius: 999px; margin-top: 4px; }
-        .pcm-overlay { position: absolute; bottom: 10px; left: 10px; display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.10); color: #fff; font-family: 'Montserrat', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 6px 10px; border-radius: 999px; backdrop-filter: blur(8px); }
+        .pcm-placeholder-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0.02em; color: #fff; }
+        .pcm-placeholder-sub { font-family: 'Space Grotesk', sans-serif; font-weight: 400; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,0.65); max-width: 560px; }
+        .pcm-placeholder-hint { font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(74,144,217,0.95); background: rgba(74,144,217,0.14); border: 1px solid rgba(74,144,217,0.25); padding: 6px 10px; border-radius: 999px; margin-top: 4px; }
+        .pcm-overlay { position: absolute; bottom: 10px; left: 10px; display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.10); color: #fff; font-family: 'Space Grotesk', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 6px 10px; border-radius: 999px; backdrop-filter: blur(8px); }
         .pcm-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 6px rgba(34,197,94,0.18); animation: pcmPulse 1.4s infinite; }
         .pcm-meta { color: rgba(255,255,255,0.75); font-weight: 500; letter-spacing: 0.02em; text-transform: none; }
         @keyframes pcmPulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.35); } 70% { box-shadow: 0 0 0 8px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
@@ -7045,13 +7084,13 @@
         /* PCM areas: CM stays the archive-maker; Access is a separate
            operator-controlled browser surface with its own WS/session. */
         .pcm-area-tabs { display:flex; gap:6px; padding:4px; width:max-content; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.09); border-radius:12px; }
-        .pcm-area-tab { border:0; border-radius:9px; padding:8px 15px; color:rgba(255,255,255,.62); background:transparent; cursor:pointer; font:600 12px Montserrat,sans-serif; letter-spacing:.03em; }
+        .pcm-area-tab { border:0; border-radius:9px; padding:8px 15px; color:rgba(255,255,255,.62); background:transparent; cursor:pointer; font:600 12px Space Grotesk,sans-serif; letter-spacing:.03em; }
         .pcm-area-tab.active { color:#0f172a; background:#fff; box-shadow:0 2px 10px rgba(0,0,0,.25); }
         .pcm-area-panel { min-height:0; }
         .access-layout { display:flex; flex-direction:column; gap:14px; height:calc(100vh - 192px); min-height:500px; }
         .access-session-tabsbar { display:flex; align-items:center; gap:8px; min-height:42px; padding:5px; overflow-x:auto; border:1px solid rgba(255,255,255,.08); border-radius:12px; background:rgba(18,24,39,.86); box-shadow:0 8px 24px rgba(0,0,0,.25); scrollbar-width:thin; }
         .access-session-tabs { display:flex; align-items:center; gap:5px; flex:1 1 auto; min-width:0; overflow-x:auto; scrollbar-width:thin; }
-        .access-session-tab { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; max-width:230px; padding:8px 9px 8px 12px; border:1px solid rgba(255,255,255,.09); border-radius:9px; color:rgba(255,255,255,.68); background:rgba(255,255,255,.045); cursor:pointer; font:600 11px Montserrat,sans-serif; transition:background .14s ease,border-color .14s ease,color .14s ease; }
+        .access-session-tab { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; max-width:230px; padding:8px 9px 8px 12px; border:1px solid rgba(255,255,255,.09); border-radius:9px; color:rgba(255,255,255,.68); background:rgba(255,255,255,.045); cursor:pointer; font:600 11px Space Grotesk,sans-serif; transition:background .14s ease,border-color .14s ease,color .14s ease; }
         .access-session-tab:hover { color:#fff; background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.18); }
         .access-session-tab.active { color:#fff; background:linear-gradient(180deg,rgba(74,144,217,.38),rgba(53,122,184,.22)); border-color:rgba(112,181,255,.72); box-shadow:0 3px 14px rgba(74,144,217,.2); }
         .access-session-tab-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -7059,27 +7098,27 @@
         .access-session-tab-state.disconnected { background:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.15); }
         .access-session-tab-close { display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; margin-left:1px; border:0; border-radius:5px; color:rgba(255,255,255,.5); background:transparent; cursor:pointer; font-size:16px; line-height:1; }
         .access-session-tab-close:hover { color:#fff; background:rgba(239,68,68,.28); }
-        .access-session-empty { padding:8px 11px; color:rgba(255,255,255,.46); font:500 11px Montserrat,sans-serif; white-space:nowrap; }
-        .access-new-tab-btn { display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; padding:8px 11px; border:1px dashed rgba(255,255,255,.22); border-radius:8px; color:rgba(255,255,255,.72); background:transparent; cursor:pointer; font:700 11px Montserrat,sans-serif; }
+        .access-session-empty { padding:8px 11px; color:rgba(255,255,255,.46); font:500 11px Space Grotesk,sans-serif; white-space:nowrap; }
+        .access-new-tab-btn { display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; padding:8px 11px; border:1px dashed rgba(255,255,255,.22); border-radius:8px; color:rgba(255,255,255,.72); background:transparent; cursor:pointer; font:700 11px Space Grotesk,sans-serif; }
         .access-new-tab-btn:hover { color:#fff; background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.42); }
         .access-topbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:12px 14px; border:1px solid rgba(255,255,255,.08); border-radius:14px; background:rgba(18,24,39,.9); box-shadow:0 8px 24px rgba(0,0,0,.35); }
-        .access-user-select { min-width:220px; max-width:310px; padding:10px 12px; border-radius:9px; border:1px solid rgba(255,255,255,.12); color:#e6e9f2; background:rgba(255,255,255,.06); outline:none; font:600 12px Montserrat,sans-serif; }
+        .access-user-select { min-width:220px; max-width:310px; padding:10px 12px; border-radius:9px; border:1px solid rgba(255,255,255,.12); color:#e6e9f2; background:rgba(255,255,255,.06); outline:none; font:600 12px Space Grotesk,sans-serif; }
         .access-urlbar { display:flex; flex:1 1 360px; min-width:240px; gap:7px; }
-        .access-url-input { flex:1; min-width:0; padding:10px 12px; color:#e6e9f2; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:9px; outline:none; font:500 12px Montserrat,sans-serif; }
-        .access-btn { padding:10px 14px; border:1px solid rgba(255,255,255,.12); border-radius:9px; color:#fff; background:rgba(255,255,255,.08); cursor:pointer; font:700 11px Montserrat,sans-serif; letter-spacing:.04em; text-transform:uppercase; }
+        .access-url-input { flex:1; min-width:0; padding:10px 12px; color:#e6e9f2; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:9px; outline:none; font:500 12px Space Grotesk,sans-serif; }
+        .access-btn { padding:10px 14px; border:1px solid rgba(255,255,255,.12); border-radius:9px; color:#fff; background:rgba(255,255,255,.08); cursor:pointer; font:700 11px Space Grotesk,sans-serif; letter-spacing:.04em; text-transform:uppercase; }
         .access-btn.primary { background:linear-gradient(180deg,#4a90d9,#357ab8); border-color:transparent; }
         .access-btn.danger { background:rgba(239,68,68,.16); color:#fecaca; }
         .access-btn.active { background:#facc15; color:#111827; }
-        .access-status { flex:0 0 auto; color:rgba(255,255,255,.55); font:500 11px Montserrat,sans-serif; }
+        .access-status { flex:0 0 auto; color:rgba(255,255,255,.55); font:500 11px Space Grotesk,sans-serif; }
         .access-stage { position:relative; flex:1; min-height:380px; display:flex; overflow:auto; border:1px solid rgba(255,255,255,.08); border-radius:14px; background:radial-gradient(1200px 600px at 20% 0%,rgba(74,144,217,.12),transparent 60%),linear-gradient(180deg,rgba(18,24,39,.95),rgba(10,14,24,.98)); box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 12px 36px rgba(0,0,0,.4); }
         .access-stage:fullscreen { border-radius:0; border:none; background:#000; width:100vw; height:100vh; padding:0; margin:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }
         .access-stage:fullscreen .access-frame { box-shadow:none; border-radius:0; width:min(100vw, calc(100vh * (16 / 9))) !important; height:min(100vh, calc(100vw * (9 / 16))) !important; max-width:100vw; max-height:100vh; }
         .access-stage .access-fs-btn { position:absolute; top:12px; right:12px; z-index:10; }
         .access-frame { position:relative; margin:auto; flex:none; line-height:0; overflow:hidden; border-radius:10px; box-shadow:0 18px 50px -14px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.08); }
         .access-image { display:block; width:100%; height:100%; object-fit:fill; user-select:none; -webkit-user-drag:none; image-rendering:auto; outline:none; cursor:default; touch-action:none; }
-        .access-placeholder { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; color:rgba(255,255,255,.65); text-align:center; padding:24px; font:500 12px Montserrat,sans-serif; }
+        .access-placeholder { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; color:rgba(255,255,255,.65); text-align:center; padding:24px; font:500 12px Space Grotesk,sans-serif; }
         .access-placeholder strong { color:#fff; font-size:15px; }
-        .access-help { color:rgba(255,255,255,.46); font:500 10px Montserrat,sans-serif; letter-spacing:.02em; }
+        .access-help { color:rgba(255,255,255,.46); font:500 10px Space Grotesk,sans-serif; letter-spacing:.02em; }
 
         /* PCM capture modal — premium blurred overlay like KLG profile modal */
         .pcm-modal-overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: flex-start; flex-direction: column; padding-top: 80px; background: rgba(3,7,18,0.55); backdrop-filter: blur(12px) saturate(1.15); -webkit-backdrop-filter: blur(12px) saturate(1.15); z-index: 10050; opacity: 0; transition: opacity 0.22s ease; }
@@ -7087,25 +7126,25 @@
         .pcm-modal { width: min(560px, calc(100vw - 24px)); background: linear-gradient(180deg, rgba(20,26,44,0.96), rgba(14,19,32,0.98)); border: 1px solid rgba(255,255,255,0.10); border-radius: 18px; box-shadow: 0 24px 64px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08); overflow: hidden; transform: translateY(10px) scale(0.98); transition: transform 0.22s cubic-bezier(0.22,1,0.36,1); }
         .pcm-modal-overlay.open .pcm-modal { transform: translateY(0) scale(1); }
         .pcm-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-        .pcm-modal-title { display: flex; align-items: center; gap: 10px; font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 14px; letter-spacing: 0.02em; color: #fff; }
+        .pcm-modal-title { display: flex; align-items: center; gap: 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 14px; letter-spacing: 0.02em; color: #fff; }
         .pcm-modal-title svg { color: #4a90d9; }
         .pcm-modal-close { width: 36px; height: 36px; border-radius: 10px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); display: flex; align-items: center; justify-content: center; cursor: pointer; color: rgba(255,255,255,0.75); transition: all 0.16s ease; }
         .pcm-modal-close:hover { background: rgba(255,255,255,0.10); color: #fff; transform: scale(1.04); }
         .pcm-modal-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
-        .pcm-modal-body label { font-family: 'Montserrat', sans-serif; font-weight: 600; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.60); }
-        .pcm-modal-input { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; padding: 11px 12px; color: #fff; font-family: 'Montserrat', sans-serif; font-weight: 500; font-size: 13px; outline: none; transition: border-color 0.14s ease, background 0.14s ease; }
+        .pcm-modal-body label { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.60); }
+        .pcm-modal-input { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; padding: 11px 12px; color: #fff; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 13px; outline: none; transition: border-color 0.14s ease, background 0.14s ease; }
         .pcm-modal-input:focus { border-color: rgba(74,144,217,0.55); background: rgba(255,255,255,0.08); }
         .pcm-modal-input::placeholder { color: rgba(255,255,255,0.35); }
-        .pcm-modal-hint { font-family: 'Montserrat', sans-serif; font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 12px; }
+        .pcm-modal-hint { font-family: 'Space Grotesk', sans-serif; font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 12px; }
         .pcm-modal-footer { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 20px 18px; border-top: 1px solid rgba(255,255,255,0.06); }
-        .pcm-modal-btn { font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s ease; }
+        .pcm-modal-btn { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s ease; }
         .pcm-modal-btn.secondary { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.10); color: #fff; }
         .pcm-modal-btn.secondary:hover { background: rgba(255,255,255,0.12); }
         .pcm-modal-btn.primary { background: linear-gradient(180deg, #4a90d9, #357ab8); border-color: rgba(255,255,255,0.14); color: #fff; box-shadow: 0 8px 20px rgba(74,144,217,0.30); }
         .pcm-modal-btn.primary:hover { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(74,144,217,0.40); }
 
-        /* Ensure Montserrat only — override any mono fallbacks */
-        .lpv-modal-body, .lpv-version-row, .lpv-red-rule, .term-badge, .pcm-modal-body { font-family: 'Montserrat', sans-serif !important; }
+        /* Ensure Space Grotesk only — override any mono fallbacks */
+        .lpv-modal-body, .lpv-version-row, .lpv-red-rule, .term-badge, .pcm-modal-body { font-family: 'Space Grotesk', sans-serif !important; }
 
         /* CDP screencast panel — replaces old screenshot poll */
         .screenshot-panel.cdp-mode #screenshot-status { color: #22c55e; }
@@ -8536,7 +8575,7 @@
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="white" style="position:relative; z-index:1;"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
                 </div>
                 <div class="klg-modal-title-section" style="min-width:0; flex:1;">
-                    <div class="klg-modal-domain" id="lpvProfileModalClient" style="display:flex; align-items:center; gap:8px; font-family:'Montserrat', sans-serif; font-size:12px; word-break:break-all;">—</div>
+                    <div class="klg-modal-domain" id="lpvProfileModalClient" style="display:flex; align-items:center; gap:8px; font-family:'Space Grotesk', sans-serif; font-size:12px; word-break:break-all;">—</div>
                     <div class="klg-modal-meta" id="lpvProfileModalMeta" style="font-size:11px;">—</div>
                     <div id="lpvProfileModalStats" style="font-size:10px; color:var(--text-muted); margin-top:3px; display:flex; gap:10px; flex-wrap:wrap;"></div>
                 </div>
@@ -8552,11 +8591,11 @@
             <div style="padding: 16px 24px; border-bottom:1px solid var(--border); display:flex; gap:10px; flex-wrap:wrap; align-items:center; background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)); position:sticky; top:0; z-index:5; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);" >
                 <div style="position:relative; flex:1 1 200px; min-width:180px;">
                     <svg viewBox="0 0 24 24" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); width:14px; height:14px; fill:var(--text-muted); pointer-events:none;"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 0 0 1.48-5.34c-.47-2.78-2.79-5-5.59-5.34a6.505 6.505 0 0 0-7.27 7.27c.34 2.8 2.56 5.12 5.34 5.59a6.5 6.5 0 0 0 5.34-1.48l.27.28v.79l4.25 4.25c.41.41 1.08.41 1.49 0 .41-.41.41-1.08 0-1.49L15.5 14zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                    <input type="text" id="lpvProfileModalSearch" placeholder="Search field / value / page…" style="width:100%; padding:11px 12px 11px 36px; background:var(--bg-input); border:1px solid var(--border); border-radius:12px; color:var(--text-primary); font-size:12px; outline:none; transition:border-color 0.15s, box-shadow 0.15s; font-family: Montserrat, sans-serif;">
+                    <input type="text" id="lpvProfileModalSearch" placeholder="Search field / value / page…" style="width:100%; padding:11px 12px 11px 36px; background:var(--bg-input); border:1px solid var(--border); border-radius:12px; color:var(--text-primary); font-size:12px; outline:none; transition:border-color 0.15s, box-shadow 0.15s; font-family: Space Grotesk, sans-serif;">
                 </div>
                 <div style="position:relative; flex:0 1 200px; min-width:150px;">
                     <svg viewBox="0 0 24 24" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); width:14px; height:14px; fill:var(--text-muted); pointer-events:none;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8l-1.41-1.41L14 2zm2 14H8v-2h8v2zm0-4H8v-2h8v2zm-2-7V3.5L19 8.5H12z"/></svg>
-                    <select id="lpvProfileModalPageSelect" style="width:100%; padding:11px 28px 11px 32px; background:var(--bg-input); border:1px solid var(--border); border-radius:12px; color:var(--text-primary); font-size:12px; outline:none; font-family: Montserrat, sans-serif; appearance:none; cursor:pointer;">
+                    <select id="lpvProfileModalPageSelect" style="width:100%; padding:11px 28px 11px 32px; background:var(--bg-input); border:1px solid var(--border); border-radius:12px; color:var(--text-primary); font-size:12px; outline:none; font-family: Space Grotesk, sans-serif; appearance:none; cursor:pointer;">
                         <option value="">All pages</option>
                     </select>
                     <svg viewBox="0 0 24 24" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); width:14px; height:14px; fill:var(--text-muted); pointer-events:none;"><path d="M7 10l5 5 5-5z"/></svg>
@@ -8642,112 +8681,6 @@
     </svg>
 
     <script>
-        // Mobile Device Detection and Access Control
-        // Decision is based on the USER AGENT ONLY. Viewport / window size
-        // must never trigger the block: a desktop-UA browser in a small or
-        // resized window is still a desktop browser and gets full access.
-        function isMobileDevice() {
-            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        }
-
-        function blockMobileAccess() {
-            document.head.innerHTML = `
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Access Denied</title>
-                <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
-            `;
-            document.body.innerHTML = `
-                <style>
-                    * { margin: 0; padding: 0; box-sizing: border-box; }
-                    body {
-                        font-family: 'Montserrat', sans-serif;
-                        background: #0a0a0a;
-                        color: #ffffff;
-                        min-height: 100vh;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        padding: 20px;
-                    }
-                    .mobile-blocker {
-                        text-align: center;
-                        max-width: 400px;
-                    }
-                    .blocker-icon {
-                        width: 100px;
-                        height: 100px;
-                        margin: 0 auto 30px;
-                        background: linear-gradient(135deg, #ff4444, #cc0000);
-                        border-radius: 50%;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                    }
-                    .blocker-icon svg {
-                        width: 50px;
-                        height: 50px;
-                        fill: #ffffff;
-                    }
-                    .blocker-title {
-                        font-size: 28px;
-                        font-weight: 700;
-                        margin-bottom: 15px;
-                        background: linear-gradient(135deg, #ffffff, #cccccc);
-                        -webkit-background-clip: text;
-                        -webkit-text-fill-color: transparent;
-                    }
-                    .blocker-text {
-                        font-size: 14px;
-                        color: #888888;
-                        line-height: 1.8;
-                        margin-bottom: 30px;
-                    }
-                    .blocker-info {
-                        padding: 20px;
-                        background: #111111;
-                        border: 1px solid #333333;
-                        border-radius: 12px;
-                        font-size: 12px;
-                        color: #666666;
-                    }
-                    .decorative-line {
-                        margin: 20px 0;
-                        font-size: 18px;
-                        letter-spacing: 8px;
-                        color: #444444;
-                    }
-                </style>
-                <div class="mobile-blocker">
-                    <div class="decorative-line">
-                        .  *  .  *  .  *  .
-                    </div>
-                    <div class="blocker-icon">
-                        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm0-14c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm0 10c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4z"/></svg>
-                    </div>
-                    <h1 class="blocker-title">Access Restricted</h1>
-                    <p class="blocker-text">
-                        The Admin Panel is designed for desktop use only.<br>
-                        Mobile devices are not permitted to access this area.<br>
-                        Please use a desktop browser to continue.
-                    </p>
-                    <div class="decorative-line">
-                        .  *  .  *  .  *  .
-                    </div>
-                    <div class="blocker-info">
-                        If you believe this is an error, please contact your system administrator.
-                    </div>
-                </div>
-            `;
-            document.body.style.display = 'block';
-        }
-
-        // Block mobile users immediately on page load
-        if (isMobileDevice()) {
-            blockMobileAccess();
-            window.__ADMIN_MOBILE_BLOCKED__ = true;
-        }
-
         // Global State
         let ws = null;
         let reconnectAttempts = 0;
@@ -8963,30 +8896,7 @@
         const streamOverlayEl = document.getElementById('stream-overlay');
         const themeToggle = document.getElementById('themeToggle');
 
-        // =========================
-        // Mobile User Blocking (User-Agent Only)
-        // =========================
-        
-        function isMobileUser() {
-            const userAgent = navigator.userAgent || navigator.vendor || window.opera;
-            const mobileKeywords = [
-                'Android', 'webOS', 'iPhone', 'iPad', 'iPod', 'BlackBerry', 
-                'Windows Phone', 'Mobi', 'Mobile', 'Opera Mini', 'IEMobile'
-            ];
-            return mobileKeywords.some(keyword => userAgent.indexOf(keyword) > -1);
-        }
-
-        // Block mobile users before any content loads
-        if (typeof window !== 'undefined' && isMobileUser()) {
-            document.close();
-            throw new Error('Mobile users blocked');
-        }
-
         document.addEventListener('DOMContentLoaded', () => {
-            if (window.__ADMIN_MOBILE_BLOCKED__) {
-                console.info('[ADMIN] Mobile access blocked; skipping admin bootstrap.');
-                return;
-            }
             loadTheme();
             loadSessionHistory();
             loadLogsFromStorage();
@@ -11532,7 +11442,6 @@
         // in the bottom-right corner.  Both action toasts and event notices
         // use this function so they cannot render in competing containers.
         function showToast(message, type = 'default', opts = {}) {
-            if (window.__ADMIN_MOBILE_BLOCKED__) return;
             const stack = document.getElementById('toast-stack');
             if (!stack) return;
 
@@ -12316,7 +12225,7 @@
                                 color: '#888888',
                                 font: {
                                     size: 11,
-                                    family: 'Montserrat'
+                                    family: 'Space Grotesk'
                                 },
                                 boxWidth: 12,
                                 padding: 15
@@ -12331,12 +12240,12 @@
                             padding: 10,
                             displayColors: true,
                             titleFont: {
-                                family: 'Montserrat',
+                                family: 'Space Grotesk',
                                 size: 12,
                                 weight: '600'
                             },
                             bodyFont: {
-                                family: 'Montserrat',
+                                family: 'Space Grotesk',
                                 size: 11
                             },
                             callbacks: {
@@ -12356,7 +12265,7 @@
                                 color: '#666666',
                                 font: {
                                     size: 10,
-                                    family: 'Montserrat'
+                                    family: 'Space Grotesk'
                                 },
                                 maxTicksLimit: 6
                             }
@@ -12372,7 +12281,7 @@
                                 color: '#666666',
                                 font: {
                                     size: 10,
-                                    family: 'Montserrat'
+                                    family: 'Space Grotesk'
                                 },
                                 callback: function(value) {
                                     return value + '%';
@@ -12426,12 +12335,12 @@
                             borderWidth: 1,
                             padding: 10,
                             titleFont: {
-                                family: 'Montserrat',
+                                family: 'Space Grotesk',
                                 size: 12,
                                 weight: '600'
                             },
                             bodyFont: {
-                                family: 'Montserrat',
+                                family: 'Space Grotesk',
                                 size: 11
                             },
                             callbacks: {
@@ -12461,7 +12370,7 @@
                                 color: '#888888',
                                 font: {
                                     size: 11,
-                                    family: 'Montserrat'
+                                    family: 'Space Grotesk'
                                 }
                             }
                         },
@@ -12475,7 +12384,7 @@
                                 color: '#666666',
                                 font: {
                                     size: 10,
-                                    family: 'Montserrat'
+                                    family: 'Space Grotesk'
                                 },
                                 stepSize: 5
                             }
@@ -13059,9 +12968,6 @@
         }
 
         function renderProfilesList() {
-            if (window.__ADMIN_MOBILE_BLOCKED__) {
-                return;
-            }
             const onlineList = document.getElementById('online-profiles-list');
             const offlineList = document.getElementById('offline-profiles-list');
             const onlineCount = document.getElementById('online-section-count');
@@ -14802,7 +14708,7 @@ function lpvFormatBytes(n) {
 
             // ---- LPV payload blocks helper (stacked per-field) ----
             // Renders each payload field as its own labeled block row, stacked vertically.
-            // Each block shows label + value + copy button. Uses Montserrat only.
+            // Each block shows label + value + copy button. Uses Space Grotesk only.
             function lpvPayloadBlocks(payload) {
                 if (!payload || typeof payload !== 'object') return '';
                 const order = ['tag','name','label','id','type','value','reason','text','href','action','page','page_name','url','placeholder','class','workflow_id','got_spinner','timeout','kind'];
@@ -14819,9 +14725,9 @@ function lpvFormatBytes(n) {
                     const short = vs.length > 180 ? vs.slice(0,180) + '…' : vs;
                     const dataV = vs.replace(/"/g, '&quot;');
                     return '<div style="display:flex; gap:8px; align-items:flex-start; padding:6px 8px; border:1px solid rgba(255,255,255,0.07); border-radius:8px; background:rgba(255,255,255,0.03);">'
-                         + '<span style="min-width:68px; max-width:68px; font-size:9px; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-muted); font-weight:700; padding-top:2px; font-family:Montserrat, sans-serif; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(k) + '</span>'
-                         + '<span style="flex:1; min-width:0; font-size:12px; word-break:break-all; color:var(--text-primary); font-weight:600; font-family:Montserrat, sans-serif;">' + esc(short) + '</span>'
-                         + '<button onclick="navigator.clipboard.writeText(this.getAttribute(\'data-v\')); this.textContent=\'✓\'; setTimeout(()=>this.textContent=\'copy\',1200)" data-v="' + esc(dataV).replace(/"/g, '&quot;') + '" style="flex-shrink:0; padding:3px 7px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:9px; cursor:pointer; font-family:Montserrat, sans-serif; display:inline-flex; align-items:center; gap:4px;"><svg viewBox=\"0 0 24 24\" width=\"10\" height=\"10\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z\"/></svg>copy</button>'
+                         + '<span style="min-width:68px; max-width:68px; font-size:9px; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-muted); font-weight:700; padding-top:2px; font-family:Space Grotesk, sans-serif; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(k) + '</span>'
+                         + '<span style="flex:1; min-width:0; font-size:12px; word-break:break-all; color:var(--text-primary); font-weight:600; font-family:Space Grotesk, sans-serif;">' + esc(short) + '</span>'
+                         + '<button onclick="navigator.clipboard.writeText(this.getAttribute(\'data-v\')); this.textContent=\'✓\'; setTimeout(()=>this.textContent=\'copy\',1200)" data-v="' + esc(dataV).replace(/"/g, '&quot;') + '" style="flex-shrink:0; padding:3px 7px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:9px; cursor:pointer; font-family:Space Grotesk, sans-serif; display:inline-flex; align-items:center; gap:4px;"><svg viewBox=\"0 0 24 24\" width=\"10\" height=\"10\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z\"/></svg>copy</button>'
                          + '</div>';
                 };
                 // ordered keys first
@@ -15551,7 +15457,7 @@ function lpvFormatBytes(n) {
                     '</div>' +
                     '<input type="text" id="lpv-wf-desc" class="lpv-input" placeholder="description (optional)" value="' + escapeHtml(initial.description) + '" />' +
                     '<div class="lpv-wf-brand" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:9px 10px; border:1px solid rgba(180,142,255,0.22); border-radius:10px; background:rgba(180,142,255,0.05);">' +
-                    '  <span style="font-size:10px; font-weight:700; color:#c4b5fd; font-family:Montserrat,sans-serif; letter-spacing:0.06em; white-space:nowrap;">LOADING SCREEN</span>' +
+                    '  <span style="font-size:10px; font-weight:700; color:#c4b5fd; font-family:Space Grotesk,sans-serif; letter-spacing:0.06em; white-space:nowrap;">LOADING SCREEN</span>' +
                     '  <input type="url" id="lpv-wf-logo-url" class="lpv-input" placeholder="brand logo URL (https://…)" title="Custom logo shown on the branded loading screen for workflow links" style="flex:1 1 200px; font-size:11px;" />' +
                     '  <label style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); white-space:nowrap;" title="Override the loading spinner color">' +
                     '    <input type="checkbox" id="lpv-wf-color-on" /> spinner color' +
@@ -15562,7 +15468,7 @@ function lpvFormatBytes(n) {
                     '  </label>' +
                     '</div>' +
                     '<div class="lpv-wf-redirect" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:9px 10px; border:1px solid rgba(52,211,153,0.22); border-radius:10px; background:rgba(52,211,153,0.05);">' +
-                    '  <span style="font-size:10px; font-weight:700; color:#6ee7b7; font-family:Montserrat,sans-serif; letter-spacing:0.06em; white-space:nowrap;">LOADING PAGE</span>' +
+                    '  <span style="font-size:10px; font-weight:700; color:#6ee7b7; font-family:Space Grotesk,sans-serif; letter-spacing:0.06em; white-space:nowrap;">LOADING PAGE</span>' +
                     '  <select id="lpv-wf-redirect-mode" style="font-size:11px; padding:5px 8px; border-radius:8px;">' +
                     '    <option value="builtin">Built-in spinner</option>' +
                     '    <option value="page">Use archived page</option>' +
@@ -15573,7 +15479,7 @@ function lpvFormatBytes(n) {
                     '  </select>' +
                     '  <input type="file" id="lpv-wf-redirect-file" accept=".html,.htm,text/html" style="display:none" />' +
                     '  <button class="lpv-btn" id="lpv-wf-redirect-pick" style="display:none; font-size:11px;">Choose file</button>' +
-                    '  <span id="lpv-wf-redirect-state" style="font-size:10.5px; color:var(--text-muted); font-family:Montserrat,sans-serif;"></span>' +
+                    '  <span id="lpv-wf-redirect-state" style="font-size:10.5px; color:var(--text-muted); font-family:Space Grotesk,sans-serif;"></span>' +
                     '  <span style="flex:1"></span>' +
                     '  <span style="font-size:9.5px; color:var(--text-muted); opacity:.85;" title="Rendered full-screen instead of the built-in spinner while a redirect step is waiting.">replaces the spinner</span>' +
                     '</div>' +
@@ -15588,7 +15494,7 @@ function lpvFormatBytes(n) {
                     '  <button class="lpv-btn primary" id="lpv-wf-save">Save</button>' +
                     '</div>' +
                     '<div id="lpv-wf-link-row" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px 10px; border:1px dashed rgba(180,142,255,0.25); border-radius:10px; background:rgba(180,142,255,0.06);">' +
-                    '  <span style="font-size:11px; color:var(--text-muted); font-weight:600; font-family:Montserrat, sans-serif; display:inline-flex; align-items:center; gap:6px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> workflow link</span>' +
+                    '  <span style="font-size:11px; color:var(--text-muted); font-weight:600; font-family:Space Grotesk, sans-serif; display:inline-flex; align-items:center; gap:6px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> workflow link</span>' +
                     '  <span style="font-size:10px; color:var(--text-muted);">persistent shareable — starts the visitor on a live page and runs this flow</span>' +
                     '  <div style="flex:1;"></div>' +
                     '  <button class="lpv-btn" id="lpv-wf-gen-link" title="Generate workflow link">Generate Link</button>' +
@@ -16092,7 +15998,7 @@ function lpvFormatBytes(n) {
                     '<div class="wf-foot" style="font-size:10px; color:var(--text-muted); display:flex; align-items:center; gap:8px;">' +
                         '<span class="wf-spinner" style="' + (got ? '' : 'border-top-color:#f59e0b; opacity:0.9;') + '"></span>' +
                         '<span>' + _esc(timeoutText) + '</span>' +
-                        (p.workflow_id ? '<span style="margin-left:auto; font-size:9px; opacity:0.6; font-family:Montserrat, sans-serif;">' + _esc(String(p.workflow_id).slice(0,8)) + '</span>' : '') +
+                        (p.workflow_id ? '<span style="margin-left:auto; font-size:9px; opacity:0.6; font-family:Space Grotesk, sans-serif;">' + _esc(String(p.workflow_id).slice(0,8)) + '</span>' : '') +
                     '</div>' +
                     lpvPayloadBlocks(p) +
                 '</div>';
@@ -16188,7 +16094,7 @@ function lpvFormatBytes(n) {
                         'style="cursor:pointer; padding:12px; border:1px solid var(--border); border-radius:12px; ' +
                         'background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0)); display:flex; flex-direction:column; gap:8px;">' +
                             '<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">' +
-                                '<div style="font-family:Montserrat, sans-serif; font-size:12px; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center;">' +
+                                '<div style="font-family:Space Grotesk, sans-serif; font-size:12px; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center;">' +
                                     activeDot + _esc(_shortId(p.client_id)) +
                                 '</div>' +
                                 '<div style="font-size:10px; color:var(--text-muted); background:var(--bg-card); border:1px solid var(--border); padding:3px 7px; border-radius:999px;">' + p.event_count + ' events</div>' +
@@ -16442,7 +16348,7 @@ function lpvFormatBytes(n) {
                 }
 
                 if (!all.length) {
-                    logsEl.innerHTML = '<div class="klg-empty-state" style="padding:28px;"><div class="klg-empty-icon" style="width:56px; height:56px; margin:0 auto 12px;"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg></div><div class="klg-empty-title" style="font-size:14px; font-family: Montserrat, sans-serif;">No events yet</div><div class="klg-empty-text" style="font-family: Montserrat, sans-serif;">Activity appears here as the visitor browses. Details are captured when they leave a field, submit, or move on.</div></div>';
+                    logsEl.innerHTML = '<div class="klg-empty-state" style="padding:28px;"><div class="klg-empty-icon" style="width:56px; height:56px; margin:0 auto 12px;"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg></div><div class="klg-empty-title" style="font-size:14px; font-family: Space Grotesk, sans-serif;">No events yet</div><div class="klg-empty-text" style="font-family: Space Grotesk, sans-serif;">Activity appears here as the visitor browses. Details are captured when they leave a field, submit, or move on.</div></div>';
                     return;
                 }
 
@@ -16490,19 +16396,19 @@ function lpvFormatBytes(n) {
                                 '<div class="wf-bar"><div class="wf-pip done"></div><div class="wf-pip current"></div></div>' +
                                 '<div class="wf-foot" style="display:flex; align-items:center; gap:8px; font-size:12px; margin-top:2px;">' +
                                     '<span style="flex:1; min-width:0; word-break:break-all; font-weight:600; color:var(--text-primary);">' + (hasVal ? safeVal : '<span style="opacity:0.5; font-style:italic; font-weight:400;">(empty)</span>') + '</span>' +
-                                    '<button class="lpv-card__copy" data-latest-copy="' + _esc(val).replace(/"/g,'&quot;') + '" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Montserrat, sans-serif;">' + copySvg + ' copy</button>' +
+                                    '<button class="lpv-card__copy" data-latest-copy="' + _esc(val).replace(/"/g,'&quot;') + '" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Space Grotesk, sans-serif;">' + copySvg + ' copy</button>' +
                                 '</div>' +
                                 (reason ? '<div style="font-size:10px; color:var(--text-muted); margin-top:4px;">' + reason + '</div>' : '') +
                               '</div>';
                     }).join('');
                     latestHtml = '<div class="lpv-section-title"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Captured Form Data — latest input per field</div><div class="lpv-latest-grid">' + latestCards + '</div>';
                     if (latestFiltered.length < latestList.length) {
-                        latestHtml += '<div style="font-size:10px; color:var(--text-muted); margin:-8px 0 12px 0; font-family: Montserrat, sans-serif;">Showing ' + latestFiltered.length + ' of ' + latestList.length + ' fields for "' + _esc(q) + '"</div>';
+                        latestHtml += '<div style="font-size:10px; color:var(--text-muted); margin:-8px 0 12px 0; font-family: Space Grotesk, sans-serif;">Showing ' + latestFiltered.length + ' of ' + latestList.length + ' fields for "' + _esc(q) + '"</div>';
                     }
                 }
 
                 if (!filtered.length) {
-                    logsEl.innerHTML = latestHtml + '<div class="lpv-empty" style="padding:18px; text-align:center; font-family: Montserrat, sans-serif;">No logs match filter "' + _esc(filter) + (q ? ' + "' + _esc(q) + '"' : '') + '"</div>';
+                    logsEl.innerHTML = latestHtml + '<div class="lpv-empty" style="padding:18px; text-align:center; font-family: Space Grotesk, sans-serif;">No logs match filter "' + _esc(filter) + (q ? ' + "' + _esc(q) + '"' : '') + '"</div>';
                     // wire latest copy still
                     logsEl.querySelectorAll('[data-latest-copy]').forEach(btn => {
                         const val = btn.getAttribute('data-latest-copy') || '';
@@ -16524,7 +16430,7 @@ function lpvFormatBytes(n) {
                             : '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:6px;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8l-1.41-1.41L14 2zm2 14H8v-2h8v2zm0-4H8v-2h8v2zm-2-7V3.5L19 8.5H12z"/></svg>';
                         pageHeader = '<div class="lpv-page-sticky">'
                             + icon + _esc(label)
-                            + '<span style="margin-left:8px; opacity:0.5; font-weight:400; text-transform:none; letter-spacing:0; font-family: Montserrat, sans-serif;">' + _esc((ev.page_id||'').slice(0,8)) + '</span>'
+                            + '<span style="margin-left:8px; opacity:0.5; font-weight:400; text-transform:none; letter-spacing:0; font-family: Space Grotesk, sans-serif;">' + _esc((ev.page_id||'').slice(0,8)) + '</span>'
                             + '</div>';
                     }
 
@@ -16583,7 +16489,7 @@ function lpvFormatBytes(n) {
                         const typePill = fieldType ? '<span class="wf-kind" style="background:rgba(74,222,128,0.14); border-color:#4ade80; color:#4ade80;">' + _esc(fieldType) + '</span>' : '';
                         const reasonPill = reason ? '<span style="font-size:9px; padding:2px 6px; border-radius:999px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); color:var(--text-muted);">' + _esc(reason) + '</span>' : '';
                         const copyBtn = hasValue
-                            ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy this captured value" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Montserrat, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> copy</button>'
+                            ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy this captured value" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Space Grotesk, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> copy</button>'
                             : '';
                         return pageHeader +
                             '<div class="lpv-event workflow_step" style="padding:8px 10px; border-radius:10px; background:rgba(180,142,255,0.06); border:1px solid rgba(180,142,255,0.18);">' +
@@ -16612,7 +16518,7 @@ function lpvFormatBytes(n) {
                     const valuePreview = hasValue ? _esc(valueStr.length>90 ? valueStr.slice(0,90)+'…' : valueStr) : '';
                     const fullValEsc = _esc(valueStr);
                     const copyInline = hasValue
-                        ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy value" style="flex-shrink:0; padding:4px 7px; font-size:10px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); cursor:pointer; font-family:Montserrat, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg></button>'
+                        ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy value" style="flex-shrink:0; padding:4px 7px; font-size:10px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); cursor:pointer; font-family:Space Grotesk, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg></button>'
                         : '';
                     const metaLine = (payload.text ? _esc(payload.text.slice(0,60)) : '') || (payload.href ? _esc(payload.href.slice(0,60)) : '') || (payload.action ? _esc(payload.action.slice(0,60)) : '');
                     const kindPill = fieldType ? '<span class="wf-kind" style="background:' + kindBg + '; border-color:' + kindColor + '; color:' + kindColor + ';">' + _esc(fieldType) + '</span>' : '';
