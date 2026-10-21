@@ -5441,13 +5441,36 @@ def _lpv_connection_is_current(client_id: str, connection_token: Optional[str]) 
 
 
 def _lpv_spinner_signal(client_id: str, connection_token: Optional[str] = None) -> None:
-    """Wake only the spinner waiter belonging to this websocket generation."""
-    key = (client_id, connection_token)
-    for ev in list(_lpv_spinner_subs.get(key, ())):
-        try:
-            ev.set()
-        except Exception:
-            pass
+    """Wake every spinner waiter parked on this client.
+
+    Waiters are keyed by (client_id, connection_token) so a superseded
+    socket generation cannot satisfy a live workflow's redirect wait.  But
+    the workflow runner and the inbound event handler do not always agree
+    on which token to use, so an exact-key lookup frequently missed:
+
+      * admin-triggered runs go through _launch_workflow(), which passes
+        connection_token=None, while an LPV-only client's clicks arrive on
+        the per-link socket, which signals with its real token;
+      * a reconnect issues a NEW token, so a click on the new socket never
+        matches the token the already-running chain subscribed with.
+
+    In both cases the exact-key lookup never fired, and a `redirect` step
+    parked in _lpv_wait_for_spinner() — which waits forever by design —
+    hung for good, so clicking a button never advanced the workflow.
+
+    Waking every waiter for the client is safe: each waiter re-checks
+    _lpv_connection_is_current(client_id, connection_token) the instant it
+    wakes and aborts the whole chain if it belongs to a superseded
+    generation, so a stale waiter still cannot advance a live workflow.
+    """
+    for _key, _subs in list(_lpv_spinner_subs.items()):
+        if _key[0] != client_id:
+            continue
+        for ev in list(_subs):
+            try:
+                ev.set()
+            except Exception:
+                pass
 
 
 async def _lpv_wait_for_spinner(
