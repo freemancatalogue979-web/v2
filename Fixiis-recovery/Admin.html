@@ -7596,6 +7596,128 @@
             .lpv-chat-form { padding: 8px; }
         }
 
+        /* ============================================================
+           WORKFLOW EDITOR / LIST — mobile compaction
+           ============================================================
+           Workflow list row
+             Was flex with no wrap: the name block and the Run/Edit/X
+             buttons shared one line, so the buttons were squeezed to
+             38px wide while stretching to the row's 74px height —
+             tall thin vertical bars. They now sit on their own row at
+             a normal size.
+
+           Workflow step
+             Was flex-row nowrap with a .step-body that had
+             flex:1 1 auto and no min-width:0, so it could not shrink
+             below its content. The badge, input and "no timeout" hint
+             were crushed and text wrapped inside each span: 344px of
+             content in a 250px box, one step 139px tall with its body
+             spilling over seven lines.
+
+             Now a two-row grid — step number and actions on row one,
+             the step's controls full width on row two — so the body
+             gets the whole row rather than a sliver.
+
+             The step also printed its kind twice ("redirect" then
+             "redirect — spinner body"); the bare label is dropped on
+             a phone when a status pill follows it, as is the "no
+             timeout" hint which only restates the input's tooltip.
+           ============================================================ */
+        @media (max-width: 768px) {
+/* ---- workflow list row ----------------------------------
+       .lpv-wf-row is flex with no wrap: the name block and the three
+       buttons (Run / Edit / X) fight for one line and the buttons get
+       crushed downward. Give the buttons their own row. */
+    .lpv-wf-row {
+        flex-wrap: wrap !important;
+        row-gap: 8px !important;
+        padding: 10px !important;
+    }
+    .lpv-wf-row > div:first-child {
+        flex: 1 1 100% !important;
+        min-width: 0 !important;
+    }
+    .lpv-wf-row .wf-name { overflow-wrap: anywhere !important; }
+    .lpv-wf-row .wf-actions {
+        flex: 1 1 100% !important;
+        justify-content: flex-start !important;
+        flex-wrap: wrap !important;
+    }
+
+    /* ---- editor shell ---- */
+    .lpv-wf-editor { padding: 10px !important; gap: 8px !important; }
+
+    /* ---- step row: two predictable rows ---- */
+    .lpv-wf-step {
+        display: grid !important;
+        grid-template-columns: auto 1fr !important;
+        grid-template-areas:
+            "num actions"
+            "body body" !important;
+        align-items: start !important;
+        column-gap: 8px !important;
+        row-gap: 6px !important;
+        padding: 8px !important;
+    }
+    .lpv-wf-step .step-num    { grid-area: num !important; }
+    .lpv-wf-step .step-actions {
+        grid-area: actions !important;
+        justify-self: end !important;
+    }
+    .lpv-wf-step .step-body {
+        grid-area: body !important;
+        min-width: 0 !important;
+        flex-wrap: wrap !important;
+        row-gap: 4px !important;
+        column-gap: 5px !important;
+    }
+
+    /* Rendered markup carries inline min-width (goto_url is 220px),
+       wider than a 320px phone once padding is off. */
+    .lpv-wf-step .step-body input,
+    .lpv-wf-step .step-body select {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        flex: 0 1 auto !important;
+    }
+    .lpv-wf-step .step-body input[type="text"] {
+        flex: 1 1 140px !important;
+    }
+    .lpv-wf-step .step-body > span {
+        min-width: 0 !important;
+        overflow-wrap: anywhere !important;
+    }
+    /* The step renders its kind twice: once as a bare label and again
+       inside the status pill ("redirect" then "redirect — spinner
+       body"). On a phone that is a wasted ~45px, so drop the bare
+       label when a pill immediately follows it. (:has() is ignored by
+       very old browsers, which simply keep the label.) */
+    .lpv-wf-step .step-body > span:has(+ span[style*="999px"]) {
+        display: none !important;
+    }
+
+    /* "∞ no timeout" restates the input's own title tooltip. It is
+       ~75px of pure decoration on a narrow screen. */
+    .lpv-wf-step .step-body > span[title^="No timeout"] {
+        display: none !important;
+    }
+
+    /* Tighten the status pill so it stops dominating the row. */
+    .lpv-wf-step .step-body > span[style*="border-radius:999px"],
+    .lpv-wf-step .step-body > span[style*="border-radius: 999px"] {
+        font-size: 10px !important;
+        padding: 2px 7px !important;
+        max-width: 100% !important;
+    }
+
+    /* ---- editor header controls ---- */
+    .lpv-wf-editor input[type="text"],
+    .lpv-wf-editor select {
+        min-width: 0 !important;
+        max-width: 100% !important;
+    }
+        }
+
 </style>
 </head>
 <body>
