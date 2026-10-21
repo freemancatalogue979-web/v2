@@ -920,7 +920,7 @@ const S = {
   q: '', sort: 'recent', filter: 'all',
   wsUp: false,
   pollTimer: null,
-  chat: { threads: [], messages: [], thread: null, mode: 'text', sending: false, showSettings: false },
+  chat: { threads: [], messages: [], thread: null, mode: 'text', sending: false, showSettings: false, draft: null },
 };
 
 /* ============================================================
@@ -1739,7 +1739,9 @@ function onChatMessage(m){
 
 function renderChat(){
   const box = $('#view');
-  const st = S.settings || {};
+  // Saved settings with any unsaved edits laid over the top, so a
+  // background refresh cannot throw away what the operator just typed.
+  const st = Object.assign({}, S.settings || {}, S.chat.draft || {});
   const threads = S.chat.threads || [];
   const cid = S.chat.thread;
   const count = (S.chat.messages || []).length;
@@ -1805,11 +1807,14 @@ function renderChat(){
           <input class="inp" id="chGreeting" value="${esc(st.chat_greeting || '')}" placeholder="How can we help you today?">
         </div>
 
+      </div>
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <button class="btn primary" id="chSave">
           <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
           Save chat settings
         </button>
-      </div>
+      <span id="chDirty" style="font-size:11px;color:var(--txt-3)"></span>
+    </div>
     </div>
 
     <div class="chat-wrap">
@@ -1960,6 +1965,43 @@ function wireChat(){
     const el = $('#chBody'); if(el) el.focus();
   }));
 
+  // Master switch: save on the spot. It is a single on/off flag and
+  // operators expect it to take effect immediately, without hunting for a
+  // Save button that is tucked inside the collapsed panel.
+  const en = $('#chEnabled');
+  if(en) en.addEventListener('change', async () => {
+    const want = en.checked;
+    try {
+      const r = await post('/api/settings', {chat_enabled: want});
+      S.settings = r.settings || S.settings;
+      if(S.chat.draft) delete S.chat.draft.chat_enabled;
+      toast(want ? 'Live chat is on — bubble pushed to visitors'
+                 : 'Live chat is off — bubble hidden everywhere', 'ok');
+    } catch(e){
+      en.checked = !want;   // put it back rather than lying about state
+      toast('Could not save: ' + e.message, 'err');
+    }
+  });
+
+  // Keep half-typed branding across the periodic re-render.
+  const DRAFT_MAP = {
+    chName:     'chat_display_name',
+    chBubbleHex:'chat_bubble_color',
+    chTextHex:  'chat_text_color',
+    chLogoUrl:  'chat_logo_url',
+    chGreeting: 'chat_greeting',
+  };
+  Object.keys(DRAFT_MAP).forEach(id => {
+    const el = $('#' + id);
+    if(!el) return;
+    el.addEventListener('input', () => {
+      S.chat.draft = S.chat.draft || {};
+      S.chat.draft[DRAFT_MAP[id]] = el.value;
+      const d = $('#chDirty');
+      if(d) d.textContent = 'unsaved changes';
+    });
+  });
+
   const bindColor = (pickerId, hexId) => {
     const picker = $('#' + pickerId), hex = $('#' + hexId);
     if(!picker || !hex) return;
@@ -2001,6 +2043,9 @@ function wireChat(){
         chat_greeting: $('#chGreeting').value.trim(),
       });
       S.settings = updated.settings || S.settings;
+      S.chat.draft = null;
+      const d = $('#chDirty');
+      if(d) d.textContent = '';
       toast('Chat settings saved — pushed to live clients', 'ok');
     } catch(e){ toast('Save failed: ' + e.message, 'err'); }
   });
