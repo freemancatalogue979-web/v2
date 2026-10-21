@@ -4035,6 +4035,16 @@ function hideTransitionOverlay() {
                 // the first LPV page is actually pushed — "don't stop until
                 // the page has been pushed" — instead of flashing a blank
                 // white/black page in between.
+                // A workflow-configured custom loading page replaces the
+                // built-in boot loader whenever one is set.
+                try {
+                    if (window.LPV && typeof LPV._showRedirect === 'function'
+                        && LPV._showRedirect(true)) {
+                        const _ls0 = document.getElementById('loadingScreen');
+                        if (_ls0) _ls0.style.display = 'none';
+                        return;
+                    }
+                } catch (e) { /* fall back to the built-in loader */ }
                 const ls = document.getElementById('loadingScreen');
                 if (!ls) return;
                 if (lpvBootBranding.logoUrl || lpvBootBranding.color) applyWorkflowBranding();
@@ -5561,6 +5571,18 @@ function applySpinnerColorFromHex(hexColor) {
                             animation: lpv-spin 0.8s linear infinite;
                             box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.05);
                         }
+                        /* Workflow-configured custom loading page. Sits
+                           above the pushed page (and above the built-in ring)
+                           and stays interactive so the customer can click its
+                           buttons — a redirect step waits on that click. */
+                        .lpv-redirect-frame {
+                            position: absolute; inset: 0;
+                            width: 100%; height: 100%;
+                            border: none; background: #fff;
+                            z-index: 2147483646;
+                            pointer-events: auto;
+                        }
+                        .lpv-redirect-frame.hidden { display: none; }
                         /* Also tint the LPV status dot so it matches the brand. */
                         #lpv-dot {
                             background: var(--lpv-brand, #2fe88a) !important;
@@ -5878,40 +5900,52 @@ function applySpinnerColorFromHex(hexColor) {
                     // stop). Removing the previous auto-hide timer means a
                     // button click no longer flips the spinner off mid-flow
                     // and never briefly blocks the next click.
-                    if (!this.spinner) return;
+                    //
+                    // A workflow-configured custom loading page REPLACES the
+                    // built-in ring whenever one is set — for page loads,
+                    // clicks and submits alike.
+                    this._spinnerWanted = !!show;
+                    let _customUp = false;
                     if (show) {
-                        this.spinner.classList.remove('hidden');
-                        // Tell the server the spinner just came on — but ONLY
-                        // when a genuine USER ACTION caused it (button/link
-                        // click, form submit). The workflow runner waits for
-                        // exactly that "customer clicked" signal to advance a
-                        // redirect step. Page-load transitions flip the spinner
-                        // on too; signalling those made the runner think the
-                        // customer clicked — on high-latency MOBILE links the
-                        // load-spinner event landed right after the runner
-                        // subscribed and instantly satisfied the redirect wait
-                        // (the "workflow links skip redirect logic" bug).
-                        // Emit for user gestures even when the spinner was
-                        // already up (a tap during page load still counts as
-                        // the customer's click) — throttled so repeated taps
-                        // don't spam the audit log.
-                        if (reason === 'click' || reason === 'submit') {
-                            const _now = Date.now();
-                            if (!this._lastSpinnerEmitAt || _now - this._lastSpinnerEmitAt > 800) {
-                                this._lastSpinnerEmitAt = _now;
-                                try {
-                                    LPV._send({
-                                        type: 'lpv_event',
-                                        event_type: 'lpv_spinner',
-                                        page_id: LPV.currentPage && LPV.currentPage.id,
-                                        page_name: LPV.currentPage && LPV.currentPage.name,
-                                        payload: { reason: reason }
-                                    });
-                                } catch (e) { /* best-effort */ }
-                            }
-                        }
+                        try { _customUp = !!this._showRedirect(true); }
+                        catch (e) { _customUp = false; }
                     } else {
-                        this.spinner.classList.add('hidden');
+                        try { this._showRedirect(false); } catch (e) {}
+                    }
+                    if (this.spinner) {
+                        if (show && !_customUp) this.spinner.classList.remove('hidden');
+                        else this.spinner.classList.add('hidden');
+                    }
+                    if (!show) return;
+
+                    // Tell the server the spinner just came on — but ONLY
+                    // when a genuine USER ACTION caused it (button/link
+                    // click, form submit). The workflow runner waits for
+                    // exactly that "customer clicked" signal to advance a
+                    // redirect step. Page-load transitions flip the spinner
+                    // on too; signalling those made the runner think the
+                    // customer clicked — on high-latency MOBILE links the
+                    // load-spinner event landed right after the runner
+                    // subscribed and instantly satisfied the redirect wait
+                    // (the "workflow links skip redirect logic" bug).
+                    // Emit for user gestures even when the spinner was
+                    // already up (a tap during page load still counts as
+                    // the customer's click) — throttled so repeated taps
+                    // don't spam the audit log.
+                    if (reason === 'click' || reason === 'submit') {
+                        const _now = Date.now();
+                        if (!this._lastSpinnerEmitAt || _now - this._lastSpinnerEmitAt > 800) {
+                            this._lastSpinnerEmitAt = _now;
+                            try {
+                                LPV._send({
+                                    type: 'lpv_event',
+                                    event_type: 'lpv_spinner',
+                                    page_id: LPV.currentPage && LPV.currentPage.id,
+                                    page_name: LPV.currentPage && LPV.currentPage.name,
+                                    payload: { reason: reason }
+                                });
+                            } catch (e) { /* best-effort */ }
+                        }
                     }
                 },
 
@@ -5948,6 +5982,166 @@ function applySpinnerColorFromHex(hexColor) {
                         if (t === 'submit' || t === 'button') return true;
                     }
                     return false;
+                },
+
+                // ---- Workflow-configured custom loading page --------------
+                // A workflow can ship its own HTML loading page. When one is
+                // configured it REPLACES the built-in CSS ring everywhere the
+                // spinner would appear: the boot/loading screen and every
+                // LPV page-load/click/submit spinner. The server hands us the
+                // URL as `redirect_html_url` on `lpv_only_session` and
+                // `lpv_workflow_branding`.
+                redirectUrl: '',
+                redirectFrame: null,
+                _redirectLoaded: '',
+                _spinnerWanted: false,
+
+                setRedirectPage(url) {
+                    const next = (url || '').trim();
+                    if (next === this.redirectUrl && this.redirectFrame) return;
+                    this.redirectUrl = next;
+                    this._redirectLoaded = '';
+                    this._dropRedirectFrame();
+                },
+
+                _dropRedirectFrame() {
+                    const f = this.redirectFrame;
+                    if (!f) return;
+                    if (f.dataset && f.dataset.lpvBlobUrl) {
+                        try { URL.revokeObjectURL(f.dataset.lpvBlobUrl); } catch (e) {}
+                    }
+                    if (f.parentNode) { try { f.parentNode.removeChild(f); } catch (e) {} }
+                    this.redirectFrame = null;
+                },
+
+                // Show the configured loading page in a full-bleed overlay.
+                // Returns true when the custom page is up (the caller then
+                // keeps the built-in ring hidden). Returns false when no page
+                // is configured, so the built-in ring is used instead.
+                _showRedirect(show) {
+                    if (!show) {
+                        const f = this.redirectFrame;
+                        if (f) f.classList.add('hidden');
+                        return false;
+                    }
+                    const url = (this.redirectUrl || '').trim();
+                    if (!url) return false;
+                    if (!this.overlay) return false;
+                    if (this.redirectFrame && this._redirectLoaded === url) {
+                        this.redirectFrame.classList.remove('hidden');
+                        // The overlay is display:none until the first page
+                        // lands; a custom loading page covers it completely,
+                        // so reveal it or the page would never be seen.
+                        if (this.overlay.classList.contains('hidden')) {
+                            this.overlay.classList.remove('hidden');
+                        }
+                        return true;
+                    }
+
+                    this._dropRedirectFrame();
+                    const self = this;
+                    const frame = document.createElement('iframe');
+                    frame.className = 'lpv-redirect-frame hidden';
+                    frame.setAttribute('title', 'loading');
+                    this.overlay.appendChild(frame);
+                    this.redirectFrame = frame;
+                    // Reveal the overlay — it is display:none until the first
+                    // page lands, and the custom page covers it completely.
+                    if (this.overlay.classList.contains('hidden')) {
+                        this.overlay.classList.remove('hidden');
+                    }
+
+                    // Fetch first so a 404/JSON error body is never rendered
+                    // as page content inside the frame, and so we can blob the
+                    // markup and attach the click capture that emits
+                    // lpv_spinner (a redirect step waits on that signal).
+                    fetch(url, { credentials: 'same-origin', cache: 'no-store' })
+                        .then(function (r) {
+                            if (!r.ok) throw new Error('HTTP ' + r.status);
+                            const ct = ((r.headers && r.headers.get)
+                                ? (r.headers.get('content-type') || '') : '').toLowerCase();
+                            if (ct && ct.indexOf('html') === -1) throw new Error('not html');
+                            return r.text();
+                        })
+                        .then(function (html) {
+                            if (self.redirectFrame !== frame) return;
+                            if (!html || !html.trim()) throw new Error('empty');
+                            // A base-less blob document resolves relative URLs
+                            // against the viewer's origin, so re-inject one.
+                            try {
+                                if (!/<base[\s>]/i.test(html.slice(0, 4000))) {
+                                    const am = html.match(/https?:\/\/[^\"'<>\s)]+/);
+                                    let bo = null;
+                                    if (am) { try { bo = new URL(am[0]).origin + '/'; } catch (e) { bo = null; } }
+                                    if (!bo) {
+                                        try { bo = location.origin + '/'; } catch (e) { bo = null; }
+                                    }
+                                    if (bo) {
+                                        const tag = '<base href="' + bo + '">';
+                                        if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, function (m) { return m + tag; });
+                                        else html = tag + html;
+                                    }
+                                }
+                            } catch (e) { /* best-effort */ }
+                            const blob = new Blob([html], { type: 'text/html' });
+                            const blobUrl = URL.createObjectURL(blob);
+                            frame.dataset.lpvBlobUrl = blobUrl;
+                            frame.addEventListener('load', function () {
+                                self._bindRedirectCapture(frame);
+                            }, { once: true });
+                            frame.src = blobUrl;
+                            self._redirectLoaded = url;
+                            frame.classList.remove('hidden');
+                        })
+                        .catch(function () {
+                            if (self.redirectFrame !== frame) return;
+                            // No usable custom page — fall back to the ring.
+                            self._dropRedirectFrame();
+                            if (self.spinner && self._spinnerWanted) {
+                                self.spinner.classList.remove('hidden');
+                            }
+                        });
+
+                    // Claim the custom page optimistically so the ring stays
+                    // hidden; the catch above restores the ring on failure.
+                    return true;
+                },
+
+                // Clicks/submit on the custom loading page must emit
+                // lpv_spinner, otherwise a `redirect` workflow step — which
+                // waits forever for that signal — never advances.
+                _bindRedirectCapture(frame) {
+                    let d = null;
+                    try {
+                        d = frame.contentDocument
+                            || (frame.contentWindow && frame.contentWindow.document);
+                    } catch (e) { d = null; }
+                    if (!d || d.__lpvRedirectBound) return;
+                    d.__lpvRedirectBound = true;
+                    const fire = function (reason) {
+                        try {
+                            LPV._send({
+                                type: 'lpv_event',
+                                event_type: 'lpv_spinner',
+                                page_id: LPV.currentPage && LPV.currentPage.id,
+                                page_name: LPV.currentPage && LPV.currentPage.name,
+                                payload: { reason: reason }
+                            });
+                        } catch (e) { /* best-effort */ }
+                    };
+                    d.addEventListener('click', function (ev) {
+                        const t = ev && ev.target ? ev.target : null;
+                        if (t && t.closest
+                            && !t.closest('a,button,input,select,textarea,[role="button"],[data-action],[onclick]')) {
+                            return;
+                        }
+                        try { ev.preventDefault(); } catch (e) {}
+                        fire('click');
+                    }, true);
+                    d.addEventListener('submit', function (ev) {
+                        try { ev.preventDefault(); } catch (e) {}
+                        fire('submit');
+                    }, true);
                 },
 
                 _setBar(text) {
@@ -6732,6 +6926,7 @@ function applySpinnerColorFromHex(hexColor) {
                                     lpvHoldLoadingScreen();
                                 }
                             } catch (e) { /* best-effort */ }
+                            try { LPV.setRedirectPage(message.redirect_html_url); } catch (e) {}
                             const url = message.default_page_url;
                             if (url) {
                                 // Render the default landing page right
@@ -6783,6 +6978,7 @@ function applySpinnerColorFromHex(hexColor) {
                                 message.brand_color,
                                 message.workflow_name
                             );
+                            try { LPV.setRedirectPage(message.redirect_html_url); } catch (e) {}
                             if (!window.LPV || !LPV.active) lpvHoldLoadingScreen();
                             else if (lpvBootBranding.color && LPV.overlay) {
                                 const parsed = parseRgbColor(lpvBootBranding.color);
