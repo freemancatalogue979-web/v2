@@ -82,6 +82,16 @@ Open any of these by double-clicking, or upload them to any static host.
   client.html       the injected client page (only needed if you serve it
                     yourself instead of letting the server inject it)
 
+Generated and copied links
+  Both panels offer three Link base options:
+    Default server URL     use the backend's client.html address
+    Custom client.html URL enter the URL where you hosted client.html
+    This page's origin     use this panel's origin + /client.html
+  The choice is remembered in this browser and shared by panels on the
+  same origin. It does not change the backend API/WebSocket address.
+  Host the generated client.html too when choosing custom or page origin.
+  On file://, page-origin mode falls back to the server URL.
+
 Logging in
   Use the same username and password as the server's admin login.
 

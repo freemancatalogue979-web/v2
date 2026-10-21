@@ -7718,7 +7718,23 @@
     }
         }
 
-</style>
+
+        /* ---- link base selector ------------------------------------
+           Lets the operator choose which address generated links point
+           at: the server's own URL, a custom client.html URL, or the
+           origin serving this page. Stacks to one column on a phone. */
+        .lpv-linkbase{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0;padding:7px 9px;border:1px dashed rgba(180,142,255,0.25);border-radius:10px;background:rgba(180,142,255,0.06);}
+        .lpv-linkbase-label{font-size:11px;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;}
+        .lpv-linkbase select,.lpv-linkbase input{font-size:11px;padding:5px 7px;min-width:0;border:1px solid var(--border);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-family:'Space Grotesk',sans-serif;}
+        .lpv-linkbase select{flex:0 1 auto;cursor:pointer;}
+        .lpv-linkbase input{flex:1 1 170px;}
+        .lpv-linkbase input[hidden]{display:none!important;}
+        .lpv-linkbase-note{font-size:10px;color:var(--text-muted);flex:1 1 100%;line-height:1.35;}
+        @media (max-width:768px){
+            .lpv-linkbase{flex-direction:column;align-items:stretch;gap:6px;}
+            .lpv-linkbase select,.lpv-linkbase input{flex:1 1 100%;width:100%;max-width:100%;}
+        }
+        </style>
 </head>
 <body>
     
@@ -8556,6 +8572,7 @@
                             <input type="text" class="url-input" id="targetUrl" placeholder="Enter target URL or leave empty for default">
                             <button class="generate-btn" onclick="generateLink()">Generate Link</button>
                         </div>
+                        <div id="create-link-base-host"></div>
                         <div class="result-box" id="resultBox">
                             <div class="result-label">Generated Link</div>
                             <div class="result-input-group">
@@ -8573,6 +8590,7 @@
             <!-- Links Tab Content -->
             <div class="tab-content" id="links-content">
                 <div class="links-container">
+                    <div id="saved-link-base-host"></div>
                     <div class="links-header">
                         <div class="links-stats">
                             <div class="links-stat">
@@ -9430,6 +9448,210 @@
             return SERVER_WS_BASE + normalizeServerPath(path);
         }
 
+        /* ============================================================
+           LINK BASE  — which address generated links point at
+           ============================================================
+           The backend builds links from request.base_url, so by default
+           every link carries the server's own address. Three times that
+           is not what is wanted:
+
+             1. client.html is served from a branded/CDN domain and the
+                operator would rather visitors never see the raw server.
+             2. The panel and client.html are hosted together, so the
+                page's own origin is already correct.
+             3. The panel is opened standalone (file:// or a static
+                host), where window.location.origin is "null" or the
+                static host — which is never a working client.
+
+           Modes are remembered in localStorage and shared with
+           mini-admin.html. Every generated link goes through
+           lpvApplyLinkBase(); link builders use lpvLinkBaseForBuild().
+           ============================================================ */
+        const LINK_BASE_MODE_KEY = 'lpv_link_base_mode';
+        const LINK_BASE_CUSTOM_KEY = 'lpv_link_base_custom';
+
+        // Accepts a bare host or a full URL, and tolerates a trailing
+        // /client.html so either form means the same thing. Returns an
+        // origin + optional path prefix, with no trailing slash.
+        function lpvNormalizeBase(raw) {
+            if (!raw) return '';
+            let s = String(raw).trim();
+            if (!s) return '';
+            if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) s = 'https://' + s;
+            try {
+                const u = new URL(s);
+                if (!/^https?:$/.test(u.protocol) || u.username || u.password) return '';
+                const p = u.pathname.replace(/\/client\.html\/?$/, '').replace(/\/+$/, '');
+                return u.origin + p;
+            } catch (e) { return ''; }
+        }
+
+        function lpvLinkBaseMode() {
+            let m = 'server';
+            try { m = localStorage.getItem(LINK_BASE_MODE_KEY) || 'server'; } catch (e) {}
+            return (m === 'custom' || m === 'origin') ? m : 'server';
+        }
+
+        function lpvLinkBaseCustom() {
+            try { return localStorage.getItem(LINK_BASE_CUSTOM_KEY) || ''; } catch (e) { return ''; }
+        }
+
+        function lpvSetLinkBase(mode, custom) {
+            try {
+                localStorage.setItem(LINK_BASE_MODE_KEY, mode);
+                if (custom !== undefined && custom !== null) {
+                    localStorage.setItem(LINK_BASE_CUSTOM_KEY, custom);
+                }
+            } catch (e) {}
+        }
+
+        // Base a generated link should be rewritten onto. '' means leave
+        // the server's own address alone.
+        function lpvLinkBase() {
+            const mode = lpvLinkBaseMode();
+            if (mode === 'custom') return lpvNormalizeBase(lpvLinkBaseCustom());
+            if (mode === 'origin') {
+                // file:// has an opaque origin that can never be a client.
+                if (window.location.protocol === 'file:') return '';
+                return lpvNormalizeBase(window.location.origin);
+            }
+            return '';
+        }
+
+        // Base for links built client-side. Falls back to the backend
+        // itself rather than window.location.origin, which is wrong
+        // whenever the panel is not served by the backend.
+        function lpvLinkBaseForBuild() {
+            return lpvLinkBase() || SERVER_API_BASE;
+        }
+
+        // Rewrite a server-generated link onto the chosen base, keeping
+        // its path and query string intact.
+        function lpvApplyLinkBase(link) {
+            if (!link) return link;
+            const base = lpvLinkBase();
+            if (!base) return link;
+            try {
+                const u = new URL(link, window.location.href);
+                let path = u.pathname;
+                // Drop the prefix the backend sits behind (reverse proxy)
+                // so the link keeps just /client.html?...
+                try {
+                    const apiPath = new URL(SERVER_API_BASE, window.location.href)
+                        .pathname.replace(/\/+$/, '');
+                    if (apiPath && apiPath !== '/' && (path === apiPath || path.startsWith(apiPath + '/'))) {
+                        path = path.slice(apiPath.length) || '/';
+                    }
+                } catch (e) {}
+                return base + path + u.search + u.hash;
+            } catch (e) { return link; }
+        }
+
+        function lpvLinkBaseAttrEsc(v) {
+            return String(v == null ? '' : v)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        // Compact "Link base" control. Safe to render more than once;
+        // every instance is kept in sync by lpvWireLinkBaseControls().
+        function lpvLinkBaseControlHtml() {
+            const mode = lpvLinkBaseMode();
+            const custom = lpvLinkBaseCustom();
+            return '' +
+                '<div class="lpv-linkbase">' +
+                  '<span class="lpv-linkbase-label">' +
+                    '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">' +
+                    '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
+                    '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>' +
+                    'Link base' +
+                  '</span>' +
+                  '<select class="lpv-linkbase-mode" title="Which address generated links should point at">' +
+                    '<option value="server"' + (mode === 'server' ? ' selected' : '') + '>Default server URL</option>' +
+                    '<option value="custom"' + (mode === 'custom' ? ' selected' : '') + '>Custom client.html URL…</option>' +
+                    '<option value="origin"' + (mode === 'origin' ? ' selected' : '') + '>This page\'s origin</option>' +
+                  '</select>' +
+                  '<input type="url" class="lpv-linkbase-custom" spellcheck="false"' +
+                    ' placeholder="https://your-domain.com/client.html"' +
+                    ' title="Address client.html is served from. A bare host works too."' +
+                    ' value="' + lpvLinkBaseAttrEsc(custom) + '"' +
+                    (mode === 'custom' ? '' : ' hidden') + ' />' +
+                  '<span class="lpv-linkbase-note">Applies to client links, workflow links and impersonation links.</span>' +
+                '</div>';
+        }
+
+        // Wire every rendered control. Called once at startup and again
+        // whenever markup containing a control is injected.
+        function lpvWireLinkBaseControls(root) {
+            const scope = root || document;
+            const controls = scope.querySelectorAll('.lpv-linkbase');
+            if (!controls.length) return;
+
+            const syncAll = (mode, custom) => {
+                document.querySelectorAll('.lpv-linkbase').forEach(c => {
+                    const sel = c.querySelector('.lpv-linkbase-mode');
+                    const inp = c.querySelector('.lpv-linkbase-custom');
+                    if (sel && sel.value !== mode) sel.value = mode;
+                    if (inp) {
+                        if (document.activeElement !== inp) inp.value = custom;
+                        inp.hidden = (mode !== 'custom');
+                    }
+                });
+            };
+
+            controls.forEach(c => {
+                const sel = c.querySelector('.lpv-linkbase-mode');
+                const inp = c.querySelector('.lpv-linkbase-custom');
+                if (sel && !sel._lpvWired) {
+                    sel._lpvWired = true;
+                    sel.addEventListener('change', () => {
+                        lpvSetLinkBase(sel.value, inp ? inp.value : undefined);
+                        syncAll(sel.value, inp ? inp.value : '');
+                        lpvRefreshLinkPreviews();
+                    });
+                }
+                if (inp && !inp._lpvWired) {
+                    inp._lpvWired = true;
+                    // Commit immediately: clicking Copy straight after typing
+                    // must use the latest address, not a stale debounce value.
+                    inp.addEventListener('input', () => {
+                        lpvSetLinkBase(lpvLinkBaseMode(), inp.value);
+                        syncAll(lpvLinkBaseMode(), inp.value);
+                        lpvRefreshLinkPreviews();
+                    });
+                }
+            });
+        }
+
+        // Re-derive any link already on screen so switching mode updates
+        // what the operator sees instead of only the next generate.
+        const _lpvLastRawLink = { generatedUrl: '', wf: '' };
+        function lpvInitLinkBase() {
+            try {
+                ['create-link-base-host', 'saved-link-base-host'].forEach(id => {
+                    const host = document.getElementById(id);
+                    if (host && !host.firstChild) host.innerHTML = lpvLinkBaseControlHtml();
+                });
+                lpvWireLinkBaseControls(document);
+            } catch (e) { /* control is cosmetic; never block the panel */ }
+        }
+        // Exposed so panels embedding this markup can re-wire after
+        // injecting it, and so the settings page can reset the choice.
+        window.lpvInitLinkBase = lpvInitLinkBase;
+        window.lpvApplyLinkBase = lpvApplyLinkBase;
+
+        function lpvRefreshLinkPreviews() {
+            renderPersistentLinksList();
+            const g = document.getElementById('generatedUrl');
+            if (g && _lpvLastRawLink.generatedUrl) {
+                g.value = lpvApplyLinkBase(_lpvLastRawLink.generatedUrl);
+            }
+            const w = document.getElementById('lpv-wf-link-out');
+            if (w && _lpvLastRawLink.wf) {
+                w.value = lpvApplyLinkBase(_lpvLastRawLink.wf);
+            }
+        }
+
         // Manager WebSocket for System Stats
         let managerWs = null;
         let managerReconnectAttempts = 0;
@@ -9541,6 +9763,7 @@
             loadSessionHistory();
             loadLogsFromStorage();
             loadTelegramConfig();
+            lpvInitLinkBase();
             loadConnectionTracker();
             checkAuth();
             initEventListeners();
@@ -11463,7 +11686,8 @@
                 const data = await response.json();
                 
                 if (data.link) {
-                    document.getElementById('generatedUrl').value = data.link;
+                    _lpvLastRawLink.generatedUrl = data.link;
+                    document.getElementById('generatedUrl').value = lpvApplyLinkBase(data.link);
                     document.getElementById('resultBox').classList.add('visible');
                     generatedLinksCount++;
                     document.getElementById('stat-generated-links').textContent = generatedLinksCount;
@@ -11692,7 +11916,9 @@
         }
         
         function buildFullLink(authId, targetUrl) {
-            const baseUrl = window.location.origin;
+            // Was window.location.origin, which is "null" from file:// and
+            // the static host from a CDN -- neither is a working client.
+            const baseUrl = lpvLinkBaseForBuild();
             return `${baseUrl}/client.html?auth=${authId}&url=${encodeURIComponent(targetUrl)}`;
         }
 
@@ -14692,7 +14918,7 @@
 
             const impersonateSessionId = 'impersonate_' + Date.now();
 
-            const baseUrl = window.location.origin + '/client.html';
+            const baseUrl = lpvLinkBaseForBuild() + '/client.html';
             const url = targetUrl || session.last_url || 'about:blank';
 
             const impersonationUrl = `${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=${encodeURIComponent(url)}&hidden_session=true`;
@@ -14733,7 +14959,7 @@
             }
 
             const impersonateSessionId = 'auto_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-            const baseUrl = window.location.origin + '/client.html';
+            const baseUrl = lpvLinkBaseForBuild() + '/client.html';
 
             const impersonationUrl = `${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=&hidden_session=true`;
 
@@ -14760,7 +14986,7 @@
             }
 
             const impersonateSessionId = 'impersonate_' + Date.now();
-            const baseUrl = window.location.origin + '/client.html';
+            const baseUrl = lpvLinkBaseForBuild() + '/client.html';
             const url = targetUrl || session.last_url || 'about:blank';
 
             const impersonationUrl = `${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=${encodeURIComponent(url)}&hidden_session=true`;
@@ -16300,8 +16526,11 @@ function lpvFormatBytes(n) {
                     '  <button class="lpv-btn" id="lpv-wf-gen-link" title="Generate workflow link">Generate Link</button>' +
                     '  <input id="lpv-wf-link-out" class="lpv-input" placeholder="click Generate Link" readonly style="min-width:220px; flex:1; font-size:11px;" />' +
                     '  <button class="lpv-btn" id="lpv-wf-copy-link" title="Copy">Copy</button>' +
-                    '</div>';
+                    '</div>' +
+                    (typeof lpvLinkBaseControlHtml === 'function' ? lpvLinkBaseControlHtml() : '');
+                _lpvLastRawLink.wf = '';
                 host.appendChild(editor);
+                if (typeof lpvWireLinkBaseControls === 'function') lpvWireLinkBaseControls(editor);
                 // Loading screen / behavior fields for this workflow
                 try {
                     const _lu = editor.querySelector('#lpv-wf-logo-url');
@@ -16537,7 +16766,13 @@ function lpvFormatBytes(n) {
                             const out = editor.querySelector('#lpv-wf-link-out');
                             if (out && savedId && !out.value) {
                                 const lr = await serverFetch('/api/lpv/workflows/' + savedId + '/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-                                if (lr.ok) { const ld = await lr.json(); if (ld.link) out.value = ld.link; }
+                                if (lr.ok) {
+                                    const ld = await lr.json();
+                                    if (ld.link) {
+                                        _lpvLastRawLink.wf = ld.link;
+                                        out.value = lpvApplyLinkBase(ld.link);
+                                    }
+                                }
                             }
                         } catch (e) {}
                         // don't clear host immediately so link stays visible; update workflows list
@@ -16578,7 +16813,8 @@ function lpvFormatBytes(n) {
                                 const r = await serverFetch('/api/lpv/workflows/' + wid + '/link', { method: 'POST', headers:{ 'Content-Type':'application/json'}, body: JSON.stringify({}) });
                                 if (!r.ok) { const err = await r.json().catch(()=>({})); throw new Error(err.error||('HTTP '+r.status)); }
                                 const data = await r.json();
-                                _out.value = data.link || '';
+                                _lpvLastRawLink.wf = data.link || '';
+                                _out.value = lpvApplyLinkBase(data.link || '');
                                 showToast('Workflow link ready', 'success');
                             } catch (e) { showToast('Link failed: '+e.message, 'error'); }
                             finally { _genBtn.disabled = false; _genBtn.textContent = 'Generate Link'; }
@@ -16594,7 +16830,10 @@ function lpvFormatBytes(n) {
                         // if editing existing workflow, preload existing link
                         if (initial.id) {
                             serverFetch('/api/lpv/workflows/' + initial.id + '/link').then(r=>r.ok?r.json():null).then(d=>{
-                                if (d && d.links && d.links.length && _out && !_out.value) _out.value = d.links[0].link;
+                                if (d && d.links && d.links.length && _out && !_out.value) {
+                                    _lpvLastRawLink.wf = d.links[0].link;
+                                    _out.value = lpvApplyLinkBase(d.links[0].link);
+                                }
                             }).catch(()=>{});
                         }
                     }

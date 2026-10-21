@@ -728,7 +728,22 @@ select.sel option{background:#12141c;color:#f3f5f9}
     transition-duration:.01ms !important;
   }
 }
-</style>
+
+  /* ---- link base selector ----
+     Which address generated links point at: the server's own URL,
+     a custom client.html URL, or this page's origin. */
+  .lpv-linkbase{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0;padding:8px 10px;border:1px solid var(--stroke);border-radius:10px;background:var(--panel);}
+  .lpv-linkbase-label{font-size:11px;font-weight:600;color:var(--txt-3);display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;}
+  .lpv-linkbase select,.lpv-linkbase input{font-size:11px;padding:5px 7px;min-width:0;border:1px solid var(--stroke);border-radius:7px;background:transparent;color:var(--txt);}
+  .lpv-linkbase select{flex:0 1 auto;cursor:pointer;}
+  .lpv-linkbase input{flex:1 1 170px;}
+  .lpv-linkbase input[hidden]{display:none!important;}
+  .lpv-linkbase-note{font-size:10px;color:var(--txt-3);flex:1 1 100%;line-height:1.4;}
+  @media (max-width:768px){
+    .lpv-linkbase{flex-direction:column;align-items:stretch;gap:6px;}
+    .lpv-linkbase select,.lpv-linkbase input{flex:1 1 100%;width:100%;max-width:100%;}
+  }
+  </style>
 </head>
 <body>
 
@@ -979,6 +994,122 @@ function wsBase(){
 function apiPath(path){ return (path && path.startsWith('/')) ? path : '/' + (path || ''); }
 function apiUrl(path){ return apiBase() + apiPath(path); }
 function backendReady(){ return !!SERVER_URL; }
+
+/* ============================================================
+   LINK BASE  — which address generated links point at
+   ============================================================
+   Same three modes and the same localStorage keys as Admin.html,
+   so a choice made in either panel applies in both.
+     server  leave the link as the server returned it (default)
+     custom  rewrite onto a URL the operator types
+     origin  rewrite onto the origin serving this page
+   ============================================================ */
+const LINK_BASE_MODE_KEY = 'lpv_link_base_mode';
+const LINK_BASE_CUSTOM_KEY = 'lpv_link_base_custom';
+
+function _normBase(raw){
+  if(!raw) return '';
+  let s = String(raw).trim();
+  if(!s) return '';
+  if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) s = 'https://' + s;
+  try {
+    const u = new URL(s);
+    // A bare host or a full /client.html URL both mean the same base.
+    if (!/^https?:$/.test(u.protocol) || u.username || u.password) return '';
+    const p = u.pathname.replace(/\/client\.html\/?$/, '').replace(/\/+$/, '');
+    return u.origin + p;
+  } catch(e){ return ''; }
+}
+function lpvLinkBaseMode(){
+  let m = 'server';
+  try { m = localStorage.getItem(LINK_BASE_MODE_KEY) || 'server'; } catch(e){}
+  return (m === 'custom' || m === 'origin') ? m : 'server';
+}
+function lpvLinkBaseCustom(){
+  try { return localStorage.getItem(LINK_BASE_CUSTOM_KEY) || ''; } catch(e){ return ''; }
+}
+function lpvLinkBase(){
+  const mode = lpvLinkBaseMode();
+  if(mode === 'custom') return _normBase(lpvLinkBaseCustom());
+  if(mode === 'origin'){
+    // file:// has an opaque origin that can never be a client.
+    if(location.protocol === 'file:') return '';
+    return _normBase(location.origin);
+  }
+  return '';
+}
+function lpvLinkBaseForBuild(){ return lpvLinkBase() || apiBase(); }
+
+function lpvApplyLinkBase(link){
+  if(!link) return link;
+  const base = lpvLinkBase();
+  if(!base) return link;
+  try {
+    const u = new URL(link, location.href);
+    let path = u.pathname;
+    // Drop the prefix the backend sits behind (reverse proxy).
+    try {
+      const apiP = new URL(apiBase(), location.href).pathname.replace(/\/+$/, '');
+      if(apiP && apiP !== '/' && (path === apiP || path.startsWith(apiP + '/'))) path = path.slice(apiP.length) || '/';
+    } catch(e){}
+    return base + path + u.search + u.hash;
+  } catch(e){ return link; }
+}
+
+function lpvLinkBaseControlHtml(){
+  const mode = lpvLinkBaseMode();
+  const custom = lpvLinkBaseCustom();
+  return `<div class="lpv-linkbase">
+    <span class="lpv-linkbase-label">
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      Link base
+    </span>
+    <select class="lpv-linkbase-mode" title="Which address generated links should point at">
+      <option value="server"${mode==='server'?' selected':''}>Default server URL</option>
+      <option value="custom"${mode==='custom'?' selected':''}>Custom client.html URL…</option>
+      <option value="origin"${mode==='origin'?' selected':''}>This page's origin</option>
+    </select>
+    <input type="url" class="lpv-linkbase-custom" spellcheck="false"
+      placeholder="https://your-domain.com/client.html"
+      title="Address client.html is served from. A bare host works too."
+      value="${esc(custom)}"${mode==='custom'?'':' hidden'}>
+    <span class="lpv-linkbase-note">Applies to flow share links.</span>
+  </div>`;
+}
+
+function lpvWireLinkBaseControls(root){
+  const ctrls = (root || document).querySelectorAll('.lpv-linkbase');
+  const sync = (mode, custom) => ctrls.forEach(c => {
+    const sel = c.querySelector('.lpv-linkbase-mode');
+    const inp = c.querySelector('.lpv-linkbase-custom');
+    if(sel && sel.value !== mode) sel.value = mode;
+    if(inp){
+      if(document.activeElement !== inp) inp.value = custom;
+      inp.hidden = (mode !== 'custom');
+    }
+  });
+  ctrls.forEach(c => {
+    const sel = c.querySelector('.lpv-linkbase-mode');
+    const inp = c.querySelector('.lpv-linkbase-custom');
+    if(sel && !sel._lpvWired){
+      sel._lpvWired = true;
+      sel.addEventListener('change', () => {
+        try {
+          localStorage.setItem(LINK_BASE_MODE_KEY, sel.value);
+          if(inp) localStorage.setItem(LINK_BASE_CUSTOM_KEY, inp.value);
+        } catch(e){}
+        sync(sel.value, inp ? inp.value : '');
+      });
+    }
+    if(inp && !inp._lpvWired){
+      inp._lpvWired = true;
+      inp.addEventListener('input', () => {
+        try { localStorage.setItem(LINK_BASE_CUSTOM_KEY, inp.value); } catch(e){}
+        sync(lpvLinkBaseMode(), inp.value);
+      });
+    }
+  });
+}
 
 S.drawerTimer = null;
 
@@ -2303,6 +2434,7 @@ function renderLPV(){
       <h2>Automated flows</h2><span class="hint">${wfs.length} set up</span><div class="line"></div>
       <button class="btn sm" onclick="loadWorkflows()">Refresh</button>
     </div>
+    ${lpvLinkBaseControlHtml()}
     <div class="grid g-auto">
       ${wfs.length ? wfs.map(wfCard).join('') : emptyBlock('No flows yet',
         'Build a sequence of pages and redirects in the main panel to see it here.',
@@ -2322,11 +2454,12 @@ function renderLPV(){
     } catch(e){ toast('Save failed: ' + e.message, 'err'); }
   });
   $$('[data-push-page]').forEach(b => b.addEventListener('click', () => openDrawer(null, {push:b.dataset.pushPage})));
+  lpvWireLinkBaseControls($('#tab-lpv') || document);
   $$('[data-run-wf]').forEach(b => b.addEventListener('click', () => openDrawer(null, {run:b.dataset.runWf})));
   $$('[data-wf-link]').forEach(b => b.addEventListener('click', async () => {
     try {
       const r = await post('/api/lpv/workflows/' + encodeURIComponent(b.dataset.wfLink) + '/link', {});
-      const link = r.link || '';
+      const link = lpvApplyLinkBase(r.link || '');
       try { await navigator.clipboard.writeText(link); toast('Share link copied', 'ok'); }
       catch(e){ prompt('Flow link', link); }
     } catch(e){ toast('Link failed: ' + e.message, 'err'); }
