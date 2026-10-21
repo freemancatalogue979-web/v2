@@ -1,0 +1,43 @@
+[Unit]
+Description=Fixiis / Neo Browser Stream
+Documentation=https://github.com/freemancatalogue979-web/v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fixiis
+Group=fixiis
+WorkingDirectory=/opt/fixiis
+
+# .env holds the secrets; main.py loads it at startup.
+EnvironmentFile=/opt/fixiis/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/fixiis
+
+ExecStart=/opt/fixiis/venv/bin/python /opt/fixiis/main.py
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# Hardening. The app needs to spawn Chrome, so it cannot be fully locked
+# down, but it does not need device access beyond what it is given.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/fixiis
+
+# Give the browser pool room to breathe (each session opens many fds).
+LimitNOFILE=65535
+LimitNPROC=8192
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fixiis
+
+[Install]
+WantedBy=multi-user.target
