@@ -31,3 +31,6 @@ build/
 
 # Generated standalone panels (contain your server address)
 standalone/
+
+# generated mobile layout screenshots (verification only)
+mobile-shots/
