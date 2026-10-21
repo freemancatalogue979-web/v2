@@ -251,6 +251,49 @@ To do this:
 `ws://` from an HTTPS page as mixed content, and the live feed will not
 connect.
 
+### Click guard — decide which controls a pushed page may use
+
+Every archived page has a **click guard** (Archive → `🔓 Guard`, also in the
+page preview footer, and a quick `🔒` toggle in the mini admin). With the guard
+on, `client.html` swallows every click on that page except the controls you
+list — the usual case is a captured sign-in page where only **Sign in** should
+work.
+
+* Blocked clicks never reach the page, never flash the spinner and never
+  report a `lpv_spinner` event — so a `redirect` workflow step can no longer be
+  advanced by a stray tap.
+* Scrolling, typing and focussing fields still work; only clicks and form
+  submits are gated.
+* Rules are matched against the clicked element and up to four ancestors:
+
+  | Rule | Matches |
+  |---|---|
+  | `#signin` | element id |
+  | `.js-next` | class name |
+  | `button[type=submit]` | any CSS selector (`closest`) |
+  | `button` | tag name |
+  | `text:Sign in` | visible text / `aria-label` / `title` / `value` |
+  | `name:identifier` | `name` attribute |
+  | `aria:Continue` | `aria-label` contains |
+  | `*` | everything (guard inert) |
+
+* **Report blocked clicks** (default on, throttled) sends a `click_blocked`
+  event to the LPV audit feed, so you can see what visitors tried to press
+  while tuning the allowlist.
+* **Show the visitor a hint** (default on) shows a short toast when they hit a
+  locked control instead of leaving them with a page that looks broken.
+* Saved guards apply immediately: clients already showing the page get an
+  `lpv_guard` message over their WebSocket (`delivered` in the response tells
+  you how many were updated).
+
+*API:* `GET` / `PUT /api/lpv/pages/<id>/guard` with
+`{"guard": {"enabled": true, "allow": ["#signin"], "notify": true, "feedback": true}}`
+(the flat form without the `guard` wrapper also works). The guard is also
+included in every `lpv_show_page` payload as `guard`, and as
+`default_page_guard` in the LPV-only boot payload.
+
+---
+
 ### Hosting `client.html` away from the backend (LPV pages and workflows)
 
 `client.html` can be hosted anywhere, but it must be told where the backend

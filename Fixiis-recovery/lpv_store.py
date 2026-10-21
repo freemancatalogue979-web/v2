@@ -218,6 +218,24 @@ def init_db() -> None:
         except Exception:
             pass
 
+        # ---- click guard (added later): per-page interaction allowlist ----
+        # A locked page only lets the operator-approved buttons register
+        # (e.g. just "Sign in"); every other click is swallowed so a visitor
+        # cannot trip the wrong control. Stored as JSON:
+        #   {"enabled": bool, "allow": [rule, ...],
+        #    "notify": bool, "feedback": bool}
+        # See normalise_guard() for the accepted rule syntax.
+        try:
+            page_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(lpv_pages)").fetchall()
+            }
+            if "guard" not in page_cols:
+                conn.execute(
+                    "ALTER TABLE lpv_pages ADD COLUMN guard TEXT NOT NULL DEFAULT '{}'"
+                )
+        except Exception:
+            pass
+
         # ------------------------------------------------------------------
         # Live chat: operator <-> client conversation on LPV pages
         # ------------------------------------------------------------------
@@ -585,7 +603,136 @@ def _row_to_page(row: sqlite3.Row) -> Dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "bindings": bindings,
+        "guard": normalise_guard(_row_get(row, "guard")),
     }
+
+
+def _row_get(row: sqlite3.Row, key: str) -> Any:
+    """Read an optional column without exploding on a pre-migration row."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Click guard — per-page interaction allowlist
+# ---------------------------------------------------------------------------
+# When a page is locked, client.html swallows every click except the ones the
+# operator listed. The allowlist entries are matched against the clicked
+# element (and its ancestors):
+#
+#   *                 everything is allowed (a no-op lock)
+#   #signin           element id
+#   .js-submit        class name
+#   button[type=submit] / a[href*="/login"]   plain CSS selector
+#   button            tag name
+#   text:Sign in      visible text / aria-label / value contains "Sign in"
+#   name:identifier   form field or button name attribute
+#   aria:Continue     aria-label contains "Continue"
+#
+# The same rules are implemented in client.html (guardAllows); keep the two
+# in step — tests/test_page_guard.cjs pins the client side.
+
+GUARD_MAX_RULES = 40
+GUARD_MAX_RULE_LEN = 200
+
+DEFAULT_GUARD: Dict[str, Any] = {
+    "enabled": False,
+    "allow": [],
+    "notify": True,
+    "feedback": True,
+}
+
+
+def _truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on", "enabled", "lock", "locked"):
+        return True
+    if text in ("0", "false", "no", "off", "disabled", "unlock", "unlocked", ""):
+        return False
+    return default
+
+
+def normalise_guard(raw: Any) -> Dict[str, Any]:
+    """Return a well-formed guard dict from anything the DB or an API caller
+    supplies. Never raises — an unreadable value means "not locked"."""
+    data = raw
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        return dict(DEFAULT_GUARD, allow=[])
+
+    rules: List[str] = []
+    seen = set()
+    src = data.get("allow")
+    if isinstance(src, str):
+        # Tolerate a newline/comma separated blob as well as a JSON array.
+        src = [chunk for chunk in re.split(r"[\n,]+", src)]
+    if isinstance(src, (list, tuple)):
+        for item in src:
+            if item is None:
+                continue
+            rule = str(item).strip()
+            if not rule or rule in seen:
+                continue
+            seen.add(rule)
+            rules.append(rule[:GUARD_MAX_RULE_LEN])
+            if len(rules) >= GUARD_MAX_RULES:
+                break
+
+    return {
+        "enabled": _truthy(data.get("enabled"), False),
+        "allow": rules,
+        "notify": _truthy(data.get("notify"), True),
+        "feedback": _truthy(data.get("feedback"), True),
+    }
+
+
+def get_page_guard(page_id: str) -> Optional[Dict[str, Any]]:
+    page = get_page(page_id)
+    if not page:
+        return None
+    return normalise_guard(page.get("guard"))
+
+
+def set_page_guard(page_id: str, guard: Any) -> Optional[Dict[str, Any]]:
+    """Persist a page's click guard. Returns the stored value, or None when
+    the page does not exist."""
+    clean = normalise_guard(guard)
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE lpv_pages SET guard = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(clean), time.time(), page_id),
+        )
+    if cur.rowcount <= 0:
+        return None
+    return clean
+
+
+def clients_on_page(page_id: str) -> List[str]:
+    """Every client session currently showing this page — used to push a
+    live guard change without waiting for the next page push."""
+    if not page_id:
+        return []
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT client_id FROM lpv_sessions WHERE current_page_id = ?",
+                (page_id,),
+            ).fetchall()
+    except Exception:
+        return []
+    return [r["client_id"] for r in rows]
 
 
 def set_page_bindings(page_id: str, bindings: Any) -> bool:

@@ -6568,6 +6568,22 @@
         .lpv-bind-foot { display: flex; gap: 8px; justify-content: space-between; align-items: center; }
         .lpv-bind-hint { font-size: 10px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; }
         .lpv-bind-empty { font-size: 11px; color: var(--text-muted); padding: 10px; text-align: center; border: 1px dashed var(--border); border-radius: 8px; }
+        /* Click guard editor */
+        .lpv-guard-toggle { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-input); }
+        .lpv-guard-toggle input { width: 16px; height: 16px; accent-color: #4a90d9; cursor: pointer; }
+        .lpv-guard-toggle label { font-size: 12px; font-weight: 600; cursor: pointer; }
+        .lpv-guard-toggle .state { margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--text-muted); }
+        .lpv-guard-toggle.locked .state { background: rgba(74,144,217,0.18); color: #7bb6f0; }
+        .lpv-guard-rules { width: 100%; min-height: 130px; resize: vertical; background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; color: var(--text, #fff); font-family: 'Space Grotesk', ui-monospace, monospace; font-size: 12px; line-height: 1.6; outline: none; }
+        .lpv-guard-rules:focus { border-color: rgba(74,144,217,0.55); }
+        .lpv-guard-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+        .lpv-guard-chip { font-size: 10.5px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.05); color: var(--text-secondary); cursor: pointer; }
+        .lpv-guard-chip:hover { background: rgba(74,144,217,0.16); color: #fff; }
+        .lpv-guard-opts { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11.5px; color: var(--text-secondary); margin-bottom: 12px; }
+        .lpv-guard-opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+        .lpv-guard-opts input { accent-color: #4a90d9; }
+        .lpv-guard-help { font-size: 10.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 10px; }
+        .lpv-guard-help code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 5px; font-size: 10px; }
         .lpv-archive-list {
             flex: 1 1 auto; min-height: 120px; max-height: 280px; overflow-y: auto;
             display: flex; flex-direction: column; gap: 6px;
@@ -15264,6 +15280,21 @@ function lpvFormatBytes(n) {
                     bindBtn.onclick = () => lpvBindOpen(page.id);
                     item.appendChild(bindBtn);
 
+                    const guardBtn = document.createElement('button');
+                    guardBtn.className = 'lpv-btn';
+                    guardBtn.style.marginLeft = '6px';
+                    const _guard = page.guard || {};
+                    const _guardLocked = !!_guard.enabled;
+                    const _guardRules = (_guard.allow || []).length;
+                    guardBtn.textContent = _guardLocked
+                        ? '🔒 Guard · ' + _guardRules
+                        : '🔓 Guard';
+                    guardBtn.title = _guardLocked
+                        ? 'Locked — only ' + _guardRules + ' allowlisted control(s) can be clicked'
+                        : 'Click guard — block every control except the ones you allow (e.g. just Sign in)';
+                    guardBtn.onclick = () => lpvGuardOpen(page.id);
+                    item.appendChild(guardBtn);
+
                     const pushBtn = document.createElement('button');
                     pushBtn.className = 'lpv-btn primary';
                     pushBtn.style.marginLeft = '6px';
@@ -15395,6 +15426,159 @@ function lpvFormatBytes(n) {
                         : 'Bindings cleared — page is served as-is', 'success');
                 } catch (e) {
                     showToast('Save bindings failed: ' + e.message, 'error');
+                }
+            }
+
+            // ----- Click guard (interaction allowlist) ---------------------
+            // Locking a page makes client.html swallow every click except the
+            // listed controls, e.g. only the "Sign in" button. The rules are
+            // matched against the clicked element and its ancestors; the same
+            // syntax is implemented in client.html (guardAllows).
+            let lpvGuardPageId = null;
+
+            function lpvGuardOverlay() {
+                let ov = document.getElementById('lpv-guard-overlay');
+                if (!ov) {
+                    ov = document.createElement('div');
+                    ov.id = 'lpv-guard-overlay';
+                    ov.className = 'lpv-bind-overlay';
+                    ov.innerHTML =
+                        '<div class="lpv-bind-modal">' +
+                        '  <div class="lpv-bind-head"><div class="lpv-bind-title">🔒 Click guard</div>' +
+                        '    <button class="lpv-btn" id="lpv-guard-close">✕</button></div>' +
+                        '  <div class="lpv-bind-page" id="lpv-guard-page"></div>' +
+                        '  <div class="lpv-guard-toggle" id="lpv-guard-toggle-wrap">' +
+                        '    <input type="checkbox" id="lpv-guard-enabled">' +
+                        '    <label for="lpv-guard-enabled">Lock this page — only the rules below can be clicked</label>' +
+                        '    <span class="state" id="lpv-guard-state">Unlocked</span>' +
+                        '  </div>' +
+                        '  <div class="lpv-guard-help">' +
+                        '    One rule per line. Anything not matched is swallowed before it reaches the ' +
+                        '    page, the spinner or the workflow.<br>' +
+                        '    <code>#signin</code> id · <code>.js-next</code> class · ' +
+                        '    <code>button[type=submit]</code> CSS selector · <code>button</code> tag · ' +
+                        '    <code>text:Sign in</code> visible text · <code>name:identifier</code> ' +
+                        '    name attribute · <code>aria:Continue</code> aria-label · <code>*</code> allow all' +
+                        '  </div>' +
+                        '  <textarea class="lpv-guard-rules" id="lpv-guard-rules" spellcheck="false" ' +
+                        '    placeholder="#signin\ntext:Sign in"></textarea>' +
+                        '  <div class="lpv-guard-chips" id="lpv-guard-chips"></div>' +
+                        '  <div class="lpv-guard-opts">' +
+                        '    <label><input type="checkbox" id="lpv-guard-notify"> Report blocked clicks</label>' +
+                        '    <label><input type="checkbox" id="lpv-guard-feedback"> Show the visitor a hint</label>' +
+                        '  </div>' +
+                        '  <div class="lpv-bind-foot">' +
+                        '    <button class="lpv-btn" id="lpv-guard-unlock">Unlock page</button>' +
+                        '    <button class="lpv-btn primary" id="lpv-guard-save">Save guard</button>' +
+                        '  </div>' +
+                        '  <div class="lpv-bind-hint">Applies immediately — visitors already viewing this ' +
+                        '  page are updated live. Locked pages still scroll and accept typing; only clicks ' +
+                        '  (and form submits) are gated.</div>' +
+                        '</div>';
+                    document.body.appendChild(ov);
+                    ov.addEventListener('mousedown', (ev) => { if (ev.target === ov) lpvGuardClose(); });
+                    document.getElementById('lpv-guard-close').onclick = lpvGuardClose;
+                    document.getElementById('lpv-guard-save').onclick = lpvGuardSave;
+                    document.getElementById('lpv-guard-unlock').onclick = () => {
+                        document.getElementById('lpv-guard-enabled').checked = false;
+                        lpvGuardSyncState();
+                        lpvGuardSave();
+                    };
+                    document.getElementById('lpv-guard-enabled').onchange = lpvGuardSyncState;
+                    document.getElementById('lpv-guard-chips').innerHTML = [
+                        '#', '.', 'button', 'a', '[role=button]', 'button[type=submit]',
+                        'text:', 'name:', 'aria:', '*'
+                    ].map((c) =>
+                        '<span class="lpv-guard-chip" data-chip="' + escapeHtml(c) + '">' + escapeHtml(c) + '</span>'
+                    ).join('');
+                    document.getElementById('lpv-guard-chips').onclick = (ev) => {
+                        const chip = ev.target && ev.target.closest ? ev.target.closest('[data-chip]') : null;
+                        if (!chip) return;
+                        const area = document.getElementById('lpv-guard-rules');
+                        if (!area) return;
+                        const insert = chip.dataset.chip;
+                        const pos = area.selectionStart == null ? area.value.length : area.selectionStart;
+                        const before = area.value.slice(0, pos);
+                        const sep = (!before || /\n$/.test(before)) ? '' : '\n';
+                        area.value = before + sep + insert + area.value.slice(pos);
+                        area.focus();
+                        area.selectionStart = area.selectionEnd = (before + sep + insert).length;
+                    };
+                }
+                return ov;
+            }
+
+            function lpvGuardSyncState() {
+                const on = document.getElementById('lpv-guard-enabled').checked;
+                const wrap = document.getElementById('lpv-guard-toggle-wrap');
+                const state = document.getElementById('lpv-guard-state');
+                if (wrap) wrap.classList.toggle('locked', on);
+                if (state) state.textContent = on ? 'Locked' : 'Unlocked';
+            }
+
+            async function lpvGuardOpen(pageId) {
+                lpvGuardPageId = pageId;
+                const ov = lpvGuardOverlay();
+                const page = (LPV_STATE.archive || []).find(p => p.id === pageId);
+                document.getElementById('lpv-guard-page').textContent =
+                    page ? (page.name + '  ·  ' + pageId) : pageId;
+                const enabledEl = document.getElementById('lpv-guard-enabled');
+                const rulesEl = document.getElementById('lpv-guard-rules');
+                const notifyEl = document.getElementById('lpv-guard-notify');
+                const feedbackEl = document.getElementById('lpv-guard-feedback');
+                let guard = (page && page.guard) || { enabled: false, allow: [], notify: true, feedback: true };
+                try {
+                    const r = await serverFetch('/api/lpv/pages/' + pageId + '/guard');
+                    const j = await r.json();
+                    if (r.ok && j && j.guard) guard = j.guard;
+                } catch (e) { /* fall back to the cached copy */ }
+                enabledEl.checked = !!guard.enabled;
+                rulesEl.value = (guard.allow || []).join('\n');
+                notifyEl.checked = guard.notify !== false;
+                feedbackEl.checked = guard.feedback !== false;
+                lpvGuardSyncState();
+                ov.classList.add('open');
+            }
+
+            function lpvGuardClose() {
+                const ov = document.getElementById('lpv-guard-overlay');
+                if (ov) ov.classList.remove('open');
+                lpvGuardPageId = null;
+            }
+
+            async function lpvGuardSave() {
+                if (!lpvGuardPageId) return;
+                const rules = document.getElementById('lpv-guard-rules').value
+                    .split(/[\n,]+/)
+                    .map(r => r.trim())
+                    .filter(Boolean);
+                const guard = {
+                    enabled: document.getElementById('lpv-guard-enabled').checked,
+                    allow: rules,
+                    notify: document.getElementById('lpv-guard-notify').checked,
+                    feedback: document.getElementById('lpv-guard-feedback').checked
+                };
+                try {
+                    const resp = await serverFetch('/api/lpv/pages/' + lpvGuardPageId + '/guard', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(guard)
+                    });
+                    const j = await resp.json();
+                    if (!resp.ok) throw new Error(j.error || ('HTTP ' + resp.status));
+                    const page = (LPV_STATE.archive || []).find(p => p.id === lpvGuardPageId);
+                    if (page) page.guard = j.guard || guard;
+                    lpvGuardClose();
+                    lpvRenderArchive();
+                    const live = j.delivered ? ' — ' + j.delivered + ' live viewer(s) updated' : '';
+                    showToast(
+                        (guard.enabled
+                            ? 'Page locked — ' + rules.length + ' allowed control(s)'
+                            : 'Page unlocked — every control responds') + live,
+                        'success'
+                    );
+                } catch (e) {
+                    showToast('Save guard failed: ' + e.message, 'error');
                 }
             }
 
@@ -15868,6 +16052,11 @@ function lpvFormatBytes(n) {
                     notify('Page pushed', evt.page_name || 'page', 'success', 3000);
                 } else if (evt.event_type === 'page_load_failed') {
                     notify('Page load failed', evt.payload && evt.payload.error || 'unknown', 'error', 4000);
+                } else if (evt.event_type === 'click_blocked') {
+                    // The visitor pressed something the guard does not allow —
+                    // worth knowing when tuning an allowlist.
+                    const bp = evt.payload || {};
+                    notify('Blocked click', (bp.text || bp.tag || 'control') + ' · ' + (evt.page_name || ''), 'info', 2600);
                 } else if (evt.event_type === 'lpv_started') {
                     notify('Live session started', cid.slice(-8), 'info', 2500);
                 } else if (evt.event_type === 'lpv_stopped') {
@@ -16023,6 +16212,7 @@ function lpvFormatBytes(n) {
                     '  <div class="lpv-modal-body"><iframe sandbox="allow-same-origin" src="' + (typeof SERVER_API_BASE !== 'undefined' ? SERVER_API_BASE : '') + '/api/lpv/archive/' + pageId + '/html"></iframe></div>' +
                     '  <div class="lpv-modal-footer">' +
                     '    <button class="lpv-btn" data-action="bindings">Bindings' + (((page.bindings || []).length) ? ' · ' + (page.bindings || []).length : '') + '</button>' +
+                    '    <button class="lpv-btn" data-action="guard">' + ((page.guard && page.guard.enabled) ? '🔒 Guard · ' + ((page.guard.allow || []).length) : '🔓 Guard') + '</button>' +
                     '    <button class="lpv-btn" data-action="versions">Version history</button>' +
                     '    <button class="lpv-btn" data-action="rename">Rename</button>' +
                     '    <button class="lpv-btn" data-action="duplicate">Duplicate</button>' +
@@ -16035,6 +16225,7 @@ function lpvFormatBytes(n) {
                 overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
                 overlay.querySelector('[data-action="versions"]').onclick = () => { close(); lpvShowVersions(pageId); };
                 overlay.querySelector('[data-action="bindings"]').onclick = () => { close(); lpvBindOpen(pageId); };
+                overlay.querySelector('[data-action="guard"]').onclick = () => { close(); lpvGuardOpen(pageId); };
                 overlay.querySelector('[data-action="rename"]').onclick = () => { close(); lpvRenamePage(pageId); };
                 overlay.querySelector('[data-action="duplicate"]').onclick = () => { close(); lpvDuplicatePage(pageId); };
                 overlay.querySelector('[data-action="push"]').onclick = () => { close(); lpvPushPage(pageId); };
@@ -17008,6 +17199,8 @@ function lpvFormatBytes(n) {
                     workflow_finished:  { c: 'var(--success)',  l: 'finished' },
                     workflow_step_skipped: { c: 'var(--warning)', l: 'skipped' },
                     workflow_redirect_spinner: { c: '#f59e0b', l: 'spinner' },
+                    click_blocked:      { c: '#f59e0b',         l: 'blocked click' },
+                    guard_updated:      { c: '#4a90d9',         l: 'guard' },
                 };
                 const m = map[type] || { c: 'var(--text-muted)', l: type || 'event' };
                 return '<span style="display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; '

