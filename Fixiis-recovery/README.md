@@ -152,6 +152,13 @@ verify before considering a change "done":
 python -m py_compile api.py
 ```
 
+Dependency-free front-end regression checks (Node 18+):
+
+```bash
+node tests/test_link_base.cjs        # link-base rewriting in both panels
+node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
+```
+
 ### 2. Server boots
 
 ```bash

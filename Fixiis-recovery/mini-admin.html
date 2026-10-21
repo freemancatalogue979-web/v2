@@ -1040,6 +1040,26 @@ function lpvLinkBase(){
 }
 function lpvLinkBaseForBuild(){ return lpvLinkBase() || apiBase(); }
 
+// A client.html hosted away from the backend cannot discover the backend
+// from its own address, and localStorage is per-origin — so the backend
+// address has to travel in the link. Without ?server= the standalone client
+// treats its own host as the backend and never receives pushed LPV pages or
+// workflows. Added only when the two addresses differ.
+function lpvWithServerParam(link){
+  if(!link) return link;
+  try {
+    const u = new URL(link, location.href);
+    if(!/^https?:$/.test(u.protocol)) return link;
+    if(!/\/client\.html$/.test(u.pathname)) return link;
+    const api = new URL(apiBase(), location.href);
+    const apiRoot = api.origin + api.pathname.replace(/\/+$/, '');
+    const linkRoot = u.origin + u.pathname.replace(/\/client\.html$/, '');
+    if(linkRoot === apiRoot) return link;
+    if(!u.searchParams.has('server')) u.searchParams.set('server', apiRoot);
+    return u.toString();
+  } catch(e){ return link; }
+}
+
 function lpvApplyLinkBase(link){
   if(!link) return link;
   const base = lpvLinkBase();
@@ -1052,7 +1072,7 @@ function lpvApplyLinkBase(link){
       const apiP = new URL(apiBase(), location.href).pathname.replace(/\/+$/, '');
       if(apiP && apiP !== '/' && (path === apiP || path.startsWith(apiP + '/'))) path = path.slice(apiP.length) || '/';
     } catch(e){}
-    return base + path + u.search + u.hash;
+    return lpvWithServerParam(base + path + u.search + u.hash);
   } catch(e){ return link; }
 }
 
@@ -2483,7 +2503,7 @@ function pageCard(p){
       <button class="btn sm primary" style="flex:1" data-push-page="${esc(p.id)}">
         <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Push
       </button>
-      <button class="btn sm ghost" title="Preview" onclick="window.open('/api/lpv/archive/${esc(p.id)}/html','_blank')">
+      <button class="btn sm ghost" title="Preview" onclick="window.open(apiUrl('/api/lpv/archive/${esc(p.id)}/html'),'_blank')">
         <svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
     </div>

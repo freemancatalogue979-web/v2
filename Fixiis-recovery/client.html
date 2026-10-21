@@ -3938,7 +3938,12 @@ function hideTransitionOverlay() {
             function applyWorkflowBranding(logoUrl, color, workflowName) {
                 // Explicit values replace the current workflow overrides;
                 // omitted values are retained when the loader is re-shown.
-                if (typeof logoUrl === 'string') lpvBootBranding.logoUrl = logoUrl.trim();
+                // The logo may be a server-relative path ("/api/lpv/...");
+                // pin it to the backend so a standalone client still shows
+                // the operator's artwork.
+                if (typeof logoUrl === 'string') {
+                    lpvBootBranding.logoUrl = resolveServerUrl(logoUrl) || logoUrl.trim();
+                }
                 if (typeof color === 'string') lpvBootBranding.color = color.trim();
                 if (typeof workflowName === 'string' && workflowName.trim()) {
                     lpvBootBranding.workflowName = workflowName.trim();
@@ -4089,7 +4094,8 @@ function hideTransitionOverlay() {
                     lpvTabBranding.tabTitle = tabTitle.trim();
                 }
                 if (typeof faviconUrl === 'string') {
-                    lpvTabBranding.faviconUrl = faviconUrl.trim();
+                    lpvTabBranding.faviconUrl =
+                        resolveServerUrl(faviconUrl) || faviconUrl.trim();
                 }
                 const title = lpvTabBranding.tabTitle;
                 const icon = lpvTabBranding.faviconUrl;
@@ -4272,6 +4278,97 @@ function applySpinnerColorFromHex(hexColor) {
                 isMobile: /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|opera mobi/i.test(navigator.userAgent),
                 isTouchDevice: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
             };
+
+            // ================================================================
+            // Server-relative URL resolution
+            // ================================================================
+            // The backend hands out LPV page addresses as server-relative
+            // paths ("/api/lpv/archive/<id>/html"). That is correct only while
+            // this document is served BY the backend. A standalone copy
+            // (static host, CDN, file://, or a custom "client.html URL")
+            // lives on a different origin, so the same path resolved against
+            // the viewer's origin — the static host answered 404 and the LPV
+            // overlay stayed on the loading screen forever. Every workflow
+            // whose first step pushes a page then looked permanently stuck.
+            //
+            // Everything the server sends us that is meant to be fetched is
+            // therefore pinned to the backend base below, with the page's own
+            // origin kept only as a last-resort fallback.
+            const API_ORIGIN = SERVER_OVERRIDE.origin;
+            const API_PATH_PREFIX = SERVER_OVERRIDE.pathname.replace(/\/+$/, '');
+
+            function resolveServerUrl(raw) {
+                const value = raw == null ? '' : String(raw).trim();
+                if (!value) return '';
+                // Fully qualified — the server already chose the address.
+                if (/^https?:\/\//i.test(value)) return value;
+                // Protocol-relative "//host/path": borrow the backend scheme.
+                if (value.slice(0, 2) === '//') return SERVER_OVERRIDE.protocol + value;
+                // data:, blob:, about:, javascript: ... are not server paths.
+                if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return value;
+                if (value.charAt(0) === '/') {
+                    // Keep a path that already carries the reverse-proxy
+                    // prefix (e.g. backend behind https://host/panel/).
+                    if (API_PATH_PREFIX
+                        && (value === API_PATH_PREFIX || value.indexOf(API_PATH_PREFIX + '/') === 0)) {
+                        return API_ORIGIN + value;
+                    }
+                    return API_ORIGIN + API_PATH_PREFIX + value;
+                }
+                // Bare relative path ("api/lpv/...", "./page.html").
+                return API_ORIGIN + API_PATH_PREFIX + '/' + value.replace(/^\.\//, '');
+            }
+
+            // Fetch a server-provided HTML document (LPV page, custom
+            // loading page, ...) from the backend. Falls back to the page's
+            // own origin when the backend address cannot serve it, which
+            // keeps same-origin deployments and legacy links working.
+            async function fetchServerDocument(rawUrl, signal) {
+                const primary = resolveServerUrl(rawUrl);
+                const candidates = [];
+                if (primary) candidates.push(primary);
+                if (rawUrl) {
+                    try {
+                        const localUrl = new URL(String(rawUrl), window.location.href).href;
+                        if (localUrl !== primary) candidates.push(localUrl);
+                    } catch (e) { /* not resolvable — skip */ }
+                }
+                let lastError = new Error('No page address was supplied');
+                for (let i = 0; i < candidates.length; i++) {
+                    const url = candidates[i];
+                    try {
+                        const resp = await fetch(url, {
+                            signal,
+                            credentials: 'same-origin',
+                            cache: 'no-store',
+                            mode: 'cors',
+                        });
+                        if (!resp.ok) {
+                            lastError = new Error('HTTP ' + resp.status + ' from ' + url);
+                            continue;
+                        }
+                        const contentType = ((resp.headers && resp.headers.get)
+                            ? (resp.headers.get('content-type') || '') : '').toLowerCase();
+                        if (contentType.indexOf('application/json') !== -1) {
+                            lastError = new Error('JSON error body from ' + url);
+                            continue;
+                        }
+                        const html = await resp.text();
+                        if (!html || !html.trim()) {
+                            lastError = new Error('Empty body from ' + url);
+                            continue;
+                        }
+                        if (i > 0) {
+                            dbg('[LPV] backend fetch failed, used fallback origin', url);
+                        }
+                        return { url, html };
+                    } catch (e) {
+                        if (e && e.name === 'AbortError') throw e;
+                        lastError = e || new Error('fetch failed for ' + url);
+                    }
+                }
+                throw lastError;
+            }
 
             const MOBILE_USER_AGENTS = {
                 // The remote browser policy is Android Chrome for every
@@ -5351,8 +5448,16 @@ function applySpinnerColorFromHex(hexColor) {
                         (this.unread ? ' on' : '') + '">' + (this.unread || '') + '</span>';
                 },
 
+                // Chat artwork may be server-relative ("/api/lpv/chat/logo/…");
+                // resolve it against the backend so a standalone client does
+                // not look for the image on the host serving its HTML.
+                _logoUrl() {
+                    const raw = (this.cfg && this.cfg.logo_url) || '';
+                    return raw ? (resolveServerUrl(raw) || raw) : '';
+                },
+
                 _logoMarkup() {
-                    const url = (this.cfg && this.cfg.logo_url) || '';
+                    const url = this._logoUrl();
                     if (url) {
                         return '<img src="' + String(url).replace(/"/g, '&quot;') + '" alt="">';
                     }
@@ -5361,7 +5466,7 @@ function applySpinnerColorFromHex(hexColor) {
                 },
 
                 _bubbleMarkup() {
-                    const url = (this.cfg && this.cfg.logo_url) || '';
+                    const url = this._logoUrl();
                     if (url) {
                         return '<img src="' + String(url).replace(/"/g, '&quot;') + '" alt="">';
                     }
@@ -6213,14 +6318,10 @@ function applySpinnerColorFromHex(hexColor) {
                     // as page content inside the frame, and so we can blob the
                     // markup and attach the click capture that emits
                     // lpv_spinner (a redirect step waits on that signal).
-                    fetch(url, { credentials: 'same-origin', cache: 'no-store' })
-                        .then(function (r) {
-                            if (!r.ok) throw new Error('HTTP ' + r.status);
-                            const ct = ((r.headers && r.headers.get)
-                                ? (r.headers.get('content-type') || '') : '').toLowerCase();
-                            if (ct && ct.indexOf('html') === -1) throw new Error('not html');
-                            return r.text();
-                        })
+                    // Resolved against the backend, so a standalone client
+                    // still finds a server-relative loading page.
+                    fetchServerDocument(url, undefined)
+                        .then(function (loaded) { return loaded.html; })
                         .then(function (html) {
                             if (self.redirectFrame !== frame) return;
                             if (!html || !html.trim()) throw new Error('empty');
@@ -6251,8 +6352,10 @@ function applySpinnerColorFromHex(hexColor) {
                             self._redirectLoaded = url;
                             frame.classList.remove('hidden');
                         })
-                        .catch(function () {
+                        .catch(function (err) {
                             if (self.redirectFrame !== frame) return;
+                            dbg('[LPV] custom loading page unavailable', url,
+                                err && err.message ? err.message : err);
                             // No usable custom page — fall back to the ring.
                             self._dropRedirectFrame();
                             if (self.spinner && self._spinnerWanted) {
@@ -6354,16 +6457,16 @@ function applySpinnerColorFromHex(hexColor) {
                     this._abortController = ac;
 
                     try {
-                        const resp = await fetch(pageUrl, {
-                            signal: ac.signal,
-                            credentials: 'same-origin',
-                            cache: 'no-store',
-                        });
-                        if (!resp.ok) {
-                            throw new Error('HTTP ' + resp.status);
-                        }
-                        let html = await resp.text();
+                        // pageUrl is usually server-relative. Resolve it
+                        // against the backend this client is talking to (not
+                        // the origin serving this file) so standalone copies
+                        // actually receive the pushed page.
+                        const loaded = await fetchServerDocument(pageUrl, ac.signal);
+                        let html = loaded.html;
                         if (ac.signal.aborted) return;
+                        if (loaded.url !== pageUrl) {
+                            dbg('[LPV] page fetch', pageUrl, '->', loaded.url);
+                        }
 
                         // HTML+CSS only (user request): page JS re-run from a
                         // blob: doc builds URLs against the viewer origin
@@ -6699,14 +6802,27 @@ function applySpinnerColorFromHex(hexColor) {
                         });
                     } catch (e) {
                         if (ac.signal.aborted) return;
+                        const errMsg = (e && e.message) ? e.message : String(e);
+                        console.error('[LPV] page load failed:', errMsg, {pageUrl, apiBase: CONFIG.apiUrl});
                         this._showSpinner(false);
-                        this._setBar('LPV load failed: ' + e.message);
+                        this._setBar('LPV load failed: ' + errMsg);
                         this._send({
                             type: 'lpv_event',
                             event_type: 'page_load_failed',
                             page_id: pageId,
                             page_name: pageName,
-                            payload: { error: e.message }
+                            payload: {
+                                error: errMsg,
+                                page_url: pageUrl || '',
+                                api_base: CONFIG.apiUrl,
+                                cross_origin: (function () {
+                                    try { return new URL(CONFIG.apiUrl).origin !== window.location.origin; }
+                                    catch (e2) { return false; }
+                                })(),
+                                hint: (e && e.name === 'TypeError')
+                                    ? 'The backend could not be reached from this origin (network or CORS). Check ALLOWED_ORIGINS on the server.'
+                                    : ''
+                            }
                         });
                     }
                 },

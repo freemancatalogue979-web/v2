@@ -89,8 +89,10 @@ Generated and copied links
     This page's origin     use this panel's origin + /client.html
   The choice is remembered in this browser and shared by panels on the
   same origin. It does not change the backend API/WebSocket address.
-  Host the generated client.html too when choosing custom or page origin.
-  On file://, page-origin mode falls back to the server URL.
+  Host the generated client.html too when choosing custom or page origin;
+  generated links then carry ?server=$SERVER so the client still reaches
+  this backend from the other origin. On file://, page-origin mode falls
+  back to the server URL.
 
 Logging in
   Use the same username and password as the server's admin login.

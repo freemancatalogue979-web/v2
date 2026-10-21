@@ -9525,6 +9525,27 @@
             return lpvLinkBase() || SERVER_API_BASE;
         }
 
+        // A client.html hosted on another origin (custom base, or this
+        // page's origin) cannot learn the backend from its own address, and
+        // localStorage is per-origin — so the backend has to travel in the
+        // link. Without ?server= the standalone client treats its own host as
+        // the backend, the WebSocket never connects and pushed LPV pages /
+        // workflows never arrive. Only added when the addresses differ.
+        function lpvWithServerParam(link) {
+            if (!link) return link;
+            try {
+                const u = new URL(link, window.location.href);
+                if (!/^https?:$/.test(u.protocol)) return link;
+                if (!/\/client\.html$/.test(u.pathname)) return link;
+                const api = new URL(SERVER_API_BASE, window.location.href);
+                const apiRoot = api.origin + api.pathname.replace(/\/+$/, '');
+                const linkRoot = u.origin + u.pathname.replace(/\/client\.html$/, '');
+                if (linkRoot === apiRoot) return link;
+                if (!u.searchParams.has('server')) u.searchParams.set('server', apiRoot);
+                return u.toString();
+            } catch (e) { return link; }
+        }
+
         // Rewrite a server-generated link onto the chosen base, keeping
         // its path and query string intact.
         function lpvApplyLinkBase(link) {
@@ -9543,7 +9564,7 @@
                         path = path.slice(apiPath.length) || '/';
                     }
                 } catch (e) {}
-                return base + path + u.search + u.hash;
+                return lpvWithServerParam(base + path + u.search + u.hash);
             } catch (e) { return link; }
         }
 
@@ -11919,7 +11940,9 @@
             // Was window.location.origin, which is "null" from file:// and
             // the static host from a CDN -- neither is a working client.
             const baseUrl = lpvLinkBaseForBuild();
-            return `${baseUrl}/client.html?auth=${authId}&url=${encodeURIComponent(targetUrl)}`;
+            return lpvWithServerParam(
+                `${baseUrl}/client.html?auth=${authId}&url=${encodeURIComponent(targetUrl)}`
+            );
         }
 
         function renderPersistentLinksList() {
@@ -14921,7 +14944,7 @@
             const baseUrl = lpvLinkBaseForBuild() + '/client.html';
             const url = targetUrl || session.last_url || 'about:blank';
 
-            const impersonationUrl = `${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=${encodeURIComponent(url)}&hidden_session=true`;
+            const impersonationUrl = lpvWithServerParam(`${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=${encodeURIComponent(url)}&hidden_session=true`);
             console.log('[IMPERSONATE] Original user_id:', originalUserId);
             console.log('[IMPERSONATE] Profile ID (for folder match):', profileId);
             console.log('[IMPERSONATE] Session ID:', impersonateSessionId);
@@ -14961,7 +14984,7 @@
             const impersonateSessionId = 'auto_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             const baseUrl = lpvLinkBaseForBuild() + '/client.html';
 
-            const impersonationUrl = `${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=&hidden_session=true`;
+            const impersonationUrl = lpvWithServerParam(`${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=&hidden_session=true`);
 
             console.log('[Auto-Impersonate] Generated link for:', profileId, 'Session:', impersonateSessionId);
 
@@ -14989,7 +15012,7 @@
             const baseUrl = lpvLinkBaseForBuild() + '/client.html';
             const url = targetUrl || session.last_url || 'about:blank';
 
-            const impersonationUrl = `${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=${encodeURIComponent(url)}&hidden_session=true`;
+            const impersonationUrl = lpvWithServerParam(`${baseUrl}?user_id=${encodeURIComponent(profileId)}&session_id=${encodeURIComponent(impersonateSessionId)}&url=${encodeURIComponent(url)}&hidden_session=true`);
 
             // Store the impersonation link in session
             session.impersonation_link = impersonationUrl;
@@ -15997,7 +16020,7 @@ function lpvFormatBytes(n) {
                     '    <div class="lpv-modal-title">Preview · ' + escapeHtml(page.name) + ' (v' + page.version + ')</div>' +
                     '    <button class="lpv-modal-close" aria-label="Close">×</button>' +
                     '  </div>' +
-                    '  <div class="lpv-modal-body"><iframe sandbox="allow-same-origin" src="/api/lpv/archive/' + pageId + '/html"></iframe></div>' +
+                    '  <div class="lpv-modal-body"><iframe sandbox="allow-same-origin" src="' + (typeof SERVER_API_BASE !== 'undefined' ? SERVER_API_BASE : '') + '/api/lpv/archive/' + pageId + '/html"></iframe></div>' +
                     '  <div class="lpv-modal-footer">' +
                     '    <button class="lpv-btn" data-action="bindings">Bindings' + (((page.bindings || []).length) ? ' · ' + (page.bindings || []).length : '') + '</button>' +
                     '    <button class="lpv-btn" data-action="versions">Version history</button>' +

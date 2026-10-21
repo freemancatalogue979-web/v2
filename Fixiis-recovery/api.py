@@ -17,7 +17,7 @@ import stat
 import sys
 import base64
 from datetime import datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Query, BackgroundTasks
@@ -1862,7 +1862,20 @@ def _lpv_page_url(page_id: str) -> str:
                     "simplify-hospitality.it.com",
                 }
                 if host_lower.startswith("http://") or host_lower.startswith("https://"):
-                    parsed = host_lower
+                    # server_domain/public_ip may be configured as a full URL.
+                    # Previously this branch did nothing, so a correctly
+                    # configured absolute domain still produced a relative
+                    # URL — which breaks any client.html hosted away from the
+                    # backend (the page fetch went to the static host).
+                    parsed_url = urlsplit(host)
+                    host_only = (parsed_url.hostname or "").lower()
+                    if (parsed_url.scheme in ("http", "https") and parsed_url.netloc
+                            and host_only not in placeholder_hosts):
+                        prefix = parsed_url.path.rstrip("/")
+                        return (
+                            f"{parsed_url.scheme}://{parsed_url.netloc}"
+                            f"{prefix}/api/lpv/archive/{page_id}/html"
+                        )
                 elif host_lower not in placeholder_hosts and not host_lower.startswith("*"):
                     return f"{scheme}://{host}/api/lpv/archive/{page_id}/html"
     except Exception:

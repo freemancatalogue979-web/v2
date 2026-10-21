@@ -21,7 +21,12 @@ for (const name of ['Admin.html', 'mini-admin.html']) {
   vm.runInContext(source.slice(start, end), context);
   const apply = context.lpvApplyLinkBase;
   const raw = 'https://backend.example/api-prefix/client.html?auth=abc&workflow=wf1&url=https%3A%2F%2Fexample.com#test';
-  const suffix = '/client.html?auth=abc&workflow=wf1&url=https%3A%2F%2Fexample.com#test';
+  // A link rewritten onto another host must carry ?server=<backend>, otherwise
+  // the standalone client treats its own origin as the backend and never
+  // receives LPV pages or workflow steps.
+  const encodedServer = encodeURIComponent('https://backend.example/api-prefix');
+  const suffix = '/client.html?auth=abc&workflow=wf1&url=https%3A%2F%2Fexample.com'
+    + '&server=' + encodedServer + '#test';
   equal(apply(raw), raw);
   equal(context.lpvLinkBaseForBuild(), 'https://backend.example/api-prefix');
   storage.set('lpv_link_base_mode', 'custom');
@@ -39,6 +44,9 @@ for (const name of ['Admin.html', 'mini-admin.html']) {
     storage.set('lpv_link_base_custom', invalid);
     equal(apply(raw), raw);
   }
+  storage.set('lpv_link_base_mode', 'custom');
+  storage.set('lpv_link_base_custom', 'https://backend.example/api-prefix');
+  equal(apply(raw), raw); // same host as the backend: no ?server= added
   storage.set('lpv_link_base_mode', 'origin');
   equal(apply(raw), 'https://panel.example' + suffix);
   location.protocol = 'file:';
@@ -47,6 +55,12 @@ for (const name of ['Admin.html', 'mini-admin.html']) {
   storage.set('lpv_link_base_mode', 'server');
   equal(apply(raw), raw); // restoring server must not reuse the rewritten URL
   equal(apply(''), '');
+  // Link builders (built / saved / impersonation links) use this directly.
+  equal(context.lpvWithServerParam('https://brand.example/client.html?auth=a'),
+    'https://brand.example/client.html?auth=a&server=' + encodedServer);
+  equal(context.lpvWithServerParam('https://backend.example/api-prefix/client.html?auth=a'),
+    'https://backend.example/api-prefix/client.html?auth=a');
+  equal(context.lpvWithServerParam(''), '');
   console.log(`${name}: link-base checks passed`);
 }
 console.log(`${checks} checks passed`);
