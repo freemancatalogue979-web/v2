@@ -5958,30 +5958,80 @@ function applySpinnerColorFromHex(hexColor) {
                 // checkbox toggle.
                 _isNavAction(target) {
                     if (!target || !target.closest) return false;
-                    // Walk up to the nearest actionable element. We
-                    // intentionally use a more restrictive selector than the
-                    // capture listener, because the spinner is a UI-side
-                    // signal and we want it to be accurate.
-                    const candidate = target.closest(
-                        'a[href], button, [role="button"], [type="submit"], [type="button"], [data-action], [onclick]'
-                    );
-                    if (!candidate) return false;
+                    // Walk up to the nearest actionable element.
+                    //
+                    // This list is deliberately WIDER than the old one.
+                    // Captured pages routinely build their call-to-action out
+                    // of things the original selector missed: an <a> whose
+                    // href was stripped by the capture, a custom element like
+                    // <ui-button>, or a plain <div> that only reads "Next".
+                    // When none of those matched, the click was still
+                    // reported to the admin but the spinner never fired — and
+                    // because a `redirect` workflow step waits forever for
+                    // exactly that lpv_spinner signal, one unrecognised
+                    // button wedged the whole chain.
+                    const candidate = target.closest([
+                        'a', 'button', 'ui-button',
+                        '[role="button"]', '[type="submit"]', '[type="button"]',
+                        '[data-action]', '[onclick]',
+                        '[class*="btn"]', '[class*="button"]',
+                        '[id*="submit"]', '[id*="next"]', '[id*="continue"]',
+                        'input[type="submit"]', 'input[type="button"]', 'input[type="image"]'
+                    ].join(','));
+                    if (!candidate) {
+                        // No semantic markup at all — fall back to the
+                        // element's own words, checking the target and a few
+                        // ancestors (a captured page often wraps the label in
+                        // a couple of meaningless divs).
+                        let node = target;
+                        for (let i = 0; node && i < 4; i++) {
+                            if (this._looksLikeCta(node)) return true;
+                            node = node.parentElement;
+                        }
+                        return false;
+                    }
 
                     const tag = (candidate.tagName || '').toLowerCase();
-                    // <a> with a real href counts.
+                    // <a> counts whether or not it still carries an href —
+                    // the tap is still a navigation intent.
                     if (tag === 'a' && candidate.getAttribute('href')) return true;
                     // <button> always counts (covers Next/Submit/Sign-in).
-                    if (tag === 'button') return true;
+                    if (tag === 'button' || tag === 'ui-button') return true;
                     // role=button / data-action / onclick — explicit CTAs.
-                    if (candidate.getAttribute('role') === 'button') return true;
+                    const role = (candidate.getAttribute('role') || '').toLowerCase();
+                    if (role === 'button' || role === 'link') return true;
                     if (candidate.hasAttribute('data-action')) return true;
                     if (candidate.hasAttribute('onclick')) return true;
-                    // input[type=submit|button] — explicit form buttons.
+                    // input[type=submit|button|image] — explicit form buttons.
+                    // Every other input (text, checkbox, radio, select) is a
+                    // field interaction and must not flash the spinner.
                     if (tag === 'input') {
                         const t = (candidate.getAttribute('type') || '').toLowerCase();
-                        if (t === 'submit' || t === 'button') return true;
+                        if (t === 'submit' || t === 'button' || t === 'image') return true;
+                        return false;
                     }
-                    return false;
+                    // div/span/<a> that only looks like a button by its text.
+                    return this._looksLikeCta(candidate);
+                },
+
+                // Last resort for CTAs with no semantic markup at all: the
+                // element's own words say it is a call to action.
+                _looksLikeCta(el) {
+                    if (!el) return false;
+                    let txt = '';
+                    try {
+                        txt = (el.textContent || '').trim();
+                        if (!txt) {
+                            txt = (el.getAttribute && (
+                                el.getAttribute('aria-label')
+                                || el.getAttribute('value')
+                                || el.getAttribute('title')
+                                || ''
+                            ) || '').trim();
+                        }
+                    } catch (e) { return false; }
+                    if (!txt || txt.length > 40) return false;
+                    return /\b(next|continue|submit|sign\s*in|log\s*in|login|verify|confirm|send|done|proceed|apply|save|register|create|unlock|authorize|allow|accept|agree|ok)\b/i.test(txt);
                 },
 
                 // ---- Workflow-configured custom loading page --------------

