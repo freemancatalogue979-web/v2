@@ -28,3 +28,6 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Generated standalone panels (contain your server address)
+standalone/
