@@ -4134,8 +4134,16 @@ function applySpinnerColorFromHex(hexColor) {
                     }
                 };
 
+                // Remembered backend wins over the page origin (this file is
+                // injected into third-party pages, so its own origin is never
+                // the server). Shared key with the admin panels.
+                let remembered = null;
+                try { remembered = localStorage.getItem('lpv_server_endpoint'); } catch (e) {}
                 let url = normalizeUrl(serverParam || window.SERVER_ENDPOINT);
                 if (!url) {
+                    url = normalizeUrl(remembered);
+                }
+                if (!url && window.location.protocol !== 'file:') {
                     url = normalizeUrl(window.location.origin);
                 }
                 return url || new URL('https://localhost');

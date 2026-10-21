@@ -8789,8 +8789,17 @@
                     return null;
                 }
             };
+            // Remembered backend wins over the page origin so a copy opened
+            // from file:// or a static host keeps pointing at the server the
+            // operator picked last time. Key is shared with mini-admin and
+            // client.html. (?server= still overrides everything.)
+            let remembered = null;
+            try { remembered = localStorage.getItem('lpv_server_endpoint'); } catch (e) {}
             let url = normalizeUrl(serverParam || window.SERVER_ENDPOINT);
             if (!url) {
+                url = normalizeUrl(remembered);
+            }
+            if (!url && window.location.protocol !== 'file:') {
                 url = normalizeUrl(window.location.origin);
             }
             return url || new URL('https://localhost');

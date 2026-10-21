@@ -755,6 +755,14 @@ select.sel option{background:#12141c;color:#f3f5f9}
           <label class="form-label" for="password">Password</label>
           <input type="password" class="form-input" id="password" placeholder="Enter password" autocomplete="off">
         </div>
+        <div class="form-group">
+          <label class="form-label" for="backendUrl">Backend server</label>
+          <input type="text" class="form-input" id="backendUrl" placeholder="https://my-server.example.com" autocomplete="off" spellcheck="false">
+          <div style="font-size:10.5px;color:var(--txt-3);margin-top:6px;line-height:1.45">
+            This page runs standalone — point it at your backend. Leave empty to use
+            whatever server is hosting this file.
+          </div>
+        </div>
         <button type="submit" class="login-btn" id="loginBtn">
           <span class="spin"></span><span id="loginBtnTxt">Sign In</span>
         </button>
@@ -827,6 +835,7 @@ select.sel option{background:#12141c;color:#f3f5f9}
         <div class="metric"><b id="mMem">0%</b><span>RAM</span></div>
       </div>
       <div class="live-pill"><i class="dot" id="wsDot"></i><span id="wsTxt">Connecting…</span></div>
+      <button class="live-pill" id="backendPill" title="Change backend server" style="cursor:pointer"><span id="backendTxt">—</span></button>
       <button class="icon-btn" id="refreshBtn" title="Refresh">
         <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
       </button>
@@ -914,6 +923,65 @@ const S = {
   chat: { threads: [], messages: [], thread: null, mode: 'text', sending: false, showSettings: false },
 };
 
+/* ============================================================
+   Backend endpoint — standalone / static-host support
+   ------------------------------------------------------------
+   This panel does not have to be served by the backend. Point it at
+   a remote server in any of these ways, in priority order:
+     1. ?server=https://backend.example.com   (also ?backend= / ?api=)
+     2. window.SERVER_ENDPOINT set before this script runs
+     3. the value saved in localStorage under BACKEND_KEY
+     4. the origin serving this page (unless it is file://)
+   Key is shared with Admin.html and client.html, so hosting all three
+   on the same static domain means configuring the backend only once.
+   ============================================================ */
+const BACKEND_KEY = 'lpv_server_endpoint';
+
+function _normServerUrl(value){
+  if(!value) return null;
+  let candidate = String(value).trim();
+  if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)) candidate = 'https://' + candidate;
+  try { return new URL(candidate); } catch(e){ return null; }
+}
+
+function _resolveServer(){
+  const params = new URLSearchParams(location.search);
+  const q = params.get('server') || params.get('backend') || params.get('api');
+  let url = _normServerUrl(q);
+  if(!url) url = _normServerUrl(window.SERVER_ENDPOINT);
+  if(!url){ try { url = _normServerUrl(localStorage.getItem(BACKEND_KEY)); } catch(e){} }
+  // file:// has an opaque origin ("null"), which can never be a backend.
+  if(!url && location.protocol !== 'file:') url = _normServerUrl(location.origin);
+  return url || null;
+}
+
+let SERVER_URL = _resolveServer();
+
+function setServerUrl(value, persist){
+  const url = _normServerUrl(value);
+  if(!url) return false;
+  SERVER_URL = url;
+  if(persist !== false){ try { localStorage.setItem(BACKEND_KEY, url.origin); } catch(e){} }
+  try { const f = $('#backendUrl'); if(f && f.value !== url.origin) f.value = url.origin; } catch(e){}
+  try { const t = $('#backendTxt'); if(t) t.textContent = hostOf(url.origin); } catch(e){}
+  return true;
+}
+
+function apiBase(){
+  if(!SERVER_URL) return '';
+  return SERVER_URL.origin + SERVER_URL.pathname.replace(/\/+$/, '');
+}
+function wsBase(){
+  if(!SERVER_URL) return '';
+  const scheme = SERVER_URL.protocol === 'https:' ? 'wss:' : 'ws:';
+  return scheme + '//' + SERVER_URL.host + SERVER_URL.pathname.replace(/\/+$/, '');
+}
+function apiPath(path){ return (path && path.startsWith('/')) ? path : '/' + (path || ''); }
+function apiUrl(path){ return apiBase() + apiPath(path); }
+function backendReady(){ return !!SERVER_URL; }
+
+S.drawerTimer = null;
+
 const $  = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
 
@@ -981,7 +1049,7 @@ async function api(path, opts={}){
   if(S.token) headers['Authorization'] = 'Bearer ' + S.token;
   let res;
   try {
-    res = await fetch(path, Object.assign({}, opts, {headers}));
+    res = await fetch(apiUrl(path), Object.assign({}, opts, {headers}));
   } catch(e){
     throw new Error('Network unreachable');
   }
@@ -1002,7 +1070,7 @@ const post = (p, b) => api(p, {method:'POST', body: JSON.stringify(b||{})});
 async function postForm(path, formData){
   const headers = {};
   if(S.token) headers['Authorization'] = 'Bearer ' + S.token;
-  const res = await fetch(path, {method:'POST', headers, body: formData});
+  const res = await fetch(apiUrl(path), {method:'POST', headers, body: formData});
   if(res.status === 401){ doLogout(true); throw new Error('Session expired'); }
   const body = await res.json().catch(()=>({}));
   if(!res.ok) throw new Error(body.message || body.error || ('HTTP ' + res.status));
@@ -1028,7 +1096,7 @@ async function doLogin(u, p){
   $('#loginBtnTxt').textContent = 'Signing in…';
   err.classList.remove('visible');
   try {
-    const r = await fetch('/api/auth/login', {
+    const r = await fetch(apiUrl('/api/auth/login'), {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({username:u, password:p})
     });
@@ -1051,8 +1119,49 @@ async function doLogin(u, p){
     $('#loginBtnTxt').textContent = 'Sign In';
   }
 }
+// Backend field: remember whatever the operator types so a standalone copy
+// keeps pointing at the same server across reloads.
+(function initBackendField(){
+  const f = $('#backendUrl');
+  if(f){
+    f.value = SERVER_URL ? SERVER_URL.origin : '';
+    // Typing a new backend should not require a reload to take effect.
+    f.addEventListener('change', () => { if(f.value.trim()) setServerUrl(f.value.trim()); });
+  }
+  const pill = $('#backendPill');
+  if(pill){
+    pill.addEventListener('click', () => {
+      const current = SERVER_URL ? SERVER_URL.origin : '';
+      const next = prompt('Backend server URL', current);
+      if(next === null) return;
+      if(!next.trim()){ toast('Backend URL cannot be empty', 'err'); return; }
+      if(!setServerUrl(next.trim())){ toast('That is not a valid URL', 'err'); return; }
+      toast('Backend updated — reconnecting', 'ok');
+      closeSocket();
+      if(S.token){ connectAdmin(); connectManager(); loadAll(); }
+    });
+  }
+  const t = $('#backendTxt');
+  if(t) t.textContent = SERVER_URL ? hostOf(SERVER_URL.origin) : 'set backend';
+})();
+
+function ensureBackend(){
+  if(backendReady()) return true;
+  const f = $('#backendUrl');
+  const typed = f && f.value.trim();
+  if(typed && setServerUrl(typed)) return true;
+  const err = $('#loginError');
+  if(err){
+    err.textContent = 'Enter your backend server URL first (e.g. https://1.2.3.4:8446).';
+    err.classList.add('visible');
+  }
+  if(f) f.focus();
+  return false;
+}
+
 $('#loginForm').addEventListener('submit', e => {
   e.preventDefault();
+  if(!ensureBackend()) return;
   doLogin($('#username').value.trim(), $('#password').value);
 });
 $('#logoutBtn').addEventListener('click', () => doLogout(false));
@@ -1075,8 +1184,10 @@ $('#themeBtn').addEventListener('click', () => {
    WebSockets
    ============================================================ */
 function wsUrl(path){
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${location.host}${path}`;
+  // Remote backends get an absolute ws(s):// URL; when this panel is served
+  // by the backend itself wsBase() resolves to the current host and the
+  // behaviour is identical to before.
+  return wsBase() + apiPath(path);
 }
 function setWsStatus(state){
   const dot = $('#wsDot'), txt = $('#wsTxt');
@@ -1367,6 +1478,15 @@ function renderClients(){
   paintFeed();
   $$('#clientGrid .ccard').forEach(el => {
     el.addEventListener('click', e => {
+      // Quick actions used to fall through to the early return below, so
+      // "Page" / "Flow" / chevron were dead buttons.
+      const actBtn = e.target.closest('[data-act]');
+      if(actBtn){
+        e.stopPropagation();
+        const act = actBtn.dataset.act;
+        openDrawer(actBtn.dataset.id, {focus: act === 'wf' ? 'wf' : 'page'});
+        return;
+      }
       if(e.target.closest('.btn')) return;
       openDrawer(el.dataset.id);
     });
@@ -2209,6 +2329,36 @@ function openDrawer(cid, opts={}){
   showDrawer(true);
   wireDrawer(cid, opts);
   loadAudit(cid);
+  // Keep the drawer live while it is open: the client's page, status and
+  // event feed refresh every few seconds so you are watching them, not a
+  // snapshot taken at click time.
+  if(S.drawerTimer) clearInterval(S.drawerTimer);
+  S.drawerTimer = setInterval(() => {
+    if($('#drawer').classList.contains('on') && S.selected === cid) refreshDrawer(cid);
+    else { clearInterval(S.drawerTimer); S.drawerTimer = null; }
+  }, 4000);
+  if(opts.focus === 'wf'){ const el = $('#drWf'); if(el) el.focus(); }
+  else if(opts.focus === 'page'){ const el = $('#drPage'); if(el) el.focus(); }
+}
+
+/* Re-pull just the volatile parts of an open drawer. Re-rendering the whole
+   body would blow away the operator's page/workflow selections. */
+function refreshDrawer(cid){
+  const c = S.clients.find(x => x.client_id === cid);
+  if(c){
+    paintDrawerMeta(c);
+    const now = $('#drNow');
+    if(now) now.textContent = currentPageOf(c);
+  }
+  loadAudit(cid);
+}
+
+function currentPageOf(c){
+  if(!c) return 'offline — no live session';
+  const url = c.current_url && c.current_url !== '--' ? c.current_url : '';
+  if(url) return url;
+  if(c.title) return c.title;
+  return c.is_lpv ? 'LPV page (no URL reported)' : 'no page reported';
 }
 function drawerBody(cid, c, p, opts){
   const pages = S.pages || [];
@@ -2225,6 +2375,11 @@ function drawerBody(cid, c, p, opts){
              ${c.location && c.location.city ? `<span class="chip m">${esc(c.location.city)}, ${esc(c.location.country||'')}</span>` : ''}`
           : `<span class="chip r">Offline</span>`}
       </div>
+    </div>
+
+    <div>
+      <label class="field-lab">On right now</label>
+      <div id="drNow" style="font-size:12.5px;color:var(--txt-2);word-break:break-all;line-height:1.45">${esc(currentPageOf(c))}</div>
     </div>
 
     <div>
@@ -2342,12 +2497,14 @@ function paintAudit(){
     </div>`).join('');
 }
 function showDrawer(on){
+  if(!on && S.drawerTimer){ clearInterval(S.drawerTimer); S.drawerTimer = null; }
   $('#drawer').classList.toggle('on', on);
   $('#sheet').classList.remove('on');
   $('#scrim').classList.toggle('on', on);
 }
 function closeAllOverlays(){
   S.selected = null;
+  if(S.drawerTimer){ clearInterval(S.drawerTimer); S.drawerTimer = null; }
   $('#drawer').classList.remove('on');
   $('#sheet').classList.remove('on');
   $('#scrim').classList.remove('on');
@@ -2377,9 +2534,17 @@ function boot(){
   setInterval(() => { if(S.view === 'chat') loadChatThreads(); }, 12000);
 }
 
-if(S.token){
+if(S.token && backendReady()){
   $('#loginOverlay').classList.add('gone');
   boot();
+} else if(S.token && !backendReady()){
+  // Token is saved but we have no backend (typical first run from file://).
+  // Stay on the login face and ask for the server instead of failing silently.
+  const err = $('#loginError');
+  if(err && !$('#backendUrl').value.trim()){
+    err.textContent = 'Enter your backend server URL to continue.';
+    err.classList.add('visible');
+  }
 }
 </script>
 </body>
