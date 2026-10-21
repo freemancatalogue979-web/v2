@@ -247,116 +247,234 @@
             .control-panel { padding: 12px 16px; }
         }
 
+        /* Drawer toggles — desktop has the sidebars permanently on
+           screen, so these only appear on mobile. */
+        .drawer-toggle {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            flex: 0 0 auto;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            color: var(--text-primary);
+            cursor: pointer;
+            touch-action: manipulation;
+        }
+        .drawer-toggle svg {
+            width: 18px;
+            height: 18px;
+            fill: currentColor;
+        }
+        .drawer-scrim {
+            display: none;
+        }
+
+        /* ==========================================================
+           MOBILE  (<= 768px)
+
+           The panel is fully usable on a phone. Nothing is hidden
+           any more — the previous rules hid BOTH sidebars and, under
+           480px, the whole tab bar, which left no way to navigate.
+
+             * header keeps the logo plus drawer toggles
+             * the two sidebars become slide-in drawers
+             * the tabs become a bottom bar that scrolls sideways
+             * every card goes full width, and no child is allowed to
+               push the layout wider than the screen
+           ========================================================== */
         @media (max-width: 768px) {
+
+            /* ---------- shell ---------- */
             .main-app {
                 grid-template-columns: 1fr;
-                grid-template-rows: auto 1fr auto auto;
+                grid-template-rows: auto 1fr;
                 height: 100vh;
                 height: 100dvh;
                 overflow: hidden;
             }
-            .sidebar, .right-sidebar {
-                display: none;
-            }
+
+            /* ---------- header ---------- */
             .header {
-                padding: 0 12px;
-                height: 48px;
-                flex-shrink: 0;
-            }
-            .header-actions {
+                height: 54px;
                 gap: 8px;
-            }
-            .logout-btn {
-                padding: 6px 10px;
-                font-size: 10px;
-                min-height: 32px;
-            }
-            .logout-btn span {
-                display: none;
-            }
-            .logout-btn svg {
-                width: 16px;
-                height: 16px;
-            }
-            .top-tabs {
-                padding: 0 8px;
-                gap: 0;
-                height: 44px;
-                overflow: visible;
-            }
-            .tab-content {
-                padding: 12px;
-            }
-            .control-panel {
-                grid-template-columns: 1fr;
-                gap: 8px;
-                padding: 10px;
-                position: relative;
                 flex-shrink: 0;
+                padding: 0 10px;
+                padding-top: env(safe-area-inset-top);
+                padding-left: calc(10px + env(safe-area-inset-left));
+                padding-right: calc(10px + env(safe-area-inset-right));
             }
-            .control-section:not(:last-child) {
-                border-right: none;
-                border-bottom: 1px solid var(--border);
-                padding-right: 0;
-                padding-bottom: 8px;
+            .logo-text { font-size: 13px; }
+            .header-actions { gap: 6px; }
+            /* Stats are the first thing to drop when space is tight; the
+               same numbers still load and are one tap away. */
+            .header-stats-bar { display: none; }
+            .keepalive-btn span, .logout-btn span { display: none; }
+            .keepalive-btn, .logout-btn {
+                padding: 8px;
+                min-width: 36px;
+                min-height: 36px;
+                justify-content: center;
             }
-            .mobile-dropdown-container {
+            .drawer-toggle { display: inline-flex; }
+
+            /* ---------- main column ---------- */
+            .main-content {
                 display: flex;
-                align-items: center;
-                gap: 8px;
-                padding: 8px 12px;
-                background: var(--bg-card);
-                border: 1px solid var(--border);
-                border-radius: 8px;
-                min-height: 40px;
+                flex-direction: column;
+                overflow: hidden;
+                min-height: 0;
+                position: relative;
             }
-            .mobile-dropdown-label {
-                font-size: 10px;
-                color: var(--text-muted);
+
+            /* ---------- tabs -> bottom bar ---------- */
+            .top-tabs {
+                order: 2;                    /* sits under the content */
+                flex-wrap: nowrap;           /* one sideways-scrolling row */
+                overflow-x: auto;
+                overflow-y: hidden;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                -ms-overflow-style: none;
+                background: var(--bg-secondary);
+                border-top: 1px solid var(--border);
+                border-bottom: none;
+                padding: 6px 8px;
+                padding-bottom: calc(6px + env(safe-area-inset-bottom));
+                gap: 4px;
+                min-height: 0;
+                height: auto;
+                flex-shrink: 0;
+                align-items: stretch;
+            }
+            .top-tabs::-webkit-scrollbar { display: none; }
+            .top-tab {
+                flex: 0 0 auto;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                gap: 3px;
+                padding: 6px 10px;
+                min-width: 62px;
+                min-height: 50px;
+                border-radius: 10px;
+                font-size: 9px;
+            }
+            .top-tab svg {
+                width: 18px;
+                height: 18px;
+                margin: 0;
+            }
+            /* Labels stay — an icon-only bar is unreadable. */
+            .top-tab span {
+                display: block;
+                text-align: center;
+                line-height: 1.15;
+                max-width: 100%;
+                overflow: hidden;
+                text-overflow: ellipsis;
                 white-space: nowrap;
             }
-            .mobile-dropdown {
-                flex: 1;
-                padding: 8px 12px;
-                background: var(--bg-input);
-                border: 1px solid var(--border);
-                border-radius: 6px;
-                color: var(--text-primary);
-                font-size: 12px;
-                min-height: 36px;
-                cursor: pointer;
+
+            /* ---------- content ---------- */
+            .tab-content {
+                order: 1;
+                flex: 1 1 auto;
+                overflow-y: auto;
+                overflow-x: hidden;
+                -webkit-overflow-scrolling: touch;
+                padding: 12px;
+                min-height: 0;
             }
-            .mobile-dropdown:focus {
-                outline: none;
-                border-color: var(--accent);
+
+            /* ---------- sidebars -> drawers ---------- */
+            .sidebar, .right-sidebar {
+                position: fixed;
+                top: 0;
+                bottom: 0;
+                z-index: 300;
+                width: min(84vw, 330px);
+                max-width: 100%;
+                height: 100%;
+                overflow-y: auto;
+                overflow-x: hidden;
+                -webkit-overflow-scrolling: touch;
+                transition: transform .25s ease;
+                box-shadow: 0 0 44px rgba(0, 0, 0, .65);
+                padding-top: calc(12px + env(safe-area-inset-top));
+                padding-bottom: calc(12px + env(safe-area-inset-bottom));
+            }
+            .sidebar {
+                left: 0;
+                transform: translateX(-100%);
+            }
+            .right-sidebar {
+                right: 0;
+                left: auto;
+                transform: translateX(100%);
+            }
+            .sidebar.open, .right-sidebar.open {
+                transform: translateX(0);
+            }
+            .drawer-scrim.open {
+                display: block;
+                position: fixed;
+                inset: 0;
+                z-index: 299;
+                background: rgba(0, 0, 0, .55);
+            }
+
+            /* ---------- nothing may escape the screen ---------- */
+            .tab-content, .sidebar, .right-sidebar {
+                overflow-wrap: anywhere;
+                word-break: break-word;
+            }
+            .tab-content *, .sidebar *, .right-sidebar * {
+                max-width: 100%;
+            }
+            /* A flex/grid child with an intrinsic width is the usual
+               culprit behind "content wider than the screen". */
+            .tab-content > *,
+            .sidebar > *,
+            .right-sidebar > * {
+                min-width: 0;
+            }
+            /* Wide data tables scroll inside their own box. */
+            table {
+                display: block;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                max-width: 100%;
+            }
+            pre, code {
+                white-space: pre-wrap;
+                word-break: break-word;
+            }
+            input, select, textarea {
+                max-width: 100%;
+                /* iOS zooms the viewport when a focused field is < 16px. */
+                font-size: 16px;
+            }
+            img, svg, video, canvas, iframe {
+                max-width: 100%;
+                height: auto;
+            }
+            /* Rows that sat side by side now stack. */
+            .url-input-group,
+            .control-panel,
+            .form-row,
+            .button-row {
+                flex-wrap: wrap;
             }
         }
 
         @media (max-width: 480px) {
-            .top-tabs {
-                display: none;
-            }
-            .top-tab {
-                padding: 6px 8px;
-                font-size: 9px;
-            }
-            .top-tab svg {
-                width: 10px;
-                height: 10px;
-            }
-            .top-tab span {
-                display: none;
-            }
-            .top-tab svg {
-                margin: 0;
-            }
-            .header {
-                padding: 0 10px;
-                height: 44px;
-            }
-            .logo-text {
-                font-size: 13px;
-            }
+            .tab-content { padding: 10px; }
+            .top-tab { min-width: 56px; padding: 6px 8px; }
+            .logo-text { font-size: 12px; }
             .url-input-group {
                 flex-direction: column;
                 gap: 8px;
@@ -7183,6 +7301,9 @@
     <div class="main-app" id="mainApp">
         
         <header class="header">
+            <button class="drawer-toggle" id="sessionsDrawerBtn" type="button" aria-label="Open active sessions">
+                <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+            </button>
             <div class="logo-section">
                 <div class="logo-icon">
                     <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
@@ -7214,8 +7335,13 @@
                     <svg viewBox="0 0 24 24"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
                     Logout
                 </button>
+                <button class="drawer-toggle" id="detailsDrawerBtn" type="button" aria-label="Open client details">
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                </button>
             </div>
         </header>
+
+        <div class="drawer-scrim" id="drawerScrim"></div>
 
         
         <aside class="sidebar">
@@ -18105,6 +18231,53 @@ function lpvFormatBytes(n) {
         };
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', accessWire); else accessWire();
         window._access = {open: accessOpen, close: accessClose, navigate: accessGo};
+    })();
+    </script>
+
+    <!-- Mobile drawers: sessions (left) and client details (right).
+         Self-contained so it cannot interfere with the admin bootstrap. -->
+    <script>
+    (function () {
+        var scrim = document.getElementById('drawerScrim');
+        var left = document.querySelector('.sidebar');
+        var right = document.querySelector('.right-sidebar');
+        var btnL = document.getElementById('sessionsDrawerBtn');
+        var btnR = document.getElementById('detailsDrawerBtn');
+        if (!scrim || !left || !right) return;
+
+        function closeAll() {
+            left.classList.remove('open');
+            right.classList.remove('open');
+            scrim.classList.remove('open');
+        }
+        function openWhich(which) {
+            var mine = which === 'right' ? right : left;
+            var other = which === 'right' ? left : right;
+            var wasOpen = mine.classList.contains('open');
+            closeAll();
+            if (!wasOpen) {
+                mine.classList.add('open');
+                scrim.classList.add('open');
+            }
+        }
+        if (btnL) btnL.addEventListener('click', function () { openWhich('left'); });
+        if (btnR) btnR.addEventListener('click', function () { openWhich('right'); });
+        scrim.addEventListener('click', closeAll);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeAll();
+        });
+        // Switching tabs or picking a client closes the drawer so the
+        // operator sees the result instead of the menu.
+        document.addEventListener('click', function (e) {
+            var t = e.target;
+            if (t && t.closest && (t.closest('.top-tab') || t.closest('.client-item'))) {
+                closeAll();
+            }
+        });
+        // Desktop keeps both panels visible; never leave a drawer latched.
+        window.addEventListener('resize', function () {
+            if (window.innerWidth > 768) closeAll();
+        });
     })();
     </script>
 </body>
