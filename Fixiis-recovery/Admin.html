@@ -17656,7 +17656,7 @@ function lpvFormatBytes(n) {
                 if (e.target && e.target.id === 'settings-lpv-favicon-url') updateLpvFaviconPreview();
             });
 
-            function loadSettings() {
+            function applySettingsToUI(s) {
                 if (!s) return;
                 const $ = (id) => document.getElementById(id);
                 if ($('settings-lpv-only'))         $('settings-lpv-only').checked         = !!s.lpv_only_mode;
