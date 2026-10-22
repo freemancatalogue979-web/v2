@@ -346,6 +346,48 @@ What you should know:
 
 ---
 
+## Editing an archive (re-uploading its HTML)
+
+A page is not frozen once it is in the archive. On its card press **✎** (or
+open **⋯ → Edit HTML**):
+
+* the editor starts from the **stored** HTML, not the rendered visitor copy,
+  so saving cannot bake bindings into the page;
+* **Choose file…** loads a local `.html` into the editor, or paste straight in;
+* **Save new version** keeps the page's id, name, bindings, click guard,
+  click actions and device pairing — only the file changes;
+* the outgoing HTML goes into **Version history**, so an edit is reversible
+  from the same card.
+
+Over HTTP: `GET /api/lpv/archive/<id>/source` (raw, admin only) and
+`PUT /api/lpv/archive/<id>/html` with `{"html": "..."}`.
+
+---
+
+## Click actions: "if they click this, take them there"
+
+A page can map a specific control to somewhere else. On the page card press
+**⚡** (or **⋯ → Actions**):
+
+| Field | Meaning |
+|---|---|
+| **Control** | what to watch, using the same rules as the click guard: `text:Sign in`, `.btn-next`, `#submit`, `a[href*="/go"]`, `button[type=submit]` |
+| **go to a page** | show another archived page (bindings, guard and its phone/desktop version all still apply) |
+| **open a link** | send the visitor to an external URL |
+
+A mapped control works **even on a locked page** — the mapping is the
+permission — and it is checked before the guard. Every click is recorded in
+the activity log as `page_action`.
+
+In the **workflow editor** the same idea is a step: **+ Action**. It arms the
+rule on whatever page the visitor is looking at when the chain reaches it,
+then either continues immediately (`wait 0`) or waits up to N seconds for the
+click before moving on — so the next step runs on the page the click opened.
+
+Over HTTP: `GET`/`PUT /api/lpv/pages/<id>/actions`.
+
+---
+
 ## Live chat bubble: on, off, and which device
 
 Settings → **Live chat bubble** (or mini panel → Pages → Advanced):
@@ -354,6 +396,14 @@ Settings → **Live chat bubble** (or mini panel → Pages → Advanced):
 |---|---|
 | **Show chat on live pages** | OFF removes the bubble for every visitor, on every page. ON brings it back. |
 | **Show it on** | `Both` (default), `Desktop only`, `Mobile only` |
+| **Bubble does** | `Open the chat` (default), or `Go to a page or link` |
+
+**Two modes.** In *chat* mode the bubble opens the conversation panel. In
+*redirect* mode the bubble is a shortcut: pressing it shows an archived page
+(through the normal push path, so bindings and guard still apply) or sends the
+visitor to a link — no conversation, no thread. The full set of bubble
+controls lives in **Live pages → Chat → Bubble settings**; the Settings tab
+keeps the on/off switch and the device choice.
 
 The device is the same one that picks a page's phone/desktop build — the
 device the visitor actually connected with, not the window size. Both
@@ -493,6 +543,9 @@ node tests/test_login_diagnostics.cjs     # a rejected sign-in says why
 node tests/test_mini_simple.cjs           # the phone panel stays four jobs
 node tests/test_bind_push.cjs             # page fields: saved once, asked at push
 node tests/test_chat_switch.cjs           # chat on/off + which device sees the bubble
+node tests/test_page_actions.cjs          # archive edit, click actions, action step
+node tests/test_page_actions_ui.cjs       # the action editor + chat modes (needs jsdom)
+python3 tests/test_page_actions.py     # replace HTML + action rules + action step
 python3 tests/test_chat.py             # the chat switch's decision table
 node tests/test_bind_ui.cjs               # the push dialogs (needs jsdom; skipped otherwise)
 python3 tests/test_page_bindings.py    # text / element / regex rewriting engine

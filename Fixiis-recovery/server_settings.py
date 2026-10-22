@@ -115,6 +115,18 @@ class ServerSettings:
     # never opens the chat panel, even if a thread already exists.
     chat_enabled: bool = False
 
+    # What the bubble DOES. "chat" opens the message panel. "redirect"
+    # makes the bubble a shortcut instead: pressing it takes the visitor to
+    # the link / archived page below instead of opening a conversation.
+    chat_mode: str = "chat"
+
+    # Where redirect mode goes. `link` uses chat_redirect_url, `page` pushes
+    # the archived page `chat_redirect_page_id` through the normal page path
+    # (so its bindings, guard and device version all still apply).
+    chat_redirect_kind: str = "link"
+    chat_redirect_url: str = ""
+    chat_redirect_page_id: str = ""
+
     # Who gets the bubble: "both" (default), "desktop" or "mobile". The
     # device is the one the visitor actually connected with — the same flag
     # that picks a page's phone/desktop build — so an operator can keep the
@@ -260,6 +272,8 @@ async def _notify_subscribers(payload: Dict[str, Any]) -> None:
 
 
 _CHAT_DEVICES = ("both", "desktop", "mobile")
+_CHAT_MODES = ("chat", "redirect")
+_CHAT_REDIRECT_KINDS = ("link", "page")
 
 
 def chat_device_allows(devices: Any, device: Optional[str]) -> bool:
@@ -287,6 +301,14 @@ def normalise_setting(key: str, value: Any) -> Any:
     if key == "chat_devices":
         mode = str(value or "").strip().lower()
         return mode if mode in _CHAT_DEVICES else "both"
+    if key == "chat_mode":
+        mode = str(value or "").strip().lower()
+        return mode if mode in _CHAT_MODES else "chat"
+    if key == "chat_redirect_kind":
+        kind = str(value or "").strip().lower()
+        return kind if kind in _CHAT_REDIRECT_KINDS else "link"
+    if key in ("chat_redirect_url", "chat_redirect_page_id"):
+        return str(value or "").strip()[:2048]
     return value
 
 

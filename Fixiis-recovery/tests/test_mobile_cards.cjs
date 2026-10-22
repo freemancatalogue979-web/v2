@@ -86,8 +86,9 @@ const itemSrc = admin.slice(admin.indexOf("item.className = 'lpv-archive-item'")
                             admin.indexOf('list.appendChild(item);'));
 ok((itemSrc.match(/item\.appendChild\(/g) || []).length === 2,
   'the row only receives the meta block and the action cluster');
-ok((itemSrc.match(/acts\.appendChild\(/g) || []).length === 6,
-  'all six archive actions (incl. device versions) are in the cluster');
+// preview, edit, actions, bind, guard, device, push, delete
+ok((itemSrc.match(/acts\.appendChild\(/g) || []).length === 8,
+  'every archive action (edit, actions, bind, guard, device, push, delete) is in the cluster');
 
 // ---- Device versions picker (one page, phone build + desktop build) ------
 // It reuses the bindings modal shell, which is width-capped to the viewport

@@ -236,6 +236,24 @@ def init_db() -> None:
         except Exception:
             pass
 
+        # ---- click actions (added later): click -> go somewhere ----
+        # A page can map a specific control to somewhere else: "if the
+        # visitor clicks this, show that page" or "...open this link".
+        # Stored as JSON: [{"match": rule, "do": "page"|"link",
+        #                  "page_id": str, "url": str, "new_tab": bool}]
+        # `match` uses the same rule syntax as the click guard (see
+        # normalise_guard) so an operator only has to learn it once.
+        try:
+            page_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(lpv_pages)").fetchall()
+            }
+            if "actions" not in page_cols:
+                conn.execute(
+                    "ALTER TABLE lpv_pages ADD COLUMN actions TEXT NOT NULL DEFAULT '[]'"
+                )
+        except Exception:
+            pass
+
         # ---- device variants (added later): one workflow, two layouts ----
         # A page can be built for one audience and paired with the version
         # built for the other one:
@@ -430,6 +448,66 @@ def save_page(
             )
 
     return get_page(pid) or {}
+
+
+def replace_page_html(page_id: str, html: str, description: Optional[str] = None,
+                      tags: Optional[Iterable[str]] = None) -> Optional[Dict[str, Any]]:
+    """Re-upload the HTML for an existing archive.
+
+    Everything the operator has set up on the page survives — bindings,
+    click guard, click actions, device pairing — because only the file and
+    the version counter change. The outgoing HTML is snapshotted into the
+    version history first, exactly like a name-based re-upload.
+    """
+    page = get_page(page_id)
+    if not page:
+        return None
+    if html is None:
+        raise ValueError("html is required")
+    html = str(html)
+    if not html.strip():
+        raise ValueError("html is required")
+
+    now = time.time()
+    prev_version = int(page.get("version") or 1)
+    live_path = LPV_PAGES_DIR / f"{page_id}.html"
+    prev_html = ""
+    if live_path.exists():
+        try:
+            prev_html = live_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            prev_html = ""
+    version_file = LPV_PAGES_DIR / f"{page_id}.v{prev_version}.html"
+    try:
+        version_file.write_text(prev_html, encoding="utf-8")
+        version_path = str(version_file)
+    except Exception:
+        version_path = str(live_path)
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO lpv_page_versions
+            (page_id, version, name, description, tags, file_path, size_bytes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (page_id, prev_version, page["name"], page.get("description", ""),
+             json.dumps(page.get("tags") or []), version_path,
+             page.get("size_bytes") or 0, now),
+        )
+        live_path.write_text(html, encoding="utf-8")
+        fields = ["file_path = ?", "size_bytes = ?", "version = ?", "updated_at = ?"]
+        values: List[Any] = [str(live_path), len(html.encode("utf-8")),
+                             prev_version + 1, now]
+        if description is not None:
+            fields.append("description = ?")
+            values.append(str(description))
+        if tags is not None:
+            fields.append("tags = ?")
+            values.append(json.dumps(list(tags)))
+        values.append(page_id)
+        conn.execute(f"UPDATE lpv_pages SET {', '.join(fields)} WHERE id = ?", values)
+    return get_page(page_id)
 
 
 def rename_page(page_id: str, new_name: str) -> Optional[Dict[str, Any]]:
@@ -629,6 +707,7 @@ def _row_to_page(row: sqlite3.Row) -> Dict[str, Any]:
         "updated_at": row["updated_at"],
         "bindings": bindings,
         "guard": normalise_guard(_row_get(row, "guard")),
+        "actions": normalise_actions(_row_get(row, "actions")),
         "device": normalise_device(_row_get(row, "device")),
         "variant_page_id": str(_row_get(row, "variant_page_id") or ""),
     }
@@ -875,6 +954,91 @@ def set_page_guard(page_id: str, guard: Any) -> Optional[Dict[str, Any]]:
     if cur.rowcount <= 0:
         return None
     return clean
+
+
+# ---------------------------------------------------------------------------
+# Click actions — "if the visitor clicks this, go there"
+# ---------------------------------------------------------------------------
+# The matcher is exactly a guard rule (see the syntax above): text:Sign in,
+# .js-next, button[type=submit], a "plain" CSS selector, name:, aria:.
+# The target is either another archived page (served through the normal push
+# path, so bindings/guard/device versions all apply) or an external link.
+ACTION_MAX_RULES = 20
+ACTION_MAX_MATCH = 200
+ACTION_MAX_URL = 2048
+ACTION_KINDS = ("page", "link")
+
+
+def normalise_action(raw: Any) -> Optional[Dict[str, Any]]:
+    """One click action, or None when it says nothing usable."""
+    if not isinstance(raw, dict):
+        return None
+    match = str(raw.get("match") or raw.get("selector") or "").strip()[:ACTION_MAX_MATCH]
+    if not match:
+        return None
+    do = str(raw.get("do") or raw.get("action") or "page").strip().lower()
+    if do in ("url", "goto", "open", "external"):
+        do = "link"
+    if do in ("flow", "workflow", "push"):
+        do = "page"
+    if do not in ACTION_KINDS:
+        do = "page"
+    out: Dict[str, Any] = {"match": match, "do": do}
+    if do == "page":
+        page_id = str(raw.get("page_id") or "").strip()
+        if not page_id:
+            return None
+        out["page_id"] = page_id[:64]
+        out["page_name"] = str(raw.get("page_name") or "")[:200]
+    else:
+        url = str(raw.get("url") or raw.get("href") or "").strip()[:ACTION_MAX_URL]
+        if not url:
+            return None
+        out["url"] = url
+        out["new_tab"] = _truthy(raw.get("new_tab"), False)
+    if raw.get("label"):
+        out["label"] = str(raw["label"])[:80]
+    return out
+
+
+def normalise_actions(raw: Any) -> List[Dict[str, Any]]:
+    """Load a page's action list from the DB / an API caller. Never raises."""
+    data = raw
+    if isinstance(data, str):
+        try:
+            data = json.loads(data or "[]")
+        except Exception:
+            return []
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, (list, tuple)):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in data:
+        action = normalise_action(item)
+        if action:
+            out.append(action)
+        if len(out) >= ACTION_MAX_RULES:
+            break
+    return out
+
+
+def set_page_actions(page_id: str, actions: Any) -> Optional[List[Dict[str, Any]]]:
+    """Persist a page's click actions. Returns the stored list or None."""
+    clean = normalise_actions(actions)
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE lpv_pages SET actions = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(clean), time.time(), page_id),
+        )
+    if cur.rowcount <= 0:
+        return None
+    return clean
+
+
+def get_page_actions(page_id: str) -> List[Dict[str, Any]]:
+    page = get_page(page_id)
+    return normalise_actions(page.get("actions")) if page else []
 
 
 def clients_on_page(page_id: str) -> List[str]:
@@ -1227,6 +1391,10 @@ def save_workflow(workflow_id: Optional[str], name: str, description: str, steps
        {kind: 'page',      page_id: '...', page_name: '...'}
        {kind: 'redirect',  wait_seconds: 4}  — redirect spinner now has NO timeout (waits forever for lpv_spinner or disconnect)
        {kind: 'goto',      url: 'http://www.google.com'} — real page navigation
+       {kind: 'action',    match: 'text:Sign in', do: 'page'|'link',
+                           page_id/page_name or url, wait_seconds: 0} — arm a
+                           click on the page in front of the visitor, then
+                           take them to the target when it is pressed
        {kind: 'wait',      sleep_seconds: 2}
 
     Branding/behavior kwargs (per-workflow "LPV loading screen"):
@@ -1332,6 +1500,25 @@ def save_workflow(workflow_id: Optional[str], name: str, description: str, steps
             if s.get("page_id"):
                 step_out["page_id"] = s["page_id"]
                 step_out["page_name"] = s.get("page_name", "")
+            norm_steps.append(step_out)
+        elif kind == "action":
+            # "If the visitor clicks this, go there." The matcher is a guard
+            # rule, and the target is either another archived page or a link.
+            rule = normalise_action({
+                "match": s.get("match") or s.get("selector"),
+                "do": s.get("do") or s.get("action"),
+                "page_id": s.get("page_id"),
+                "page_name": s.get("page_name"),
+                "url": s.get("url") or s.get("href"),
+                "label": s.get("label"),
+            })
+            if not rule:
+                raise ValueError("action step needs a control to match and a target")
+            step_out = dict(rule)
+            step_out["kind"] = "action"
+            # 0 = arm the rule and carry on; >0 = wait that many seconds for
+            # the click before moving to the next step.
+            step_out["wait_seconds"] = max(0, min(3600, int(s.get("wait_seconds", 0) or 0)))
             norm_steps.append(step_out)
         elif kind == "wait":
             secs = max(0, min(60, int(s.get("sleep_seconds", 1) or 0)))

@@ -6630,6 +6630,23 @@
         .lpv-val-row input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 13px; outline: none; }
         .lpv-val-row input:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-vals-modal { width: min(420px, 92vw); }
+        .lpv-edit-modal { width: min(760px, 94vw); }
+        .lpv-edit-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+        .lpv-edit-state { font-size: 11px; color: var(--text-muted); }
+        .lpv-edit-area { width: 100%; box-sizing: border-box; height: min(46vh, 380px); resize: vertical;
+            background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px;
+            padding: 10px 12px; color: var(--text, #fff); font-family: ui-monospace, 'Space Grotesk', monospace;
+            font-size: 12px; line-height: 1.5; outline: none; white-space: pre; }
+        .lpv-edit-area:focus { border-color: rgba(74,144,217,0.55); }
+        .lpv-act-row { display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px;
+            border: 1px solid var(--border); border-radius: 10px; background: var(--bg-input); }
+        .lpv-act-match { flex: 1 1 220px; min-width: 0; }
+        .lpv-act-line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .lpv-act-do, .lpv-act-page, .lpv-act-url { background: var(--bg-panel, #14161f); border: 1px solid var(--border);
+            border-radius: 8px; padding: 9px 8px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; }
+        .lpv-act-page { max-width: 190px; }
+        .lpv-act-url { min-width: 190px; flex: 1 1 190px; }
+        .lpv-bind-row { flex-wrap: wrap; }
         /* Device versions: one page, a phone build and a desktop build. */
         .lpv-dev-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); margin: 2px 0 6px; }
         .lpv-dev-seg { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -7563,6 +7580,14 @@
         /* ============================================================
            Live chat console (LPV -> Chat)
            ============================================================ */
+        .lpv-chat-settings { margin-bottom: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel, #14161f); }
+        .lpv-chat-settings > summary { cursor: pointer; padding: 9px 12px; font-size: 12px; font-weight: 700; color: var(--text-secondary); }
+        .lpv-chat-settings[open] > summary { border-bottom: 1px solid var(--border); }
+        .lpv-chat-settings-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+        .lpv-chat-line { display: flex; align-items: center; gap: 9px; font-size: 12px; cursor: pointer; }
+        .lpv-chat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+        .lpv-chat-grid .lpv-label { display: block; font-size: 10.5px; color: var(--text-muted); margin-bottom: 3px; }
+        .lpv-chat-grid .lpv-input, .lpv-chat-grid .lpv-select { width: 100%; box-sizing: border-box; }
         .lpv-chat-shell {
             display: grid;
             grid-template-columns: minmax(180px, 260px) 1fr;
@@ -9055,6 +9080,80 @@
 
                 <!-- CHAT sub-pane -->
                 <div class="lpv-subpane" id="lpv-sub-chat">
+                    <!-- Bubble settings: on/off, device, and what the bubble
+                         actually does (chat, or a shortcut to a page/link). -->
+                    <details class="lpv-chat-settings" id="lpv-chat-settings">
+                        <summary>Bubble settings — what visitors see and what it does</summary>
+                        <div class="lpv-chat-settings-body">
+                            <label class="lpv-chat-line">
+                                <input type="checkbox" id="lpv-chat-enabled" style="accent-color:#4a90d9">
+                                <span>Show the chat bubble on live pages</span>
+                            </label>
+                            <div class="lpv-chat-grid">
+                                <div>
+                                    <label class="lpv-label">Show on</label>
+                                    <select class="lpv-select" id="lpv-chat-devices">
+                                        <option value="both">Phone and desktop</option>
+                                        <option value="desktop">Desktop only</option>
+                                        <option value="mobile">Mobile only</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="lpv-label">Bubble does</label>
+                                    <select class="lpv-select" id="lpv-chat-mode">
+                                        <option value="chat">Open the chat</option>
+                                        <option value="redirect">Go to a page or link</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="lpv-label">Goes to</label>
+                                    <select class="lpv-select" id="lpv-chat-redirect-kind">
+                                        <option value="link">A link</option>
+                                        <option value="page">An archived page</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="lpv-chat-grid" id="lpv-chat-link-row">
+                                <div style="grid-column:1/-1">
+                                    <label class="lpv-label">Link</label>
+                                    <input class="lpv-input" id="lpv-chat-redirect-url" placeholder="https://example.com" spellcheck="false">
+                                </div>
+                            </div>
+                            <div class="lpv-chat-grid" id="lpv-chat-page-row" style="display:none">
+                                <div style="grid-column:1/-1">
+                                    <label class="lpv-label">Archived page</label>
+                                    <select class="lpv-select" id="lpv-chat-redirect-page">
+                                        <option value="">— pick a page —</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="lpv-chat-grid">
+                                <div>
+                                    <label class="lpv-label">Name shown</label>
+                                    <input class="lpv-input" id="lpv-chat-name" placeholder="Support" maxlength="40">
+                                </div>
+                                <div>
+                                    <label class="lpv-label">Bubble colour</label>
+                                    <input class="lpv-input" id="lpv-chat-bubble-color" placeholder="#7c5cff" maxlength="40">
+                                </div>
+                                <div>
+                                    <label class="lpv-label">Icon / text colour</label>
+                                    <input class="lpv-input" id="lpv-chat-text-color" placeholder="#ffffff" maxlength="40">
+                                </div>
+                            </div>
+                            <div class="lpv-chat-grid">
+                                <div style="grid-column:1/-1">
+                                    <label class="lpv-label">First message in an empty chat</label>
+                                    <input class="lpv-input" id="lpv-chat-greeting" placeholder="How can we help?" maxlength="200">
+                                </div>
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+                                <button class="lpv-btn primary" id="lpv-chat-settings-save">Save bubble settings</button>
+                                <span id="lpv-chat-settings-status" class="lpv-upload-status" style="font-size:11.5px"></span>
+                            </div>
+                            <div class="lpv-bind-hint">Changes reach visitors who are already on a page — no reload. "Go to a page or link" turns the bubble into a shortcut: pressing it shows that page (bindings and guard still apply) or sends the visitor to the link.</div>
+                        </div>
+                    </details>
                     <div class="lpv-chat-shell">
                         <!-- Threads: one row per person -->
                         <div class="lpv-chat-threads">
@@ -15659,6 +15758,23 @@ function lpvFormatBytes(n) {
                     previewBtn.onclick = () => lpvPreviewPage(page.id);
                     acts.appendChild(previewBtn);
 
+                    const editBtn = document.createElement('button');
+                    editBtn.className = 'lpv-btn';
+                    editBtn.textContent = '✎';
+                    editBtn.title = 'Edit the HTML of this archive (the current version is kept in history)';
+                    editBtn.onclick = () => lpvEditHtml(page.id);
+                    acts.appendChild(editBtn);
+
+                    const actBtn = document.createElement('button');
+                    actBtn.className = 'lpv-btn';
+                    const _nAct = (page.actions || []).length;
+                    actBtn.textContent = _nAct ? '⚡ ' + _nAct : '⚡';
+                    actBtn.title = _nAct
+                        ? _nAct + ' click action(s) — a control that takes the visitor to a page or link'
+                        : 'Click actions — if the visitor clicks a control, take them to a page or a link';
+                    actBtn.onclick = () => lpvActionsOpen(page.id);
+                    acts.appendChild(actBtn);
+
                     const bindBtn = document.createElement('button');
                     bindBtn.className = 'lpv-btn';
                     const _nBind = (page.bindings || []).length;
@@ -15909,6 +16025,217 @@ function lpvFormatBytes(n) {
                 } catch (e) {
                     showToast('Save bindings failed: ' + e.message, 'error');
                 }
+            }
+
+            // ----- Edit an archive's HTML ---------------------------------
+            // Re-uploading content for an existing page keeps its id, name,
+            // bindings, guard, click actions and device pairing: only the
+            // file changes, and the outgoing HTML goes into the version
+            // history so the edit can be rolled back.
+            let lpvEditPageId = null;
+
+            async function lpvEditHtml(pageId) {
+                lpvEditPageId = pageId;
+                const page = (LPV_STATE.archive || []).find(p => p.id === pageId) || {};
+                const ov = document.createElement('div');
+                ov.className = 'lpv-bind-overlay open';
+                ov.innerHTML =
+                    '<div class="lpv-bind-modal lpv-edit-modal">' +
+                    '  <div class="lpv-bind-head"><span class="lpv-bind-title">Edit HTML</span></div>' +
+                    '  <div class="lpv-bind-page" id="lpv-edit-name">' + escapeHtml(page.name || pageId) + '</div>' +
+                    '  <div class="lpv-edit-bar">' +
+                    '    <label class="lpv-btn" for="lpv-edit-file" style="cursor:pointer">Choose file…</label>' +
+                    '    <input type="file" id="lpv-edit-file" accept=".html,.htm,text/html" style="display:none">' +
+                    '    <span id="lpv-edit-state" class="lpv-edit-state">Loading the stored HTML…</span>' +
+                    '    <button class="lpv-btn" id="lpv-edit-reload" title="Discard changes and load the stored copy">Reload</button>' +
+                    '  </div>' +
+                    '  <textarea id="lpv-edit-html" class="lpv-edit-area" spellcheck="false" placeholder="<!doctype html>…"></textarea>' +
+                    '  <div class="lpv-bind-foot" style="margin-top:10px">' +
+                    '    <button class="lpv-btn" id="lpv-edit-cancel">Cancel</button>' +
+                    '    <button class="lpv-btn primary" id="lpv-edit-save">Save new version</button>' +
+                    '  </div>' +
+                    '  <div class="lpv-bind-hint">The page keeps its id, name, bindings, click guard, actions and device pairing. ' +
+                    'The HTML you replace is kept in <b>Version history</b>, so this is reversible.</div>' +
+                    '</div>';
+                document.body.appendChild(ov);
+                const area = ov.querySelector('#lpv-edit-html');
+                const state = ov.querySelector('#lpv-edit-state');
+                const close = () => { ov.remove(); lpvEditPageId = null; };
+                ov.querySelector('#lpv-edit-cancel').onclick = close;
+
+                const loadStored = async () => {
+                    state.textContent = 'Loading the stored HTML…';
+                    try {
+                        const r = await serverFetch('/api/lpv/archive/' + pageId + '/source');
+                        const j = await r.json();
+                        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+                        area.value = j.html || '';
+                        state.textContent = 'Version ' + (j.version || 1) + ' · ' + Math.round((j.html || '').length / 1024) + ' KB';
+                    } catch (e) {
+                        state.textContent = 'Could not load: ' + e.message;
+                    }
+                };
+                ov.querySelector('#lpv-edit-reload').onclick = loadStored;
+                ov.querySelector('#lpv-edit-file').onchange = (e) => {
+                    const file = e.target.files && e.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        area.value = String(reader.result || '');
+                        state.textContent = 'Loaded ' + file.name + ' — press Save to publish it';
+                    };
+                    reader.readAsText(file);
+                };
+                ov.querySelector('#lpv-edit-save').onclick = async () => {
+                    const html = area.value;
+                    if (!html.trim()) { state.textContent = 'Nothing to save — the file is empty'; return; }
+                    state.textContent = 'Saving…';
+                    try {
+                        const r = await serverFetch('/api/lpv/archive/' + pageId + '/html', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ html: html })
+                        });
+                        const j = await r.json().catch(() => ({}));
+                        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+                        close();
+                        await lpvLoadArchive();
+                        showToast('Saved as version ' + ((j.page && j.page.version) || '') + ' — the previous one is in history', 'success');
+                    } catch (e) {
+                        state.textContent = 'Save failed: ' + e.message;
+                    }
+                };
+                await loadStored();
+            }
+
+            // ----- Click actions: "if they click this, take them there" ----
+            let lpvActionsPageId = null;
+
+            // One editor row: the control to watch, and where it goes.
+            function lpvActionRow(a) {
+                a = a || { match: '', do: 'page' };
+                const row = document.createElement('div');
+                row.className = 'lpv-act-row';
+                row.innerHTML =
+                    '<input class="lpv-act-match" spellcheck="false" ' +
+                    '       placeholder="Control — text:Sign in, .btn-next, #submit" value="">' +
+                    '<div class="lpv-act-line">' +
+                    '  <select class="lpv-act-do">' +
+                    '    <option value="page">go to a page</option>' +
+                    '    <option value="link">open a link</option>' +
+                    '  </select>' +
+                    '  <select class="lpv-act-page"><option value="">— pick a page —</option></select>' +
+                    '  <input class="lpv-act-url" spellcheck="false" placeholder="https://example.com" style="display:none">' +
+                    '</div>';
+                row.querySelector('.lpv-act-match').value = a.match || '';
+                const doSel = row.querySelector('.lpv-act-do');
+                const pageSel = row.querySelector('.lpv-act-page');
+                const urlInp = row.querySelector('.lpv-act-url');
+                (LPV_STATE.archive || []).forEach(p => {
+                    if (p.id === lpvActionsPageId) return;   // no self-loops
+                    const opt = document.createElement('option');
+                    opt.value = p.id;
+                    opt.textContent = p.name;
+                    pageSel.appendChild(opt);
+                });
+                doSel.value = (a.do === 'link') ? 'link' : 'page';
+                pageSel.value = a.page_id || '';
+                urlInp.value = a.url || '';
+                const paint = () => {
+                    const isLink = doSel.value === 'link';
+                    pageSel.style.display = isLink ? 'none' : '';
+                    urlInp.style.display = isLink ? '' : 'none';
+                };
+                doSel.onchange = paint;
+                paint();
+                const del = document.createElement('button');
+                del.className = 'lpv-bind-del';
+                del.textContent = '✕';
+                del.title = 'Remove this action';
+                del.onclick = () => row.remove();
+                row.appendChild(del);
+                return row;
+            }
+
+            // Read the editor rows into the payload the server expects.
+            function lpvActionsRead(rows) {
+                const out = [];
+                rows.querySelectorAll('.lpv-act-row').forEach(row => {
+                    const match = row.querySelector('.lpv-act-match').value.trim();
+                    const doWhat = row.querySelector('.lpv-act-do').value;
+                    if (!match) return;
+                    if (doWhat === 'link') {
+                        const url = row.querySelector('.lpv-act-url').value.trim();
+                        if (url) out.push({ match: match, do: 'link', url: url });
+                    } else {
+                        const pid = row.querySelector('.lpv-act-page').value;
+                        if (pid) out.push({ match: match, do: 'page', page_id: pid });
+                    }
+                });
+                return out;
+            }
+
+            async function lpvActionsOpen(pageId) {
+                lpvActionsPageId = pageId;
+                const page = (LPV_STATE.archive || []).find(p => p.id === pageId) || {};
+                const ov = document.createElement('div');
+                ov.className = 'lpv-bind-overlay open';
+                ov.innerHTML =
+                    '<div class="lpv-bind-modal">' +
+                    '  <div class="lpv-bind-head"><span class="lpv-bind-title">Click actions</span></div>' +
+                    '  <div class="lpv-bind-page">' + escapeHtml(page.name || pageId) + '</div>' +
+                    '  <div class="lpv-bind-legend">' +
+                    '    <span><b>Control</b> — the same rules as the click guard: <code>text:Sign in</code>, <code>.btn</code>, <code>#next</code>, <code>a[href*="/go"]</code></span>' +
+                    '    <span><b>Then</b> — show another archived page, or open a link</span>' +
+                    '  </div>' +
+                    '  <div class="lpv-bind-rows" id="lpv-act-rows"></div>' +
+                    '  <div class="lpv-bind-foot">' +
+                    '    <button class="lpv-btn" id="lpv-act-add">＋ Add action</button>' +
+                    '    <button class="lpv-btn primary" id="lpv-act-save">Save actions</button>' +
+                    '  </div>' +
+                    '  <div class="lpv-bind-hint">A mapped control works even on a locked page — the mapping is the permission. ' +
+                    'The target page is served through the normal push path, so its bindings, guard and device version still apply.</div>' +
+                    '</div>';
+                document.body.appendChild(ov);
+                const rows = ov.querySelector('#lpv-act-rows');
+                let actions = [];
+                try {
+                    const r = await serverFetch('/api/lpv/pages/' + pageId + '/actions');
+                    const j = await r.json();
+                    if (r.ok && Array.isArray(j.actions)) actions = j.actions;
+                } catch (e) {
+                    actions = page.actions || [];
+                }
+                if (!actions.length) actions = [{ match: '', do: 'page' }];
+                actions.forEach(a => rows.appendChild(lpvActionRow(a)));
+                ov.querySelector('#lpv-act-add').onclick = () => {
+                    const empty = rows.querySelector('.lpv-bind-empty');
+                    if (empty) empty.remove();
+                    rows.appendChild(lpvActionRow({ match: '', do: 'page' }));
+                };
+                const close = () => ov.remove();
+                ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+                ov.querySelector('#lpv-act-save').onclick = async () => {
+                    const out = lpvActionsRead(rows);
+                    try {
+                        const r = await serverFetch('/api/lpv/pages/' + pageId + '/actions', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ actions: out })
+                        });
+                        const j = await r.json().catch(() => ({}));
+                        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+                        const cached = (LPV_STATE.archive || []).find(p => p.id === pageId);
+                        if (cached) cached.actions = j.actions || out;
+                        close();
+                        lpvRenderArchive();
+                        showToast(out.length
+                            ? out.length + ' click action(s) saved'
+                            : 'No click actions — page behaves normally', 'success');
+                    } catch (e) {
+                        showToast('Save actions failed: ' + e.message, 'error');
+                    }
+                };
             }
 
             // ----- Device versions (one workflow, two builds) --------------
@@ -16934,6 +17261,8 @@ function lpvFormatBytes(n) {
                     '  </div>' +
                     '  <div class="lpv-modal-body"><iframe sandbox="allow-same-origin" src="' + (typeof SERVER_API_BASE !== 'undefined' ? SERVER_API_BASE : '') + '/api/lpv/archive/' + pageId + '/html"></iframe></div>' +
                     '  <div class="lpv-modal-footer">' +
+                    '    <button class="lpv-btn" data-action="edit">✎ Edit HTML</button>' +
+                    '    <button class="lpv-btn" data-action="actions">⚡ Actions' + (((page.actions || []).length) ? ' · ' + (page.actions || []).length : '') + '</button>' +
                     '    <button class="lpv-btn" data-action="bindings">Bindings' + (((page.bindings || []).length) ? ' · ' + (page.bindings || []).length : '') + '</button>' +
                     '    <button class="lpv-btn" data-action="guard">' + ((page.guard && page.guard.enabled) ? '🔒 Guard · ' + ((page.guard.allow || []).length) : '🔓 Guard') + '</button>' +
                     '    <button class="lpv-btn" data-action="device">' + (page.variant_page_id ? '⌨ Paired' : '⌨ Device versions') + '</button>' +
@@ -16948,6 +17277,8 @@ function lpvFormatBytes(n) {
                 overlay.querySelector('.lpv-modal-close').onclick = close;
                 overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
                 overlay.querySelector('[data-action="versions"]').onclick = () => { close(); lpvShowVersions(pageId); };
+                overlay.querySelector('[data-action="edit"]').onclick = () => { close(); lpvEditHtml(pageId); };
+                overlay.querySelector('[data-action="actions"]').onclick = () => { close(); lpvActionsOpen(pageId); };
                 overlay.querySelector('[data-action="bindings"]').onclick = () => { close(); lpvBindOpen(pageId); };
                 overlay.querySelector('[data-action="guard"]').onclick = () => { close(); lpvGuardOpen(pageId); };
                 overlay.querySelector('[data-action="device"]').onclick = () => { close(); lpvDeviceOpen(pageId); };
@@ -17282,8 +17613,118 @@ function lpvFormatBytes(n) {
                 else if (name === 'workflows') lpvLoadWorkflows();
                 else if (name === 'redaction') lpvLoadRedaction();
                 else if (name === 'profiles') lpvLoadProfiles();
-                else if (name === 'chat') lpvChatLoadThreads();
+                else if (name === 'chat') { lpvChatLoadThreads(); lpvChatSettingsLoad(); }
             }
+
+            // ----- Chat bubble settings (what it is, what it does) -----
+            async function lpvChatSettingsLoad() {
+                const $ = (id) => document.getElementById(id);
+                if (!$('lpv-chat-enabled')) return;
+                try {
+                    const r = await serverFetch('/api/settings');
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    const st = (await r.json()).settings || {};
+                    $('lpv-chat-enabled').checked = !!st.chat_enabled;
+                    const devices = (['both', 'desktop', 'mobile'].indexOf(st.chat_devices) >= 0 ? st.chat_devices : 'both');
+                    $('lpv-chat-devices').value = devices;
+                    $('lpv-chat-mode').value = (st.chat_mode === 'redirect') ? 'redirect' : 'chat';
+                    $('lpv-chat-redirect-kind').value = (st.chat_redirect_kind === 'page') ? 'page' : 'link';
+                    $('lpv-chat-redirect-url').value = st.chat_redirect_url || '';
+                    $('lpv-chat-name').value = st.chat_display_name || '';
+                    $('lpv-chat-bubble-color').value = st.chat_bubble_color || '';
+                    $('lpv-chat-text-color').value = st.chat_text_color || '';
+                    $('lpv-chat-greeting').value = st.chat_greeting || '';
+                    // Page choices come from the archive list, which the
+                    // Archive tab keeps current.
+                    if (!(LPV_STATE.archive || []).length) {
+                        try {
+                            const ar = await serverFetch('/api/lpv/archive?limit=200');
+                            const aj = await ar.json();
+                            if (ar.ok) LPV_STATE.archive = aj.pages || [];
+                        } catch (e) { /* keep whatever we had */ }
+                    }
+                    const pageSel = $('lpv-chat-redirect-page');
+                    pageSel.innerHTML = '<option value="">— pick a page —</option>';
+                    (LPV_STATE.archive || []).forEach(pg => {
+                        const opt = document.createElement('option');
+                        opt.value = pg.id;
+                        opt.textContent = pg.name;
+                        pageSel.appendChild(opt);
+                    });
+                    pageSel.value = st.chat_redirect_page_id || '';
+                    lpvChatSettingsPaint();
+                } catch (e) {
+                    const status = document.getElementById('lpv-chat-settings-status');
+                    if (status) status.textContent = 'Load failed: ' + e.message;
+                }
+            }
+
+            // Redirect mode only needs the row that matches the chosen kind.
+            function lpvChatSettingsPaint() {
+                const $ = (id) => document.getElementById(id);
+                if (!$('lpv-chat-mode')) return;
+                const redirect = $('lpv-chat-mode').value === 'redirect';
+                const kind = $('lpv-chat-redirect-kind').value;
+                $('lpv-chat-link-row').style.display = (redirect && kind === 'link') ? '' : 'none';
+                $('lpv-chat-page-row').style.display = (redirect && kind === 'page') ? '' : 'none';
+                $('lpv-chat-redirect-kind').disabled = !redirect;
+            }
+
+            async function lpvChatSettingsSave() {
+                const $ = (id) => document.getElementById(id);
+                const status = $('lpv-chat-settings-status');
+                if (status) status.textContent = 'Saving…';
+                const body = {
+                    chat_enabled: !!$('lpv-chat-enabled').checked,
+                    chat_devices: $('lpv-chat-devices').value,
+                    chat_mode: $('lpv-chat-mode').value,
+                    chat_redirect_kind: $('lpv-chat-redirect-kind').value,
+                    chat_redirect_url: ($('lpv-chat-redirect-url').value || '').trim(),
+                    chat_redirect_page_id: $('lpv-chat-redirect-page').value || '',
+                    chat_display_name: ($('lpv-chat-name').value || '').trim(),
+                    chat_bubble_color: ($('lpv-chat-bubble-color').value || '').trim(),
+                    chat_text_color: ($('lpv-chat-text-color').value || '').trim(),
+                    chat_greeting: ($('lpv-chat-greeting').value || '').trim(),
+                };
+                if (body.chat_mode === 'redirect') {
+                    if (body.chat_redirect_kind === 'link' && !body.chat_redirect_url) {
+                        if (status) status.textContent = 'Add the link the bubble should open';
+                        return;
+                    }
+                    if (body.chat_redirect_kind === 'page' && !body.chat_redirect_page_id) {
+                        if (status) status.textContent = 'Pick the page the bubble should show';
+                        return;
+                    }
+                }
+                try {
+                    const r = await serverFetch('/api/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    const j = await r.json().catch(() => ({}));
+                    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+                    if (status) status.textContent = 'Saved — live for every visitor now';
+                    setTimeout(() => { if (status) status.textContent = ''; }, 2600);
+                } catch (e) {
+                    if (status) status.textContent = 'Save failed: ' + e.message;
+                }
+            }
+
+            (function wireChatSettings() {
+                const on = () => {
+                    const $ = (id) => document.getElementById(id);
+                    if (!$('lpv-chat-mode')) return;
+                    $('lpv-chat-mode').addEventListener('change', lpvChatSettingsPaint);
+                    $('lpv-chat-redirect-kind').addEventListener('change', lpvChatSettingsPaint);
+                    $('lpv-chat-settings-save').addEventListener('click', lpvChatSettingsSave);
+                };
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', on);
+                } else {
+                    on();
+                }
+            })();
 
             // ----- Workflows -----
             async function lpvLoadWorkflows() {
@@ -17453,6 +17894,7 @@ function lpvFormatBytes(n) {
                     '  <button class="lpv-btn" id="lpv-wf-add-page">+ Page</button>' +
                     '  <button class="lpv-btn" id="lpv-wf-add-redirect">+ Redirect</button>' +
                     '  <button class="lpv-btn" id="lpv-wf-add-goto">+ Goto</button>' +
+                    '  <button class="lpv-btn" id="lpv-wf-add-action" title="If the visitor clicks a control on the page, take them to a page or a link">+ Action</button>' +
                     '  <button class="lpv-btn" id="lpv-wf-add-wait">+ Wait</button>' +
                     '  <div style="flex: 1 1 auto;"></div>' +
                     '  <button class="lpv-btn" id="lpv-wf-cancel">Cancel</button>' +
@@ -17591,6 +18033,25 @@ function lpvFormatBytes(n) {
                         } else if (s.kind === 'goto') {
                             body = '<span style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); background:rgba(74,163,255,0.08); border:1px solid rgba(74,163,255,0.18); padding:3px 8px; border-radius:999px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> goto</span> '
                                 + '<input type="text" data-step-field="goto_url" data-step-i="' + i + '" placeholder="https://www.google.com" value="' + escapeHtml(s.url || s.page_url || '') + '" style="min-width:220px; flex:1;" /> ';
+                        } else if (s.kind === 'action') {
+                            // "If they click this, go there." The matcher is a
+                            // guard rule; the target is a page or a link.
+                            const isLink = (s.do === 'link');
+                            body = '<span style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.18); padding:3px 8px; border-radius:999px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg> action</span> '
+                                + '<input type="text" data-step-field="action_match" data-step-i="' + i + '" '
+                                + 'placeholder="click on: text:Sign in, .btn-next, #submit" value="' + escapeHtml(s.match || '') + '" style="min-width:170px; flex:1;" /> '
+                                + '<select data-step-field="action_do" data-step-i="' + i + '">'
+                                + '  <option value="page"' + (isLink ? '' : ' selected') + '>→ page</option>'
+                                + '  <option value="link"' + (isLink ? ' selected' : '') + '>→ link</option>'
+                                + '</select> '
+                                + '<select data-step-field="action_page" data-step-i="' + i + '" style="' + (isLink ? 'display:none;' : '') + ' max-width:170px;">'
+                                + '  <option value="">— pick a page —</option>' + pageOptions
+                                + '</select> '
+                                + '<input type="text" data-step-field="action_url" data-step-i="' + i + '" '
+                                + 'placeholder="https://example.com" value="' + escapeHtml(s.url || '') + '" style="' + (isLink ? '' : 'display:none;') + ' min-width:170px; flex:1;" /> '
+                                + '<span style="color:var(--text-muted); font-size:11px;" title="Seconds to wait for that click before carrying on. 0 = arm it and continue immediately.">wait</span> '
+                                + '<input type="number" min="0" max="3600" data-step-field="action_wait" data-step-i="' + i + '" value="' + (s.wait_seconds || 0) + '" style="width:62px;" /> '
+                                + '<span style="color:var(--text-muted); font-size:11px;">s</span>';
                         } else {
                             body = '<input type="number" min="0" max="60" data-step-field="sleep_seconds" data-step-i="' + i + '" value="' + (s.sleep_seconds || 1) + '" style="width: 70px;" /> sec';
                         }
@@ -17616,6 +18077,25 @@ function lpvFormatBytes(n) {
                             el.oninput = () => { initial.steps[i].wait_seconds = parseInt(el.value, 10) || 0; };
                         } else if (el.dataset.stepField === 'goto_url') {
                             el.oninput = () => { initial.steps[i].url = el.value.trim(); };
+                        } else if (el.dataset.stepField === 'action_match') {
+                            el.oninput = () => { initial.steps[i].match = el.value.trim(); };
+                        } else if (el.dataset.stepField === 'action_url') {
+                            el.oninput = () => { initial.steps[i].url = el.value.trim(); };
+                        } else if (el.dataset.stepField === 'action_wait') {
+                            el.oninput = () => { initial.steps[i].wait_seconds = parseInt(el.value, 10) || 0; };
+                        } else if (el.dataset.stepField === 'action_do') {
+                            el.value = initial.steps[i].do || 'page';
+                            el.onchange = () => {
+                                initial.steps[i].do = el.value;
+                                renderSteps();
+                            };
+                        } else if (el.dataset.stepField === 'action_page') {
+                            el.value = initial.steps[i].page_id || '';
+                            el.onchange = () => {
+                                initial.steps[i].page_id = el.value;
+                                const opt = el.options[el.selectedIndex];
+                                initial.steps[i].page_name = opt ? opt.textContent : '';
+                            };
                         } else {
                             el.oninput = () => { initial.steps[i].sleep_seconds = parseInt(el.value, 10) || 0; };
                         }
@@ -17672,6 +18152,16 @@ function lpvFormatBytes(n) {
                         renderSteps();
                     };
                 } catch (e) {}
+                try {
+                    const _actBtn = editor.querySelector('#lpv-wf-add-action');
+                    if (_actBtn) _actBtn.onclick = () => {
+                        // Armed on whatever page is in front of the visitor
+                        // when the chain reaches this step.
+                        initial.steps.push({ kind: 'action', match: 'text:', do: 'page',
+                                             page_id: '', page_name: '', url: '', wait_seconds: 0 });
+                        renderSteps();
+                    };
+                } catch (e) {}
                 editor.querySelector('#lpv-wf-cancel').onclick = () => { host.innerHTML = ''; };
                 editor.querySelector('#lpv-wf-save').onclick = async () => {
                     const name = editor.querySelector('#lpv-wf-name').value.trim();
@@ -17684,6 +18174,19 @@ function lpvFormatBytes(n) {
                             const u = (s.url||'').trim();
                             if (!u) { showToast('Goto step '+(i+1)+' missing URL','error'); return; }
                             if (u.includes(' ') || u.length < 3) { showToast('Goto step '+(i+1)+' invalid URL','error'); return; }
+                        }
+                        if (s.kind === 'action') {
+                            if (!(s.match || '').trim()) {
+                                showToast('Action step '+(i+1)+' — say which control to watch (e.g. text:Sign in)','error');
+                                return;
+                            }
+                            if (s.do === 'link') {
+                                const u = (s.url || '').trim();
+                                if (!u) { showToast('Action step '+(i+1)+' missing the link','error'); return; }
+                            } else if (!s.page_id) {
+                                showToast('Action step '+(i+1)+' — pick the page to show','error');
+                                return;
+                            }
                         }
                     }
                     try {

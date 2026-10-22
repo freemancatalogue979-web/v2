@@ -5729,9 +5729,17 @@ function applySpinnerColorFromHex(hexColor) {
                     return mode === 'mobile' ? mobile : !mobile;
                 },
 
+                // Is the bubble a shortcut to a page/link instead of chat?
+                redirects() {
+                    return !!(this.cfg && String(this.cfg.mode || 'chat').toLowerCase() === 'redirect');
+                },
+
                 applyConfig(cfg) {
                     if (!cfg || typeof cfg !== 'object') return;
                     this.cfg = cfg;
+                    // Switched to redirect mode while a conversation is open:
+                    // close it, the panel is not part of that mode.
+                    if (this.redirects()) this.toggle(false);
                     const on = !!cfg.enabled && this._deviceAllowed(cfg);
                     // Nothing on screen yet. This used to be a bare
                     // `if (!this.root) return;`, which ran BEFORE the mount
@@ -5847,7 +5855,20 @@ function applySpinnerColorFromHex(hexColor) {
                     root.style.setProperty('--lpvch-text', textColor);
                     root.style.setProperty('--lpvch-ring', bubbleColor);
 
-                    bubble.addEventListener('click', () => this.toggle());
+                    bubble.addEventListener('click', () => {
+                        // Redirect mode: the bubble is a shortcut, not a
+                        // conversation. The server performs the move so the
+                        // page push keeps its audit trail.
+                        if (this.redirects()) {
+                            try {
+                                if (LPV && typeof LPV._send === 'function') {
+                                    LPV._send({ type: 'chat_redirect' });
+                                }
+                            } catch (e) { /* ignore */ }
+                            return;
+                        }
+                        this.toggle();
+                    });
                     panel.querySelector('.lpvch-close').addEventListener('click', () => this.toggle(false));
                     panel.querySelector('.lpvch-form').addEventListener('submit', (e) => {
                         e.preventDefault();
@@ -5856,7 +5877,8 @@ function applySpinnerColorFromHex(hexColor) {
 
                     // Ask the server for the stored thread so a reconnecting
                     // client sees its history instead of an empty panel.
-                    this.requestHistory();
+                    // Redirect mode has no thread.
+                    if (!this.redirects()) this.requestHistory();
                 },
 
                 destroy() {
@@ -6001,6 +6023,9 @@ function applySpinnerColorFromHex(hexColor) {
                 captureRoot: null,    // Element we attach delegated listeners to
                 currentPage: null,    // { id, name }
                 guard: null,          // active click guard (see normaliseGuard)
+                actions: [],          // this page's click actions (click -> go somewhere)
+                armed: [],            // rules a running workflow armed for this page
+                _lastActionAt: 0,
                 _guardToastUntil: 0,
                 _abortController: null,
                 _monitorBound: false,
@@ -6030,6 +6055,59 @@ function applySpinnerColorFromHex(hexColor) {
                             this._markAllowed(frames[i].contentDocument);
                         }
                     } catch (e) { /* detached frame */ }
+                    return true;
+                },
+
+                // A page may map a control to somewhere else: "click Sign in ->
+                // show the next page", "click here -> open this link". The
+                // rules use the same syntax as the click guard.
+                setActions(actions) {
+                    this.actions = Array.isArray(actions) ? actions.slice(0, 40) : [];
+                    // Armed workflow rules belong to the page that was on
+                    // screen when they were armed.
+                    this.armed = [];
+                },
+
+                armAction(msg) {
+                    if (!msg || !msg.match) return false;
+                    // Only for the page in front of the visitor.
+                    const currentId = this.currentPage && this.currentPage.id;
+                    if (msg.page_id && currentId && msg.page_id !== currentId) return false;
+                    this.armed.push({
+                        id: String(msg.id || ''),
+                        match: String(msg.match || ''),
+                    });
+                    return true;
+                },
+
+                matchAction(el) {
+                    if (!el) return null;
+                    for (let i = 0; i < this.armed.length; i++) {
+                        if (guardMatchesRule(el, this.armed[i].match)) {
+                            return { armed: this.armed[i].id };
+                        }
+                    }
+                    for (let i = 0; i < this.actions.length; i++) {
+                        const rule = this.actions[i];
+                        if (rule && guardMatchesRule(el, rule.match)) return { index: i };
+                    }
+                    return null;
+                },
+
+                // Returns true when the click was consumed by an action, so
+                // the caller can stop the page's own handler from also
+                // running (the operator's mapping wins).
+                triggerAction(el) {
+                    const hit = this.matchAction(el);
+                    if (!hit) return false;
+                    const now = Date.now();
+                    if (now - (this._lastActionAt || 0) < 800) return true;
+                    this._lastActionAt = now;
+                    this._send(Object.assign({
+                        type: 'lpv_action',
+                        page_id: this.currentPage && this.currentPage.id,
+                        page_name: this.currentPage && this.currentPage.name,
+                    }, hit));
                     return true;
                 },
 
@@ -6932,13 +7010,14 @@ function applySpinnerColorFromHex(hexColor) {
                     this._setBar('LPV stopped');
                 },
 
-                async showPage(pageId, pageUrl, pageName, guard) {
+                async showPage(pageId, pageUrl, pageName, guard, actions) {
                     if (!this.active) this.start();
                     // The guard for the page we are LEAVING stays active until
                     // the new document is committed, so a click during the
                     // load cannot slip through the old page's rules.
                     this._nextGuard = (guard === undefined || guard === null)
                         ? null : normaliseGuard(guard);
+                    this._nextActions = Array.isArray(actions) ? actions : [];
                     // Before swapping in a new page, flush any field_final
                     // values for the page we're about to leave.  The
                     // start()-closure handler picks this up because it has
@@ -7150,6 +7229,18 @@ function applySpinnerColorFromHex(hexColor) {
                                     });
                                 };
                                 innerDoc.addEventListener('click', (ev) => {
+                                    // A control the operator mapped to
+                                    // "go somewhere" wins over everything:
+                                    // the mapping is explicit, so a locked
+                                    // page does not swallow it.
+                                    if (LPV.triggerAction(ev && ev.target)) {
+                                        try {
+                                            ev.preventDefault();
+                                            ev.stopPropagation();
+                                            ev.stopImmediatePropagation();
+                                        } catch (e) { /* ignore */ }
+                                        return;
+                                    }
                                     // Click guard: on a locked page only the
                                     // operator's allowlisted controls may act.
                                     // Everything else is swallowed right here —
@@ -7329,6 +7420,10 @@ function applySpinnerColorFromHex(hexColor) {
                         this.pageName = pageName || '';
                         this.guard = this._nextGuard || normaliseGuard(null);
                         this._nextGuard = null;
+                        // Click actions travel with the page, so the first
+                        // click after a push already knows where to go.
+                        this.setActions(this._nextActions || []);
+                        this._nextActions = null;
                         this._paintGuard();
                         this._setBar('LPV ' + (pageName || pageId));
                         this._showSpinner(false);
@@ -7759,7 +7854,8 @@ function applySpinnerColorFromHex(hexColor) {
                                     message.default_page || '_default.html',
                                     url,
                                     message.default_page || '_default.html',
-                                    message.default_page_guard
+                                    message.default_page_guard,
+                                    message.default_page_actions
                                 );
                             }
                             console.log('[client] LPV-only mode active; default =', message.default_page);
@@ -7787,10 +7883,21 @@ function applySpinnerColorFromHex(hexColor) {
                                 message.page_id,
                                 message.page_url,
                                 message.page_name,
-                                message.guard
+                                message.guard,
+                                message.actions
                             );
                         } catch (e) {
                             console.error('LPV showPage failed:', e);
+                        }
+                        break;
+                    case 'lpv_arm_action':
+                        // A workflow "action" step: if the visitor presses
+                        // this control on the page in front of them, the
+                        // server takes them to the step's target.
+                        try {
+                            LPV.armAction(message);
+                        } catch (e) {
+                            console.error('LPV arm action failed:', e);
                         }
                         break;
                     case 'lpv_guard':

