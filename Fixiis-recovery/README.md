@@ -416,6 +416,7 @@ node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
 node tests/test_backend_address.cjs  # "Connection error": backend address handling
 node tests/test_no_hardcoded_addresses.cjs  # no server address baked into code
 node tests/test_login_diagnostics.cjs     # a rejected sign-in says why
+node tests/test_mini_simple.cjs           # the phone panel stays four jobs
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
 python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup
@@ -498,6 +499,23 @@ both sides for WebSocket errors against `/ws/manager` or `/ws/...`.
 - **`Admin.html`** is the operator console. Big single-file SPA — search
   by function name (e.g. `connect`, `handleStream`, `loadProfiles`)
   rather than line number.
+
+- **`mini-admin.html`** (`/mini`) is the one-hand, on-a-phone panel. It has
+  exactly four jobs, one per tab, and is deliberately smaller than the full
+  panel:
+
+  | Tab | Job |
+  |---|---|
+  | **Clients** | who is on your pages now; tap a card to send a page or run a flow |
+  | **Pages** | pick a saved page → pick a visitor → it appears |
+  | **Flows** | pick a flow → pick a visitor → it runs in order |
+  | **Telegram** | is the bot working, and what should it tell you |
+
+  "Past visitors" sits one tap inside Clients (it is history, not a fifth
+  job). Live chat is not part of this panel — it lives in the full console.
+  Anything advanced (how brand-new visitors start, the per-event alert list)
+  stays folded inside a `<details>` so the first screen of each tab is one
+  decision. `tests/test_mini_simple.cjs` enforces that shape.
 
 ### Conventions
 

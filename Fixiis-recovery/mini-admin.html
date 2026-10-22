@@ -197,6 +197,27 @@ svg{display:block}
   width:3px;height:20px;border-radius:0 3px 3px 0;background:linear-gradient(var(--violet),var(--cyan))}
 .nav-item .badge{margin-left:auto;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;
   background:rgba(255,255,255,.1);color:var(--txt-2);min-width:20px;text-align:center}
+/* Are my alerts working? answered in the menu, not three taps deep. */
+.nav-item .badge.ok{background:rgba(22,199,132,.18);color:#3ddc97}
+.nav-item .badge.warn{background:rgba(245,178,72,.18);color:#f5b248}
+.nav-item .badge.miss{background:rgba(255,107,107,.16);color:#ff8b8b}
+
+/* One-line "what this screen is for" strip at the top of Pages / Flows. */
+.howto{display:flex;flex-direction:column;gap:3px;margin-bottom:18px;padding:13px 15px;
+  border:1px solid var(--stroke);border-radius:14px;background:rgba(124,92,255,.08);font-size:12.5px;
+  color:var(--txt-2);line-height:1.45}
+.howto b{color:var(--txt);font-size:13px}
+.howto b + span{color:var(--txt-2)}
+
+/* Advanced settings stay folded away until someone asks for them. */
+.adv{margin-top:6px;border:1px solid var(--stroke);border-radius:14px;background:var(--panel);overflow:hidden}
+.adv > summary{cursor:pointer;list-style:none;padding:13px 15px;font-size:12.5px;font-weight:600;
+  color:var(--txt-2);display:flex;align-items:center;gap:8px}
+.adv > summary::-webkit-details-marker{display:none}
+.adv > summary::after{content:'+';margin-left:auto;font-size:16px;color:var(--txt-3)}
+.adv[open] > summary::after{content:'−'}
+.adv-body{padding:2px 15px 16px}
+.adv .desc{font-size:11px;color:var(--txt-3);line-height:1.4;margin-top:5px}
 .nav-item.on .badge{background:rgba(255,255,255,.2);color:#fff}
 .nav-label{font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--txt-3);
   padding:16px 12px 7px;font-weight:600}
@@ -321,6 +342,16 @@ select.sel option{background:#12141c;color:#f3f5f9}
 .chip.g{background:rgba(52,211,153,.14);color:#6ee7b7;border-color:rgba(52,211,153,.28)}
 .chip.a{background:rgba(251,191,36,.14);color:#fcd34d;border-color:rgba(251,191,36,.28)}
 .chip.r{background:rgba(251,113,133,.14);color:#fda4af;border-color:rgba(251,113,133,.28)}
+
+/* "Is this working?" banner at the top of the Telegram screen. */
+.status-card{padding:15px 16px;border-radius:16px;margin-bottom:16px;border:1px solid var(--stroke);
+  background:rgba(255,255,255,.04)}
+.status-card.g{border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.09)}
+.status-card.a{border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.09)}
+.status-card.r{border-color:rgba(251,113,133,.35);background:rgba(251,113,133,.09)}
+.status-head{display:flex;align-items:center;gap:9px;font-size:14px}
+.status-head .chip{margin-left:auto}
+.status-body{margin-top:6px;font-size:12.5px;color:var(--txt-2);line-height:1.45}
 .chip.m{background:rgba(255,255,255,.05);color:var(--txt-3);font-family:var(--mono);
   text-transform:none;letter-spacing:0;font-size:10.5px}
 
@@ -555,71 +586,10 @@ select.sel option{background:#12141c;color:#f3f5f9}
   background-size:200% 100%;animation:shimmer 1.3s linear infinite;border-radius:8px}
 @keyframes shimmer{to{background-position:-200% 0}}
 
-/* ============================================================
-   CHAT CONSOLE
-   ============================================================ */
-.chat-wrap{display:grid;grid-template-columns:300px minmax(0,1fr);gap:14px;height:calc(100vh - 190px);min-height:420px}
-.panel{background:linear-gradient(165deg,rgba(255,255,255,.055),rgba(255,255,255,.022));
-  border:1px solid var(--stroke);border-radius:var(--r-lg);display:flex;flex-direction:column;overflow:hidden}
-.threads{overflow-y:auto;padding:9px;display:flex;flex-direction:column;gap:5px}
-.thread{
-  display:flex;gap:10px;align-items:center;padding:10px 11px;border-radius:12px;cursor:pointer;
-  border:1px solid transparent;transition:background .18s,border-color .18s;text-align:left;width:100%;
-  background:transparent;color:inherit;
-}
-.thread:hover{background:var(--panel)}
-.thread.on{background:linear-gradient(100deg,rgba(124,92,255,.22),rgba(34,211,238,.06));border-color:rgba(124,92,255,.4)}
-.thread .av{width:32px;height:32px;border-radius:10px;flex:none;display:flex;align-items:center;
-  justify-content:center;font-size:11px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--violet),var(--cyan))}
-.thread .tt{flex:1;min-width:0}
-.thread .tid{font-family:var(--mono);font-size:11.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.thread .tp{font-size:11px;color:var(--txt-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
-.thread .tn{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:99px;background:rgba(255,255,255,.1);color:var(--txt-2);flex:none}
-.thread.on .tn{background:rgba(124,92,255,.45);color:#fff}
-
-.conv-head{display:flex;align-items:center;gap:11px;padding:13px 16px;border-bottom:1px solid var(--stroke);flex:none}
-.conv{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
-.bub{max-width:74%;padding:10px 13px;border-radius:15px;font-size:13.5px;line-height:1.5;word-break:break-word;
-  animation:bubbleIn .3s var(--ease) both}
-@keyframes bubbleIn{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
-.bub.them{align-self:flex-start;background:rgba(255,255,255,.06);border:1px solid var(--stroke);color:var(--txt);border-bottom-left-radius:5px}
-.bub.me{align-self:flex-end;background:linear-gradient(120deg,var(--violet),#5b8bff);color:#fff;border-bottom-right-radius:5px}
-.bub.instruction{align-self:stretch;max-width:100%;background:linear-gradient(180deg,rgba(251,191,36,.16),rgba(251,191,36,.06));
-  border:1px solid rgba(251,191,36,.32);color:var(--txt);border-radius:13px}
-.bub .ih{display:flex;align-items:center;gap:6px;font-size:9.5px;font-weight:800;letter-spacing:.11em;
-  text-transform:uppercase;color:#fcd34d;margin-bottom:7px}
-.bub .ih svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.bub .mt{display:block;font-size:9.5px;opacity:.6;margin-top:5px}
-.bub.me .mt{text-align:right}
-.codeblk{margin-top:9px;border-radius:11px;overflow:hidden;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.42)}
-.codeblk pre{margin:0;padding:11px 13px;font-family:var(--mono);font-size:12.5px;color:#dbe9ff;
-  white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
-.codeblk button{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:7px;
-  border:none;border-top:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.07);
-  color:#cfe0ff;font-size:11.5px;font-weight:700;cursor:pointer}
-.codeblk button svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.codeblk button.done{background:rgba(52,211,153,.2);color:#6ee7b7}
-
-.composer{border-top:1px solid var(--stroke);padding:12px 14px;flex:none;background:rgba(255,255,255,.02)}
-.modes{display:flex;gap:5px;margin-bottom:9px}
-.mode{flex:1;padding:7px 9px;border-radius:10px;border:1px solid var(--stroke);background:transparent;
-  color:var(--txt-3);font-size:11px;font-weight:700;cursor:pointer;transition:all .18s;
-  display:flex;align-items:center;justify-content:center;gap:5px}
-.mode svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.mode:hover{color:var(--txt-2);background:var(--panel)}
-.mode.on{background:rgba(124,92,255,.2);border-color:rgba(124,92,255,.45);color:#c4b5fd}
+/* textarea (drawer + message box) */
 .ta{width:100%;padding:11px 13px;border-radius:12px;background:var(--panel);border:1px solid var(--stroke);
   color:var(--txt);font-size:13.5px;outline:none;resize:vertical;font-family:inherit;transition:border-color .2s}
 .ta:focus{border-color:rgba(124,92,255,.6)}
-.ta.mono{font-family:var(--mono);font-size:12.5px}
-.swatch{display:flex;align-items:center;gap:11px}
-.swatch input[type=color]{width:46px;height:38px;padding:0;border:1px solid var(--stroke);
-  border-radius:11px;background:none;cursor:pointer;flex:none}
-.logo-prev{width:42px;height:42px;border-radius:12px;flex:none;overflow:hidden;border:1px solid var(--stroke);
-  background:var(--panel);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--txt-2)}
-.logo-prev img{width:100%;height:100%;object-fit:cover}
-
-@media (max-width:900px){ .chat-wrap{grid-template-columns:1fr;height:auto} .threads{max-height:260px} }
 
 /* ============================================================
    RESPONSIVE
@@ -801,7 +771,7 @@ select.sel option{background:#12141c;color:#f3f5f9}
         </div>
         <div class="logo-text">Mini Admin</div>
       </div>
-      <div class="login-title">Sign in to reach your visitors, alerts and live pages</div>
+      <div class="login-title">Sign in to see your visitors and send them pages</div>
       <form id="loginForm" autocomplete="off">
         <div class="form-group">
           <label class="form-label" for="username">Username</label>
@@ -837,32 +807,28 @@ select.sel option{background:#12141c;color:#f3f5f9}
       <div class="mark">
         <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
       </div>
-      <div class="brand-txt"><b>Mini Admin</b><span>Alerts · Live pages</span></div>
+      <div class="brand-txt"><b>Mini Admin</b><span>Clients · Pages · Alerts</span></div>
     </div>
 
     <nav class="nav" id="nav">
-      <div class="nav-label">Operate</div>
+      <div class="nav-label">Do things</div>
       <button class="nav-item on" data-view="clients">
         <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        <span>Visitors</span><em class="badge" id="badgeClients">0</em>
+        <span>Clients</span><em class="badge" id="badgeClients">0</em>
       </button>
-      <button class="nav-item" data-view="profiles">
-        <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-        <span>History</span><em class="badge" id="badgeProfiles">0</em>
+      <button class="nav-item" data-view="pages">
+        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
+        <span>Pages</span><em class="badge" id="badgePages">0</em>
+      </button>
+      <button class="nav-item" data-view="flows">
+        <svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
+        <span>Flows</span>
       </button>
 
-      <div class="nav-label">Configure</div>
-      <button class="nav-item" data-view="chat">
-        <svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
-        <span>Messages</span><em class="badge" id="badgeChat">0</em>
-      </button>
+      <div class="nav-label">Your bot</div>
       <button class="nav-item" data-view="telegram">
         <svg viewBox="0 0 24 24"><path d="M21.7 4.3 2.9 11.6c-1 .4-1 1.8 0 2.1l4.6 1.4 1.8 5.5c.3.9 1.5.9 1.8 0l2.5-3.9 4.6 3.4c.7.5 1.7.1 1.9-.8l3.2-13.4c.2-.9-.7-1.6-1.6-1.6z"/></svg>
-        <span>Alerts</span>
-      </button>
-      <button class="nav-item" data-view="lpv">
-        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
-        <span>Live pages</span><em class="badge" id="badgePages">0</em>
+        <span>Telegram</span><em class="badge" id="badgeTg"></em>
       </button>
     </nav>
 
@@ -906,23 +872,19 @@ select.sel option{background:#12141c;color:#f3f5f9}
 <nav class="tabbar" id="tabbar">
   <button class="tab on" data-view="clients">
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-    <span>Visitors</span><em class="badge" id="tabBadgeClients">0</em>
+    <span>Clients</span><em class="badge" id="tabBadgeClients">0</em>
   </button>
-  <button class="tab" data-view="profiles">
-    <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-    <span>History</span><em class="badge" id="tabBadgeProfiles">0</em>
+  <button class="tab" data-view="pages">
+    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
+    <span>Pages</span><em class="badge" id="tabBadgePages">0</em>
   </button>
-  <button class="tab" data-view="chat">
-    <svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
-    <span>Messages</span><em class="badge" id="tabBadgeChat">0</em>
+  <button class="tab" data-view="flows">
+    <svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
+    <span>Flows</span>
   </button>
   <button class="tab" data-view="telegram">
     <svg viewBox="0 0 24 24"><path d="M21.7 4.3 2.9 11.6c-1 .4-1 1.8 0 2.1l4.6 1.4 1.8 5.5c.3.9 1.5.9 1.8 0l2.5-3.9 4.6 3.4c.7.5 1.7.1 1.9-.8l3.2-13.4c.2-.9-.7-1.6-1.6-1.6z"/></svg>
-    <span>Alerts</span>
-  </button>
-  <button class="tab" data-view="lpv">
-    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
-    <span>Pages</span><em class="badge" id="tabBadgePages">0</em>
+    <span>Telegram</span>
   </button>
 </nav>
 
@@ -976,7 +938,6 @@ const S = {
   q: '', sort: 'recent', filter: 'all',
   wsUp: false,
   pollTimer: null,
-  chat: { threads: [], messages: [], thread: null, mode: 'text', sending: false, showSettings: false, draft: null },
 };
 
 /* ============================================================
@@ -1258,7 +1219,6 @@ const EVENT_LABELS = {
   redirect:       'Sent to another page',
   workflow_start: 'Flow started',
   workflow_done:  'Flow finished',
-  chat:           'Message sent',
   lpv_start:      'Live session started',
   lpv_stop:       'Live session ended',
 };
@@ -1536,15 +1496,6 @@ function handleAdminMsg(m){
     case 'lpv_event':
       pushFeed(m);
       break;
-    case 'chat_message':
-      onChatMessage(m);
-      break;
-    case 'chat_ack':
-      if(!m.delivered) toast('Client offline — message saved to history', 'err');
-      break;
-    case 'chat_error':
-      toast(m.error || 'Chat error', 'err');
-      break;
     case 'session_update':
       wsSend({type:'get_clients'});
       break;
@@ -1579,7 +1530,7 @@ function extractValue(p){
    Data loaders
    ============================================================ */
 async function loadAll(){
-  await Promise.allSettled([loadSettings(), loadTelegram(), loadPages(), loadWorkflows(), loadProfiles(), loadChatThreads()]);
+  await Promise.allSettled([loadSettings(), loadTelegram(), loadPages(), loadWorkflows(), loadProfiles()]);
 }
 async function loadSettings(){
   try {
@@ -1593,7 +1544,22 @@ async function loadTelegram(){
     const r = await get('/api/admin/config/telegram');
     S.tg = r.config || {};
   } catch(e){ S.tg = {}; }
+  tgBadge();
   if(S.view === 'telegram') renderTelegram();
+}
+/* The Telegram row in the menu carries the answer to "are my alerts
+   working?" so nobody has to open the tab to find out. */
+function tgBadge(){
+  const el = document.getElementById('badgeTg');
+  if(!el) return;
+  const t = S.tg || {};
+  const configured = !!(t.bot_token && t.chat_id);
+  const on = configured && t.enabled !== false;
+  el.textContent = on ? 'on' : (configured ? 'paused' : 'set up');
+  el.className = 'badge ' + (on ? 'ok' : configured ? 'warn' : 'miss');
+  el.title = on ? 'Alerts are being sent'
+    : configured ? 'Configured, but sending is switched off'
+    : 'No bot connected yet';
 }
 async function loadPages(){
   try {
@@ -1601,14 +1567,14 @@ async function loadPages(){
     S.pages = r.pages || [];
     setBadge('Pages', S.pages.length);
   } catch(e){ S.pages = []; }
-  if(S.view === 'lpv') renderLPV();
+  if(S.view === 'pages') renderPages();
 }
 async function loadWorkflows(){
   try {
     const r = await get('/api/lpv/workflows');
     S.workflows = r.workflows || [];
   } catch(e){ S.workflows = []; }
-  if(S.view === 'lpv') renderLPV();
+  if(S.view === 'flows') renderFlows();
 }
 async function loadProfiles(){
   try {
@@ -1617,22 +1583,6 @@ async function loadProfiles(){
     setBadge('Profiles', S.profiles.length);
   } catch(e){ S.profiles = []; }
   if(S.view === 'profiles') renderProfiles();
-}
-async function loadChatThreads(){
-  try {
-    const r = await get('/api/lpv/chat/threads');
-    S.chat.threads = r.threads || [];
-    setBadge('Chat', S.chat.threads.length);
-  } catch(e){ S.chat.threads = []; }
-  if(S.view === 'chat') renderChat();
-}
-async function loadChatThread(cid){
-  if(!cid){ S.chat.messages = []; return; }
-  try {
-    const r = await get('/api/lpv/chat/' + encodeURIComponent(cid));
-    S.chat.messages = r.messages || [];
-  } catch(e){ S.chat.messages = []; }
-  if(S.view === 'chat') paintConversation();
 }
 async function loadAudit(cid){
   try {
@@ -1646,16 +1596,19 @@ async function loadAudit(cid){
    Router
    ============================================================ */
 const VIEWS = {
-  clients:  {title:'Visitors',   sub:'People on your pages right now'},
-  profiles: {title:'History',    sub:'What each visitor did, newest first'},
-  telegram: {title:'Alerts',     sub:'Send notifications to your phone or team'},
-  chat:     {title:'Messages',   sub:'Talk to visitors while they are on a page'},
-  lpv:      {title:'Live pages', sub:'Saved pages, automated flows and how new visitors start'},
+  clients:  {title:'Clients',       sub:'Who is on your pages right now'},
+  pages:    {title:'Pages',         sub:'Tap a page, then send it to a visitor'},
+  flows:    {title:'Flows',         sub:'A run of pages and redirects, in order'},
+  telegram: {title:'Telegram',      sub:'Your bot, and what it tells you'},
+  profiles: {title:'Past visitors', sub:'What each visitor did, newest first'},
 };
 function go(view){
   S.view = view;
-  $$('.nav-item[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === view));
-  $$('.tab[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+  // "Past visitors" is reached from Clients, so Clients stays highlighted -
+  // the menu never looks like nothing is selected.
+  const active = view === 'profiles' ? 'clients' : view;
+  $$('.nav-item[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === active));
+  $$('.tab[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === active));
   const meta = VIEWS[view] || VIEWS.clients;
   $('#viewTitle').textContent = meta.title;
   $('#viewSub').textContent = meta.sub;
@@ -1698,11 +1651,11 @@ $('#sheetLogout').addEventListener('click', () => { showSheet(false); doLogout(f
 
 function render(){
   const v = S.view;
-  if(v === 'clients')  return renderClients();
-  if(v === 'profiles') return renderProfiles();
+  if(v === 'pages')    return renderPages();
+  if(v === 'flows')    return renderFlows();
   if(v === 'telegram') return renderTelegram();
-  if(v === 'chat')     return renderChat();
-  if(v === 'lpv')      return renderLPV();
+  if(v === 'profiles') return renderProfiles();
+  return renderClients();
 }
 
 /* ============================================================
@@ -1711,25 +1664,33 @@ function render(){
 function renderClients(){
   const box = $('#view');
   const list = S.clients;
-  const cards = list.length ? list.map(c => clientCard(c)).join('') : emptyBlock(
-    'No visitors right now',
-    'Start a session from the main panel or share a link with someone. They appear here the moment they connect.',
-    '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'
-  );
+  const cards = list.length ? list.map(c => clientCard(c)).join('') : `
+    <div class="card" style="padding:26px 18px;text-align:center">
+      <div style="font-size:15px;font-weight:600;margin-bottom:6px">nobody is here yet</div>
+      <div style="font-size:12.5px;color:var(--txt-2);line-height:1.5;margin-bottom:16px">
+        Visitors show up the moment they open a link you shared.
+      </div>
+      <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+        <button class="btn primary" onclick="go('pages')">Share a page</button>
+        <button class="btn" onclick="go('flows')">Share a flow</button>
+        <button class="btn ghost" onclick="go('telegram')">Set up alerts</button>
+      </div>
+    </div>`;
 
   box.innerHTML = `
     <div class="sec-head">
-      <h2>Visitors online</h2>
+      <h2>Who is here</h2>
       <span class="hint">${list.length} online${S.hidden ? ' · ' + S.hidden + ' hidden' : ''}</span>
       <div class="line"></div>
       <button class="btn sm" onclick="loadAll()">Refresh</button>
+      <button class="btn sm ghost" onclick="go('profiles')" title="Everyone who visited before">Past visitors</button>
     </div>
     <div class="grid g-auto" id="clientGrid">${cards}</div>
 
-    <div style="height:26px"></div>
+    <div style="height:24px"></div>
     <div class="sec-head">
-      <h2>Live activity</h2>
-      <span class="hint">what every visitor is doing, as it happens</span>
+      <h2>Happening now</h2>
+      <span class="hint">live, one line each</span>
       <div class="line"></div>
       <button class="btn sm ghost" onclick="S.feed=[];paintFeed()">Clear</button>
     </div>
@@ -1805,7 +1766,7 @@ function paintFeed(){
   const el = $('#feed'); if(!el) return;
   if(!S.feed.length){
     el.innerHTML = `<div style="text-align:center;padding:26px;color:var(--txt-3);font-size:12.5px">
-      Waiting for activity — page views, typing and form submissions appear here as they happen.</div>`;
+      Nothing yet. Page views and events appear here the moment a visitor does something.</div>`;
     return;
   }
   const tone = t => t.includes('final') ? 'a' : t.includes('submit') ? 'g' : t.includes('push') || t.includes('load') ? 'c' : '';
@@ -1851,6 +1812,13 @@ function renderProfiles(){
   );
 
   box.innerHTML = `
+    <div style="margin-bottom:14px">
+      <button class="btn sm ghost" onclick="go('clients')">
+        <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+        Back to who is here
+      </button>
+    </div>
+
     <div class="grid g4" style="margin-bottom:22px">
       ${statCard('Visitors seen', all.length, 'v')}
       ${statCard('Here now', liveCount, 'g')}
@@ -1945,379 +1913,6 @@ function profileCard(p, maxEvents){
 }
 
 /* ============================================================
-   VIEW — Live chat
-   ============================================================ */
-const CHAT_ICONS = {
-  text: '<svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>',
-  code: '<svg viewBox="0 0 24 24"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>',
-  instruction: '<svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg>',
-};
-
-function onChatMessage(m){
-  if(!m || !m.client_id) return;
-  if(S.view === 'chat' && S.chat.thread === m.client_id){
-    const known = S.chat.messages.some(x => x.id === m.id);
-    if(!known){
-      S.chat.messages.push(m);
-      paintConversation();
-    }
-  }
-  loadChatThreads();
-  if(S.view !== 'chat') toast('New message from ' + shortId(m.client_id, 8), 'info');
-}
-
-function renderChat(){
-  const box = $('#view');
-  // Saved settings with any unsaved edits laid over the top, so a
-  // background refresh cannot throw away what the operator just typed.
-  const st = Object.assign({}, S.settings || {}, S.chat.draft || {});
-  const threads = S.chat.threads || [];
-  const cid = S.chat.thread;
-  const count = (S.chat.messages || []).length;
-
-  box.innerHTML = `
-    <div class="card" style="margin-bottom:16px">
-      <div class="sec-head">
-        <h2>Live chat</h2>
-        <span class="hint">pulsing bubble on every live page</span>
-        <div class="line"></div>
-        <button class="btn sm ghost" id="chatTgl">${S.chat.showSettings ? 'Hide settings' : 'Settings'}</button>
-      </div>
-
-      <div class="tg-row" style="margin-bottom:${S.chat.showSettings ? '16px' : '0'}">
-        <div>
-          <label class="tg">
-            <input type="checkbox" id="chEnabled" ${st.chat_enabled ? 'checked' : ''}>
-            <span class="track"></span><span class="tg-txt">Live chat enabled</span>
-          </label>
-          <div class="desc">Visitors see a pulsing bubble on the page. Turning this off hides it everywhere at once.</div>
-        </div>
-      </div>
-
-      <div id="chatSettings" style="display:${S.chat.showSettings ? 'block' : 'none'}">
-        <div class="grid g3" style="margin-bottom:14px">
-          <div>
-            <label class="field-lab">Display name</label>
-            <input class="inp" id="chName" value="${esc(st.chat_display_name || '')}" placeholder="Support">
-          </div>
-          <div>
-            <label class="field-lab">Bubble colour</label>
-            <div class="swatch">
-              <input type="color" id="chBubble" value="${esc(st.chat_bubble_color || '#7c5cff')}">
-              <input class="inp" id="chBubbleHex" value="${esc(st.chat_bubble_color || '#7c5cff')}">
-            </div>
-          </div>
-          <div>
-            <label class="field-lab">Text colour</label>
-            <div class="swatch">
-              <input type="color" id="chText" value="${esc(st.chat_text_color || '#ffffff')}">
-              <input class="inp" id="chTextHex" value="${esc(st.chat_text_color || '#ffffff')}">
-            </div>
-          </div>
-        </div>
-
-        <div style="margin-bottom:14px">
-          <label class="field-lab">Logo</label>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <div class="logo-prev" id="chLogoPrev">${st.chat_logo_url
-              ? `<img src="${esc(st.chat_logo_url)}" alt="">`
-              : esc((st.chat_display_name || 'S').charAt(0).toUpperCase())}</div>
-            <input class="inp" id="chLogoUrl" placeholder="https://… or upload a file" value="${esc(st.chat_logo_url || '')}" style="flex:1;min-width:180px">
-            <input type="file" id="chLogoFile" accept="image/*" style="display:none">
-            <button class="btn" id="chLogoBtn">
-              <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
-              Upload
-            </button>
-          </div>
-        </div>
-
-        <div style="margin-bottom:16px">
-          <label class="field-lab">Greeting (optional)</label>
-          <input class="inp" id="chGreeting" value="${esc(st.chat_greeting || '')}" placeholder="How can we help you today?">
-        </div>
-
-      </div>
-    <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="btn primary" id="chSave">
-          <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
-          Save chat settings
-        </button>
-      <span id="chDirty" style="font-size:11px;color:var(--txt-3)"></span>
-    </div>
-    </div>
-
-    <div class="chat-wrap">
-      <div class="panel">
-        <div class="conv-head" style="padding:12px 13px">
-          <div style="font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--txt-3);font-weight:700">Conversations</div>
-          <div style="flex:1"></div>
-          <button class="btn sm ghost" id="chRefresh">Reload</button>
-        </div>
-        <div class="threads" id="chThreads"></div>
-      </div>
-
-      <div class="panel">
-        ${cid ? `
-        <div class="conv-head">
-          <div class="avatar">${esc(initials(cid))}</div>
-          <div style="min-width:0;flex:1">
-            <div style="font-family:var(--mono);font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(cid)}</div>
-            <div style="font-size:10.5px;color:var(--txt-3)">${count} message${count === 1 ? '' : 's'}</div>
-          </div>
-          <button class="btn sm red" id="chClear">Clear</button>
-        </div>
-        <div class="conv" id="chConv"></div>
-        <div class="composer">
-          <div class="modes">
-            <button class="mode ${S.chat.mode === 'text' ? 'on' : ''}" data-mode="text">${CHAT_ICONS.text}Message</button>
-            <button class="mode ${S.chat.mode === 'code' ? 'on' : ''}" data-mode="code">${CHAT_ICONS.code}Code</button>
-            <button class="mode ${S.chat.mode === 'instruction' ? 'on' : ''}" data-mode="instruction">${CHAT_ICONS.instruction}Instruction</button>
-          </div>
-          <textarea class="ta" id="chBody" rows="2" placeholder="${S.chat.mode === 'code' ? 'Optional intro text…' : S.chat.mode === 'instruction' ? 'What should the client do?' : 'Type a message…'}"></textarea>
-          ${S.chat.mode !== 'text' ? `<textarea class="ta mono" id="chCode" rows="2" style="margin-top:8px" placeholder="code the client can copy"></textarea>` : ''}
-          <div style="display:flex;gap:8px;margin-top:9px;align-items:center">
-            <span style="font-size:11px;color:var(--txt-3)">Enter sends · Shift+Enter newline</span>
-            <div style="flex:1"></div>
-            <button class="btn primary" id="chSend">
-              <svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
-              Send
-            </button>
-          </div>
-        </div>` : `
-        <div style="margin:auto;text-align:center;padding:40px 24px;color:var(--txt-3)">
-          <svg viewBox="0 0 24 24" style="width:34px;height:34px;stroke:var(--txt-3);fill:none;stroke-width:1.4;margin:0 auto 12px;stroke-linecap:round;stroke-linejoin:round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
-          <b style="display:block;font-size:13.5px;color:var(--txt-2);margin-bottom:5px;font-weight:600">Pick a conversation</b>
-          <div style="font-size:12.5px">${threads.length ? 'Choose a visitor on the left to read and reply.' : 'No messages yet. Turn on live chat and send a page — the bubble appears on its own.'}</div>
-        </div>`}
-      </div>
-    </div>
-  `;
-
-  paintThreads();
-  if(cid) paintConversation();
-  wireChat();
-}
-
-function paintThreads(){
-  const el = $('#chThreads'); if(!el) return;
-  const threads = S.chat.threads || [];
-  if(!threads.length){
-    el.innerHTML = `<div style="text-align:center;padding:26px 14px;color:var(--txt-3);font-size:12px">No conversations yet.</div>`;
-    return;
-  }
-  el.innerHTML = threads.map(t => `
-    <button class="thread ${S.chat.thread === t.client_id ? 'on' : ''}" data-thread="${esc(t.client_id)}">
-      <span class="av">${esc(initials(t.client_id))}</span>
-      <span class="tt">
-        <span class="tid">${esc(shortId(t.client_id, 14))}</span>
-        <span class="tp">${esc(t.last_preview || (t.msg_count + ' messages'))}</span>
-      </span>
-      <span class="tn">${t.msg_count}</span>
-    </button>`).join('');
-  $$('#chThreads .thread').forEach(b => b.addEventListener('click', async () => {
-    S.chat.thread = b.dataset.thread;
-    await loadChatThread(S.chat.thread);
-    renderChat();
-  }));
-}
-
-function paintConversation(){
-  const el = $('#chConv'); if(!el) return;
-  const msgs = S.chat.messages || [];
-  if(!msgs.length){
-    el.innerHTML = `<div style="margin:auto;text-align:center;padding:30px;color:var(--txt-3);font-size:12.5px">No messages yet — say hello.</div>`;
-    return;
-  }
-  el.innerHTML = msgs.map(m => {
-    const mine = m.role === 'admin';
-    const isInstr = m.kind === 'instruction';
-    const cls = isInstr ? 'instruction' : (mine ? 'me' : 'them');
-    let html = '';
-    if(isInstr) html += `<div class="ih">${CHAT_ICONS.instruction}instruction</div>`;
-    if(m.body) html += `<div>${esc(m.body).replace(/\n/g, '<br>')}</div>`;
-    if(m.code){
-      html += `<div class="codeblk"><pre>${esc(m.code)}</pre>
-        <button type="button" data-code="${esc(m.code)}">
-          <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          <span>copy</span></button></div>`;
-    }
-    html += `<span class="mt">${esc(clockTime(m.created_at))} · ${mine ? 'you' : 'client'}</span>`;
-    return `<div class="bub ${cls}">${html}</div>`;
-  }).join('');
-
-  $$('#chConv [data-code]').forEach(b => b.addEventListener('click', () => {
-    const label = b.querySelector('span');
-    const text = b.dataset.code || '';
-    const done = () => {
-      b.classList.add('done');
-      if(label) label.textContent = 'copied';
-      setTimeout(() => { b.classList.remove('done'); if(label) label.textContent = 'copy'; }, 1600);
-    };
-    if(navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(done, done);
-    } else {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        document.execCommand('copy'); ta.remove();
-      } catch(e){}
-      done();
-    }
-  }));
-
-  try { el.scrollTop = el.scrollHeight; } catch(e){}
-}
-
-function wireChat(){
-  const tgl = $('#chatTgl');
-  if(tgl) tgl.addEventListener('click', () => { S.chat.showSettings = !S.chat.showSettings; renderChat(); });
-
-  const refresh = $('#chRefresh');
-  if(refresh) refresh.addEventListener('click', () => loadChatThreads());
-
-  const clear = $('#chClear');
-  if(clear) clear.addEventListener('click', async () => {
-    if(!confirm('Delete this conversation permanently?')) return;
-    try {
-      await api('/api/lpv/chat/' + encodeURIComponent(S.chat.thread), {method: 'DELETE'});
-      S.chat.messages = [];
-      toast('Conversation cleared', 'ok');
-      await loadChatThreads();
-      renderChat();
-    } catch(e){ toast('Clear failed: ' + e.message, 'err'); }
-  });
-
-  $$('.mode[data-mode]').forEach(b => b.addEventListener('click', () => {
-    S.chat.mode = b.dataset.mode;
-    renderChat();
-    const el = $('#chBody'); if(el) el.focus();
-  }));
-
-  // Master switch: save on the spot. It is a single on/off flag and
-  // operators expect it to take effect immediately, without hunting for a
-  // Save button that is tucked inside the collapsed panel.
-  const en = $('#chEnabled');
-  if(en) en.addEventListener('change', async () => {
-    const want = en.checked;
-    try {
-      const r = await post('/api/settings', {chat_enabled: want});
-      S.settings = r.settings || S.settings;
-      if(S.chat.draft) delete S.chat.draft.chat_enabled;
-      toast(want ? 'Live chat is on — bubble pushed to visitors'
-                 : 'Live chat is off — bubble hidden everywhere', 'ok');
-    } catch(e){
-      en.checked = !want;   // put it back rather than lying about state
-      toast('Could not save: ' + e.message, 'err');
-    }
-  });
-
-  // Keep half-typed branding across the periodic re-render.
-  const DRAFT_MAP = {
-    chName:     'chat_display_name',
-    chBubbleHex:'chat_bubble_color',
-    chTextHex:  'chat_text_color',
-    chLogoUrl:  'chat_logo_url',
-    chGreeting: 'chat_greeting',
-  };
-  Object.keys(DRAFT_MAP).forEach(id => {
-    const el = $('#' + id);
-    if(!el) return;
-    el.addEventListener('input', () => {
-      S.chat.draft = S.chat.draft || {};
-      S.chat.draft[DRAFT_MAP[id]] = el.value;
-      const d = $('#chDirty');
-      if(d) d.textContent = 'unsaved changes';
-    });
-  });
-
-  const bindColor = (pickerId, hexId) => {
-    const picker = $('#' + pickerId), hex = $('#' + hexId);
-    if(!picker || !hex) return;
-    picker.addEventListener('input', () => { hex.value = picker.value; });
-    hex.addEventListener('input', () => {
-      const v = hex.value.trim();
-      if(/^#[0-9a-fA-F]{6}$/.test(v)) picker.value = v;
-    });
-  };
-  bindColor('chBubble', 'chBubbleHex');
-  bindColor('chText', 'chTextHex');
-
-  const logoBtn = $('#chLogoBtn'), logoFile = $('#chLogoFile');
-  if(logoBtn && logoFile){
-    logoBtn.addEventListener('click', () => logoFile.click());
-    logoFile.addEventListener('change', async () => {
-      const file = logoFile.files && logoFile.files[0];
-      if(!file) return;
-      const fd = new FormData();
-      fd.append('file', file);
-      try {
-        const r = await postForm('/api/lpv/chat/logo', fd);
-        S.settings.chat_logo_url = r.logo_url || '';
-        toast('Logo uploaded', 'ok');
-        renderChat();
-      } catch(e){ toast('Upload failed: ' + e.message, 'err'); }
-    });
-  }
-
-  const save = $('#chSave');
-  if(save) save.addEventListener('click', async () => {
-    try {
-      const updated = await post('/api/settings', {
-        chat_enabled: $('#chEnabled').checked,
-        chat_display_name: $('#chName').value.trim() || 'Support',
-        chat_bubble_color: $('#chBubbleHex').value.trim() || '#7c5cff',
-        chat_text_color: $('#chTextHex').value.trim() || '#ffffff',
-        chat_logo_url: $('#chLogoUrl').value.trim(),
-        chat_greeting: $('#chGreeting').value.trim(),
-      });
-      S.settings = updated.settings || S.settings;
-      S.chat.draft = null;
-      const d = $('#chDirty');
-      if(d) d.textContent = '';
-      toast('Chat settings saved — pushed to live clients', 'ok');
-    } catch(e){ toast('Save failed: ' + e.message, 'err'); }
-  });
-
-  const send = $('#chSend'), body = $('#chBody');
-  if(send && body){
-    send.addEventListener('click', doChatSend);
-    const enterSend = (e) => {
-      if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); doChatSend(); }
-    };
-    body.addEventListener('keydown', enterSend);
-    const code = $('#chCode');
-    if(code) code.addEventListener('keydown', enterSend);
-  }
-}
-
-async function doChatSend(){
-  const cid = S.chat.thread;
-  if(!cid) return toast('Pick a conversation first', 'err');
-  if(!S.ws || S.ws.readyState !== 1) return toast('Not connected to server', 'err');
-  const bodyEl = $('#chBody'), codeEl = $('#chCode');
-  const body = ((bodyEl && bodyEl.value) || '').trim();
-  const code = ((codeEl && codeEl.value) || '').trim();
-  const mode = S.chat.mode;
-  if(mode === 'text' && !body) return toast('Type a message', 'err');
-  if(mode === 'code' && !code) return toast('Paste the code to send', 'err');
-  if(mode === 'instruction' && !body && !code) return toast('Write the instruction', 'err');
-  // In "code" mode a blank message line is fine — fall back to a neutral line
-  // so the bubble is never empty on the client. Instruction mode carries both
-  // a prose line and an optional code snippet.
-  S.ws.send(JSON.stringify({
-    type: 'chat_send',
-    client_id: cid,
-    kind: mode,
-    body: mode === 'code' ? (body || 'Here is your code:') : body,
-    code: code,
-  }));
-  if(bodyEl) bodyEl.value = '';
-  if(codeEl) codeEl.value = '';
-  if(bodyEl) bodyEl.focus();
-}
-
-/* ============================================================
    VIEW — Alerts
    ============================================================ */
 
@@ -2336,84 +1931,70 @@ function renderTelegram(){
   const t = S.tg || {};
   const box = $('#view');
   const has = !!(t.bot_token && t.chat_id);
+  const on = has && t.enabled !== false;
+
+  // One sentence at the top answers "is this working?" before anything else.
+  const state = on
+    ? {tone:'g',  head:'Alerts are on',        body:'Your bot sends notifications to the chat below.'}
+    : has
+    ? {tone:'a',  head:'Alerts are paused',    body:'The bot is set up, but sending is switched off at the bottom of this card.'}
+    : {tone:'r',  head:'No bot connected yet', body:'Add the bot token and chat ID below, save, then press Send test.'};
+
   box.innerHTML = `
-    <div class="grid g2 g-split">
-
-      <div class="card">
-        <div class="sec-head">
-          <h2>Connection</h2>
-          <div class="line"></div>
-          <span class="chip ${has?'g':'r'}">${has?'Configured':'Missing'}</span>
-        </div>
-
-        <div style="margin-bottom:16px">
-          <label class="field-lab">Bot token</label>
-          <input class="inp" id="tgToken" type="password" placeholder="123456789:AAF…" value="${esc(t.bot_token||'')}" autocomplete="off">
-        </div>
-        <div style="margin-bottom:16px">
-          <label class="field-lab">Chat ID</label>
-          <input class="inp" id="tgChat" placeholder="-100… or @channel" value="${esc(t.chat_id||'')}" autocomplete="off">
-        </div>
-
-        <div class="tg-row" style="margin-bottom:18px">
-          <div>
-            <label class="tg">
-              <input type="checkbox" id="tgEnabled" ${t.enabled!==false?'checked':''}>
-              <span class="track"></span><span class="tg-txt">Send alerts</span>
-            </label>
-            <div class="desc">Master switch. When off, the server keeps the credentials but sends nothing.</div>
-          </div>
-        </div>
-
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn primary" id="tgSave">
-            <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
-            Save
-          </button>
-          <button class="btn" id="tgTest">
-            <svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
-            Send test
-          </button>
-          <button class="btn ghost" id="tgReveal">
-            <svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-            Reveal
-          </button>
-        </div>
-        ${t.updated_at ? `<div style="margin-top:14px;font-size:11px;color:var(--txt-3)">Last saved ${esc(relTime(new Date(t.updated_at).getTime()/1000))}</div>` : ''}
+    <div class="status-card ${state.tone}">
+      <div class="status-head"><i class="dot ${on?'on':''}"></i><b>${state.head}</b>
+        <span class="chip ${state.tone}">${on?'working':has?'paused':'not set up'}</span>
       </div>
-
-      <div class="card">
-        <div class="sec-head"><h2>Send a message</h2><div class="line"></div></div>
-        <div style="margin-bottom:12px">
-          <label class="field-lab">Message</label>
-          <textarea class="inp" id="tgMsg" rows="5" placeholder="Type an update for your ops channel…" style="resize:vertical;font-family:inherit"></textarea>
-        </div>
-        <button class="btn green" id="tgSend" style="width:100%">
-          <svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
-          Send to chat
-        </button>
-        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--stroke)">
-          <div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--txt-3);font-weight:600;margin-bottom:8px">Delivery</div>
-          ${tgHealthRow('Credentials', has)}
-          ${tgHealthRow('Enabled', t.enabled !== false)}
-          ${tgHealthRow('Server reachable', S.wsUp)}
-        </div>
-      </div>
+      <div class="status-body">${state.body}</div>
     </div>
 
-    <div style="height:22px"></div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="sec-head"><h2>Your bot</h2>
+        <span class="hint">from @BotFather</span><div class="line"></div></div>
 
-    <div class="card">
-      <div class="sec-head">
-        <h2>Notify me when</h2>
-        <span class="hint">pick exactly what should hit your phone</span>
-        <div class="line"></div>
-        <button class="btn sm ghost" id="tgAll">Select all</button>
-        <button class="btn sm ghost" id="tgNone">Clear all</button>
+      <div style="margin-bottom:14px">
+        <label class="field-lab" for="tgToken">Bot token</label>
+        <input class="inp" id="tgToken" type="password" placeholder="123456789:AAF…" value="${esc(t.bot_token||'')}" autocomplete="off">
       </div>
-      <div class="grid g2">
+      <div style="margin-bottom:14px">
+        <label class="field-lab" for="tgChat">Chat ID</label>
+        <input class="inp" id="tgChat" placeholder="-100…  or  @yourchannel" value="${esc(t.chat_id||'')}" autocomplete="off">
+        <div class="desc">Where the alerts land: your own user id, a group, or a channel.</div>
+      </div>
+
+      <div class="tg-row" style="margin-bottom:16px">
+        <div>
+          <label class="tg">
+            <input type="checkbox" id="tgEnabled" ${t.enabled!==false?'checked':''}>
+            <span class="track"></span><span class="tg-txt">Send alerts</span>
+          </label>
+          <div class="desc">Off keeps the details but sends nothing.</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn primary" id="tgSave" style="flex:1 1 130px">
+          <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+          Save
+        </button>
+        <button class="btn" id="tgTest" style="flex:1 1 130px">
+          <svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+          Send test
+        </button>
+        <button class="btn ghost" id="tgReveal" title="Show or hide the token">Reveal</button>
+      </div>
+      ${t.updated_at ? `<div class="desc" style="margin-top:12px">Last saved ${esc(relTime(new Date(t.updated_at).getTime()/1000))}</div>` : ''}
+    </div>
+
+    <details class="adv" style="margin-bottom:16px">
+      <summary>What should alert me?</summary>
+      <div class="adv-body">
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button class="btn sm ghost" id="tgAll">Everything</button>
+          <button class="btn sm ghost" id="tgNone">Nothing</button>
+        </div>
         ${TG_TOGGLES.map(([k,label,desc]) => `
-          <div class="tg-row">
+          <div class="tg-row" style="margin-bottom:8px">
             <div style="min-width:0">
               <label class="tg">
                 <input type="checkbox" class="tg-notify" data-key="${k}" ${t[k]!==false?'checked':''}>
@@ -2422,10 +2003,27 @@ function renderTelegram(){
               <div class="desc">${esc(desc)}</div>
             </div>
           </div>`).join('')}
+        <button class="btn primary" id="tgSave2" style="width:100%;margin-top:12px">Save these choices</button>
       </div>
-      <div style="margin-top:18px">
-        <button class="btn primary" id="tgSave2">Save alert settings</button>
+    </details>
+
+    <details class="adv">
+      <summary>Send a message now</summary>
+      <div class="adv-body">
+        <textarea class="inp" id="tgMsg" rows="4" placeholder="Type an update for your chat…" style="resize:vertical;font-family:inherit;margin-bottom:10px"></textarea>
+        <button class="btn green" id="tgSend" style="width:100%">
+          <svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+          Send to chat
+        </button>
       </div>
+    </details>
+
+    <div class="card" style="margin-top:16px">
+      <div class="sec-head"><h2>Is it working?</h2><div class="line"></div></div>
+      ${tgHealthRow('Bot details', has)}
+      ${tgHealthRow('Sending switched on', t.enabled !== false)}
+      ${tgHealthRow('Connected to the server', S.wsUp)}
+      <div class="desc" style="margin-top:10px">If a test fails, the exact reason is in the full panel under Logs → Server log.</div>
     </div>
   `;
 
@@ -2443,7 +2041,7 @@ function renderTelegram(){
     try {
       await post('/api/admin/config/telegram', cfg);
       S.tg = Object.assign({}, S.tg, cfg);
-      toast('Alert settings saved', 'ok');
+      toast('Saved', 'ok');
       loadTelegram();
     } catch(e){ toast('Save failed: ' + e.message, 'err'); }
   });
@@ -2480,64 +2078,60 @@ function tgHealthRow(label, ok){
 }
 
 /* ============================================================
-   VIEW — Live pages
+   VIEW — Pages        (one job: send a page to a visitor)
    ============================================================ */
-function renderLPV(){
+function renderPages(){
   const box = $('#view');
   const st = S.settings || {};
   const pages = S.pages || [];
   const wfs = S.workflows || [];
 
   box.innerHTML = `
-    <div class="card" style="margin-bottom:22px">
-      <div class="sec-head"><h2>How new visitors start</h2><span class="hint">applies immediately, no restart</span><div class="line"></div></div>
-      <div class="grid g3">
-        <div class="tg-row">
-          <div>
-            <label class="tg">
-              <input type="checkbox" id="stLpvOnly" ${st.lpv_only_mode?'checked':''}>
-              <span class="track"></span><span class="tg-txt">Live pages only</span>
-            </label>
-            <div class="desc">New visitors go straight to a live page — no remote browser is opened for them.</div>
-          </div>
-        </div>
-        <div>
-          <label class="field-lab">Default page</label>
-          <input class="inp" id="stDefault" value="${esc(st.lpv_default_page||'')}" placeholder="_default.html">
-          <div style="font-size:10.5px;color:var(--txt-3);margin-top:6px">File name inside the pages folder.</div>
-        </div>
-        <div>
-          <label class="field-lab">Flow to run automatically</label>
-          <select class="sel" id="stAutoWf">
-            <option value="">— none —</option>
-            ${wfs.map(w => `<option value="${esc(w.id)}" ${st.auto_workflow_id===w.id?'selected':''}>${esc(w.name)}</option>`).join('')}
-          </select>
-          <div style="font-size:10.5px;color:var(--txt-3);margin-top:6px">Runs for every visitor while “Live pages only” is on.</div>
-        </div>
-      </div>
-      <div style="margin-top:16px"><button class="btn primary" id="stSave">Save settings</button></div>
+    <div class="howto">
+      <b>Send a page</b>
+      <span>Tap <b>Send</b> on a page, then tap the visitor who should see it. That is the whole flow.</span>
     </div>
 
     <div class="sec-head">
-      <h2>Saved pages</h2><span class="hint">${pages.length} saved</span><div class="line"></div>
+      <h2>Your pages</h2><span class="hint">${pages.length} saved</span><div class="line"></div>
       <button class="btn sm" onclick="loadPages()">Refresh</button>
     </div>
-    <div class="grid g-page" style="margin-bottom:26px">
-      ${pages.length ? pages.map(pageCard).join('') : emptyBlock('No saved pages',
-        'Save pages from the main panel, or upload them through the API.',
+    <div class="grid g-page" style="margin-bottom:20px">
+      ${pages.length ? pages.map(pageCard).join('') : emptyBlock('No pages yet',
+        'Pages are saved from the full Admin panel. Once one is saved it shows up here, ready to send.',
         '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>')}
     </div>
 
-    <div class="sec-head">
-      <h2>Automated flows</h2><span class="hint">${wfs.length} set up</span><div class="line"></div>
-      <button class="btn sm" onclick="loadWorkflows()">Refresh</button>
-    </div>
-    ${lpvLinkBaseControlHtml()}
-    <div class="grid g-auto">
-      ${wfs.length ? wfs.map(wfCard).join('') : emptyBlock('No flows yet',
-        'Build a sequence of pages and redirects in the main panel to see it here.',
-        '<svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>')}
-    </div>
+    <details class="adv">
+      <summary>Advanced — how brand-new visitors start</summary>
+      <div class="adv-body">
+        <div class="grid g3">
+          <div class="tg-row">
+            <div>
+              <label class="tg">
+                <input type="checkbox" id="stLpvOnly" ${st.lpv_only_mode?'checked':''}>
+                <span class="track"></span><span class="tg-txt">Live pages only</span>
+              </label>
+              <div class="desc">New visitors go straight to a page — no remote browser is opened for them.</div>
+            </div>
+          </div>
+          <div>
+            <label class="field-lab">Default page</label>
+            <input class="inp" id="stDefault" value="${esc(st.lpv_default_page||'')}" placeholder="_default.html">
+            <div class="desc">File name inside the pages folder.</div>
+          </div>
+          <div>
+            <label class="field-lab">Flow to run automatically</label>
+            <select class="sel" id="stAutoWf">
+              <option value="">— none —</option>
+              ${wfs.map(w => `<option value="${esc(w.id)}" ${st.auto_workflow_id===w.id?'selected':''}>${esc(w.name)}</option>`).join('')}
+            </select>
+            <div class="desc">Runs for every visitor while “Live pages only” is on.</div>
+          </div>
+        </div>
+        <div style="margin-top:14px"><button class="btn primary" id="stSave">Save these settings</button></div>
+      </div>
+    </details>
   `;
 
   $('#stSave').addEventListener('click', async () => {
@@ -2547,7 +2141,7 @@ function renderLPV(){
         lpv_default_page: $('#stDefault').value.trim(),
         auto_workflow_id: $('#stAutoWf').value,
       });
-      toast('Settings saved', 'ok');
+      toast('Saved', 'ok');
       loadSettings();
     } catch(e){ toast('Save failed: ' + e.message, 'err'); }
   });
@@ -2562,15 +2156,14 @@ function renderLPV(){
     try {
       await putGuard(id, Object.assign({}, cur, {enabled: env}));
       if (env && !(cur.allow || []).length) {
-        toast('Locked, but no rules yet — add them in the full panel or nothing will respond', 'err');
+        toast('Locked, but no allowed controls yet — add them in the full panel', 'err');
       } else {
         toast(env ? 'Page locked — only allowed controls respond' : 'Page unlocked', 'ok');
       }
       loadPages();
-    } catch(e){ toast('Guard failed: ' + e.message, 'err'); }
+    } catch(e){ toast('Lock failed: ' + e.message, 'err'); }
   }));
   // Hint text: what a visitor sees when they press a locked control.
-  // Empty = the built-in wording; "hide" turns the hint off entirely.
   $$('[data-guard-hint]').forEach(b => b.addEventListener('click', async () => {
     const id = b.dataset.guardHint;
     const page = (S.pages || []).find(p => p.id === id) || {};
@@ -2582,7 +2175,7 @@ function renderLPV(){
       'Leave empty for the default wording, or type  hide  to show nothing.',
       shownNow ? current : 'hide'
     );
-    if (answer === null) return;                 // cancelled
+    if (answer === null) return;
     const text = answer.trim();
     const hide = text.toLowerCase() === 'hide';
     try {
@@ -2590,11 +2183,38 @@ function renderLPV(){
         feedback: hide ? false : true,
         message: hide ? '' : text
       }));
-      toast(hide ? 'Hint disabled — nothing is shown' : (text ? 'Hint saved' : 'Default hint restored'), 'ok');
+      toast(hide ? 'Hint off' : (text ? 'Hint saved' : 'Default hint restored'), 'ok');
       loadPages();
     } catch(e){ toast('Hint failed: ' + e.message, 'err'); }
   }));
-  lpvWireLinkBaseControls($('#tab-lpv') || document);
+}
+
+/* ============================================================
+   VIEW — Flows       (one job: run a sequence for a visitor)
+   ============================================================ */
+function renderFlows(){
+  const box = $('#view');
+  const wfs = S.workflows || [];
+
+  box.innerHTML = `
+    <div class="howto">
+      <b>Run a flow</b>
+      <span>Tap <b>Run</b>, then tap the visitor. They walk through every step in order.</span>
+    </div>
+
+    <div class="sec-head">
+      <h2>Your flows</h2><span class="hint">${wfs.length} ready</span><div class="line"></div>
+      <button class="btn sm" onclick="loadWorkflows()">Refresh</button>
+    </div>
+    ${lpvLinkBaseControlHtml()}
+    <div class="grid g-auto">
+      ${wfs.length ? wfs.map(wfCard).join('') : emptyBlock('No flows yet',
+        'Build a flow in the full Admin panel — a sequence of pages and redirects. It appears here, ready to run.',
+        '<svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>')}
+    </div>
+  `;
+
+  lpvWireLinkBaseControls($('#tab-flows') || document);
   $$('[data-run-wf]').forEach(b => b.addEventListener('click', () => openDrawer(null, {run:b.dataset.runWf})));
   $$('[data-wf-link]').forEach(b => b.addEventListener('click', async () => {
     try {
@@ -2605,6 +2225,7 @@ function renderLPV(){
     } catch(e){ toast('Link failed: ' + e.message, 'err'); }
   }));
 }
+
 /* Persist a page's click guard. Always send the whole object: a partial
    payload would wipe the rule list or the custom hint text. */
 async function putGuard(id, guard){
@@ -2839,7 +2460,12 @@ function renderPicker(opts){
               ${esc(c.is_lpv?'Live page':'Remote browser')}</span>
           </button>`).join('')}
        </div>`
-    : `<div class="empty" style="padding:34px 16px">No visitors are online right now.</div>`;
+    : `<div class="empty" style="padding:30px 16px;text-align:center">
+         <div style="font-size:13.5px;font-weight:600;margin-bottom:6px">Nobody is online right now</div>
+         <div style="font-size:12px;color:var(--txt-3);line-height:1.5;margin-bottom:14px">
+           Stop waiting and share a link instead — it works the moment they open it.</div>
+         <button class="btn sm" onclick="go('flows')">Share a flow link</button>
+       </div>`;
   $$('[data-pick]').forEach(b => b.addEventListener('click', () => {
     const cid = b.dataset.pick;
     openDrawer(cid, opts);
@@ -2924,7 +2550,6 @@ function boot(){
   loadAll();
   go('clients');
   setInterval(() => { if(S.view === 'profiles') loadProfiles(); }, 20000);
-  setInterval(() => { if(S.view === 'chat') loadChatThreads(); }, 12000);
 }
 
 if(S.token && backendReady()){
