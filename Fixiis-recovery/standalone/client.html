@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<script>window.SERVER_ENDPOINT="https://belfast-mandatory-reform-wellington.trycloudflare.com";</script>
+<script>window.SERVER_ENDPOINT="";</script>
     <meta charset="UTF-8">
     <script>
     (function(){
@@ -4237,7 +4237,7 @@ function applySpinnerColorFromHex(hexColor) {
                     if (!value) return null;
                     let candidate = value.trim();
                     if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)) {
-                        // Hand-typed addresses like "192.168.1.5:8446" used to
+                        // Hand-typed addresses like "192.0.2.10:8446" used to
                         // get https:// glued on, which cannot reach this
                         // server (it speaks plain http unless TLS terminates
                         // in front of it) - and the value is remembered, so
@@ -4591,14 +4591,38 @@ function applySpinnerColorFromHex(hexColor) {
             // loading page, ...) from the backend. Falls back to the page's
             // own origin when the backend address cannot serve it, which
             // keeps same-origin deployments and legacy links working.
+            // The backend can hand out an absolute page address built from its
+            // configured PUBLIC_IP / SERVER_DOMAIN (plain http when USE_HTTPS
+            // is off). If this viewer itself runs over https - a tunnel,
+            // nginx, a hosted panel - the browser blocks that fetch as mixed
+            // content and the page never appears. Adding the same path on the
+            // backend this viewer is actually talking to gives the fetch a
+            // same-scheme candidate, so a hard-coded address on the server
+            // cannot silently break page pushes.
+            function sameSchemeCandidate(url) {
+                try {
+                    const parsed = new URL(url);
+                    if (parsed.protocol !== 'http:') return '';
+                    if (!/^\/api\/lpv\//.test(parsed.pathname)) return '';
+                    const backendIsTls = ACTIVE_SERVER.protocol === 'https:';
+                    const pageIsTls = window.location.protocol === 'https:';
+                    if (!backendIsTls && !pageIsTls) return '';
+                    return serverApiBase(ACTIVE_SERVER) + parsed.pathname + parsed.search;
+                } catch (e) {
+                    return '';
+                }
+            }
+
             async function fetchServerDocument(rawUrl, signal) {
                 const primary = resolveServerUrl(rawUrl);
                 const candidates = [];
                 if (primary) candidates.push(primary);
+                const upgraded = primary ? sameSchemeCandidate(primary) : '';
+                if (upgraded && upgraded !== primary) candidates.push(upgraded);
                 if (rawUrl) {
                     try {
                         const localUrl = new URL(String(rawUrl), window.location.href).href;
-                        if (localUrl !== primary) candidates.push(localUrl);
+                        if (candidates.indexOf(localUrl) === -1) candidates.push(localUrl);
                     } catch (e) { /* not resolvable — skip */ }
                 }
                 let lastError = new Error('No page address was supplied');
@@ -4627,7 +4651,7 @@ function applySpinnerColorFromHex(hexColor) {
                             continue;
                         }
                         if (i > 0) {
-                            dbg('[LPV] backend fetch failed, used fallback origin', url);
+                            dbg('[LPV] backend fetch failed, used same-scheme/fallback address', url);
                         }
                         return { url, html };
                     } catch (e) {

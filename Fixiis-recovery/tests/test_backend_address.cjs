@@ -6,7 +6,7 @@
 //
 //   * the address is remembered in localStorage ('lpv_server_endpoint') and
 //     shared by Admin.html, mini-admin.html and client.html;
-//   * a bare "192.168.1.5:8446" used to be turned into https://<that>, which
+//   * a bare "192.0.2.10:8446" used to be turned into https://<that>, which
 //     this server never answers (it speaks http unless TLS is in front);
 //   * nothing in the panel showed or allowed changing that address.
 //
@@ -45,8 +45,8 @@ function guess(value, pageProtocol) {
   }
   return new URL(candidate).origin;
 }
-assert.equal(guess('192.168.1.5:8446', 'http:'), 'http://192.168.1.5:8446');
-assert.equal(guess('192.168.1.5:8446', 'https:'), 'https://192.168.1.5:8446');
+assert.equal(guess('192.0.2.10:8446', 'http:'), 'http://192.0.2.10:8446');
+assert.equal(guess('192.0.2.10:8446', 'https:'), 'https://192.0.2.10:8446');
 assert.equal(guess('https://panel.example.com', 'http:'), 'https://panel.example.com');
 checks += 3;
 
@@ -95,7 +95,7 @@ function extract(source, name) {
 const ctx = {
   URL,
   ACTIVE_SERVER: new URL('https://stale.example:8446'),
-  PAGE_ORIGIN_URL: new URL('http://192.168.1.5:8446'),
+  PAGE_ORIGIN_URL: new URL('http://192.0.2.10:8446'),
   serverFallbackUsed: false,
   API_ORIGIN: 'https://stale.example:8446',
   API_PATH_PREFIX: '',
@@ -110,9 +110,9 @@ vm.runInContext(extract(client, 'serverWsBase'), ctx);
 vm.runInContext(extract(client, 'switchToPageOrigin'), ctx);
 
 ok(ctx.switchToPageOrigin() === true, 'switchToPageOrigin switches once');
-assert.equal(ctx.CONFIG.wsUrl, 'ws://192.168.1.5:8446/ws');
-assert.equal(ctx.CONFIG.apiUrl, 'http://192.168.1.5:8446');
-assert.equal(ctx.API_ORIGIN, 'http://192.168.1.5:8446');
+assert.equal(ctx.CONFIG.wsUrl, 'ws://192.0.2.10:8446/ws');
+assert.equal(ctx.CONFIG.apiUrl, 'http://192.0.2.10:8446');
+assert.equal(ctx.API_ORIGIN, 'http://192.0.2.10:8446');
 checks += 3;
 ok(ctx.switchToPageOrigin() === false, 'it never switches twice (no ping-pong)');
 ok(ctx.serverFallbackUsed === true, 'the fallback is recorded as used');
@@ -120,12 +120,12 @@ ok(ctx.serverFallbackUsed === true, 'the fallback is recorded as used');
 // Same origin already -> nothing to do (fresh state).
 const same = vm.createContext({
   URL,
-  ACTIVE_SERVER: new URL('http://192.168.1.5:8446'),
-  PAGE_ORIGIN_URL: new URL('http://192.168.1.5:8446'),
+  ACTIVE_SERVER: new URL('http://192.0.2.10:8446'),
+  PAGE_ORIGIN_URL: new URL('http://192.0.2.10:8446'),
   serverFallbackUsed: false,
-  API_ORIGIN: 'http://192.168.1.5:8446',
+  API_ORIGIN: 'http://192.0.2.10:8446',
   API_PATH_PREFIX: '',
-  CONFIG: { wsUrl: 'ws://192.168.1.5:8446/ws', apiUrl: 'http://192.168.1.5:8446' },
+  CONFIG: { wsUrl: 'ws://192.0.2.10:8446/ws', apiUrl: 'http://192.0.2.10:8446' },
   dbg: () => {},
 });
 vm.runInContext(extract(client, 'serverApiBase'), same);

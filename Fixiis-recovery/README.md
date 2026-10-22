@@ -154,7 +154,7 @@ python main.py --setup          # force venv creation + pip install
 python main.py --network        # listen on the whole network (0.0.0.0)
 python main.py --local          # listen on 127.0.0.1 only
 python main.py --port 9000      # override PORT for this run
-python main.py --host 10.0.0.5  # bind one specific address
+python main.py --host 198.51.100.10  # bind one specific address
 python main.py --open           # open the admin page once it is up
 python main.py --help           # all options
 ```
@@ -208,10 +208,10 @@ device on the same network can open it. `main.py` prints the address to use:
 ```
   Fixiis / Neo Browser Stream
 
-    admin   http://192.168.0.14:8446/admin
-    mini    http://192.168.0.14:8446/mini
-    client  http://192.168.0.14:8446/client.html
-    health  http://192.168.0.14:8446/health
+    admin   http://198.51.100.10:8446/admin
+    mini    http://198.51.100.10:8446/mini
+    client  http://198.51.100.10:8446/client.html
+    health  http://198.51.100.10:8446/health
     local   http://127.0.0.1:8446/admin   (this machine only)
 ```
 
@@ -331,11 +331,34 @@ python main.py --fix-env          # repair placeholder/blank .env values
 * `GET /health` never fails because an optional subsystem is broken; it
   reports `build.revision`, uptime and auto-update state.
 
+### No server address is baked into the code
+
+The only place an address may live is **your** settings: `config.py` (or
+`PUBLIC_IP` / `SERVER_DOMAIN` in the environment, or the `Server:` field on
+the login screen, which is stored in the browser). Both config values ship
+blank, and blank means "no address": page URLs and links are server-relative
+and each client resolves them against the backend it actually reached. That is
+what makes one install work on localhost, on a LAN address, behind nginx and
+behind a tunnel without editing anything.
+
+`tests/test_no_hardcoded_addresses.cjs` enforces it: the build fails if a
+private or public IP literal appears in `api.py`, `main.py`, `bootstrap.py`,
+`config.py`, the three panels or `deploy/`. Only loopback/wildcard, the RFC
+5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`)
+and the connectivity probes (`8.8.8.8`, `1.1.1.1`) are allowed.
+
+`deploy/make-standalone.sh <url>` is the deliberate exception: it produces
+copies with **your** address baked in, for double-click use off a disk or a
+static host. That output is git-ignored, so the address never enters a commit.
+`./deploy/make-standalone.sh --none` produces copies with no address at all
+(they ask once, `?server=…`, or use the origin that served them) — that is what
+the committed `standalone/client.html` is.
+
 ### The remembered backend
 
 `Admin.html`, `mini-admin.html` and `client.html` all remember the backend in
 `localStorage` under `lpv_server_endpoint`. An address typed without a scheme
-(`192.168.1.5:8446`) now keeps the page's own scheme instead of being forced
+(`192.0.2.10:8446`) now keeps the page's own scheme instead of being forced
 to `https://`, and if it is stale the panel and the viewer retry against the
 origin that served them. Clear it from the login screen (`Server:` → empty) or
 in the browser devtools if you ever need to start over.
@@ -361,6 +384,7 @@ node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
 node tests/test_page_guard.cjs       # per-page click guard (interaction allowlist)
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
 node tests/test_backend_address.cjs  # "Connection error": backend address handling
+node tests/test_no_hardcoded_addresses.cjs  # no server address baked into code
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
 python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup

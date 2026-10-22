@@ -292,7 +292,7 @@ class EnvRepair(unittest.TestCase):
         for value in ("panel.example.com", "https://panel.example.com/",
                       "EXAMPLE.COM", "ops.example.org"):
             self.assertTrue(bootstrap.is_placeholder_domain(value), value)
-        for value in ("panel.myserver.net", "10.0.0.5", "", "mysite.io"):
+        for value in ("panel.myserver.net", "198.51.100.10", "", "mysite.io"):
             self.assertFalse(bootstrap.is_placeholder_domain(value), value)
 
     def test_admin_password_is_generated_once(self):
@@ -376,7 +376,9 @@ class ConfigSanitising(unittest.TestCase):
         domain, ip, host, port = json.loads(
             self._run({"SERVER_DOMAIN": "", "PUBLIC_IP": "", "HOST": "", "PORT": ""}))
         self.assertEqual(domain, "")
-        self.assertTrue(ip)
+        # Blank means "no address is baked in": links stay server-relative so
+        # the same install works on localhost, a LAN IP, nginx or a tunnel.
+        self.assertEqual(ip, "")
         self.assertTrue(host)
         self.assertEqual(port, 8446)
 
@@ -521,7 +523,7 @@ class Hosts(unittest.TestCase):
     def test_loopback_detection(self):
         for host in ("127.0.0.1", "localhost", "::1", "127.0.0.53", " [::1] "):
             self.assertTrue(bootstrap.is_loopback(host), host)
-        for host in ("0.0.0.0", "::", "", "192.168.1.20", "10.0.0.5"):
+        for host in ("0.0.0.0", "::", "", "198.51.100.10", "203.0.113.5"):
             self.assertFalse(bootstrap.is_loopback(host), host)
 
     def test_env_file_values_reads_the_file(self):
@@ -571,17 +573,17 @@ class Hosts(unittest.TestCase):
 class Banner(unittest.TestCase):
     def test_network_address_is_used_when_bound_publicly(self):
         out = io.StringIO()
-        bootstrap.banner("0.0.0.0", 9000, stream=out, machine_ip="192.168.0.14")
+        bootstrap.banner("0.0.0.0", 9000, stream=out, machine_ip="198.51.100.10")
         text = out.getvalue()
         for path in ("/admin", "/mini", "/client.html", "/health"):
-            self.assertIn(f"http://192.168.0.14:9000{path}", text)
+            self.assertIn(f"http://198.51.100.10:9000{path}", text)
         self.assertIn("http://127.0.0.1:9000/admin", text)   # local alias kept
         self.assertNotIn("only this machine can open it", text)
 
     def test_specific_bind_address_is_used_as_is(self):
         out = io.StringIO()
-        bootstrap.banner("10.1.2.3", 8446, stream=out)
-        self.assertIn("http://10.1.2.3:8446/admin", out.getvalue())
+        bootstrap.banner("203.0.113.5", 8446, stream=out)
+        self.assertIn("http://203.0.113.5:8446/admin", out.getvalue())
 
     def test_loopback_banner_warns_and_says_how_to_fix(self):
         out = io.StringIO()
@@ -601,7 +603,7 @@ class Banner(unittest.TestCase):
     def test_tunnel_line(self):
         out = io.StringIO()
         bootstrap.banner("0.0.0.0", 8446, tunnel="https://x.trycloudflare.com",
-                         stream=out, machine_ip="192.168.0.14")
+                         stream=out, machine_ip="198.51.100.10")
         self.assertIn("https://x.trycloudflare.com", out.getvalue())
 
 

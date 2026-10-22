@@ -995,7 +995,7 @@ function _normServerUrl(value){
   if(!value) return null;
   let candidate = String(value).trim();
   if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)){
-    // "192.168.1.5:8446" typed without a scheme used to become https://...,
+    // "192.0.2.10:8446" typed without a scheme used to become https://...,
     // which this server does not answer (it speaks http unless TLS sits in
     // front of it). The bad value is SAVED for every panel, so mirror the
     // page instead: https only when the panel itself was served over https.
@@ -1391,7 +1391,7 @@ function ensureBackend(){
   if(typed && setServerUrl(typed)) return true;
   const err = $('#loginError');
   if(err){
-    err.textContent = 'Enter your backend server URL first (e.g. https://1.2.3.4:8446).';
+    err.textContent = 'Enter your backend server URL first (e.g. https://192.0.2.10:8446).';
     err.classList.add('visible');
   }
   if(f) f.focus();

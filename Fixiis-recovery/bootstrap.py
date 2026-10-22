@@ -35,7 +35,7 @@ Usage
     python main.py --network       # listen on this machine's network (0.0.0.0)
     python main.py --local         # listen on 127.0.0.1 only
     python main.py --port 9000     # override PORT for this run
-    python main.py --host 192.168.0.14   # bind one specific address
+    python main.py --host 198.51.100.10   # bind one specific address
     python main.py --open          # open the admin page when it is up
 
 Where settings come from

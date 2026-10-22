@@ -70,9 +70,29 @@ class UltraConfig:
     auto_update: bool = False
     auto_update_interval: float = 2.0   # seconds between scans
     auto_update_debounce: float = 3.0   # quiet time after the last change
-    public_ip: str = "20.248.121.116"
-    server_domain: str = "simplify-hospitality.it.com"  # Domain name for server URL (e.g., "example.com")
-    use_https: bool = False  # Use HTTPS instead of HTTP
+    # ------------------------------------------------------------------
+    # The address the server hands to OTHER machines
+    # ------------------------------------------------------------------
+    # Both are BLANK by default on purpose. Blank means "no address is
+    # baked in": links and pushed page URLs are then server-relative
+    # ("/api/lpv/archive/<id>/html") and every client resolves them against
+    # whatever backend it actually reached, so the same install works on
+    # localhost, on a LAN IP, behind nginx and behind a tunnel without
+    # editing code - and a changing/reused IP cannot break page pushes or
+    # answer with mixed content.
+    #
+    # Set one ONLY when you need fully qualified links (a link pasted into
+    # Telegram, an email, another device):
+    #
+    #   public_ip = "203.0.113.10"        # or  PUBLIC_IP=203.0.113.10
+    #   server_domain = "panel.mysite.com"  # or  SERVER_DOMAIN=panel.mysite.com
+    #
+    # A domain that does not resolve here, or a placeholder such as
+    # example.com, is ignored rather than baked into links (see
+    # is_placeholder_host below).
+    public_ip: str = ""
+    server_domain: str = ""   # e.g. "panel.mysite.com"
+    use_https: bool = False   # True only when TLS terminates in front of the app
 
     # Performance
     target_fps: int = 60  # 60 FPS for maximum performance

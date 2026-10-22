@@ -9454,7 +9454,7 @@
                 if (!value) return null;
                 let candidate = value.trim();
                 if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)) {
-                    // A hand-typed "192.168.1.5:8446" used to become
+                    // A hand-typed "192.0.2.10:8446" used to become
                     // https://<that>, which can never reach this server
                     // (plain http unless TLS terminates in front of it).
                     // The wrong value is remembered, so the panel then

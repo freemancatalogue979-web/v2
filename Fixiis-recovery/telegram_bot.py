@@ -772,6 +772,30 @@ You have been successfully logged out."""
 Use <code>/login username password</code> to authenticate."""
             await self._send_telegram_message(chat_id, message_text.strip())
     
+    def _public_link_host(self) -> str:
+        """host[:port] that a Telegram link can point at, or ''.
+
+        A domain wins over an IP (TLS, tunnels, no NAT). Placeholder and
+        loopback values are skipped: a link to example.com or 127.0.0.1 is
+        worse than saying "configure this".
+        """
+        try:
+            from config import is_placeholder_host
+        except Exception:
+            def is_placeholder_host(_v):  # type: ignore
+                return False
+        domain = str(getattr(self.config, 'server_domain', '') or '').strip()
+        ip = str(getattr(self.config, 'public_ip', '') or '').strip()
+        loopback = {'localhost', '127.0.0.1', '0.0.0.0', '::1'}
+        if domain and not is_placeholder_host(domain) and domain.lower() not in loopback:
+            # A configured domain normally answers on 80/443, but keep an
+            # explicit port if the operator typed one.
+            return domain.rstrip('/')
+        if ip and not is_placeholder_host(ip) and ip.lower() not in loopback:
+            port = getattr(self.config, 'port', 8446)
+            return ip if ':' in ip or ip.endswith('/') else f"{ip}:{port}"
+        return ''
+
     async def _handle_link_command(self, chat_id: str, target_url: str = "https://www.google.com"):
         """Handle /link command - generate a client link"""
         try:
@@ -781,19 +805,29 @@ Use <code>/login username password</code> to authenticate."""
             link_data = create_auth_link(target_url)
             auth_id = link_data["auth_id"]
             
-            # Get server URL
-            server_domain = getattr(self.config, 'server_domain', '')
+            # Where should this link point? A Telegram message leaves the
+            # browser, so a server-relative link is useless here: this is the
+            # one place that genuinely needs an address. Blank settings are
+            # not an error any more - fall back to the public IP + port, and
+            # only ask the operator to configure something when neither is
+            # usable.
             use_https = getattr(self.config, 'use_https', False)
-            
-            if server_domain:
-                protocol = "https" if use_https else "http"
-                final_link = f"{protocol}://{server_domain}/client.html?auth={auth_id}&url={quote(target_url, safe='')}"
+            protocol = "https" if use_https else "http"
+            host = self._public_link_host()
+            if host:
+                final_link = (
+                    f"{protocol}://{host}/client.html"
+                    f"?auth={auth_id}&url={quote(target_url, safe='')}"
+                )
             else:
                 message_text = """
 <b>CONFIGURATION NOTICE</b>
 
-<b>Server Domain Not Configured</b>
-Please set <code>server_domain</code> in the system configuration."""
+<b>No Server Address To Link To</b>
+Links sent over Telegram have to carry a real address. Set
+<code>server_domain</code> (e.g. panel.mysite.com) or <code>public_ip</code>
+in config.py, or <code>SERVER_DOMAIN</code> / <code>PUBLIC_IP</code> in the
+environment. Everything inside the panel keeps working without one."""
                 await self._send_telegram_message(chat_id, message_text.strip())
                 return
 

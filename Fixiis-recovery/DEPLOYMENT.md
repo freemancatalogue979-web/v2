@@ -520,8 +520,21 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 **Share links point at the wrong address.**
-Set `PUBLIC_IP` and `SERVER_DOMAIN`. The shipped default in `config.py` is a
-hardcoded IP from a previous host.
+`config.py` now ships with **no address at all** (`public_ip = ""`,
+`server_domain = ""`), so links are server-relative and every client resolves
+them against the backend it actually reached. That is correct on localhost, a
+LAN IP, nginx and a tunnel, and it means a changed IP cannot break page pushes.
+
+Only set an address when a link must work somewhere that has no context (a
+link pasted into Telegram, an email, another device):
+
+```bash
+PUBLIC_IP=203.0.113.10          # or set it in config.py
+SERVER_DOMAIN=panel.example.com
+```
+
+A domain that does not resolve from here, or a placeholder like
+`example.com`, is ignored rather than baked into links.
 
 **Panels hosted elsewhere can't reach the backend.**
 Set `ALLOWED_ORIGINS`, and make sure both sides are HTTPS.
