@@ -29,8 +29,10 @@ Usage
     python main.py --check         # diagnose the environment and exit
     python main.py --setup         # force venv creation + pip install
     python main.py --no-install    # never install; print instructions
+    python main.py --network       # listen on this machine's network (0.0.0.0)
+    python main.py --local         # listen on 127.0.0.1 only
     python main.py --port 9000     # override PORT for this run
-    python main.py --host 0.0.0.0  # override HOST for this run
+    python main.py --host 192.168.0.14   # bind one specific address
     python main.py --open          # open the admin page when it is up
 
 Environment overrides
@@ -350,25 +352,127 @@ def port_free(port: int, host: str = "") -> bool:
     return True
 
 
-def port_from_env(default: int = 8446) -> int:
-    """``PORT`` from the environment, tolerating junk (config.py falls back too)."""
+def env_file_values(root: Path = ROOT) -> Dict[str, str]:
+    """KEY=VALUE pairs from .env, without touching the process environment.
+
+    Needed because ``--check`` runs before main.py loads .env, so the report
+    has to read the file itself to show the settings that will really apply.
+    """
+    values: Dict[str, str] = {}
     try:
-        value = int(os.environ.get("PORT") or default)
+        lines = (root / ".env").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            values[key] = value
+    return values
+
+
+def env_value(key: str, default: str = "", root: Path = ROOT) -> str:
+    """Effective value: real environment first, then .env, then the default."""
+    if key in os.environ:
+        return os.environ[key]
+    return env_file_values(root).get(key, default)
+
+
+def port_from_env(default: int = 8446, root: Path = ROOT) -> int:
+    """``PORT`` from the environment or .env, tolerating junk."""
+    try:
+        value = int(env_value("PORT", str(default), root) or default)
     except (TypeError, ValueError):
         return default
     return value if 1 <= value <= 65535 else default
 
 
+def host_from_env(default: str = "0.0.0.0", root: Path = ROOT) -> str:
+    """``HOST`` from the environment or .env, blank meaning "all interfaces"."""
+    host = (env_value("HOST", default, root) or default).strip()
+    return host or default
+
+
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
+
+
+def is_loopback(host: str) -> bool:
+    """True when ``host`` can only be reached from this machine."""
+    value = (host or "").strip().strip("[]").lower()
+    return value in LOOPBACK_HOSTS or value.startswith("127.")
+
+
+def usable_ip(address: str) -> bool:
+    """False for loopback, link-local (169.254.x.x), 0.0.0.0 and garbage."""
+    try:
+        parts = [int(p) for p in address.split(".")]
+    except ValueError:
+        return False
+    if len(parts) != 4 or any(not 0 <= p <= 255 for p in parts):
+        return False
+    if parts[0] in (0, 127):
+        return False
+    if parts[0] == 169 and parts[1] == 254:
+        return False
+    return True
+
+
+def ip_rank(address: str) -> int:
+    """Lower is better: RFC1918 LAN addresses first, then anything routable."""
+    parts = [int(p) for p in address.split(".")]
+    if parts[0] == 10:
+        return 0
+    if parts[0] == 192 and parts[1] == 168:
+        return 0
+    if parts[0] == 172 and 16 <= parts[1] <= 31:
+        return 0
+    if parts[0] == 100 and 64 <= parts[1] <= 127:      # carrier-grade NAT / VPN
+        return 2
+    return 1
+
+
+def hostname_addresses() -> List[str]:
+    """Every IPv4 address this host's own name resolves to."""
+    found: List[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            address = info[4][0]
+            if address not in found:
+                found.append(address)
+    except (OSError, UnicodeError):
+        pass
+    return found
+
+
 def lan_ip() -> Optional[str]:
-    """Local address other machines can use. No packet is actually sent."""
+    """Address other devices on the network can use to reach this machine.
+
+    Tries the routing table first (no packet is actually sent), then the
+    hostname's own addresses, and ignores loopback and 169.254.x.x
+    link-local addresses, which no other machine can use.
+    """
+    candidates: List[str] = []
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(0.2)
             sock.connect(("8.8.8.8", 80))
-            address = sock.getsockname()[0]
-            return None if address.startswith("127.") else address
+            candidates.append(sock.getsockname()[0])
     except OSError:
+        pass
+    candidates.extend(hostname_addresses())
+
+    usable: List[str] = []
+    for address in candidates:
+        if usable_ip(address) and address not in usable:
+            usable.append(address)
+    if not usable:
         return None
+    usable.sort(key=ip_rank)
+    return usable[0]
 
 
 def diagnose(
@@ -380,13 +484,19 @@ def diagnose(
     out = stream or sys.stdout
     ok = True
 
-    def line(label: str, value: str, good: bool = True, hint: str = "") -> None:
+    def line(
+        label: str,
+        value: str,
+        good: bool = True,
+        hint: str = "",
+        warn: bool = False,
+    ) -> None:
         nonlocal ok
         if not good:
             ok = False
-        mark = "ok  " if good else "FAIL"
+        mark = "warn" if warn else ("ok  " if good else "FAIL")
         print(f"  [{mark}] {label:<32} {value}", file=out)
-        if hint and not good:
+        if hint and (warn or not good):
             print(f"         -> {hint}", file=out)
 
     print("Fixiis / Neo Browser Stream - environment check", file=out)
@@ -447,6 +557,23 @@ def diagnose(
     free = port_free(port)
     line("port", f"{port} {'free' if free else 'in use (will be reclaimed on start)'}")
 
+    host = host_from_env()
+    if is_loopback(host):
+        line(
+            "bind address",
+            f"{host} - this machine only",
+            warn=True,
+            hint=(
+                "other devices (phones, laptops, other PCs) cannot connect. "
+                "Use: python main.py --host 0.0.0.0, or set HOST=0.0.0.0 in .env"
+            ),
+        )
+    else:
+        where = "all interfaces" if host in ("", "0.0.0.0", "::") else host
+        machine = lan_ip()
+        reach = f" -> http://{machine}:{port}/admin" if machine else ""
+        line("bind address", f"{where} (network reachable){reach}")
+
     line("Chrome / Chromium", chrome_binary() or "not found", bool(chrome_binary()),
          "install Chrome, or set CHROME_PATH in .env")
 
@@ -467,29 +594,65 @@ def diagnose(
 # --------------------------------------------------------------------------
 # startup banner
 # --------------------------------------------------------------------------
-def banner(host: str, port: int, tunnel: str = "", stream: Optional[TextIO] = None) -> None:
-    """Print the URLs an operator needs right after a successful start."""
-    out = stream or sys.stdout
-    loopback = f"http://127.0.0.1:{port}"
-    if host in ("", "0.0.0.0", "::"):
-        public = f"http://{lan_ip() or '127.0.0.1'}:{port}"
-    else:
-        public = f"http://{host}:{port}"
+def banner(
+    host: str,
+    port: int,
+    tunnel: str = "",
+    stream: Optional[TextIO] = None,
+    machine_ip: Optional[str] = None,
+) -> None:
+    """Print the URLs an operator needs right after a successful start.
 
-    lines = [
-        "",
-        "  Fixiis / Neo Browser Stream",
-        f"    admin    {loopback}/admin",
-        f"    mini     {loopback}/mini",
-        f"    client   {loopback}/client.html",
-        f"    health   {loopback}/health",
-    ]
-    if public != loopback:
-        lines.append(f"    network  {public}/admin")
+    ``host`` is the bind address (``0.0.0.0`` = every interface). The URLs
+    are printed with the machine's own network address whenever the server
+    is reachable from more than localhost, so a phone or another PC can use
+    them as-is.
+    """
+    out = stream or sys.stdout
+    local = f"http://127.0.0.1:{port}"
+    loopback_only = is_loopback(host)
+    machine = None if loopback_only else (machine_ip if machine_ip is not None else lan_ip())
+    wildcard = (host or "").strip() in ("", "0.0.0.0", "::")
+    if loopback_only:
+        base = local
+    elif not wildcard:
+        base = f"http://{host}:{port}"          # bound to one specific address
+    else:
+        base = f"http://{machine}:{port}" if machine else local
+    no_detected_ip = base == local and not loopback_only
+
+    pages = (
+        ("admin", "/admin"),
+        ("mini", "/mini"),
+        ("client", "/client.html"),
+        ("health", "/health"),
+    )
+
+    lines = ["", "  Fixiis / Neo Browser Stream", ""]
+    for name, path in pages:
+        lines.append(f"    {name:<7} {base}{path}")
+    if base != local:
+        lines.append(f"    {'local':<7} {local}/admin   (this machine only)")
     if tunnel:
-        lines.append(f"    tunnel   {tunnel}")
-    lines.append("    stop     Ctrl+C")
-    lines.append("")
+        lines.append(f"    {'tunnel':<7} {tunnel}")
+    lines.append(f"    {'stop':<7} Ctrl+C")
+
+    if no_detected_ip:
+        lines += [
+            "",
+            "    note: bound to all interfaces, but this machine's network",
+            "          address could not be detected. Use its own IPv4 address",
+            "          (hostname -I on Linux, ipconfig on Windows) with the port",
+            f"          above, e.g. http://<machine-ip>:{port}/admin",
+        ]
+    if loopback_only:
+        lines += [
+            "",
+            "    ! listening on 127.0.0.1 - only this machine can open it.",
+            "      phones, laptops and other PCs will get 'connection refused'.",
+            "      fix:  python main.py --host 0.0.0.0",
+            f"      or:   HOST=0.0.0.0 in {ROOT / '.env'}, then restart",
+        ]
     for line in lines:
         print(line, file=out)
     print("", file=out, flush=True)
@@ -585,6 +748,10 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
             no_install = True
         elif arg == "--open":
             startup.open_browser = True
+        elif arg == "--network":
+            host = "0.0.0.0"
+        elif arg == "--local":
+            host = "127.0.0.1"
         elif arg in ("--port", "--host"):
             if index + 1 >= len(args):
                 _exit(f"{arg} needs a value", 2)
@@ -692,7 +859,7 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
     elif missing:
         _exit(_install_hint(missing), 2)
 
-    startup.host = os.environ.get("HOST", "")
+    startup.host = host_from_env()
     startup.port = port_from_env()
     startup.show_banner = (
         os.environ.get("FIXIIS_BANNER") == "1" or startup.interactive

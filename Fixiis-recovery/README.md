@@ -134,10 +134,12 @@ python main.py
 Useful flags:
 
 ```bash
-python main.py --check          # report python, packages, .env, port, Chrome
+python main.py --check          # report python, packages, .env, bind, port, Chrome
 python main.py --setup          # force venv creation + pip install
+python main.py --network        # listen on the whole network (0.0.0.0)
+python main.py --local          # listen on 127.0.0.1 only
 python main.py --port 9000      # override PORT for this run
-python main.py --host 0.0.0.0   # override HOST for this run
+python main.py --host 10.0.0.5  # bind one specific address
 python main.py --open           # open the admin page once it is up
 python main.py --help           # all options
 ```
@@ -145,9 +147,44 @@ python main.py --help           # all options
 `--check` is the first thing to run when a start fails; it names the exact
 missing package, unwritable folder or busy port.
 
-The default bind address is whatever `HOST` says in `.env` (`0.0.0.0` in
-`.env.example`, `127.0.0.1` otherwise). Don't expose it on a public network
-without auth + TLS in front of it.
+### Reaching it from a phone or another PC
+
+The server binds `HOST` from `.env`, and the shipped `.env.example` says
+`HOST=0.0.0.0` - "listen on every interface", so this machine *and* every
+device on the same network can open it. `main.py` prints the address to use:
+
+```
+  Fixiis / Neo Browser Stream
+
+    admin   http://192.168.0.14:8446/admin
+    mini    http://192.168.0.14:8446/mini
+    client  http://192.168.0.14:8446/client.html
+    health  http://192.168.0.14:8446/health
+    local   http://127.0.0.1:8446/admin   (this machine only)
+```
+
+If the banner shows `http://127.0.0.1` and a `! listening on 127.0.0.1`
+warning instead, the server is local-only. Either:
+
+```bash
+python main.py --host 0.0.0.0                     # this run only
+# or make it permanent:
+#   HOST=0.0.0.0  in .env, then restart
+python main.py --check                            # shows the bind address
+```
+
+Still refused from another device? The port is blocked by the firewall:
+
+```bash
+sudo ufw allow 8446/tcp                    # Linux (ufw)
+sudo firewall-cmd --add-port=8446/tcp --permanent && sudo firewall-cmd --reload  # firewalld
+# Windows: allow python.exe on the Private network when the prompt appears
+```
+
+Then check that both devices are on the same network/VPN. `HOST=127.0.0.1`
+is the right setting only when something else on the same box (nginx, a
+Cloudflare tunnel) proxies to it. Never expose a public interface without
+auth + TLS in front of it.
 
 Open:
 

@@ -205,6 +205,13 @@ class CommandLine(unittest.TestCase):
         done = self._run("--check", "--port", "65001")
         self.assertIn("65001", done.stdout)
 
+    def test_network_and_local_shortcuts(self):
+        out = self._run("--check", "--network")
+        self.assertIn("network reachable", out.stdout)
+
+        out = self._run("--check", "--local")
+        self.assertIn("this machine only", out.stdout)
+
     def test_port_out_of_range_is_rejected(self):
         for value in ("0", "70000", "-5"):
             done = self._run("--port", value)
@@ -236,6 +243,38 @@ class Diagnostics(unittest.TestCase):
         self.assertIn("[FAIL] package fastapi", text)
         self.assertIn("--setup", text)
 
+    def test_loopback_bind_is_reported_with_a_fix(self):
+        out = io.StringIO()
+        saved = os.environ.get("HOST")
+        os.environ["HOST"] = "127.0.0.1"
+        try:
+            code = bootstrap.diagnose(stream=out, finder=lambda m: True)
+        finally:
+            if saved is None:
+                os.environ.pop("HOST", None)
+            else:
+                os.environ["HOST"] = saved
+        text = out.getvalue()
+        self.assertIn("[warn] bind address", text)
+        self.assertIn("this machine only", text)
+        self.assertIn("--host 0.0.0.0", text)
+        self.assertNotEqual(code, 0)  # Chrome is still missing in CI
+
+    def test_public_bind_shows_the_network_url(self):
+        out = io.StringIO()
+        saved = os.environ.get("HOST")
+        os.environ["HOST"] = "0.0.0.0"
+        try:
+            bootstrap.diagnose(stream=out, finder=lambda m: True)
+        finally:
+            if saved is None:
+                os.environ.pop("HOST", None)
+            else:
+                os.environ["HOST"] = saved
+        text = out.getvalue()
+        self.assertIn("bind address", text)
+        self.assertIn("network reachable", text)
+
     def test_report_is_green_when_everything_is_present(self):
         out = io.StringIO()
         old = os.environ.get("CHROME_PATH")
@@ -255,24 +294,91 @@ class Diagnostics(unittest.TestCase):
         self.assertIn("Ready: python main.py", text)
 
 
+class Hosts(unittest.TestCase):
+    def test_loopback_detection(self):
+        for host in ("127.0.0.1", "localhost", "::1", "127.0.0.53", " [::1] "):
+            self.assertTrue(bootstrap.is_loopback(host), host)
+        for host in ("0.0.0.0", "::", "", "192.168.1.20", "10.0.0.5"):
+            self.assertFalse(bootstrap.is_loopback(host), host)
+
+    def test_env_file_values_reads_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text(
+                "# comment\nHOST=0.0.0.0\nPORT = 9444\nQUOTED=\"a=b\"\nbad line\n",
+                encoding="utf-8",
+            )
+            values = bootstrap.env_file_values(root)
+        self.assertEqual(values["HOST"], "0.0.0.0")
+        self.assertEqual(values["PORT"], "9444")
+        self.assertEqual(values["QUOTED"], "a=b")
+
+    def test_real_environment_wins_over_env_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("HOST=127.0.0.1\nPORT=1234\n", encoding="utf-8")
+            saved = {k: os.environ.get(k) for k in ("HOST", "PORT")}
+            try:
+                os.environ.pop("HOST", None)
+                os.environ.pop("PORT", None)
+                self.assertEqual(bootstrap.host_from_env(root=root), "127.0.0.1")
+                self.assertEqual(bootstrap.port_from_env(root=root), 1234)
+                os.environ["HOST"] = "0.0.0.0"
+                os.environ["PORT"] = "5555"
+                self.assertEqual(bootstrap.host_from_env(root=root), "0.0.0.0")
+                self.assertEqual(bootstrap.port_from_env(root=root), 5555)
+            finally:
+                for key, value in saved.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+    def test_default_host_is_reachable_on_the_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = os.environ.pop("HOST", None)
+            try:
+                self.assertEqual(bootstrap.host_from_env(root=Path(tmp)), "0.0.0.0")
+                self.assertFalse(bootstrap.is_loopback(bootstrap.host_from_env(root=Path(tmp))))
+            finally:
+                if saved is not None:
+                    os.environ["HOST"] = saved
+
+
 class Banner(unittest.TestCase):
-    def test_urls_are_listed(self):
+    def test_network_address_is_used_when_bound_publicly(self):
+        out = io.StringIO()
+        bootstrap.banner("0.0.0.0", 9000, stream=out, machine_ip="192.168.0.14")
+        text = out.getvalue()
+        for path in ("/admin", "/mini", "/client.html", "/health"):
+            self.assertIn(f"http://192.168.0.14:9000{path}", text)
+        self.assertIn("http://127.0.0.1:9000/admin", text)   # local alias kept
+        self.assertNotIn("only this machine can open it", text)
+
+    def test_specific_bind_address_is_used_as_is(self):
+        out = io.StringIO()
+        bootstrap.banner("10.1.2.3", 8446, stream=out)
+        self.assertIn("http://10.1.2.3:8446/admin", out.getvalue())
+
+    def test_loopback_banner_warns_and_says_how_to_fix(self):
         out = io.StringIO()
         bootstrap.banner("127.0.0.1", 8446, stream=out)
         text = out.getvalue()
         for path in ("/admin", "/mini", "/client.html", "/health"):
             self.assertIn(f"http://127.0.0.1:8446{path}", text)
-        self.assertNotIn("network", text)
+        self.assertIn("only this machine can open it", text)
+        self.assertIn("--host 0.0.0.0", text)
+        self.assertIn("HOST=0.0.0.0", text)
 
-    def test_network_line_when_bound_publicly(self):
+    def test_localhost_counts_as_loopback(self):
         out = io.StringIO()
-        bootstrap.banner("0.0.0.0", 9000, stream=out)
-        self.assertIn("network", out.getvalue())
-        self.assertIn(":9000", out.getvalue())
+        bootstrap.banner("localhost", 8446, stream=out)
+        self.assertIn("only this machine can open it", out.getvalue())
 
     def test_tunnel_line(self):
         out = io.StringIO()
-        bootstrap.banner("127.0.0.1", 8446, tunnel="https://x.trycloudflare.com", stream=out)
+        bootstrap.banner("0.0.0.0", 8446, tunnel="https://x.trycloudflare.com",
+                         stream=out, machine_ip="192.168.0.14")
         self.assertIn("https://x.trycloudflare.com", out.getvalue())
 
 

@@ -384,6 +384,11 @@ The manual `python -m venv` / `pip install` dance is optional.
 
 The service unit runs with `FIXIIS_AUTO_SETUP=1`, so a deploy that adds a
 dependency installs it on the next restart instead of failing the boot.
+
+`HOST` decides who can reach the app: `0.0.0.0` = the whole network,
+`127.0.0.1` = only processes on this box (what you want behind nginx or the
+Cloudflare tunnel). `main.py` prints the resulting URLs at startup and
+`--check` reports the bind address, warning when it is local-only.
 Run `sudo -u fixiis python3 main.py --check` any time you want a report on
 packages, `.env`, permissions, port and Chrome.
 

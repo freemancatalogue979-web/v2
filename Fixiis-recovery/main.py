@@ -10,7 +10,8 @@ Run it with a single command:
 bootstrap.py (imported below) takes care of the rest: it switches to this
 folder, uses venv/ or .venv/ when one exists, installs missing packages on
 first run, creates .env from the template and makes the data directories.
-Flags: --check  --setup  --no-install  --port N  --host H  --open  --help
+Flags: --check  --setup  --no-install  --network  --local
+       --port N  --host H  --open  --help
 
 Modular structure:
 - telegram_bot.py: Telegram bot functionality
