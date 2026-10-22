@@ -86,8 +86,8 @@ const itemSrc = admin.slice(admin.indexOf("item.className = 'lpv-archive-item'")
                             admin.indexOf('list.appendChild(item);'));
 ok((itemSrc.match(/item\.appendChild\(/g) || []).length === 2,
   'the row only receives the meta block and the action cluster');
-ok((itemSrc.match(/acts\.appendChild\(/g) || []).length === 5,
-  'all five archive actions are in the cluster');
+ok((itemSrc.match(/acts\.appendChild\(/g) || []).length === 6,
+  'all six archive actions (incl. device versions) are in the cluster');
 
 console.log('mobile page-card layout checks passed');
 console.log(`${checks} checks passed`);

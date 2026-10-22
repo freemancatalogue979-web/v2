@@ -6566,6 +6566,13 @@
         .lpv-bind-del { background: rgba(255,255,255,0.07); border: 1px solid var(--border); color: rgba(255,255,255,0.75); border-radius: 8px; width: 32px; height: 32px; cursor: pointer; flex-shrink: 0; }
         .lpv-bind-del:hover { background: rgba(239,68,68,0.18); }
         .lpv-bind-foot { display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+        /* Device versions: one page, a phone build and a desktop build. */
+        .lpv-dev-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); margin: 2px 0 6px; }
+        .lpv-dev-seg { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+        .lpv-dev-seg .lpv-btn { flex: 1 1 auto; }
+        .lpv-dev-seg .lpv-btn.on { border-color: rgba(74,144,217,0.65); background: rgba(74,144,217,0.18); color: var(--text, #fff); }
+        .lpv-dev-select { width: 100%; box-sizing: border-box; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; margin-bottom: 12px; outline: none; }
+        .lpv-dev-select:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-bind-hint { font-size: 10px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; }
         .lpv-bind-empty { font-size: 11px; color: var(--text-muted); padding: 10px; text-align: center; border: 1px dashed var(--border); border-radius: 8px; }
         /* Click guard editor */
@@ -15323,6 +15330,24 @@ function lpvFormatBytes(n) {
                     guardBtn.onclick = () => lpvGuardOpen(page.id);
                     acts.appendChild(guardBtn);
 
+                    const deviceBtn = document.createElement('button');
+                    deviceBtn.className = 'lpv-btn';
+                    // One page can serve phones and desktops: pair it with the
+                    // build for the other audience and the client's device
+                    // picks. Long explanation lives in the tooltip.
+                    const _paired = !!page.variant_page_id;
+                    const _role = page.device === 'mobile' ? 'mobile'
+                        : (page.device === 'desktop' ? 'desktop' : '');
+                    deviceBtn.textContent = _paired
+                        ? (_role === 'desktop' ? '⌨→📱' : '📱→⌨')
+                        : '⌨';
+                    deviceBtn.title = _paired
+                        ? 'Paired with a ' + (_role === 'desktop' ? 'phone' : 'desktop')
+                          + ' build — each visitor gets their own version'
+                        : 'Device versions — serve a different page to desktop (or phone) visitors';
+                    deviceBtn.onclick = () => lpvDeviceOpen(page.id);
+                    acts.appendChild(deviceBtn);
+
                     const pushBtn = document.createElement('button');
                     pushBtn.className = 'lpv-btn primary';
                     pushBtn.textContent = 'Push';
@@ -15453,6 +15478,137 @@ function lpvFormatBytes(n) {
                         : 'Bindings cleared — page is served as-is', 'success');
                 } catch (e) {
                     showToast('Save bindings failed: ' + e.message, 'error');
+                }
+            }
+
+            // ----- Device versions (one workflow, two builds) --------------
+            // A page declares who it is FOR. Pair it with the build for the
+            // other audience and the server serves the matching one per
+            // visitor, so a workflow references a page once instead of being
+            // duplicated into a phone workflow and a desktop workflow.
+            let lpvDevicePageId = null;
+            let lpvDeviceRole = 'any';
+
+            function lpvDeviceOverlay() {
+                let ov = document.getElementById('lpv-device-overlay');
+                if (!ov) {
+                    ov = document.createElement('div');
+                    ov.id = 'lpv-device-overlay';
+                    ov.className = 'lpv-bind-overlay';
+                    ov.innerHTML =
+                        '<div class="lpv-bind-modal">' +
+                        '  <div class="lpv-bind-head"><div class="lpv-bind-title">⌨ Device Versions</div>' +
+                        '    <button class="lpv-btn" id="lpv-device-close">✕</button></div>' +
+                        '  <div class="lpv-bind-page" id="lpv-device-page"></div>' +
+                        '  <div class="lpv-dev-label">This page is built for</div>' +
+                        '  <div class="lpv-dev-seg" id="lpv-device-seg">' +
+                        '    <button class="lpv-btn" data-dev="any">Everyone · one version</button>' +
+                        '    <button class="lpv-btn" data-dev="mobile">📱 Phones</button>' +
+                        '    <button class="lpv-btn" data-dev="desktop">⌨ Desktops</button>' +
+                        '  </div>' +
+                        '  <div class="lpv-dev-label">Other devices get</div>' +
+                        '  <select class="lpv-dev-select" id="lpv-device-variant"><option value="">— same page (no pairing) —</option></select>' +
+                        '  <div class="lpv-bind-foot">' +
+                        '    <button class="lpv-btn" id="lpv-device-unpair">Unpair</button>' +
+                        '    <button class="lpv-btn primary" id="lpv-device-save">Save</button>' +
+                        '  </div>' +
+                        '  <div class="lpv-bind-hint">A workflow only needs to reference <b>one</b> of the two pages — the device decides which build is delivered. Example: a phone build paired with its desktop build, or just this page for everybody.</div>' +
+                        '</div>';
+                    document.body.appendChild(ov);
+                    ov.addEventListener('mousedown', (ev) => { if (ev.target === ov) lpvDeviceClose(); });
+                    document.getElementById('lpv-device-close').onclick = lpvDeviceClose;
+                    document.getElementById('lpv-device-unpair').onclick = () => {
+                        lpvDeviceRole = 'any';
+                        document.getElementById('lpv-device-variant').value = '';
+                        lpvDeviceSegPaint();
+                    };
+                    document.getElementById('lpv-device-save').onclick = lpvDeviceSave;
+                    ov.querySelectorAll('#lpv-device-seg [data-dev]').forEach(btn => {
+                        btn.onclick = () => {
+                            lpvDeviceRole = btn.dataset.dev;
+                            lpvDeviceSegPaint();
+                            const sel = document.getElementById('lpv-device-variant');
+                            sel.disabled = lpvDeviceRole === 'any';
+                            if (lpvDeviceRole === 'any') sel.value = '';
+                        };
+                    });
+                }
+                return ov;
+            }
+
+            function lpvDeviceSegPaint() {
+                document.querySelectorAll('#lpv-device-seg [data-dev]').forEach(btn => {
+                    btn.classList.toggle('on', btn.dataset.dev === lpvDeviceRole);
+                });
+            }
+
+            async function lpvDeviceOpen(pageId) {
+                lpvDevicePageId = pageId;
+                const ov = lpvDeviceOverlay();
+                const page = (LPV_STATE.archive || []).find(p => p.id === pageId);
+                document.getElementById('lpv-device-page').textContent =
+                    page ? (page.name + '  ·  ' + pageId) : pageId;
+                lpvDeviceRole = (page && page.device) || 'any';
+                lpvDeviceSegPaint();
+                const sel = document.getElementById('lpv-device-variant');
+                sel.disabled = lpvDeviceRole === 'any';
+                sel.innerHTML = '<option value="">— same page (no pairing) —</option>';
+                (LPV_STATE.archive || []).forEach(other => {
+                    if (!other || other.id === pageId) return;
+                    const opt = document.createElement('option');
+                    opt.value = other.id;
+                    const role = other.device === 'mobile' ? '📱'
+                        : (other.device === 'desktop' ? '⌨' : '');
+                    opt.textContent = other.name + (role ? '  ' + role : '');
+                    sel.appendChild(opt);
+                });
+                sel.value = (page && page.variant_page_id) || '';
+                ov.classList.add('open');
+                // Server copy is authoritative (another tab may have paired it).
+                try {
+                    const r = await serverFetch('/api/lpv/pages/' + pageId + '/device');
+                    const j = await r.json();
+                    if (r.ok) {
+                        lpvDeviceRole = j.device || 'any';
+                        lpvDeviceSegPaint();
+                        sel.disabled = lpvDeviceRole === 'any';
+                        if (j.variant_page_id) sel.value = j.variant_page_id;
+                    }
+                } catch (e) { /* offline: keep the cached values */ }
+            }
+
+            function lpvDeviceClose() {
+                const ov = document.getElementById('lpv-device-overlay');
+                if (ov) ov.classList.remove('open');
+                lpvDevicePageId = null;
+            }
+
+            async function lpvDeviceSave() {
+                if (!lpvDevicePageId) return;
+                const pageId = lpvDevicePageId;
+                const variantId = lpvDeviceRole === 'any'
+                    ? ''
+                    : (document.getElementById('lpv-device-variant').value || '');
+                if (lpvDeviceRole !== 'any' && !variantId) {
+                    showToast('Pick the page ' + (lpvDeviceRole === 'mobile' ? 'desktop' : 'phone')
+                        + ' visitors should get, or choose "Everyone"', 'error');
+                    return;
+                }
+                try {
+                    const resp = await serverFetch('/api/lpv/pages/' + pageId + '/device', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ device: lpvDeviceRole, variant_page_id: variantId })
+                    });
+                    const j = await resp.json().catch(() => ({}));
+                    if (!resp.ok) throw new Error(j.error || ('HTTP ' + resp.status));
+                    lpvDeviceClose();
+                    lpvLoadArchive(document.getElementById('lpv-archive-q').value);
+                    showToast(variantId
+                        ? 'Paired — each visitor now gets the version for their device'
+                        : 'Page serves the same version to every device', 'success');
+                } catch (e) {
+                    showToast('Save device versions failed: ' + e.message, 'error');
                 }
             }
 

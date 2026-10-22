@@ -2607,6 +2607,9 @@ function pageCard(p){
             : ''}${
           hintOff
             ? '<span class="pcard-flag muted" title="Blocked-click hint is off">hint off</span>'
+            : ''}${
+          p.variant_page_id
+            ? '<span class="pcard-flag" title="Two versions — phones and desktops each get their own build (set up in the full Admin panel)">2 versions</span>'
             : ''}</div>
       </div>
     </div>

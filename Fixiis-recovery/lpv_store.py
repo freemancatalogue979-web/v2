@@ -33,7 +33,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from config import LPV_DB_PATH, LPV_PAGES_DIR
 
@@ -233,6 +233,30 @@ def init_db() -> None:
                 conn.execute(
                     "ALTER TABLE lpv_pages ADD COLUMN guard TEXT NOT NULL DEFAULT '{}'"
                 )
+        except Exception:
+            pass
+
+        # ---- device variants (added later): one workflow, two layouts ----
+        # A page can be built for one audience and paired with the version
+        # built for the other one:
+        #
+        #   device           'any' (default) | 'mobile' | 'desktop'
+        #   variant_page_id  the page to serve instead when the visitor's
+        #                    device does NOT match `device`
+        #
+        # Workflows then reference the page once; the server resolves it per
+        # visitor, so there is no need for a mobile workflow and a desktop
+        # workflow. Resolved in resolve_page_for_device() below.
+        try:
+            page_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(lpv_pages)").fetchall()
+            }
+            for col, decl in (
+                ("device", "device TEXT NOT NULL DEFAULT 'any'"),
+                ("variant_page_id", "variant_page_id TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in page_cols:
+                    conn.execute(f"ALTER TABLE lpv_pages ADD COLUMN {decl}")
         except Exception:
             pass
 
@@ -604,6 +628,8 @@ def _row_to_page(row: sqlite3.Row) -> Dict[str, Any]:
         "updated_at": row["updated_at"],
         "bindings": bindings,
         "guard": normalise_guard(_row_get(row, "guard")),
+        "device": normalise_device(_row_get(row, "device")),
+        "variant_page_id": str(_row_get(row, "variant_page_id") or ""),
     }
 
 
@@ -613,6 +639,120 @@ def _row_get(row: sqlite3.Row, key: str) -> Any:
         return row[key]
     except (IndexError, KeyError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Device variants — one workflow, a mobile and a desktop layout
+# ---------------------------------------------------------------------------
+# Each page declares who it is FOR (`device`) and, optionally, which page to
+# serve to the other audience (`variant_page_id`):
+#
+#   mobile page  + variant_page_id = <desktop page>   -> phones see it,
+#                                                        desktops see the pair
+#   desktop page + variant_page_id = <mobile page>     -> and vice versa
+#   any page     (default)                             -> everyone sees it
+#
+# A workflow only references one of the two pages. The server resolves the
+# right one per visitor (see resolve_page_for_device), so one workflow now
+# serves phones and desktops instead of two duplicated workflows.
+DEVICES = ("any", "mobile", "desktop")
+
+
+def normalise_device(value: Any) -> str:
+    """Coerce anything to one of DEVICES. Unknown -> 'any' (never breaks)."""
+    text = str(value or "").strip().lower()
+    return text if text in DEVICES else "any"
+
+
+def _other_device(device: str) -> str:
+    return "desktop" if device == "mobile" else "mobile"
+
+
+def set_page_device(
+    page_id: str,
+    device: Any,
+    variant_page_id: Any = "",
+) -> Optional[Dict[str, Any]]:
+    """Set which audience a page is for and its counterpart page.
+
+    Keeps the pair symmetric so a workflow referencing EITHER member resolves
+    for both: when the counterpart is still unclassified ('any') it takes the
+    complementary role, and an empty back-reference is filled in. Explicit
+    settings on the counterpart are never overwritten.
+
+    Note: every DB lookup happens before the write transaction — get_conn()
+    holds a non-reentrant lock, so nested reads would deadlock.
+    """
+    page = get_page(page_id)
+    if not page:
+        return None
+    role = normalise_device(device)
+    variant_id = str(variant_page_id or "").strip()
+    if role == "any":
+        variant_id = ""                      # a shared page has no counterpart
+    counterpart: Optional[Dict[str, Any]] = None
+    if variant_id:
+        if variant_id == page_id:
+            raise ValueError("a page cannot be its own variant")
+        counterpart = get_page(variant_id)
+        if not counterpart:
+            raise ValueError("variant page not found")
+
+    now = time.time()
+    counterpart_updates: List[str] = []
+    counterpart_params: List[Any] = []
+    if counterpart is not None:
+        counterpart_role = normalise_device(counterpart.get("device"))
+        if counterpart_role in ("any", role):
+            counterpart_role = _other_device(role)
+            counterpart_updates.append("device = ?")
+            counterpart_params.append(counterpart_role)
+        if not str(counterpart.get("variant_page_id") or "") \
+                and counterpart_role == _other_device(role):
+            counterpart_updates.append("variant_page_id = ?")
+            counterpart_params.append(page_id)
+
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE lpv_pages SET device = ?, variant_page_id = ?, updated_at = ? WHERE id = ?",
+            (role, variant_id, now, page_id),
+        )
+        if counterpart_updates:
+            counterpart_params.append(now)
+            counterpart_params.append(variant_id)
+            conn.execute(
+                f"UPDATE lpv_pages SET {', '.join(counterpart_updates)}, updated_at = ? "
+                "WHERE id = ?",
+                tuple(counterpart_params),
+            )
+    return get_page(page_id)
+
+
+def resolve_page_for_device(
+    page_id: str, device: Any
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """The page a visitor on ``device`` should actually see.
+
+    Returns ``(page, swapped_from_page_id)``; ``swapped_from_page_id`` is the
+    id that was asked for when a variant was substituted, else ``''``.
+    Unknown devices ('any') and unclassified pages resolve to themselves, so
+    an old client or an unpaired page behaves exactly as before.
+    """
+    page = get_page(page_id)
+    if not page:
+        return None, ""
+    wanted = normalise_device(device)
+    role = normalise_device(page.get("device"))
+    if wanted in ("any", "mobile", "desktop"):
+        if wanted == "any" or role in ("any", wanted):
+            return page, ""
+    variant_id = str(page.get("variant_page_id") or "")
+    if not variant_id:
+        return page, ""                      # unpaired: serve it as-is
+    variant = get_page(variant_id)
+    if not variant:
+        return page, ""                      # counterpart deleted: as-is
+    return variant, page_id
 
 
 # ---------------------------------------------------------------------------

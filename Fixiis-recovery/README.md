@@ -273,6 +273,31 @@ is ignored — previously those two turned into "login impossible" and
 
 ---
 
+## Device versions: one workflow, phone + desktop
+
+Some offers need a different layout on a phone and on a desktop. You do **not**
+need to duplicate the workflow: archive both HTML files, then in the page
+archive press the **⌨** button on a card and say who the page is built for.
+
+| Setting | What the visitor gets |
+|---|---|
+| `Everyone · one version` (default) | the page, on every device |
+| `📱 Phones` + desktop page | phones get this page, desktops get the other one |
+| `⌨ Desktops` + phone page | desktops get this page, phones get the other one |
+
+The pairing is saved on both pages, so a workflow step can point at either
+one — the server looks at the device the visitor connected with (`is_mobile`
+in the client's boot payload) and delivers the matching HTML. Nothing else
+changes: `page_url`, the click guard and the version history all follow the
+page that is actually served, `Push` resolves per target client, and pages
+that were never paired keep behaving exactly as before.
+
+Set it up over HTTP (`GET`/`PUT /api/lpv/pages/<page_id>/device`, body
+`{"device": "mobile", "variant_page_id": "<other page id>"}`) if you prefer
+scripting it.
+
+---
+
 ## Troubleshooting "it connects but nothing works"
 
 Run these first, in this order:
@@ -312,6 +337,7 @@ node tests/test_link_base.cjs        # link-base rewriting in both panels
 node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
 node tests/test_page_guard.cjs       # per-page click guard (interaction allowlist)
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
+python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
 python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup
 ```

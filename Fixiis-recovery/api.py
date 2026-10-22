@@ -17,6 +17,7 @@ import uuid
 import stat
 import sys
 import base64
+import re
 from datetime import datetime, timedelta
 from urllib.parse import quote, urlsplit
 from pathlib import Path
@@ -1652,6 +1653,12 @@ async def _upsert_lpv_admin_client(
             "history": existing.get("history") or [],
             "total_uptime_seconds": existing.get("total_uptime_seconds", 0),
             "gpu_id": 0,
+            # Which version of a paired page this visitor receives, and the
+            # raw signals behind it. Persisted so the choice survives a
+            # backend restart (see _client_device).
+            "device": _device_from_init(init_data),
+            "is_mobile": bool(init_data.get("is_mobile")),
+            "is_touch": bool(init_data.get("is_touch")),
             "ip_address": (location.get("ip") or ""),
             "user_agent": (init_data.get("userAgent") or "")[:500],
             "country": location.get("country") or "",
@@ -5543,6 +5550,102 @@ _lpv_parent_connections: Dict[str, Dict[str, Any]] = {}
 _lpv_parent_handoff_locks: Dict[str, asyncio.Lock] = {}
 _lpv_parent_handoff_guard = asyncio.Lock()
 
+# runtime client_id -> 'mobile' | 'desktop'.
+#
+# A workflow references ONE page; a page can pair a phone build with a
+# desktop build (see lpv_store.set_page_device). Which of the two a visitor
+# receives depends on the device they connected with, so the server has to
+# remember that per runtime. _remember_client_device() is called on every
+# LPV connection; the fallbacks below cover browser sessions and a backend
+# restart (the value is also persisted in the admin client record).
+_lpv_client_devices: Dict[str, str] = {}
+
+_MOBILE_UA_RE = re.compile(
+    r"mobi|android|iphone|ipod|ipad|tablet|silk|kindle|opera mini|iemobile",
+    re.IGNORECASE,
+)
+
+
+def _device_from_init(init_data: Optional[Dict[str, Any]]) -> str:
+    """'mobile' | 'desktop' for a client's boot payload (missing -> desktop)."""
+    data = init_data or {}
+    if data.get("is_mobile"):
+        return "mobile"
+    ua = str(data.get("mobile_user_agent") or data.get("userAgent") or "")
+    if ua and _MOBILE_UA_RE.search(ua):
+        return "mobile"
+    return "desktop"
+
+
+def _remember_client_device(client_id: str, init_data: Optional[Dict[str, Any]]) -> str:
+    """Record the visitor's device so later pushes resolve the right page."""
+    device = _device_from_init(init_data)
+    if client_id:
+        _lpv_client_devices[client_id] = device
+    return device
+
+
+async def _client_device(client_id: str) -> str:
+    """'mobile' | 'desktop' for an already connected client."""
+    if not client_id:
+        return "desktop"
+    known = _lpv_client_devices.get(client_id)
+    if known in ("mobile", "desktop"):
+        return known
+    record: Dict[str, Any] = {}
+    try:
+        stored = server_sessions.get(client_id)
+        if isinstance(stored, dict):
+            record = stored
+            if record.get("device") in ("mobile", "desktop"):
+                _lpv_client_devices[client_id] = record["device"]
+                return record["device"]
+    except Exception:
+        record = {}
+    # A browser session knows its own device flag (set at admission).
+    try:
+        session = await session_manager.get_session(client_id) if session_manager else None
+    except Exception:
+        session = None
+    if session is not None:
+        if isinstance(session, dict):
+            is_mobile = bool(session.get("is_mobile"))
+        else:
+            is_mobile = bool(getattr(session, "is_mobile", False))
+        device = "mobile" if is_mobile else "desktop"
+        _lpv_client_devices[client_id] = device
+        return device
+    if record:
+        device = _device_from_init({"userAgent": record.get("user_agent")})
+        _lpv_client_devices[client_id] = device
+        return device
+    return "desktop"
+
+
+async def _page_for_client(
+    client_id: str, page_id: str
+) -> Tuple[Optional[Dict[str, Any]], str, str]:
+    """Resolve the page a specific visitor should receive.
+
+    Returns ``(page, served_page_id, device)``. Pages without a device pair
+    resolve to themselves, so nothing changes for existing workflows.
+    """
+    device = await _client_device(client_id)
+    try:
+        page, swapped_from = lpv_store.resolve_page_for_device(page_id, device)
+    except Exception:
+        logger.debug("[LPV] device variant resolution failed for %s", page_id, exc_info=True)
+        page, swapped_from = lpv_store.get_page(page_id), ""
+    if not page:
+        return None, page_id, device
+    served_id = str(page.get("id") or page_id)
+    if swapped_from:
+        logger.debug(
+            "[LPV] %s visitor: serving page %s instead of %s",
+            device, served_id, swapped_from,
+        )
+    return page, served_id, device
+
 
 @asynccontextmanager
 async def _lpv_parent_handoff(parent_id: str):
@@ -6095,6 +6198,95 @@ async def lpv_page_guard_put(page_id: str, request: Request):
     }
 
 
+@app.get("/api/lpv/pages/{page_id}/device")
+async def lpv_page_device_get(page_id: str, request: Request):
+    """Read which audience a page is built for and its paired page (admin).
+
+    ``device`` is 'any' (default, everybody), 'mobile' or 'desktop'.
+    ``variant_page_id`` is the other build of the same page; when it is set,
+    a visitor whose device does not match ``device`` is served that page
+    instead — one workflow covers phones and desktops.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    variant_id = str(page.get("variant_page_id") or "")
+    variant = lpv_store.get_page(variant_id) if variant_id else None
+    return {
+        "page_id": page_id,
+        "device": lpv_store.normalise_device(page.get("device")),
+        "variant_page_id": variant_id,
+        "variant_page_name": (variant or {}).get("name", ""),
+        "variants": [
+            {"id": other.get("id"), "name": other.get("name"),
+             "device": lpv_store.normalise_device(other.get("device"))}
+            for other in (lpv_store.list_pages() or [])
+            if str(other.get("id")) != page_id
+        ],
+    }
+
+
+@app.put("/api/lpv/pages/{page_id}/device")
+async def lpv_page_device_put(page_id: str, request: Request):
+    """Pair a page with the build for the other audience (admin).
+
+    Body: {"device": "mobile"|"desktop"|"any", "variant_page_id": "<page>"}
+    (``desktop_page_id`` accepted as an alias). Setting device to 'any'
+    unpairs the page. Existing workflows keep referencing either member and
+    the server picks the right one per visitor, so nothing needs rebuilding.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not lpv_store.get_page(page_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "JSON object required"}, status_code=400)
+    raw_device = body.get("device")
+    if raw_device is None:
+        raw_device = "desktop" if (body.get("variant_page_id") or body.get("desktop_page_id")) else "any"
+    device = lpv_store.normalise_device(raw_device)
+    variant_id = str(
+        body.get("variant_page_id")
+        or body.get("desktop_page_id")
+        or ""
+    ).strip()
+    try:
+        page = lpv_store.set_page_device(page_id, device, variant_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.warning("[LPV] device pair save failed for %s: %s", page_id, exc)
+        return JSONResponse({"error": "save failed"}, status_code=500)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        await _broadcast_lpv_event("", {
+            "event_type": "device_updated",
+            "page_id": page_id,
+            "page_name": page.get("name"),
+            "payload": {
+                "device": lpv_store.normalise_device(page.get("device")),
+                "variant_page_id": str(page.get("variant_page_id") or ""),
+            },
+        })
+    except Exception:
+        pass
+    variant = lpv_store.get_page(str(page.get("variant_page_id") or ""))
+    return {
+        "success": True,
+        "page_id": page_id,
+        "device": lpv_store.normalise_device(page.get("device")),
+        "variant_page_id": str(page.get("variant_page_id") or ""),
+        "variant_page_name": (variant or {}).get("name", ""),
+    }
+
+
 @app.get("/api/lpv/pages/{page_id}/bindings")
 async def lpv_page_bindings_get(page_id: str, request: Request):
     """List a page's find -> replace bindings (admin)."""
@@ -6561,8 +6753,15 @@ async def _run_workflow_on_client(
             return
         kind = step.get("kind")
         if kind == "page":
-            page_id = step.get("page_id")
-            page = lpv_store.get_page(page_id) if page_id else None
+            requested_page_id = step.get("page_id")
+            # One step, one page id — but a page can pair a mobile and a
+            # desktop build, so resolve which one THIS visitor receives.
+            if requested_page_id:
+                page, page_id, _step_device = await _page_for_client(
+                    client_id, requested_page_id
+                )
+            else:
+                page, page_id = None, requested_page_id
             if not page:
                 lpv_store.record_event(
                     client_id, "workflow_step_skipped",
@@ -7447,6 +7646,8 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
     # chat thread (and the admin's thread list) follow the person rather
     # than the tab. Runtime ownership below is untouched.
     _lpv_register_identity(client_id, profile_parent_id)
+    # Which version of a paired page this visitor gets (mobile/desktop).
+    _remember_client_device(client_id, init_data)
     if session_manager:
         try:
             locked_by = await session_manager.registry.get_locked_session_id(profile_parent_id)
@@ -7513,6 +7714,15 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             if not lpv_store.get_page(default_page):
                 default_page = ""
                 default_url = ""
+            else:
+                # A landing page may pair a phone build and a desktop build;
+                # the visitor gets the one their device should see.
+                resolved, _swapped = lpv_store.resolve_page_for_device(
+                    default_page, _device_from_init(init_data)
+                )
+                if resolved:
+                    default_page = str(resolved.get("id") or default_page)
+                    default_url = _lpv_page_url(default_page)
         except Exception:
             default_page = ""
             default_url = ""
@@ -9022,7 +9232,12 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                     "error": "missing client_id or page_id",
                                 })
                             else:
-                                page = lpv_store.get_page(page_id)
+                                # Same one-page/two-builds rule as the workflow
+                                # runner: the target visitor's device decides
+                                # which of a paired page's builds ships.
+                                page, served_page_id, _push_device = await _page_for_client(
+                                    client_id, page_id
+                                )
                                 if not page:
                                     await websocket.send_json({
                                         "type": "lpv_error",
@@ -9030,6 +9245,7 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                         "client_id": client_id,
                                     })
                                 else:
+                                    page_id = served_page_id
                                     page_url = _lpv_page_url(page_id)
                                     ok = await _send_to_client(client_id, {
                                         "type": "lpv_show_page",
