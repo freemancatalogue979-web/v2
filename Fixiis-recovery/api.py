@@ -2124,11 +2124,29 @@ def _chat_redirect_url(workflow: Optional[dict]) -> str:
     return ""
 
 
-def _chat_config() -> Dict[str, Any]:
-    """Live-chat appearance/behaviour shared by every client."""
+def _chat_device_allows(devices: Any, device: Optional[str]) -> bool:
+    """Operator choice (both/desktop/mobile) vs this visitor's device."""
+    return srv_settings.chat_device_allows(devices, device)
+
+
+def _chat_config(device: Optional[str] = None) -> Dict[str, Any]:
+    """Live-chat appearance/behaviour for one client.
+
+    ``device`` is that visitor's device ("mobile"/"desktop"); passing it makes
+    ``enabled`` already correct for them.  Without it the answer is the master
+    switch and the client filters by ``devices`` itself.
+    """
     st = srv_settings.get_settings()
+    devices = str(getattr(st, "chat_devices", "both") or "both").strip().lower()
+    if devices not in ("both", "desktop", "mobile"):
+        devices = "both"
+    enabled = bool(getattr(st, "chat_enabled", False))
+    if enabled and not _chat_device_allows(devices, device):
+        enabled = False
     return {
-        "enabled": bool(getattr(st, "chat_enabled", False)),
+        "enabled": enabled,
+        "devices": devices,
+        "device": device or "",
         "bubble_color": getattr(st, "chat_bubble_color", "") or "#7c5cff",
         "text_color": getattr(st, "chat_text_color", "") or "#ffffff",
         "logo_url": getattr(st, "chat_logo_url", "") or "",
@@ -2140,8 +2158,7 @@ def _chat_config() -> Dict[str, Any]:
 async def _push_chat_config_to_clients() -> None:
     """Re-send the chat config to every connected client so an admin
     settings change takes effect immediately, without a reload."""
-    cfg = _chat_config()
-    sockets: List[Any] = []
+    targets: List[Any] = []          # (client_id, websocket)
     try:
         if session_manager:
             for item in await session_manager.get_all_sessions():
@@ -2151,13 +2168,16 @@ async def _push_chat_config_to_clients() -> None:
                 sess = await session_manager.get_session(cid)
                 ws = getattr(sess, "websocket", None) if sess else None
                 if ws:
-                    sockets.append(ws)
+                    targets.append((cid, ws))
     except Exception:
         pass
-    sockets.extend(list(_lpv_only_ws.values()))
-    for ws in sockets:
+    targets.extend(list(_lpv_only_ws.items()))
+    for cid, ws in targets:
         try:
-            await ws.send_json({"type": "chat_config", **cfg})
+            # Each visitor gets the answer for their own device, so a
+            # desktop-only bubble never appears on a phone mid-session.
+            device = await _client_device(cid)
+            await ws.send_json({"type": "chat_config", **_chat_config(device)})
         except Exception:
             pass
 
@@ -2247,7 +2267,14 @@ async def _handle_client_chat(client_id: str, msg: dict) -> None:
     if not client_id:
         return
     try:
-        if not getattr(srv_settings.get_settings(), "chat_enabled", False):
+        st = srv_settings.get_settings()
+        if not getattr(st, "chat_enabled", False):
+            return
+        # Chat is desktop-only (or mobile-only): a client on the other kind of
+        # device has no bubble, so anything claiming to come from one is stale.
+        if not _chat_device_allows(
+            getattr(st, "chat_devices", "both"), await _client_device(client_id)
+        ):
             return
     except Exception:
         return
@@ -8221,7 +8248,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             "brand_color": (wf_boot or {}).get("brand_color", "") or "",
             "respect_redirect": (wf_boot or {}).get("respect_redirect", True),
             "redirect_html_url": _chat_redirect_url(wf_boot or {}),
-            "chat": _chat_config(),
+            "chat": _chat_config(_device_from_init(init_data)),
             # Tab/favicon branding. The pushed page renders in a blob
             # iframe, so its own <title>/icon never reach the browser
             # chrome — the viewer has to apply these to be authentic.

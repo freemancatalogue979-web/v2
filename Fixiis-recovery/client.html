@@ -5587,7 +5587,8 @@ function applySpinnerColorFromHex(hexColor) {
             // z-index so the bubble and panel float above the pushed page.
             //
             // Message shapes (server is the source of truth either way):
-            //   { type:'chat_config',  enabled, bubble_color, text_color,
+            //   { type:'chat_config',  enabled, devices ('both'|'desktop'|'mobile'),
+            //                          bubble_color, text_color,
             //                          logo_url, display_name, greeting }
             //   { type:'chat_message', id, client_id, role, kind, body, code,
             //                          created_at }
@@ -5715,15 +5716,29 @@ function applySpinnerColorFromHex(hexColor) {
                     return fallback;
                 },
 
+                // Does the operator want chat on THIS device? The server
+                // already folds this into `enabled` when it knows the device;
+                // doing it here as well covers a config broadcast to every
+                // socket, and keeps a phone bubble-free when chat is
+                // desktop-only.
+                _deviceAllowed(cfg) {
+                    const mode = String((cfg && cfg.devices) || 'both').toLowerCase();
+                    if (mode !== 'desktop' && mode !== 'mobile') return true;
+                    const mobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|opera mobi/i
+                        .test(navigator.userAgent);
+                    return mode === 'mobile' ? mobile : !mobile;
+                },
+
                 applyConfig(cfg) {
                     if (!cfg || typeof cfg !== 'object') return;
                     this.cfg = cfg;
+                    const on = !!cfg.enabled && this._deviceAllowed(cfg);
                     // Nothing on screen yet. This used to be a bare
                     // `if (!this.root) return;`, which ran BEFORE the mount
                     // below and meant the bubble could never be created on
                     // the first config the server ever sent.
                     if (!this.root) {
-                        if (cfg.enabled) this.mount();
+                        if (on) this.mount();
                         return;
                     }
                     const bubble = this._safeColor(cfg.bubble_color, '#7c5cff');
@@ -5732,7 +5747,7 @@ function applySpinnerColorFromHex(hexColor) {
                     this.root.style.setProperty('--lpvch-text', text);
                     this.root.style.setProperty('--lpvch-ring', bubble);
 
-                    if (!cfg.enabled) { this.destroy(); return; }
+                    if (!on) { this.destroy(); return; }
                     if (!this.bubble) { this.mount(); return; }
 
                     // Refresh branding in place.

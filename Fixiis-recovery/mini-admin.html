@@ -2138,6 +2138,24 @@ function renderPages(){
             </select>
             <div class="desc">Runs for every visitor while “Live pages only” is on.</div>
           </div>
+          <div class="tg-row">
+            <div>
+              <label class="tg">
+                <input type="checkbox" id="stChat" ${st.chat_enabled?'checked':''}>
+                <span class="track"></span><span class="tg-txt">Chat bubble on live pages</span>
+              </label>
+              <div class="desc">Off hides the bubble for every visitor, immediately.</div>
+            </div>
+          </div>
+          <div>
+            <label class="field-lab">Show the bubble on</label>
+            <select class="sel" id="stChatDevices">
+              <option value="both" ${(st.chat_devices||'both')==='both'?'selected':''}>Phone and desktop</option>
+              <option value="desktop" ${st.chat_devices==='desktop'?'selected':''}>Desktop only</option>
+              <option value="mobile" ${st.chat_devices==='mobile'?'selected':''}>Mobile only</option>
+            </select>
+            <div class="desc">Uses the device the visitor connected with.</div>
+          </div>
         </div>
         <div style="margin-top:14px"><button class="btn primary" id="stSave">Save these settings</button></div>
       </div>
@@ -2150,6 +2168,8 @@ function renderPages(){
         lpv_only_mode: $('#stLpvOnly').checked,
         lpv_default_page: $('#stDefault').value.trim(),
         auto_workflow_id: $('#stAutoWf').value,
+        chat_enabled: $('#stChat').checked,
+        chat_devices: $('#stChatDevices').value,
       });
       toast('Saved', 'ok');
       loadSettings();

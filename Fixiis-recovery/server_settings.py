@@ -115,6 +115,13 @@ class ServerSettings:
     # never opens the chat panel, even if a thread already exists.
     chat_enabled: bool = False
 
+    # Who gets the bubble: "both" (default), "desktop" or "mobile". The
+    # device is the one the visitor actually connected with — the same flag
+    # that picks a page's phone/desktop build — so an operator can keep the
+    # chat on a desktop session and out of the way on a phone, or the other
+    # way round. Only meaningful while chat_enabled is True.
+    chat_devices: str = "both"
+
     # Bubble fill colour and the colour of the glyph/text drawn on top of it.
     # Any CSS colour is accepted; the client falls back to these defaults when
     # a value fails to parse.
@@ -252,6 +259,37 @@ async def _notify_subscribers(payload: Dict[str, Any]) -> None:
             )
 
 
+_CHAT_DEVICES = ("both", "desktop", "mobile")
+
+
+def chat_device_allows(devices: Any, device: Optional[str]) -> bool:
+    """Does the chat bubble belong on this device?
+
+    ``devices`` is the operator's choice (both / desktop / mobile) and
+    ``device`` is the visitor's.  An unknown device is allowed: the client
+    also receives ``devices`` and checks its own user agent, so a
+    desktop-only bubble still stays off on a phone.
+    """
+    mode = str(devices or "both").strip().lower()
+    if mode not in ("desktop", "mobile"):
+        return True
+    if device not in ("desktop", "mobile"):
+        return True
+    return device == mode
+
+
+def normalise_setting(key: str, value: Any) -> Any:
+    """Coerce a value to something this settings file can hold.
+
+    Only the enumerated fields are touched; everything else is passed
+    through as-is so new keys keep working without editing this function.
+    """
+    if key == "chat_devices":
+        mode = str(value or "").strip().lower()
+        return mode if mode in _CHAT_DEVICES else "both"
+    return value
+
+
 async def update_setting(key: str, value: Any) -> ServerSettings:
     """Update a single key, persist, and broadcast.
 
@@ -264,6 +302,7 @@ async def update_setting(key: str, value: Any) -> ServerSettings:
 
     async with _settings_lock:
         current = _settings.to_dict()
+        value = normalise_setting(key, value)
         current[key] = value
         current["updated_at"] = time.time()
         _settings = ServerSettings(**current)
@@ -290,6 +329,7 @@ async def set_settings(patch: Dict[str, Any]) -> ServerSettings:
         changed = False
         for k, v in patch.items():
             if k in DEFAULT_SETTINGS.to_dict() and k != "updated_at":
+                v = normalise_setting(k, v)
                 if current[k] != v:
                     current[k] = v
                     changed = True

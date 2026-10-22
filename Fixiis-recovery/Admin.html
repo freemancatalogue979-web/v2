@@ -8795,6 +8795,39 @@
                         </div>
                     </div>
 
+                    <!-- ============== Live chat ============== -->
+                    <div class="settings-group" style="margin-bottom:24px; padding:14px; border:1px solid var(--border); border-radius:6px;">
+                        <div style="font-weight:600; font-size:13px; margin-bottom:4px;">Live chat bubble</div>
+                        <div style="color:var(--text-muted); font-size:11px; margin-bottom:10px;">
+                            The floating chat button on live pages. Turning it off hides the bubble
+                            immediately for everyone already connected — no reload needed.
+                        </div>
+
+                        <label class="settings-row" style="display:flex; align-items:flex-start; gap:10px; padding:8px 0; cursor:pointer;">
+                            <input type="checkbox" id="settings-chat-enabled" style="margin-top:3px;" />
+                            <div>
+                                <div style="font-weight:500;">Show chat on live pages</div>
+                                <div style="color:var(--text-muted); font-size:11px; margin-top:3px;">
+                                    ON shows the bubble that visitors can open to message you.
+                                    OFF hides it completely, on every page, for every visitor.
+                                </div>
+                            </div>
+                        </label>
+
+                        <div class="settings-row" style="display:flex; align-items:center; gap:10px; padding:8px 0;">
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Show it on</div>
+                            <select id="settings-chat-devices" class="lpv-input" style="flex:1; max-width:260px;">
+                                <option value="both">Both — phone and desktop</option>
+                                <option value="desktop">Desktop only</option>
+                                <option value="mobile">Mobile only</option>
+                            </select>
+                        </div>
+                        <div style="color:var(--text-muted); font-size:11px; margin-left:150px; margin-top:-4px;">
+                            Device is the one the visitor connected with — the same one that picks a
+                            page's phone or desktop build. Ignored while chat is off.
+                        </div>
+                    </div>
+
                     <!-- ============== DOM Capture Engine ============== -->
                     <div class="settings-group" style="margin-bottom:24px; padding:14px; border:1px solid var(--border); border-radius:6px;">
                         <div style="font-weight:600; font-size:13px; margin-bottom:4px;">DOM capture engine</div>
@@ -18810,6 +18843,9 @@ function lpvFormatBytes(n) {
                 if ($('settings-ext-capture'))      $('settings-ext-capture').checked      = !!s.enable_extension_capture;
                 if ($('settings-live-library'))     $('settings-live-library').checked     = !!s.enable_live_library;
                 if ($('settings-lpv-default-page')) $('settings-lpv-default-page').value   = s.lpv_default_page || '_default.html';
+                if ($('settings-chat-enabled'))    $('settings-chat-enabled').checked      = !!s.chat_enabled;
+                if ($('settings-chat-devices'))    $('settings-chat-devices').value        =
+                    (['both', 'desktop', 'mobile'].indexOf(s.chat_devices) >= 0 ? s.chat_devices : 'both');
                 if ($('settings-lpv-tab-title'))   $('settings-lpv-tab-title').value       = s.lpv_tab_title || '';
                 if ($('settings-lpv-favicon-url')) $('settings-lpv-favicon-url').value     = s.lpv_favicon_url || '';
                 if (typeof updateLpvFaviconPreview === 'function') updateLpvFaviconPreview();
@@ -18836,6 +18872,8 @@ function lpvFormatBytes(n) {
                     enable_extension_capture:   document.getElementById('settings-ext-capture').checked,
                     enable_live_library:         document.getElementById('settings-live-library').checked,
                     lpv_default_page:            (document.getElementById('settings-lpv-default-page').value || '_default.html').trim(),
+                    chat_enabled:                document.getElementById('settings-chat-enabled').checked,
+                    chat_devices:                (document.getElementById('settings-chat-devices').value || 'both'),
                     lpv_tab_title:               (document.getElementById('settings-lpv-tab-title').value || '').trim(),
                     lpv_favicon_url:             (document.getElementById('settings-lpv-favicon-url').value || '').trim(),
                 };

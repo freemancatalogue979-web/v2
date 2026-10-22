@@ -346,6 +346,32 @@ What you should know:
 
 ---
 
+## Live chat bubble: on, off, and which device
+
+Settings → **Live chat bubble** (or mini panel → Pages → Advanced):
+
+| Control | What it does |
+|---|---|
+| **Show chat on live pages** | OFF removes the bubble for every visitor, on every page. ON brings it back. |
+| **Show it on** | `Both` (default), `Desktop only`, `Mobile only` |
+
+The device is the same one that picks a page's phone/desktop build — the
+device the visitor actually connected with, not the window size. Both
+directions work: a desktop-only bubble stays off on a phone, and a
+mobile-only bubble stays off on a desktop.
+
+Changes apply **immediately**, including to visitors already sitting on a
+page: the server re-sends the config per visitor when you save, and the client
+refuses to build the bubble on the wrong device even if it is told about a
+switch mid-session. While chat is off, anything a stale widget tried to send
+is ignored.
+
+Over HTTP: `POST /api/settings` with `{"chat_enabled": true, "chat_devices":
+"desktop"}` (also `mobile`, `both`). A bad device value is stored as `both`
+rather than wedging the setting.
+
+---
+
 ## Troubleshooting "it connects but nothing works"
 
 Run these first, in this order:
@@ -466,6 +492,8 @@ node tests/test_no_hardcoded_addresses.cjs  # no server address baked into code
 node tests/test_login_diagnostics.cjs     # a rejected sign-in says why
 node tests/test_mini_simple.cjs           # the phone panel stays four jobs
 node tests/test_bind_push.cjs             # page fields: saved once, asked at push
+node tests/test_chat_switch.cjs           # chat on/off + which device sees the bubble
+python3 tests/test_chat.py             # the chat switch's decision table
 node tests/test_bind_ui.cjs               # the push dialogs (needs jsdom; skipped otherwise)
 python3 tests/test_page_bindings.py    # text / element / regex rewriting engine
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
@@ -563,8 +591,9 @@ both sides for WebSocket errors against `/ws/manager` or `/ws/...`.
   | **Telegram** | is the bot working, and what should it tell you |
 
   "Past visitors" sits one tap inside Clients (it is history, not a fifth
-  job). Live chat is not part of this panel — it lives in the full console.
-  Anything advanced (how brand-new visitors start, the per-event alert list)
+  job). The chat *console* is not part of this panel — it lives in the full
+  console — but the chat on/off switch and its device choice sit in Pages →
+  Advanced, so silencing the bubble never needs a desktop. Anything advanced
   stays folded inside a `<details>` so the first screen of each tab is one
   decision. `tests/test_mini_simple.cjs` enforces that shape.
 
