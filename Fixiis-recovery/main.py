@@ -73,6 +73,12 @@ def _load_dotenv(path: Path) -> int:
                 if (v.startswith('"') and v.endswith('"')) or \
                    (v.startswith("'") and v.endswith("'")):
                     v = v[1:-1]
+                # `KEY=` means "not configured". Importing the blank value
+                # would override a working default (an empty
+                # ADMIN_PASSWORD_HASH makes login impossible, an empty
+                # PUBLIC_IP produces http://:8446 links).
+                if not v:
+                    continue
                 if k and k not in os.environ:
                     os.environ[k] = v
                     loaded += 1

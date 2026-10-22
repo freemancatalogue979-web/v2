@@ -99,7 +99,10 @@ def decrypt_xor(encrypted_data: str, key: str = None) -> str:
 
 
 RECAPTCHA_SECRET_KEY = os.environ.get('RECAPTCHA_SECRET_KEY', '6LcaJGcsAAAAAN-1mcBveZhep8PXM_Rl1sa0YdyI')
-JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'your-super-secret-jwt-key-change-in-production')
+# `or` rather than a default: an empty value in .env must not turn into a
+# blank signing key (which would make every token interchangeable).
+JWT_SECRET_KEY = (os.environ.get('JWT_SECRET_KEY') or
+                  'your-super-secret-jwt-key-change-in-production')
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -1858,6 +1861,8 @@ def _lpv_page_url(page_id: str) -> str:
                     "::1",
                     "example.com",
                     "example.org",
+                    "example.net",
+                    "panel.example.com",
                     "localtest.me",
                     "it.com",
                     "simplify-hospitality.it.com",
@@ -1877,7 +1882,10 @@ def _lpv_page_url(page_id: str) -> str:
                             f"{parsed_url.scheme}://{parsed_url.netloc}"
                             f"{prefix}/api/lpv/archive/{page_id}/html"
                         )
-                elif host_lower not in placeholder_hosts and not host_lower.startswith("*"):
+                elif (host_lower not in placeholder_hosts
+                      and not host_lower.startswith("*")
+                      and not host_lower.endswith((".example.com", ".example.org",
+                                                   ".example.net"))):
                     return f"{scheme}://{host}/api/lpv/archive/{page_id}/html"
     except Exception:
         pass
@@ -4055,7 +4063,10 @@ async def send_telegram_admin_message(request: Request):
 # ==============================
 
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
-ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH', '$2b$12$K9Xm2pQ4rT7vN8wL3jH6e.nSuc39Ma1gWXoznLSkhTeaL9F1CfDne')
+# Same reasoning: `ADMIN_PASSWORD_HASH=` (blank) in .env must fall back to
+# the built-in hash instead of locking the operator out of the panel.
+DEFAULT_ADMIN_PASSWORD_HASH = '$2b$12$K9Xm2pQ4rT7vN8wL3jH6e.nSuc39Ma1gWXoznLSkhTeaL9F1CfDne'
+ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH') or DEFAULT_ADMIN_PASSWORD_HASH
 
 
 async def verify_recaptcha(token: str) -> bool:
@@ -4138,7 +4149,9 @@ async def login(request: Request):
             try:
                 password_valid = bcrypt.checkpw(password.encode(), stored_hash)
             except Exception as e:
-                logger.error(f"[Broadcast Error] {e}")
+                # A malformed hash is a configuration mistake, not a crash:
+                # answer 401 so the panel shows "Invalid credentials".
+                logger.error(f"[Auth] ADMIN_PASSWORD_HASH is not a valid bcrypt hash: {e}")
                 password_valid = False
         else:
             # Legacy MD5 support (deprecated - migrate to bcrypt)

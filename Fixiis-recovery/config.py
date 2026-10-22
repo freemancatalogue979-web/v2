@@ -11,6 +11,30 @@ import json
 import hashlib
 
 
+# Hosts that only ever appear in examples/templates. URLs built from these
+# are guaranteed to fail, so they must never reach the running config.
+PLACEHOLDER_HOSTS = frozenset({
+    "example.com", "www.example.com", "example.org", "www.example.org",
+    "example.net", "panel.example.com", "localhost", "127.0.0.1",
+    "0.0.0.0", "::1", "it.com", "simplify-hospitality.it.com",
+})
+
+
+def is_placeholder_host(host: str) -> bool:
+    """True for template/example hostnames and other unusable addresses."""
+    value = (host or "").strip().strip("/").lower()
+    if not value:
+        return False
+    for prefix in ("http://", "https://"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+    value = value.split("/", 1)[0].split(":", 1)[0]
+    if value in PLACEHOLDER_HOSTS:
+        return True
+    return value.endswith(".example.com") or value.endswith(".example.org") \
+        or value.endswith(".example.net")
+
+
 @dataclass
 class UltraConfig:
     """Server configuration for Maximum CPU/GPU Performance Browser Streaming"""
@@ -285,11 +309,22 @@ class UltraConfig:
 
         for env_var, (attr_name, converter) in env_mappings.items():
             value = os.environ.get(env_var)
+            # An empty value means "not configured", not "set it to blank".
+            # `.env` templates ship lines like `PUBLIC_IP=` and
+            # `ADMIN_PASSWORD_HASH=`; treating those as real values used to
+            # blank out defaults and produce links like `http://:8446`.
+            if value is not None and not value.strip():
+                continue
             if value is not None:
                 try:
                     setattr(self, attr_name, converter(value))
                 except (ValueError, AttributeError):
                     pass  # Silently ignore parsing errors
+
+        # A template placeholder is also "not configured": a domain that
+        # nobody owns turns every generated link into a dead host.
+        if is_placeholder_host(getattr(self, "server_domain", "")):
+            self.server_domain = ""
 
     def _validate_config(self):
         """Validate configuration values"""

@@ -170,6 +170,15 @@ else
     info ".env already exists — leaving it alone"
 fi
 
+# Heal placeholder values left behind by an older template
+# (SERVER_DOMAIN=panel.example.com, USE_HTTPS=true, blank secrets) and make
+# sure the admin password is a real random one. Idempotent.
+if [[ -f "$INSTALL_DIR/bootstrap.py" ]]; then
+    ( cd "$INSTALL_DIR" && "$INSTALL_DIR/venv/bin/python" -c \
+        'import bootstrap; [print("    .env:", c) for c in bootstrap.repair_env_file()]; bootstrap.ensure_admin_password()' \
+    ) 2>/dev/null || true
+fi
+
 chmod 600 "$INSTALL_DIR/.env"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 

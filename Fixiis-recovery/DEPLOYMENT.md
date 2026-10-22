@@ -469,6 +469,38 @@ curl -s http://127.0.0.1:8446/health | jq .build
 `uptime_seconds` resetting is the proof the restart ran; `revision` is the
 commit of the checkout that is actually running.
 
+### If connections start failing after a deploy
+
+Two different things can look like "the app is broken", and they have
+different fixes:
+
+```bash
+sudo ./deploy/doctor.sh          # read-only: services, restarts, .env, port, logs
+sudo ./deploy/doctor.sh --watch  # follow both logs live
+```
+
+* **The app is restarting over and over** - the doctor prints
+  `restarts=N` and flags it. The watcher has a budget (8 restarts per
+  10 minutes by default, then it stops touching the service and logs why),
+  so a runaway editor/sync client cannot bounce it forever. Pause the
+  watcher without stopping the app:
+
+  ```bash
+  sudo systemctl stop fixiis-reloader      # app keeps running, restarts manual again
+  sudo systemctl start fixiis-reloader     # back on
+  ```
+
+* **The app is up but the UI cannot reach the API** - usually a `.env`
+  with placeholder values. `SERVER_DOMAIN=panel.example.com` makes the
+  app build absolute URLs pointing at a domain nobody owns, and a blank
+  `ADMIN_PASSWORD_HASH` makes every login fail:
+
+  ```bash
+  cd /opt/fixiis && sudo -u fixiis python3 main.py --check
+  cd /opt/fixiis && sudo -u fixiis python3 main.py --fix-env
+  sudo systemctl restart fixiis
+  ```
+
 ### Watching it happen
 
 ```bash

@@ -39,6 +39,8 @@ Options:
     --health-url URL      poll this after a restart and log the result
     --health-timeout SEC  how long to wait for it (default 60)
     --state-file PATH     remember the last snapshot across runs (for --once)
+    --max-restarts N      restart budget per window, 0 = unlimited (default 8)
+    --budget-window SECS  length of that window (default 600)
     --dry-run             log what would happen, never restart
     --once                scan once, act, exit (for tests/CI/cron)
     --quiet               only log restarts and errors
@@ -307,6 +309,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--health-url", default="", help="poll this URL after a restart")
     parser.add_argument("--health-timeout", type=float, default=60.0)
     parser.add_argument("--state-file", default="", help="persist the snapshot between --once runs")
+    parser.add_argument("--max-restarts", type=int, default=8,
+                        help="restart budget per window (0 = unlimited)")
+    parser.add_argument("--budget-window", type=float, default=600.0,
+                        help="seconds the restart budget is measured over")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true", help="scan once and exit")
     parser.add_argument("--quiet", action="store_true")
@@ -361,6 +367,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pending_since: Optional[float] = None
     last_restart = 0.0
     last_reported = ""
+    restart_times: List[float] = []
+    budget_warned = False
 
     while not stopping:
         now = time.time()
@@ -374,7 +382,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if not args.quiet:
                 log(f"change detected: {title}")
 
+        # Restart budget: a deploy that keeps touching files (an editor
+        # saving on a timer, a sync client, a crash-looping watcher) must not
+        # bounce the service every 10 seconds forever. That is exactly what
+        # "everything keeps disconnecting" looks like from the outside.
+        if args.max_restarts > 0:
+            window_start = now - args.budget_window
+            restart_times = [t for t in restart_times if t >= window_start]
+        over_budget = args.max_restarts > 0 and len(restart_times) >= args.max_restarts
+
         if should_restart(now, pending_since, last_restart, args.debounce, args.min_interval):
+            if over_budget:
+                if not budget_warned:
+                    budget_warned = True
+                    log_error(
+                        f"restart budget reached ({args.max_restarts} restarts in "
+                        f"{int(args.budget_window)}s) — NOT restarting. The app is "
+                        "left running as-is."
+                    )
+                    log_error(
+                        "something keeps changing files (editor auto-save, sync "
+                        "client, or a deploy loop). Fix that, raise --max-restarts, "
+                        "or restart the watcher: systemctl restart fixiis-reloader"
+                    )
+                pending.clear()
+                pending_since = None
+                previous = current
+                if state_path is not None:
+                    save_state(state_path, current)
+                if args.once:
+                    return 1
+                time.sleep(max(0.2, args.interval))
+                continue
+
             touched = sorted(pending)
             problems = syntax_errors(root, touched)
             if problems:
@@ -393,6 +433,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 ok, output = run_restart(command, args.dry_run)
                 if ok:
                     last_restart = time.time()
+                    restart_times.append(last_restart)
+                    budget_warned = False
                     log("restart command succeeded" + (f": {output}" if output else ""), args.quiet)
                     if args.health_url:
                         healthy, detail = wait_for_health(args.health_url, args.health_timeout)

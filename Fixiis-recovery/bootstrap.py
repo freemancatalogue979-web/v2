@@ -27,6 +27,7 @@ Usage
 -----
     python main.py                 # set things up if needed, then run
     python main.py --check         # diagnose the environment and exit
+    python main.py --fix-env       # repair a .env left by an old template
     python main.py --setup         # force venv creation + pip install
     python main.py --no-install    # never install; print instructions
     python main.py --network       # listen on this machine's network (0.0.0.0)
@@ -189,31 +190,64 @@ def missing_packages(
 # --------------------------------------------------------------------------
 # .env and runtime directories
 # --------------------------------------------------------------------------
-MINIMAL_ENV = """\
+#: Values that only ever appear in examples. A `.env` carrying these is
+#: broken: the app builds absolute URLs from SERVER_DOMAIN, so a domain
+#: nobody owns turns every LPV push / share link into "Failed to fetch".
+PLACEHOLDER_DOMAINS = {
+    "panel.example.com", "example.com", "www.example.com",
+    "example.org", "example.net",
+}
+
+#: The hash api.py falls back to when the value is empty (password "admin").
+DEFAULT_ADMIN_HASH = "$2b$12$K9Xm2pQ4rT7vN8wL3jH6e.nSuc39Ma1gWXoznLSkhTeaL9F1CfDne"
+
+ENV_HEADER = """\
 # Fixiis / Neo Browser Stream - created automatically by main.py.
-# Edit freely; this file is never overwritten once it exists.
-ADMIN_USERNAME=admin
-HOST=0.0.0.0
-PORT=8446
-BROWSER_BACKEND=sb
+# This file is safe to edit; it is never overwritten once it exists.
+#
+# HOST=0.0.0.0    -> this machine AND every device on its network
+# HOST=127.0.0.1  -> this machine only (for nginx / tunnel setups)
+# Leave SERVER_DOMAIN unset unless you really own that domain: when it is
+# set, share links and LPV page URLs are built from it instead of the
+# address the client actually connected to.
 """
 
 
-def ensure_env_file(root: Path = ROOT) -> bool:
+def _random_secret(bytes_: int = 48) -> str:
+    """A URL-safe random secret, stdlib only (no pip needed)."""
+    import secrets
+
+    return secrets.token_urlsafe(bytes_)
+
+
+def generate_env_text(port: int = 8446) -> str:
+    """A working .env: no placeholders, no blank secrets."""
+    return "\n".join([
+        ENV_HEADER,
+        "ADMIN_USERNAME=admin",
+        "ADMIN_PASSWORD_HASH=",          # filled by ensure_admin_password()
+        f"JWT_SECRET_KEY={_random_secret()}",
+        "HOST=0.0.0.0",
+        f"PORT={port}",
+        "BROWSER_BACKEND=sb",
+        "",
+    ])
+
+
+def ensure_env_file(root: Path = ROOT, port: int = 8446) -> bool:
     """Create ``.env`` on first run. Returns True when it was created.
 
-    The file is only written when absent, so a restart never rewrites it
-    (the deploy watcher would otherwise restart the app forever).
+    Deliberately does *not* copy ``.env.example``: that template contains
+    documentation placeholders (``SERVER_DOMAIN=panel.example.com``,
+    ``USE_HTTPS=true``, blank secrets) which, if copied verbatim, produce a
+    server whose links point at a domain nobody owns and whose login can
+    never succeed. Only real values are written here.
     """
     target = root / ".env"
     if target.exists():
         return False
-    template = root / ".env.example"
     try:
-        if template.exists():
-            target.write_bytes(template.read_bytes())
-        else:
-            target.write_text(MINIMAL_ENV, encoding="utf-8")
+        target.write_text(generate_env_text(port), encoding="utf-8")
         try:
             target.chmod(0o600)
         except OSError:
@@ -221,6 +255,176 @@ def ensure_env_file(root: Path = ROOT) -> bool:
     except OSError:
         return False
     return True
+
+
+def _env_lines(path: Path) -> List[str]:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+
+def _key_of(line: str) -> Optional[str]:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    return stripped.split("=", 1)[0].strip()
+
+
+def _value_of(line: str) -> str:
+    return line.split("=", 1)[1].strip().strip('"').strip("'") if "=" in line else ""
+
+
+def is_placeholder_domain(value: str) -> bool:
+    host = (value or "").strip().lower()
+    for prefix in ("http://", "https://"):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    host = host.split("/", 1)[0]
+    return host in PLACEHOLDER_DOMAINS or host.endswith((".example.com", ".example.org"))
+
+
+def repair_env_file(root: Path = ROOT, path: Optional[Path] = None) -> List[str]:
+    """Fix a `.env` that was created from the old template. Idempotent.
+
+    Returns a list of human-readable descriptions of what was changed
+    (empty when the file was already fine). Only known-broken values are
+    touched - a real domain, a real password hash and every other setting
+    are preserved exactly as written.
+    """
+    env_path = path or (root / ".env")
+    if not env_path.exists():
+        return []
+
+    original = _env_lines(env_path)
+    if not original:
+        return []
+
+    changes: List[str] = []
+    out: List[str] = []
+    seen: Dict[str, str] = {}
+    placeholder_domain = False
+
+    for line in original:
+        key = _key_of(line)
+        if key is None:
+            out.append(line)
+            continue
+        value = _value_of(line)
+        seen[key] = value
+
+        if key == "SERVER_DOMAIN" and value and is_placeholder_domain(value):
+            placeholder_domain = True
+            out.append("# (removed by main.py) template placeholder, not a real domain:")
+            out.append(f"# {line.strip()}")
+            changes.append(f"disabled placeholder SERVER_DOMAIN={value}")
+            continue
+
+        if key in ("PUBLIC_IP", "HOST", "TUNNEL_HOSTNAME", "CHROME_PATH",
+                   "PROFILE_BASE_PATH", "DEFAULT_URL") and not value:
+            out.append(f"# (removed by main.py) empty value overrides the default: {key}")
+            changes.append(f"dropped empty {key}=")
+            continue
+
+        if key == "ADMIN_PASSWORD_HASH" and not value:
+            out.append("# (set by main.py) ADMIN_PASSWORD_HASH is empty; the built-in")
+            out.append("# default applies until you generate your own hash.")
+            out.append("# ADMIN_PASSWORD_HASH=")
+            changes.append("removed empty ADMIN_PASSWORD_HASH (default hash now applies)")
+            continue
+
+        out.append(line)
+
+    if placeholder_domain and "USE_HTTPS" in seen and seen["USE_HTTPS"].lower() == "true":
+        changes.append("set USE_HTTPS=false (it only made sense with that domain)")
+
+    needs_https_fix = placeholder_domain and seen.get("USE_HTTPS", "").lower() == "true"
+    if needs_https_fix:
+        out = [
+            "USE_HTTPS=false" if _key_of(line) == "USE_HTTPS" else line
+            for line in out
+        ]
+
+    if not seen.get("JWT_SECRET_KEY"):
+        if "JWT_SECRET_KEY" in seen:
+            out = [
+                f"JWT_SECRET_KEY={_random_secret()}" if _key_of(line) == "JWT_SECRET_KEY" else line
+                for line in out
+            ]
+        else:
+            out.append(f"JWT_SECRET_KEY={_random_secret()}")
+        changes.append("generated a random JWT_SECRET_KEY")
+
+    if not seen.get("HOST"):
+        if "HOST" not in seen:
+            out.append("HOST=0.0.0.0")
+            changes.append("added HOST=0.0.0.0 (reachable from the network)")
+
+    if not changes:
+        return []
+
+    text = "\n".join(out).rstrip("\n") + "\n"
+    try:
+        env_path.write_text(text, encoding="utf-8")
+    except OSError:
+        return []
+    return changes
+
+
+def ensure_admin_password(root: Path = ROOT, stream: Optional[TextIO] = None) -> Optional[str]:
+    """Set a random admin password on first run and return it once.
+
+    Needs bcrypt, so it is called after dependency installation. When the
+    hash is already set (setup.sh, or a previous run) nothing happens and
+    ``None`` is returned. Also made idempotent by the fact that the file is
+    only rewritten when the value really changes.
+    """
+    env_path = root / ".env"
+    values = env_file_values(root)
+    if values.get("ADMIN_PASSWORD_HASH"):
+        return None
+    try:
+        import bcrypt
+    except Exception:
+        return None
+
+    import secrets
+
+    password = secrets.token_urlsafe(9)
+    try:
+        hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(12)).decode()
+    except Exception:
+        return None
+
+    lines = _env_lines(env_path)
+    if not lines:
+        return None
+    replaced = False
+    out: List[str] = []
+    for line in lines:
+        key = _key_of(line)
+        if key == "ADMIN_PASSWORD_HASH" and not _value_of(line):
+            out.append(f"ADMIN_PASSWORD_HASH={hashed}")
+            replaced = True
+        elif key == "ADMIN_PASSWORD_HASH":
+            out.append(line)          # already has a hash - keep it
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"ADMIN_PASSWORD_HASH={hashed}")
+    try:
+        env_path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+        env_path.chmod(0o600)
+    except OSError:
+        return None
+
+    if stream is not None:
+        print(f"    admin user: admin", file=stream)
+        print(f"    admin password: {password}", file=stream)
+        print("    (written to .env as a bcrypt hash; this is the only time it is shown)",
+              file=stream, flush=True)
+    return password
 
 
 def ensure_dirs(root: Path = ROOT, names: Sequence[str] = RUNTIME_DIRS) -> List[str]:
@@ -532,13 +736,52 @@ def diagnose(
             "python main.py --setup" if not present else "",
         )
 
-    env_exists = (ROOT / ".env").exists()
+    env_exists = ENV_FILE.exists()
+    values = env_file_values()
     line(
         ".env",
         "present" if env_exists else "missing (created on next start)",
         True,
         "",
     )
+
+    if env_exists:
+        domain = values.get("SERVER_DOMAIN", "")
+        if domain and is_placeholder_domain(domain):
+            line(
+                "SERVER_DOMAIN",
+                f"{domain} - template placeholder",
+                warn=True,
+                hint=(
+                    "the app would build share/LPV URLs from a domain that does "
+                    "not exist ('Failed to fetch'). Fix: python main.py --fix-env"
+                ),
+            )
+        elif domain:
+            line("SERVER_DOMAIN", domain)
+        else:
+            line("SERVER_DOMAIN", "unset (URLs use the address you connect to)")
+
+        password_hash = values.get("ADMIN_PASSWORD_HASH", "")
+        if password_hash:
+            line("admin password", "custom hash set in .env")
+        else:
+            line(
+                "admin password",
+                "built-in default (user 'admin')",
+                warn=True,
+                hint="anyone who knows the default can log in. Fix: python main.py --fix-env",
+            )
+
+        jwt_value = values.get("JWT_SECRET_KEY", "")
+        line(
+            "JWT secret",
+            "set" if jwt_value else "not set (random one generated on next start)",
+            warn=not jwt_value,
+            hint="" if jwt_value else "python main.py --fix-env",
+        )
+
+    # --check never modifies anything, so no repair pass here.
 
     dirs = [name for name in RUNTIME_DIRS if not (ROOT / name).is_dir()]
     line("runtime dirs", "all present" if not dirs else "created on start: " + ", ".join(dirs))
@@ -692,6 +935,8 @@ class Startup:
     open_browser: bool = False
     interactive: bool = False
     created_env: bool = False
+    env_repairs: List[str] = field(default_factory=list)
+    admin_password: str = ""
     installed: bool = False
     args: List[str] = field(default_factory=list)
 
@@ -733,6 +978,7 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
     host: Optional[str] = None
     port: Optional[int] = None
     check = False
+    fix_env = False
 
     index = 0
     while index < len(args):
@@ -742,6 +988,8 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
             raise SystemExit(0)
         if arg == "--check":
             check = True
+        elif arg == "--fix-env":
+            fix_env = True
         elif arg == "--setup":
             force_setup = True
         elif arg == "--no-install":
@@ -787,12 +1035,32 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
     if check:
         raise SystemExit(diagnose(port=port))
 
+    if fix_env:
+        if ensure_env_file():
+            _say("  created .env with working defaults")
+        changes = repair_env_file()
+        password = ensure_admin_password(stream=sys.stdout)
+        if changes:
+            _say("  .env repaired:")
+            for change in changes:
+                _say(f"    - {change}")
+        elif not password:
+            _say("  .env already looks correct - nothing to fix")
+        if password:
+            _say(f"    - set a random admin password (below)")
+        _say("")
+        _say("Restart the app for the changes to apply: python main.py")
+        raise SystemExit(0)
+
     # 3. First-run files: .env and the data directories. Done before anything
     #    that can fail, so a half-finished install still leaves a config to
     #    edit and somewhere for the app to write.
     if ensure_env_file():
         startup.created_env = True
-        _say("  created .env from the template - edit it to set your passwords")
+        _say("  created .env with working defaults")
+    for change in repair_env_file():
+        startup.env_repairs.append(change)
+        _say(f"  .env: {change}")
     ensure_dirs()
 
     if force_setup:
@@ -843,21 +1111,27 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
             _say("  could not create .venv (python3-venv missing?) - continuing with this Python")
 
     # 7. Install whatever is still missing, when we are allowed to.
-    if missing and not no_install:
-        if allow_setup:
+    #    Only a *critical* package is allowed to stop the boot: a missing
+    #    optional extra must never turn into a restart loop under systemd.
+    if missing:
+        installed_now = False
+        if allow_setup and not no_install:
             _say(f"  {len(missing)} package(s) missing: {', '.join(missing)}")
-            if install_requirements(sys.executable, ROOT):
-                startup.installed = True
-                still = missing_packages()
-                if still:
-                    _say(f"  still missing after install: {', '.join(still)}")
-                    _exit(_install_hint(still), 2)
-            else:
-                _exit(_install_hint(missing), 2)
-        else:
-            _exit(_install_hint(missing), 2)
-    elif missing:
-        _exit(_install_hint(missing), 2)
+            installed_now = install_requirements(sys.executable, ROOT)
+            startup.installed = installed_now
+            missing = missing_packages()
+            if missing and not installed_now:
+                _say("  could not install them (no network, or pip refused)")
+
+        critical = [p for p in missing if p.lower() in CRITICAL]
+        if critical:
+            _exit(_install_hint(critical), 2)
+        if missing:
+            _say(f"  continuing without optional package(s): {', '.join(missing)}")
+
+    # 8. Give the first run a real admin password instead of the built-in one.
+    password = ensure_admin_password(stream=sys.stdout if startup.show_banner or allow_setup else None)
+    startup.admin_password = password or ""
 
     startup.host = host_from_env()
     startup.port = port_from_env()

@@ -200,12 +200,40 @@ immediately.
 
 | Variable               | Default                | Purpose                                          |
 |------------------------|------------------------|--------------------------------------------------|
+| `HOST`                 | `0.0.0.0`              | Bind address. `127.0.0.1` = this machine only     |
+| `PORT`                 | `8446`                 | HTTP port                                         |
 | `ADMIN_USERNAME`       | `admin`                | Admin login username                              |
-| `ADMIN_PASSWORD_HASH`  | bcrypt hash of `admin` | bcrypt `$2b$…` hash; generate with `python -c`  |
-| `JWT_SECRET_KEY`       | placeholder            | **MUST** be set to a long random secret in prod  |
-| `RECAPTCHA_SECRET_KEY` | unused                 | Legacy; ignored since reCAPTCHA was removed      |
+| `ADMIN_PASSWORD_HASH`  | bcrypt hash of `admin` | bcrypt `$2b$…` hash; `main.py` generates one on first run |
+| `JWT_SECRET_KEY`       | random on first run    | Signs admin session tokens. Rotate if it leaks    |
+| `SERVER_DOMAIN`        | _unset_                | Only set it to a domain that really resolves here |
+| `PUBLIC_IP`            | _unset_                | Same rule; used in absolute links/reports         |
+| `USE_HTTPS`            | `false`                | `true` only when TLS terminates in front of the app |
 
-Rotate `JWT_SECRET_KEY` if you ever suspect it leaked.
+**Empty means "not configured".** A line like `ADMIN_PASSWORD_HASH=` does not
+blank out the default, and a template placeholder (`SERVER_DOMAIN=panel.example.com`)
+is ignored — previously those two turned into "login impossible" and
+"links point at a domain nobody owns". `python main.py --fix-env` repairs a
+`.env` that was written by an older template.
+
+---
+
+## Troubleshooting "it connects but nothing works"
+
+Run these first, in this order:
+
+```bash
+python main.py --check            # bind address, .env, packages, port, Chrome
+python main.py --fix-env          # repair placeholder/blank .env values
+./deploy/doctor.sh                # on the server: services, restarts, port, logs
+```
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Panel opens, LPV push fails with *Failed to fetch* | `SERVER_DOMAIN` set to a domain that does not resolve here | `python main.py --fix-env`, restart |
+| Login always says *Invalid credentials* | `ADMIN_PASSWORD_HASH=` blank or malformed | `python main.py --fix-env` |
+| Works on the server, refused from phone/laptop | bound to `127.0.0.1`, or firewall | `--network`, then open the firewall port |
+| Everything disconnects over and over | the service is restarting repeatedly | `./deploy/doctor.sh`; `sudo systemctl stop fixiis-reloader` to pause auto-restarts |
+| `/health` answers but the UI is stale | a deploy landed while a session was live | reconnect; restarts drop live sessions by design |
 
 ---
 

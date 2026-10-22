@@ -134,29 +134,45 @@ class VenvDetection(unittest.TestCase):
 
 
 class FirstRunFiles(unittest.TestCase):
-    def test_env_created_from_template(self):
+    def test_env_has_working_defaults_and_no_placeholders(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".env.example").write_text("PORT=9000\n", encoding="utf-8")
+            (root / ".env.example").write_text(
+                "SERVER_DOMAIN=panel.example.com\nUSE_HTTPS=true\n"
+                "PUBLIC_IP=\nADMIN_PASSWORD_HASH=\n", encoding="utf-8")
             self.assertTrue(bootstrap.ensure_env_file(root))
-            self.assertEqual((root / ".env").read_text(), "PORT=9000\n")
+            text = (root / ".env").read_text()
+            self.assertIn("HOST=0.0.0.0", text)
+            self.assertIn("PORT=8446", text)
+            self.assertIn("JWT_SECRET_KEY=", text)
+            values = bootstrap.env_file_values(root)
+            # The template's placeholders must NOT be copied over.
+            self.assertNotIn("SERVER_DOMAIN", values)
+            self.assertNotIn("USE_HTTPS", values)
+            self.assertNotIn("PUBLIC_IP", values)
+            self.assertNotIn("panel.example.com", values.values())
             self.assertEqual((root / ".env").stat().st_mode & 0o777, 0o600)
+
+    def test_jwt_secret_is_random_and_not_shared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap.ensure_env_file(root)
+            first = bootstrap.env_file_values(root)["JWT_SECRET_KEY"]
+            root2 = root / "second"
+            root2.mkdir()
+            bootstrap.ensure_env_file(root2)
+            second = bootstrap.env_file_values(root2)["JWT_SECRET_KEY"]
+            self.assertGreaterEqual(len(first), 32)
+            self.assertNotEqual(first, second)
 
     def test_existing_env_is_never_touched(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".env").write_text("PORT=1234\n", encoding="utf-8")
-            (root / ".env.example").write_text("PORT=9000\n", encoding="utf-8")
             before = (root / ".env").stat().st_mtime_ns
             self.assertFalse(bootstrap.ensure_env_file(root))
             self.assertEqual((root / ".env").read_text(), "PORT=1234\n")
             self.assertEqual((root / ".env").stat().st_mtime_ns, before)
-
-    def test_minimal_env_when_no_template(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.assertTrue(bootstrap.ensure_env_file(root))
-            self.assertIn("PORT=", (root / ".env").read_text())
 
     def test_runtime_dirs_created_once(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,6 +181,185 @@ class FirstRunFiles(unittest.TestCase):
             self.assertEqual(created, ["logs", "lpv"])
             self.assertEqual(bootstrap.ensure_dirs(root, ["logs", "lpv"]), [])
             self.assertTrue((root / "logs").is_dir())
+
+
+class EnvRepair(unittest.TestCase):
+    """A .env copied from the old template locked people out / broke URLs."""
+
+    TEMPLATE = (
+        "ADMIN_USERNAME=admin\n"
+        "ADMIN_PASSWORD_HASH=\n"
+        "PUBLIC_IP=\n"
+        "SERVER_DOMAIN=panel.example.com\n"
+        "USE_HTTPS=true\n"
+        "HOST=0.0.0.0\n"
+        "PORT=8446\n"
+        "BROWSER_BACKEND=sb\n"
+    )
+
+    def _write(self, tmp: str, text: str) -> Path:
+        root = Path(tmp)
+        (root / ".env").write_text(text, encoding="utf-8")
+        return root
+
+    def test_repairs_placeholders_and_reports_each_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(tmp, self.TEMPLATE)
+            changes = bootstrap.repair_env_file(root)
+        joined = " | ".join(changes)
+        self.assertIn("placeholder SERVER_DOMAIN", joined)
+        self.assertIn("ADMIN_PASSWORD_HASH", joined)
+        self.assertIn("PUBLIC_IP", joined)
+        self.assertIn("JWT", joined)
+
+    def test_repaired_file_has_no_active_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(tmp, self.TEMPLATE)
+            bootstrap.repair_env_file(root)
+            values = bootstrap.env_file_values(root)
+        self.assertNotIn("SERVER_DOMAIN", values)
+        self.assertNotIn("PUBLIC_IP", values)
+        self.assertFalse(values.get("ADMIN_PASSWORD_HASH"))
+        self.assertTrue(values.get("JWT_SECRET_KEY"))
+        self.assertEqual(values["USE_HTTPS"], "false")
+        self.assertEqual(values["PORT"], "8446")
+
+    def test_repair_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(tmp, self.TEMPLATE)
+            self.assertTrue(bootstrap.repair_env_file(root))
+            first = (root / ".env").read_text()
+            self.assertEqual(bootstrap.repair_env_file(root), [])
+            self.assertEqual((root / ".env").read_text(), first)
+
+    def test_real_settings_are_preserved(self):
+        real = (
+            "ADMIN_USERNAME=admin\n"
+            "ADMIN_PASSWORD_HASH=$2b$12$abcdefghijklmnopqrstuv\n"
+            "SERVER_DOMAIN=panel.myserver.net\n"
+            "USE_HTTPS=true\n"
+            "JWT_SECRET_KEY=keep-this-one\n"
+            "HOST=127.0.0.1\n"
+            "PORT=9000\n"
+            "CUSTOM_SETTING=1\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(tmp, real)
+            self.assertEqual(bootstrap.repair_env_file(root), [])
+            self.assertEqual((root / ".env").read_text(), real)
+
+    def test_comments_and_blank_lines_survive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(tmp, "# my notes\nHOST=0.0.0.0\n\n# tail\n")
+            bootstrap.repair_env_file(root)
+            text = (root / ".env").read_text()
+        self.assertIn("# my notes", text)
+        self.assertIn("# tail", text)
+
+    def test_missing_env_is_a_no_op(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(bootstrap.repair_env_file(Path(tmp)), [])
+
+    def test_placeholder_detection(self):
+        for value in ("panel.example.com", "https://panel.example.com/",
+                      "EXAMPLE.COM", "ops.example.org"):
+            self.assertTrue(bootstrap.is_placeholder_domain(value), value)
+        for value in ("panel.myserver.net", "10.0.0.5", "", "mysite.io"):
+            self.assertFalse(bootstrap.is_placeholder_domain(value), value)
+
+    def test_admin_password_is_generated_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(tmp, self.TEMPLATE)
+            try:
+                import bcrypt  # noqa: F401
+            except Exception:
+                self.skipTest("bcrypt not installed in this interpreter")
+            password = bootstrap.ensure_admin_password(root, stream=io.StringIO())
+            self.assertTrue(password, "a password should be generated")
+            values = bootstrap.env_file_values(root)
+            self.assertTrue(values["ADMIN_PASSWORD_HASH"].startswith("$2"))
+            self.assertIsNone(bootstrap.ensure_admin_password(root))  # only once
+            self.assertEqual(bootstrap.env_file_values(root)["ADMIN_PASSWORD_HASH"],
+                             values["ADMIN_PASSWORD_HASH"])
+
+
+class DotenvLoading(unittest.TestCase):
+    """main.py must treat `KEY=` as "not configured"."""
+
+    def _load_dotenv(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        start = source.index("def _load_dotenv(")
+        end = source.index("_loaded = _load_dotenv(")
+        namespace: dict = {"os": os, "Path": Path}
+        exec(compile(source[start:end], "main.py", "exec"), namespace)
+        return namespace["_load_dotenv"]
+
+    def test_blank_values_do_not_override_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text(
+                "ADMIN_PASSWORD_HASH=\nJWT_SECRET_KEY=\nPUBLIC_IP=\n"
+                "HOST=0.0.0.0\nPORT=8446\n",
+                encoding="utf-8",
+            )
+            saved = {k: os.environ.pop(k, None) for k in
+                     ("ADMIN_PASSWORD_HASH", "JWT_SECRET_KEY", "PUBLIC_IP", "HOST", "PORT")}
+            try:
+                loader = self._load_dotenv()
+                loaded = loader(env)
+                self.assertEqual(loaded, 2)
+                for key in ("ADMIN_PASSWORD_HASH", "JWT_SECRET_KEY", "PUBLIC_IP"):
+                    self.assertNotIn(key, os.environ, key)
+                self.assertEqual(os.environ["HOST"], "0.0.0.0")
+                self.assertEqual(os.environ["PORT"], "8446")
+            finally:
+                for key in ("ADMIN_PASSWORD_HASH", "JWT_SECRET_KEY", "PUBLIC_IP", "HOST", "PORT"):
+                    os.environ.pop(key, None)
+                for key, value in saved.items():
+                    if value is not None:
+                        os.environ[key] = value
+
+
+class ConfigSanitising(unittest.TestCase):
+    """config.py must ignore blank values and template domains."""
+
+    def _run(self, env: dict) -> str:
+        code = (
+            "import sys, json; sys.path.insert(0, %r); import config; "
+            "c = config.CONFIG; print(json.dumps([c.server_domain, c.public_ip, "
+            "c.host, c.port]))" % str(ROOT)
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=120,
+            env={**{k: v for k, v in os.environ.items()
+                    if k not in ("SERVER_DOMAIN", "PUBLIC_IP", "HOST", "PORT")}, **env},
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
+
+    def test_placeholder_domain_is_ignored(self):
+        import json
+        domain, ip, host, port = json.loads(self._run({"SERVER_DOMAIN": "panel.example.com"}))
+        self.assertEqual(domain, "")
+
+    def test_blank_values_fall_back_to_defaults(self):
+        import json
+        domain, ip, host, port = json.loads(
+            self._run({"SERVER_DOMAIN": "", "PUBLIC_IP": "", "HOST": "", "PORT": ""}))
+        self.assertEqual(domain, "")
+        self.assertTrue(ip)
+        self.assertTrue(host)
+        self.assertEqual(port, 8446)
+
+    def test_real_values_are_kept(self):
+        import json
+        domain, ip, host, port = json.loads(
+            self._run({"SERVER_DOMAIN": "panel.myserver.net", "HOST": "127.0.0.1",
+                       "PORT": "9000"}))
+        self.assertEqual(domain, "panel.myserver.net")
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, 9000)
 
 
 class CommandLine(unittest.TestCase):
@@ -380,6 +575,44 @@ class Banner(unittest.TestCase):
         bootstrap.banner("0.0.0.0", 8446, tunnel="https://x.trycloudflare.com",
                          stream=out, machine_ip="192.168.0.14")
         self.assertIn("https://x.trycloudflare.com", out.getvalue())
+
+
+class OptionalPackagesDoNotBlockStartup(unittest.TestCase):
+    def test_only_critical_missing_packages_stop_the_boot(self):
+        saved = {k: os.environ.get(k) for k in
+                 ("FIXIIS_NO_SETUP", "FIXIIS_AUTO_SETUP", "FIXIIS_BANNER")}
+        try:
+            os.environ["FIXIIS_NO_SETUP"] = "1"
+            os.environ.pop("FIXIIS_AUTO_SETUP", None)
+            os.environ["FIXIIS_BANNER"] = "0"
+            # These tests must not create a real .env or data folders in the
+            # checkout, so the first-run helpers are stubbed out.
+            quiet = [
+                mock.patch.object(bootstrap, "ensure_env_file", lambda *a, **k: False),
+                mock.patch.object(bootstrap, "repair_env_file", lambda *a, **k: []),
+                mock.patch.object(bootstrap, "ensure_dirs", lambda *a, **k: []),
+                mock.patch.object(bootstrap, "ensure_admin_password", lambda *a, **k: None),
+            ]
+            for patch in quiet:
+                patch.start()
+            try:
+                with mock.patch.object(bootstrap, "missing_packages", lambda *a, **k: ["brotli"]):
+                    startup = bootstrap.prepare([])      # optional only -> no exit
+                    self.assertFalse(startup.installed)
+                with mock.patch.object(bootstrap, "missing_packages", lambda *a, **k: ["fastapi"]):
+                    with self.assertRaises(SystemExit) as raised:
+                        bootstrap.prepare([])            # critical -> refuses to run
+                    self.assertEqual(raised.exception.code, 2)
+            finally:
+                for patch in quiet:
+                    patch.stop()
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            os.chdir(ROOT)
 
 
 class InstallSafety(unittest.TestCase):
