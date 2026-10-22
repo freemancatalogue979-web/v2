@@ -41,7 +41,7 @@ const pages = [
   { id: 'p1', name: 'Invoice', bindings: [
     { name: 'amount', match: 'text', find: 'NGN 0.00', value: 'NGN 1.00' },
     { name: 'reference', match: 'selector', find: '#ref', value: '' },
-    { find: 'me@me.com', value: 'you@you.com' },            // unnamed: no question
+    { find: 'me@me.com', value: 'you@you.com' },            // unnamed: still a question
   ] },
   { id: 'p2', name: 'Plain page', bindings: [] },
 ];
@@ -92,10 +92,12 @@ async function miniPanel() {
   sel.dispatchEvent(new win.Event('change'));
   ok(!box.hidden, 'mini: fields appear for a page that has them');
   const inputs = [...box.querySelectorAll('[data-bind]')];
-  assert.deepEqual(inputs.map((i) => i.dataset.bind), ['amount', 'reference']);
+  assert.deepEqual(inputs.map((i) => i.dataset.bind), ['amount', 'reference', 'me@me.com']);
   checks++;
   ok(inputs[0].value === 'NGN 1.00', 'mini: saved default pre-filled');
   ok(inputs[1].value === '', 'mini: a field with no default starts empty');
+  ok(inputs[2].value === 'you@you.com', 'mini: an un-named binding is asked for too');
+  ok(/me@me\.com/.test(box.textContent), 'mini: an un-named binding is labelled with its text');
 
   sel.value = 'p2';
   sel.dispatchEvent(new win.Event('change'));
@@ -109,13 +111,21 @@ async function miniPanel() {
   ok(!!push, 'mini: Send pushes the page');
   ok(push.client_id === 'client-1' && push.page_id === 'p1', 'mini: push names visitor and page');
   ok(push.bindings && push.bindings.amount === 'NGN 250,000.00', 'mini: typed value travels');
-  ok(!('reference' in push.bindings), 'mini: empty fields fall back to the page');
+  ok(!('reference' in push.bindings), 'mini: an empty field falls back to the page');
+  ok(push.bindings['me@me.com'] === 'you@you.com', 'mini: the un-named binding is sent under its text');
 
-  box.querySelector('[data-bind="amount"]').value = '';
+  // Typing a different value for the same page is how two visitors differ.
+  box.querySelector('[data-bind="me@me.com"]').value = 'someone@else.com';
   sent.length = 0;
   doc.getElementById('drPush').click();
   push = sent.find((m) => m.type === 'lpv_push_page');
-  ok(push && !push.bindings, 'mini: nothing typed = no bindings sent');
+  ok(push.bindings['me@me.com'] === 'someone@else.com', 'mini: a second visitor gets a second value');
+
+  box.querySelectorAll('[data-bind]').forEach((i) => { i.value = ''; });
+  sent.length = 0;
+  doc.getElementById('drPush').click();
+  push = sent.find((m) => m.type === 'lpv_push_page');
+  ok(push && !push.bindings, 'mini: everything cleared = no bindings sent');
   win.close();
 }
 
@@ -151,8 +161,9 @@ async function adminDialogs() {
   ]};
   const pending = ctx.lpvAskValues(page);
   const inputs = [...doc.querySelectorAll('.lpv-val')];
-  assert.deepEqual(inputs.map((i) => i.dataset.name), ['amount', 'reference']);
+  assert.deepEqual(inputs.map((i) => i.dataset.name), ['amount', 'reference', 'me@me.com']);
   checks++;
+  ok(inputs[2].value === 'you@you.com', 'admin: an un-named binding is asked for too');
   ok(inputs[0].value === 'NGN 1.00', 'admin: saved default pre-filled');
   ok(doc.querySelector('.lpv-vals-modal').textContent.includes('Send Invoice'), 'admin: dialog names the page');
   inputs[0].value = '  NGN 99.00  ';
@@ -160,6 +171,7 @@ async function adminDialogs() {
   const values = await pending;
   ok(values.amount === 'NGN 99.00', 'admin: typed value returned, trimmed');
   ok(!('reference' in values), 'admin: empty field omitted');
+  ok(values['me@me.com'] === 'you@you.com', 'admin: un-named binding filed under its text');
   ok(doc.querySelectorAll('.lpv-val').length === 0, 'admin: dialog closes');
 
   const cancelled = ctx.lpvAskValues(page);

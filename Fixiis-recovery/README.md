@@ -300,15 +300,19 @@ scripting it.
 
 ## Page fields: type a value, then push
 
-A page can carry named slots — an amount, a reference, a name, a date. Save
-the slot once, and every push asks you what this visitor should see.
+A page can carry slots — an amount, a reference, a sign-in word, a name. Save
+the slot once, and **every push asks you what this visitor should see**. There
+is no "one universal rewrite": two people get the same page with different
+words in it.
 
 1. Page archive → **⌨ Bind** on the page card.
-2. Add a row: **Name** `amount`, **what to find** (default `text`), and the
-   **Value** that is used when you leave the field empty at push time.
+2. Add a row: what to **find** (`Sign`, `NGN 0.00`, `.amount` …), how to match
+   it (`text` by default), and the **Value** you want pre-filled in the push
+   dialog. The optional **Name** is just a shorter label for that field.
 3. **Preview** shows how many places matched before anything is saved.
-4. Push the page: the panel now asks for `amount` and the visitor's copy of
-   the page says what you typed.
+4. Push the page: the panel asks for every binding, and the visitor's copy of
+   the page says what you typed. Leave a field empty and that spot keeps the
+   page's own text.
 
 | Matcher | What it means | Example |
 |---|---|---|
@@ -325,8 +329,11 @@ What you should know:
   is used, and if there is no default the original text stays.
 * **Values are per push.** They are carried in the pushed URL (`?b=<token>`),
   expire after six hours, and only ever apply to the page they were typed for.
-* **Bindings without a name** are plain find → replace rules that apply to
-  every serve (the behaviour that existed before fields).
+* **A binding is labelled by what it binds.** No name needed: bind `Sign` and
+  the push dialog asks for "Sign". Two bindings with the same name (or the same
+  text) share one answer.
+* **Serving without a push** (a page opened directly, a workflow step with no
+  values) still uses each binding's saved Value, so pages keep working.
 * Both panels ask: the mini panel shows the fields above **Send page**, the
   full panel shows them in the push dialog. Cancel pushes nothing.
 * HTML in values is escaped, so `<b>1</b>` renders as text rather than markup.

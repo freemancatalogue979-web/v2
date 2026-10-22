@@ -64,16 +64,35 @@ class Normalise(unittest.TestCase):
 
 
 class Fields(unittest.TestCase):
-    def test_only_named_bindings_become_prompt_fields(self):
+    def test_every_binding_is_a_question(self):
+        # Nothing is a "universal rewrite": both the named and the plain
+        # find->replace row are asked for at push time.
         bindings = pb.normalise_bindings([
             {"name": "amount", "find": "NGN 0.00", "value": "NGN 1.00"},
-            {"find": "me@me.com", "value": "you@you.com"},        # fixed rewrite
-            {"name": "reference", "find": "#ref", "match": "selector"},
+            {"find": "me@me.com", "value": "you@you.com"},
         ])
         fields = pb.fields_for(bindings)
-        self.assertEqual([f["name"] for f in fields], ["amount", "reference"])
+        self.assertEqual([f["name"] for f in fields], ["amount", "me@me.com"])
         self.assertEqual(fields[0]["default"], "NGN 1.00")
-        self.assertEqual(fields[1]["default"], "")                # no saved default
+        self.assertEqual(fields[1]["default"], "you@you.com")
+
+    def test_unnamed_binding_is_labelled_with_what_it_binds(self):
+        bindings = pb.normalise_bindings([
+            {"find": "Sign"},                                       # no name, no value
+            {"find": "#ref", "match": "selector"},
+            {"find": r"\d+", "match": "regex"},
+        ])
+        fields = pb.fields_for(bindings)
+        self.assertEqual([f["name"] for f in fields], ["Sign", "#ref", "\d+"])
+        self.assertEqual([f["label"] for f in fields], ["Sign", "#ref", "\d+"])
+        self.assertEqual([f["match"] for f in fields], ["text", "selector", "regex"])
+        self.assertEqual([f["default"] for f in fields], ["", "", ""])
+
+    def test_long_find_is_shortened_for_display_only(self):
+        long_text = "x" * 200
+        fields = pb.fields_for([{"find": long_text}])
+        self.assertEqual(fields[0]["name"], long_text)            # the key is whole
+        self.assertLessEqual(len(fields[0]["label"]), 48)
 
     def test_duplicate_names_only_ask_once(self):
         bindings = pb.normalise_bindings([
@@ -106,6 +125,14 @@ class Apply(unittest.TestCase):
         html, _ = pb.apply_bindings(
             PAGE, [{"find": r"NGN [\d,]+\.\d\d", "match": "regex", "value": "NGN 7.00"}])
         self.assertEqual(html.count("NGN 7.00"), 2)
+
+    def test_unnamed_binding_takes_a_value_per_visitor(self):
+        # The point of the feature: same page, two people, different words.
+        bindings = pb.normalise_bindings([{"find": "Sign"}])
+        one, _ = pb.apply_bindings("<a>Sign</a>", bindings, {"Sign": "Continue"})
+        two, _ = pb.apply_bindings("<a>Sign</a>", bindings, {"Sign": "Unlock"})
+        self.assertEqual(one, "<a>Continue</a>")
+        self.assertEqual(two, "<a>Unlock</a>")
 
     def test_push_time_value_beats_saved_default(self):
         b = pb.normalise_bindings([{"name": "amount", "find": "NGN 0.00", "value": "NGN 1.00"}])

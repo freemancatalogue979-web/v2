@@ -216,6 +216,7 @@ svg{display:block}
 .bind-row{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
 .bind-row:last-child{margin-bottom:0}
 .bind-name{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--txt-3)}
+.bind-kind{font-style:normal;font-weight:600;text-transform:none;letter-spacing:0;opacity:.65;margin-left:4px}
 .bind-inp{font-size:14px}
 
 /* Advanced settings stay folded away until someone asks for them. */
@@ -2280,8 +2281,8 @@ function pageCard(p){
           p.variant_page_id
             ? '<span class="pcard-flag" title="Two versions — phones and desktops each get their own build (set up in the full Admin panel)">2 versions</span>'
             : ''}${
-          (p.bindings||[]).some(b => b && b.name)
-            ? `<span class="pcard-flag" title="Ask for values when sending: ${esc((p.bindings||[]).filter(b=>b&&b.name).map(b=>b.name).join(', '))}">fields</span>`
+          (p.bindings||[]).length
+            ? `<span class="pcard-flag" title="Ask for values when sending: ${esc((p.bindings||[]).map(b=>b.name||b.find).slice(0,6).join(', '))}">fields</span>`
             : ''}</div>
       </div>
     </div>
@@ -2412,7 +2413,7 @@ function drawerBody(cid, c, p, opts){
       <label class="field-lab">Send this visitor a page</label>
       <select class="sel" id="drPage" style="margin-bottom:8px">
         <option value="">Choose a page…</option>
-        ${pages.map(pg => `<option value="${esc(pg.id)}" ${opts.push===pg.id?'selected':''}>${esc(pg.name)}${(pg.bindings||[]).some(b=>b.name)?' · fields':''}</option>`).join('')}
+        ${pages.map(pg => `<option value="${esc(pg.id)}" ${opts.push===pg.id?'selected':''}>${esc(pg.name)}${(pg.bindings||[]).length?' · fields':''}</option>`).join('')}
       </select>
       <div id="drBind" class="bind-box" hidden></div>
       <button class="btn primary" id="drPush" style="width:100%">
@@ -2525,20 +2526,43 @@ function paintBindFields(cid, opts){
   if(!box) return;
   const pid = $('#drPage') ? $('#drPage').value : '';
   const page = (S.pages || []).find(p => p.id === pid);
-  const fields = (page && page.bindings || []).filter(b => b && b.name);
+  // EVERY binding is a question, whether or not it has a name: the text (or
+  // element, or pattern) it binds is the label, and what you type here is
+  // what this one visitor sees. That is the whole point — two people, same
+  // page, different words.
+  const fields = bindFieldsOf(page);
   if(!fields.length){ box.hidden = true; box.innerHTML = ''; return; }
   box.hidden = false;
   box.innerHTML = `
-    <div class="bind-head">This page has ${fields.length} field${fields.length===1?'':'s'} —
-      what you type appears in the visitor's copy</div>
-    ${fields.map((b, i) => `
+    <div class="bind-head">Fill what this visitor should see —
+      leave one empty to keep the page's own words</div>
+    ${fields.map((f, i) => `
       <label class="bind-row">
-        <span class="bind-name">${esc(b.label || b.name)}</span>
-        <input class="inp bind-inp" data-bind="${esc(b.name)}" data-i="${i}"
-               value="${esc(b.value||'')}" placeholder="${esc(b.value ? b.value : 'value')}"
+        <span class="bind-name">${esc(f.label)} <em class="bind-kind">${esc(f.kind)}</em></span>
+        <input class="inp bind-inp" data-bind="${esc(f.key)}" data-i="${i}"
+               value="${esc(f.value)}" placeholder="${esc(f.value ? f.value : 'type the value')}"
                autocomplete="off" spellcheck="false">
       </label>`).join('')}
   `;
+}
+/* One question per binding, keyed by its name or, failing that, by the text
+   it binds (the same key the server files the typed value under). */
+function bindFieldsOf(page){
+  const out = [], seen = new Set();
+  (page && page.bindings || []).forEach(b => {
+    if(!b || !b.find) return;
+    const key = (b.name || b.find || '').trim();
+    if(!key || seen.has(key)) return;
+    seen.add(key);
+    const shown = String(b.label || b.name || b.find).replace(/\s+/g, ' ').trim();
+    out.push({
+      key: key,
+      label: shown.length > 48 ? shown.slice(0, 47) + '…' : shown,
+      kind: b.match === 'selector' ? 'element' : (b.match === 'regex' ? 'regex' : 'text'),
+      value: b.value || '',
+    });
+  });
+  return out;
 }
 function readBindFields(){
   const out = {};

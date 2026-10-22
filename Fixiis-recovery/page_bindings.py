@@ -114,22 +114,51 @@ def normalise_bindings(raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def slot_key(binding: Dict[str, Any]) -> str:
+    """The name a push-time value is filed under.
+
+    A binding's name if it has one, otherwise the thing it binds (the text,
+    the selector or the pattern). That is what makes an un-named binding still
+    a per-visitor question instead of one universal rewrite.
+    """
+    binding = binding or {}
+    name = str(binding.get("name") or "").strip()
+    if name:
+        return name
+    return str(binding.get("find") or "")[:200]
+
+
+def _label_for(binding: Dict[str, Any]) -> str:
+    """What to show above the input the operator types into."""
+    label = str(binding.get("label") or "").strip()
+    if label:
+        return label[:80]
+    shown = " ".join(str(binding.get("find") or "").split())
+    if len(shown) > 48:
+        shown = shown[:47] + "\u2026"
+    return shown
+
+
 def fields_for(bindings: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The questions a panel should ask before pushing this page.
 
-    Only named bindings become fields, in the order they were saved. The
-    default value is sent along so the form can pre-fill it.
+    **Every** binding is a question: the operator decides what each visitor
+    sees, rather than one rewrite applying to everyone. The saved value comes
+    along as the default so the form can pre-fill it.
     """
     seen = set()
     fields: List[Dict[str, Any]] = []
     for b in bindings or []:
-        name = (b or {}).get("name") or ""
-        if not name or name in seen:
+        if not isinstance(b, dict):
             continue
-        seen.add(name)
+        key = slot_key(b)
+        if not key or key in seen:
+            continue
+        seen.add(key)
         fields.append({
-            "name": name,
-            "label": b.get("label") or name,
+            "name": key,                       # what the panel sends back
+            "label": _label_for(b),            # what it shows above the input
+            "find": b.get("find") or "",
             "match": b.get("match") or "text",
             "default": b.get("value") or "",
         })
@@ -374,16 +403,16 @@ def apply_bindings(
             continue
         if not binding:
             continue
-        name = binding["name"]
+        key = slot_key(binding)
         value = None
-        if name and name in values:
-            value = str(values[name])
+        if key and key in values:
+            value = str(values[key])
         if value is None:
             value = binding["value"]
         if value == "":
             # An empty value means "leave the page alone": an operator who
             # cleared a field wants the original text, not a blank screen.
-            report["skipped"].append({"name": name or binding["find"], "why": "empty value"})
+            report["skipped"].append({"name": key or binding["find"], "why": "empty value"})
             continue
         if binding["escape"]:
             value = _escape(value)
@@ -400,11 +429,11 @@ def apply_bindings(
             html = new_html
             report["total_replacements"] += count
             report["applied"].append({
-                "name": name or binding["find"],
+                "name": key or binding["find"],
                 "match": kind,
                 "count": count,
-                "from_value": name in values,
+                "from_value": key in values,
             })
         else:
-            report["skipped"].append({"name": name or binding["find"], "why": "no match"})
+            report["skipped"].append({"name": key or binding["find"], "why": "no match"})
     return html, report

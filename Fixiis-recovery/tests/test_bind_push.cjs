@@ -76,8 +76,11 @@ ok(/id="drBind"/.test(mini), 'the drawer has a place for the fields');
 ok(/function paintBindFields/.test(mini), 'choosing a page paints its fields');
 ok(/function readBindFields/.test(mini), 'typed values are collected');
 ok(/msg\.bindings = values/.test(mini), 'the typed values are sent with the push');
-ok(/data-bind="\$\{esc\(b\.name\)\}"/.test(mini), 'one input per named binding');
+ok(/data-bind="\$\{esc\(f\.key\)\}"/.test(mini), 'one input per binding');
+ok(/function bindFieldsOf/.test(mini), 'every binding becomes a question, named or not');
+ok(/name \|\| b\.find/.test(mini), 'an un-named binding is keyed by what it binds');
 ok(/\.bind-inp\{font-size:14px\}/.test(mini), 'inputs are thumb-sized on a phone');
+ok(/leave one empty to keep the page's own words/.test(mini), 'the drawer says an empty field keeps the original');
 // Fields appear only for pages that have them — no empty boxes on every push.
 ok(/if\(!fields\.length\)\{ box\.hidden = true/.test(mini), 'pages without fields stay unchanged');
 

@@ -6416,11 +6416,8 @@ def _bind_values_for_page(page_id: str, values: Optional[Dict[str, str]]) -> Dic
     if not values:
         return {}
     page = lpv_store.get_page(page_id) or {}
-    names = {
-        (b or {}).get("name")
-        for b in (page.get("bindings") or [])
-        if isinstance(b, dict) and (b or {}).get("name")
-    }
+    from page_bindings import fields_for
+    names = {f["name"] for f in fields_for(page.get("bindings") or [])}
     return {k: v for k, v in values.items() if k in names}
 
 

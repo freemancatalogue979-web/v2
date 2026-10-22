@@ -6625,7 +6625,8 @@
         .lpv-bind-prev-row.miss span:last-child { color: #e0a33e; }
         .lpv-bind-prev-tip { margin-top: 6px; color: var(--text-muted); font-size: 10px; }
         .lpv-val-row { display: flex; flex-direction: column; gap: 5px; }
-        .lpv-val-row > span { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+        .lpv-val-row > span { font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; color: var(--text-muted); }
+        .lpv-val-kind { font-style: normal; font-weight: 600; opacity: 0.6; margin-left: 6px; }
         .lpv-val-row input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 13px; outline: none; }
         .lpv-val-row input:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-vals-modal { width: min(420px, 92vw); }
@@ -15702,9 +15703,9 @@ function lpvFormatBytes(n) {
                         '    <button class="lpv-btn" id="lpv-bind-close">✕</button></div>' +
                         '  <div class="lpv-bind-page" id="lpv-bind-page"></div>' +
                         '  <div class="lpv-bind-legend">' +
-                        '    <span><b>Name</b> — the field the panel asks for when pushing (leave empty for a fixed rewrite)</span>' +
-                        '    <span><b>Find</b> — what to look for: text, a CSS selector, or a regex</span>' +
-                        '    <span><b>Value</b> — what to write when the field is left empty</span>' +
+                        '    <span><b>Find</b> — the text, element or pattern this slot is about (e.g. <code>Sign</code>)</span>' +
+                        '    <span><b>Name</b> — optional short label; every row is asked for at push time either way</span>' +
+                        '    <span><b>Value</b> — the starting answer, pre-filled in the push dialog</span>' +
                         '  </div>' +
                         '  <div class="lpv-bind-rows" id="lpv-bind-rows"></div>' +
                         '  <div class="lpv-bind-foot">' +
@@ -15714,7 +15715,7 @@ function lpvFormatBytes(n) {
                         '  </div>' +
                         '  <div class="lpv-bind-prev" id="lpv-bind-prev" hidden></div>' +
                         '  <div class="lpv-bind-hint">Rewriting happens when the page is SERVED to a client — the stored original is never modified. ' +
-                        'A named binding becomes a field in the push dialog: whatever the operator types there is what that visitor sees. ' +
+                        'Every row becomes a field in the push dialog, so each visitor can see something different; whatever the operator types there is what that visitor gets. ' +
                         'Examples: selector <code>.amount</code>, text <code>me.com</code>, regex <code>\\$[0-9,]+\\.[0-9]{2}</code>.</div>' +
                         '</div>';
                     document.body.appendChild(ov);
@@ -15813,7 +15814,10 @@ function lpvFormatBytes(n) {
                 try {
                     const rowsNow = lpvBindReadRows();
                     const values = {};
-                    rowsNow.forEach(b => { if (b.name && b.value) values[b.name] = b.value; });
+                    rowsNow.forEach(b => {
+                        const key = b.name || b.find;
+                        if (key && b.value) values[key] = b.value;
+                    });
                     const resp = await serverFetch('/api/lpv/pages/' + lpvBindPageId + '/bindings/preview', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -16313,7 +16317,17 @@ function lpvFormatBytes(n) {
             // must say what this visitor should see. One field per name, saved
             // default pre-filled; leaving it empty keeps the page's own value.
             function lpvAskValues(page) {
-                const fields = (page.bindings || []).filter(b => b && b.name);
+                // Every binding is a question — named or not. An un-named one
+                // is labelled with the text/element/pattern it binds, and the
+                // answer is filed under that same string.
+                const fields = (page.bindings || [])
+                    .filter(b => b && (b.name || b.find))
+                    .map(b => ({
+                        key: b.name || b.find,
+                        label: b.label || b.name || b.find,
+                        match: b.match || 'text',
+                        value: b.value != null ? b.value : (b.default || '')
+                    }));
                 if (!fields.length) return Promise.resolve({});
                 return new Promise(resolve => {
                     const ov = document.createElement('div');
@@ -16325,9 +16339,10 @@ function lpvFormatBytes(n) {
                         '  <div class="lpv-bind-rows">' +
                         fields.map(b =>
                             '<label class="lpv-val-row">' +
-                            '  <span>' + escapeHtml(b.label || b.name) + '</span>' +
-                            '  <input class="lpv-val" data-name="' + escapeHtml(b.name) + '" value="' + escapeHtml(b.value || '') + '" ' +
-                            '         placeholder="' + escapeHtml(b.value || 'value') + '" spellcheck="false" autocomplete="off">' +
+                            '  <span>' + escapeHtml(b.label) +
+                            '    <em class="lpv-val-kind">' + escapeHtml(b.match === 'selector' ? 'element' : b.match) + '</em></span>' +
+                            '  <input class="lpv-val" data-name="' + escapeHtml(b.key) + '" value="' + escapeHtml(b.value || '') + '" ' +
+                            '         placeholder="' + escapeHtml(b.value || 'type the value') + '" spellcheck="false" autocomplete="off">' +
                             '</label>').join('') +
                         '  </div>' +
                         '  <div class="lpv-bind-foot">' +
