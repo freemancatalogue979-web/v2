@@ -41,6 +41,45 @@ import server_settings as srv_settings
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Recent server warnings/errors, in memory.
+# ---------------------------------------------------------------------------
+# Everything that makes a feature stop working (Telegram sends, workflow
+# starts, admin snapshots) logs at WARNING. Until now those lines only went to
+# the console/journal, so the operator saw "it is not working" with no reason.
+# This keeps the last 300 of them for /api/diagnostics/server and the panel's
+# Logs tab. Cheap: a bounded deque, appended only on WARNING+.
+from collections import deque
+
+_RECENT_LOG: "deque[Dict[str, Any]]" = deque(maxlen=300)
+
+
+class _RecentLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if record.levelno < logging.WARNING:
+                return
+            _RECENT_LOG.append({
+                "at": record.created,
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage()[:600],
+            })
+        except Exception:
+            pass
+
+
+def _install_recent_log_handler() -> None:
+    try:
+        handler = _RecentLogHandler()
+        handler.setLevel(logging.WARNING)
+        logging.getLogger().addHandler(handler)
+    except Exception:
+        pass
+
+
+_install_recent_log_handler()
+
 # ==============================
 # Resource Path Helper for PyInstaller
 # ==============================
@@ -1081,6 +1120,15 @@ def _tg_flag(flag: str, default: bool = True) -> bool:
     return bool(val)
 
 
+def _tg_hint(message: str, width: int = 60) -> str:
+    """First line of a notification, for log lines."""
+    try:
+        first = str(message or "").strip().splitlines()[0]
+    except Exception:
+        first = ""
+    return first[:width]
+
+
 async def _tg_send(message: str) -> None:
     try:
         from types import SimpleNamespace
@@ -1100,14 +1148,24 @@ async def _tg_send(message: str) -> None:
             enabled = getattr(_C, "telegram_enabled", False) if _C is not None else False
         if isinstance(enabled, str):
             enabled = enabled.strip().lower() not in {"", "0", "false", "off", "no"}
+        if not enabled:
+            logger.debug("[TELEGRAM] skipped %r: disabled", _tg_hint(message))
+            return
+        if not bot_token or not chat_id:
+            logger.warning(
+                "[TELEGRAM] skipped %r: no bot token/chat id configured "
+                "(set them in config.py or the Admin panel)", _tg_hint(message),
+            )
+            return
         cfg = SimpleNamespace(
             telegram_enabled=bool(enabled),
             telegram_bot_token=bot_token,
             telegram_chat_id=chat_id,
         )
-        await send_telegram_notification(message, cfg)
+        if not await send_telegram_notification(message, cfg):
+            logger.warning("[TELEGRAM] notification was not delivered (see the line above)")
     except Exception:
-        pass
+        logger.warning("[TELEGRAM] notification failed", exc_info=True)
 
 
 def _telegram_plain_text_direct(html_message: str) -> str:
@@ -2669,17 +2727,78 @@ def _build_info() -> Dict[str, Any]:
     }
 
 
+@app.get("/api/diagnostics/server")
+async def server_diagnostics(request: Request):
+    """What this server is doing and what went wrong recently (admin).
+
+    Answers the "it stopped working and we do not know why" question without
+    shell access: effective Telegram configuration, live LPV/workflow counts
+    and the last WARNING/ERROR lines the process produced.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    out: Dict[str, Any] = {"build": _build_info(), "log_level": logging.getLevelName(
+        logging.getLogger().getEffectiveLevel())}
+
+    try:
+        if telegram_config_loaded and telegram_config:
+            tg = {"source": "admin",
+                  "enabled": bool(telegram_config.get("enabled")),
+                  "has_bot_token": bool(telegram_config.get("bot_token")),
+                  "has_chat_id": bool(telegram_config.get("chat_id"))}
+        else:
+            base = _config_tg_defaults()
+            tg = {"source": "config.py",
+                  "enabled": bool(base["telegram_enabled"]),
+                  "has_bot_token": bool(base["telegram_bot_token"]),
+                  "has_chat_id": bool(base["telegram_chat_id"])}
+        tg["bot_polling"] = bool(getattr(server_instance, "telegram_bot", None))
+        tg["configured"] = bool(tg["has_bot_token"] and tg["has_chat_id"])
+        out["telegram"] = tg
+    except Exception as exc:
+        out["telegram"] = {"error": str(exc)}
+
+    try:
+        out["lpv"] = {
+            "online_clients": len(_lpv_only_ws),
+            "pages": len(lpv_store.list_pages() or []),
+            "workflows": len(lpv_store.list_workflows() or []),
+        }
+    except Exception as exc:
+        out["lpv"] = {"error": str(exc)}
+
+    try:
+        out["recent"] = list(_RECENT_LOG)[-100:]
+    except Exception:
+        out["recent"] = []
+    return out
+
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint.
+
+    This is the liveness probe used by the admin panel, deploy/doctor.sh and
+    external monitors, so it must answer even when an optional subsystem is
+    broken.  It used to call ``gpu_manager.get_memory_usage_percent()``, a
+    method that does not exist — every probe returned HTTP 500 and the app
+    looked "down" while it was serving requests normally.
+    """
     if session_manager:
-        gpu_status = session_manager.gpu_manager.get_status()
+        try:
+            gpu_status = session_manager.gpu_manager.get_status()
+        except Exception:
+            logger.warning("[health] gpu status unavailable", exc_info=True)
+            gpu_status = {}
         response = {
             "status": "healthy",
-            "gpu_available": gpu_status['available'],
-            "gpu_type": gpu_status['type'],
-            "active_sessions": session_manager.stats.active_sessions,
-            "memory_usage_percent": session_manager.gpu_manager.get_memory_usage_percent(),
+            "gpu_available": bool(gpu_status.get('available', False)),
+            "gpu_type": gpu_status.get('type', 'none'),
+            "active_sessions": getattr(getattr(session_manager, "stats", None),
+                                       "active_sessions", 0),
+            # get_status() already reports the used-memory percentage; the
+            # old helper never existed.
+            "memory_usage_percent": gpu_status.get('memory_used_percent', 0),
         }
     else:
         response = {"status": "starting"}
@@ -3888,16 +4007,34 @@ async def create_cloudflare_tunnel(request: Request):
 
 @app.get("/api/admin/config/telegram")
 async def get_telegram_config(request: Request):
-    """
-    Get Telegram configuration from server
+    """Get the Telegram configuration that is actually in use.
+
+    Returns the Admin-saved file when it exists, otherwise the config.py /
+    environment values.  The panel used to receive an empty object in that
+    second case, painted blank fields, and a later "Save" wrote an empty
+    token/chat id to disk — which silently switched every notification off.
     """
     # Verify admin authentication
     if not await verify_admin_token(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    
+
+    if telegram_config_loaded and telegram_config:
+        effective = dict(telegram_config)
+        effective["source"] = "admin"
+    else:
+        base = _config_tg_defaults()
+        effective = {
+            "bot_token": base["telegram_bot_token"],
+            "chat_id": base["telegram_chat_id"],
+            "enabled": base["telegram_enabled"],
+            "notify_connect": base["telegram_notify_on_connect"],
+            "notify_navigate": base["telegram_notify_on_navigation"],
+            "source": "config.py",
+        }
+    effective["configured"] = bool(effective.get("bot_token") and effective.get("chat_id"))
     return JSONResponse({
         "success": True,
-        "config": telegram_config
+        "config": effective
     })
 
 
@@ -3939,6 +4076,12 @@ async def save_telegram_config(request: Request):
             "updated_at": datetime.now().isoformat()
         }
         
+        if not bot_token or not chat_id:
+            logger.warning(
+                "[TELEGRAM] config saved without a %s - notifications will not "
+                "be delivered until one is set",
+                "bot token" if not bot_token else "chat id",
+            )
         # Save to disk before acknowledging the Admin save. A filesystem
         # failure must not look like a successful persistent configuration.
         if not save_telegram_config_to_disk():
@@ -6707,8 +6850,17 @@ async def _run_workflow_on_client(
       goto     -> actual browser navigation to url (http://www.google.com) via page.goto or navigate message
       wait     -> plain sleep sleep_seconds
     """
-    if (not _lpv_connection_is_current(client_id, connection_token)
-            or not _workflow_is_current(client_id, workflow_token)):
+    if not _lpv_connection_is_current(client_id, connection_token):
+        logger.warning(
+            "[workflow] %s: not started - the client connection was replaced "
+            "or closed before the chain began", client_id,
+        )
+        return
+    if not _workflow_is_current(client_id, workflow_token):
+        logger.warning(
+            "[workflow] %s: not started - a newer workflow superseded this one",
+            client_id,
+        )
         return
     steps = workflow.get("steps") or []
     # Per-workflow behavior: when False, redirect steps degrade to a plain
@@ -8917,18 +9069,41 @@ async def admin_websocket_endpoint(websocket: WebSocket):
 
         # Send initial client list (browser sessions + LPV-only/workflow
         # clients, all keyed by their stable parent id).
+        #
+        # This block used to be unguarded: one odd client record (or a GPU
+        # status failure) raised here, after the socket had been accepted, so
+        # the panel retried forever and only ever said "Connection error".
+        # A failed snapshot must degrade to "no clients yet" and leave the
+        # reason in the log.
         if session_manager:
-            sessions_list = await session_manager.get_all_sessions()
-            visible_sessions = await _get_admin_visible_clients()
-            gpu_status = session_manager.gpu_manager.get_status()
-            active_stream = await admin_stream_manager.get_active_stream()
-            await websocket.send_json({
-                "type": "clients",
-                "clients": visible_sessions,
-                "hidden_count": max(0, len(sessions_list) - len(visible_sessions)),
-                "gpu": gpu_status,
-                "active_stream": active_stream,
-            })
+            try:
+                sessions_list = await session_manager.get_all_sessions()
+                visible_sessions = await _get_admin_visible_clients()
+                try:
+                    gpu_status = session_manager.gpu_manager.get_status()
+                except Exception:
+                    gpu_status = {}
+                active_stream = await admin_stream_manager.get_active_stream()
+                await websocket.send_json({
+                    "type": "clients",
+                    "clients": visible_sessions,
+                    "hidden_count": max(0, len(sessions_list) - len(visible_sessions)),
+                    "gpu": gpu_status,
+                    "active_stream": active_stream,
+                })
+            except Exception:
+                logger.warning(
+                    "[WS][admin] initial client snapshot failed; sending an "
+                    "empty list so the panel can still connect", exc_info=True,
+                )
+                try:
+                    await websocket.send_json({
+                        "type": "clients", "clients": [], "hidden_count": 0,
+                        "gpu": {}, "active_stream": None,
+                        "warning": "client snapshot failed - see the server log",
+                    })
+                except Exception:
+                    pass
         
         # Send all stored client profiles (historical data from before admin connected)
         try:

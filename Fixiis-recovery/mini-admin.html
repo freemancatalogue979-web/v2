@@ -994,7 +994,14 @@ const BACKEND_KEY = 'lpv_server_endpoint';
 function _normServerUrl(value){
   if(!value) return null;
   let candidate = String(value).trim();
-  if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)) candidate = 'https://' + candidate;
+  if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)){
+    // "192.168.1.5:8446" typed without a scheme used to become https://...,
+    // which this server does not answer (it speaks http unless TLS sits in
+    // front of it). The bad value is SAVED for every panel, so mirror the
+    // page instead: https only when the panel itself was served over https.
+    const pageIsHttps = location.protocol === 'https:';
+    candidate = (pageIsHttps ? 'https://' : 'http://') + candidate;
+  }
   try { return new URL(candidate); } catch(e){ return null; }
 }
 
@@ -1353,10 +1360,21 @@ async function doLogin(u, p){
   if(pill){
     pill.addEventListener('click', () => {
       const current = SERVER_URL ? SERVER_URL.origin : '';
-      const next = prompt('Backend server URL', current);
-      if(next === null) return;
-      if(!next.trim()){ toast('Backend URL cannot be empty', 'err'); return; }
-      if(!setServerUrl(next.trim())){ toast('That is not a valid URL', 'err'); return; }
+      const typed = prompt('Backend server URL (empty = the server that served this page)', current);
+      if(typed === null) return;
+      if(!typed.trim()){
+        // "Reset" — forget the saved backend and use the origin serving this
+        // page (the usual fix when an old LAN IP is still remembered).
+        if(location.protocol === 'file:'){
+          toast('Open this panel from the server, or type its address', 'err');
+          return;
+        }
+        try { localStorage.removeItem(BACKEND_KEY); } catch(e){}
+        setServerUrl(location.origin, false);
+      } else if(!setServerUrl(typed.trim())){
+        toast('That is not a valid URL', 'err');
+        return;
+      }
       toast('Backend updated — reconnecting', 'ok');
       closeSocket();
       if(S.token){ connectAdmin(); connectManager(); loadAll(); }

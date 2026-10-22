@@ -268,6 +268,25 @@
             display: none;
         }
 
+        .login-server {
+            margin-top: 16px;
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .login-server button {
+            background: none;
+            border: none;
+            padding: 0 2px;
+            font: inherit;
+            font-weight: 600;
+            color: var(--accent, #4a90d9);
+            text-decoration: underline;
+            cursor: pointer;
+            word-break: break-all;
+        }
+
         .login-modal {
             background: var(--bg-card);
             border: 1px solid var(--border);
@@ -1990,6 +2009,16 @@
         .log-type.info {
             background: rgba(255, 255, 255, 0.1);
             color: var(--text-secondary);
+        }
+
+        .log-type.warning {
+            background: rgba(255, 193, 7, 0.14);
+            color: var(--warning, #f5b301);
+        }
+
+        .log-type.error {
+            background: rgba(255, 0, 0, 0.14);
+            color: var(--danger, #ff5252);
         }
 
         .log-content {
@@ -7805,6 +7834,10 @@
                 <button type="submit" class="login-btn">Sign In</button>
             </form>
             <div class="login-error" id="loginError">Invalid credentials. Please try again.</div>
+            <div class="login-server">
+                Server:
+                <button type="button" id="loginServerHost" title="Change the backend this panel talks to">…</button>
+            </div>
         </div>
     </div>
 
@@ -8169,6 +8202,10 @@
                             <button class="logs-btn" onclick="clearLogs()">
                                 <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
                                 Clear
+                            </button>
+                            <button class="logs-btn" onclick="showServerLog()" title="Warnings and errors from the server itself (Telegram, workflows, connections)">
+                                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                                Server log
                             </button>
                             <button class="logs-btn primary" onclick="downloadLogs()">
                                 <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
@@ -9417,7 +9454,13 @@
                 if (!value) return null;
                 let candidate = value.trim();
                 if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)) {
-                    candidate = 'https://' + candidate;
+                    // A hand-typed "192.168.1.5:8446" used to become
+                    // https://<that>, which can never reach this server
+                    // (plain http unless TLS terminates in front of it).
+                    // The wrong value is remembered, so the panel then
+                    // failed forever with only "Connection error".
+                    const pageIsHttps = window.location.protocol === 'https:';
+                    candidate = (pageIsHttps ? 'https://' : 'http://') + candidate;
                 }
                 try {
                     return new URL(candidate);
@@ -9442,8 +9485,95 @@
             return url || new URL('https://localhost');
         })();
 
-        const SERVER_API_BASE = SERVER_URL_OVERRIDE.origin + SERVER_URL_OVERRIDE.pathname.replace(/\/$/, '');
-        const SERVER_WS_BASE = (SERVER_URL_OVERRIDE.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + SERVER_URL_OVERRIDE.host + SERVER_URL_OVERRIDE.pathname.replace(/\/$/, '');
+        // ------------------------------------------------------------------
+        // Which backend this panel talks to
+        // ------------------------------------------------------------------
+        // A saved backend address can go stale (an old LAN IP, a tunnel that
+        // is gone, or a bare "ip:port" that was once forced to https) and it
+        // is invisible: the panel simply says "Connection error" forever.
+        // The origin that served this page is therefore kept as a second
+        // candidate, used automatically when the configured one is dead, and
+        // the address is shown on the login screen so it can be corrected.
+        const PAGE_ORIGIN = (() => {
+            try {
+                return window.location.protocol === 'file:' ? null : new URL(window.location.origin);
+            } catch (e) {
+                return null;
+            }
+        })();
+
+        function serverApiBase(url) {
+            return url.origin + url.pathname.replace(/\/$/, '');
+        }
+
+        function serverWsBase(url) {
+            return (url.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + url.host
+                + url.pathname.replace(/\/$/, '');
+        }
+
+        function serverHost(url) {
+            try { return url.host || url.origin || String(url); } catch (e) { return String(url || ''); }
+        }
+
+        let SERVER_ACTIVE = SERVER_URL_OVERRIDE;
+        let SERVER_API_BASE = serverApiBase(SERVER_ACTIVE);
+        let SERVER_WS_BASE = serverWsBase(SERVER_ACTIVE);
+        let serverFallbackTried = false;
+        let serverSwitching = false;
+
+        function useServer(url, remember) {
+            SERVER_ACTIVE = url;
+            SERVER_API_BASE = serverApiBase(url);
+            SERVER_WS_BASE = serverWsBase(url);
+            if (remember) {
+                try { localStorage.setItem('lpv_server_endpoint', url.origin); } catch (e) {}
+            }
+            const label = document.getElementById('loginServerHost');
+            if (label) label.textContent = serverHost(url);
+        }
+
+        // One-shot: the page's own origin, only when it is a different
+        // backend than the one we are using.
+        function tryPageOriginFallback() {
+            if (serverFallbackTried || !PAGE_ORIGIN) return false;
+            if (serverApiBase(PAGE_ORIGIN) === serverApiBase(SERVER_ACTIVE)) return false;
+            serverFallbackTried = true;
+            useServer(PAGE_ORIGIN, true);
+            return true;
+        }
+
+        function pingServer(base) {
+            return new Promise((resolve) => {
+                let settled = false;
+                const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+                const timer = setTimeout(() => finish(false), 2500);
+                try {
+                    fetch(base + '/health', { cache: 'no-store', mode: 'cors' })
+                        .then((r) => { clearTimeout(timer); finish(!!r && r.ok); })
+                        .catch(() => { clearTimeout(timer); finish(false); });
+                } catch (e) {
+                    clearTimeout(timer);
+                    finish(false);
+                }
+            });
+        }
+
+        // Ran on load: if the configured backend does not answer but the one
+        // serving this page does, switch before the operator tries to log in.
+        async function probeBackend() {
+            if (!PAGE_ORIGIN || serverSwitching) return;
+            if (serverApiBase(PAGE_ORIGIN) === serverApiBase(SERVER_ACTIVE)) return;
+            if (await pingServer(SERVER_API_BASE)) return;
+            if (!(await pingServer(serverApiBase(PAGE_ORIGIN)))) return;
+            const stale = serverHost(SERVER_ACTIVE);
+            if (!tryPageOriginFallback()) return;
+            serverSwitching = true;
+            showToast('Server ' + stale + ' did not answer — using ' + serverHost(SERVER_ACTIVE), 'warning');
+            if (ws) { try { ws.close(); } catch (e) {} }
+            reconnectAttempts = 0;
+            connect();
+            serverSwitching = false;
+        }
 
         function normalizeServerPath(path) {
             if (!path) return '';
@@ -9832,9 +9962,50 @@
             loadTelegramConfig();
             lpvInitLinkBase();
             loadConnectionTracker();
+            initServerControl();
             checkAuth();
             initEventListeners();
+            probeBackend();
         });
+
+        // The backend address is part of the login screen: if it is wrong
+        // nothing else in the panel can work, and until now there was no way
+        // to see or fix it (the value lives in localStorage).
+        function initServerControl() {
+            const btn = document.getElementById('loginServerHost');
+            if (!btn) return;
+            btn.textContent = serverHost(SERVER_ACTIVE);
+            btn.addEventListener('click', () => {
+                const typed = prompt(
+                    'Backend server URL (leave empty to use the server that served this page)',
+                    SERVER_ACTIVE.origin,
+                );
+                if (typed === null) return;
+                const value = String(typed).trim();
+                if (!value) {
+                    try { localStorage.removeItem('lpv_server_endpoint'); } catch (e) {}
+                    if (PAGE_ORIGIN) useServer(PAGE_ORIGIN, false);
+                    else showToast('Open this panel from the server, or type its address', 'error');
+                } else {
+                    let candidate = value;
+                    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)) {
+                        candidate = (window.location.protocol === 'https:' ? 'https://' : 'http://') + candidate;
+                    }
+                    let url = null;
+                    try { url = new URL(candidate); } catch (e) { url = null; }
+                    if (!url || !url.host) {
+                        showToast('That is not a valid URL', 'error');
+                        return;
+                    }
+                    serverFallbackTried = false;
+                    useServer(url, true);
+                }
+                reconnectAttempts = 0;
+                if (ws) { try { ws.close(); } catch (e) {} }
+                showToast('Using ' + serverHost(SERVER_ACTIVE), 'success');
+                connect();
+            });
+        }
 
         function checkAuth() {
             // Two flags used to coexist: a local "admin_auth" string
@@ -10617,6 +10788,9 @@
 
                 ws.onopen = () => {
                     reconnectAttempts = 0;
+                    // Remember the address that actually works, so a fallback
+                    // is not repeated on every reload.
+                    try { localStorage.setItem('lpv_server_endpoint', SERVER_ACTIVE.origin); } catch (e) {}
                     showToast('Connected to server', 'success');
                     startPolling();
                     // Start profile sync when admin connects to server
@@ -10635,15 +10809,25 @@
                     
                     if (reconnectAttempts < maxReconnect) {
                         reconnectAttempts++;
+                        // Two failures in a row look the same whether the app
+                        // is down or the saved address is wrong. Try the origin
+                        // that served this page once before backing off.
+                        if (reconnectAttempts >= 2 && tryPageOriginFallback()) {
+                            showToast('Server unreachable — trying ' + serverHost(SERVER_ACTIVE), 'warning');
+                            setTimeout(connect, 300);
+                            return;
+                        }
                         showToast(`Reconnecting... (${reconnectAttempts}/${maxReconnect})`);
                         setTimeout(connect, 2000);
                     } else {
-                        showToast('Connection lost. Please refresh.', 'error');
+                        showToast('Connection lost. Check Server: ' + serverHost(SERVER_ACTIVE), 'error');
                     }
                 };
 
                 ws.onerror = () => {
-                    showToast('Connection error', 'error');
+                    // Name the address: "Connection error" alone left the
+                    // operator with no clue which server was being tried.
+                    showToast('Connection error — ' + serverHost(SERVER_ACTIVE), 'error');
                 };
 
                 ws.onmessage = (event) => {
@@ -12272,6 +12456,54 @@
             }
 
             // NOTE: Telegram notifications are now handled server-side
+        }
+
+        // Why is a feature not working? The server keeps its last warnings and
+        // errors (Telegram sends, workflow starts, admin snapshots) and reports
+        // the effective configuration here — no shell access needed.
+        async function showServerLog() {
+            const logsList = document.getElementById('logs-list');
+            if (!logsList) return;
+            logsList.innerHTML = '<div class="logs-empty">Loading server log…</div>';
+            try {
+                const r = await serverFetch('/api/diagnostics/server');
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+                const b = j.build || {};
+                const tg = j.telegram || {};
+                const lpv = j.lpv || {};
+                const telegramLine = (tg.error ? ('Telegram: error — ' + tg.error)
+                    : ('Telegram: ' + (tg.configured ? 'configured' : 'NOT configured')
+                       + ' · enabled ' + (tg.enabled ? 'yes' : 'no')
+                       + ' · bot running ' + (tg.bot_polling ? 'yes' : 'no')
+                       + ' · from ' + (tg.source || '?')));
+                const head = '<div class="log-entry"><div class="log-time message-text">now</div>' +
+                    '<div class="log-type info">server</div><div class="log-content">' +
+                    '<div class="log-title message-text">Build ' + escapeHtml(b.revision || '?') +
+                    ' · up ' + Math.round(b.uptime_seconds || 0) + 's · log level ' +
+                    escapeHtml(j.log_level || '?') + '</div>' +
+                    '<div class="log-details message-text">' + escapeHtml(telegramLine) +
+                    '<br>LPV: ' + (lpv.online_clients || 0) + ' online · ' +
+                    (lpv.pages || 0) + ' pages · ' + (lpv.workflows || 0) + ' workflows</div>' +
+                    '</div></div>';
+                const recent = Array.isArray(j.recent) ? j.recent.slice().reverse() : [];
+                const body = recent.length
+                    ? recent.map(e => {
+                        const when = new Date((e.at || 0) * 1000).toLocaleTimeString();
+                        const level = String(e.level || 'WARNING').toLowerCase();
+                        return '<div class="log-entry"><div class="log-time message-text">' + escapeHtml(when) + '</div>' +
+                            '<div class="log-type ' + (level === 'error' || level === 'critical' ? 'error' : 'warning') + '">' +
+                            escapeHtml(e.level || 'WARNING') + '</div><div class="log-content">' +
+                            '<div class="log-title message-text">' + escapeHtml(e.message || '') + '</div>' +
+                            '<div class="log-details message-text">' + escapeHtml(e.logger || '') + '</div>' +
+                            '</div></div>';
+                    }).join('')
+                    : '<div class="logs-empty">No warnings since the server started — nothing is failing.</div>';
+                logsList.innerHTML = head + body;
+            } catch (e) {
+                logsList.innerHTML = '<div class="logs-empty">Server log unavailable: ' +
+                    escapeHtml(e.message) + '</div>';
+            }
         }
 
         function renderLogs() {

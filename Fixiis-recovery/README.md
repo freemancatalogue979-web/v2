@@ -310,12 +310,35 @@ python main.py --fix-env          # repair placeholder/blank .env values
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| **Login shows "Connection error — <host>"** | the panel is talking to the wrong backend (remembered address from another machine, old LAN IP, `https://` saved for a plain-http server) | **the login screen shows `Server: <host>` under the Sign In button — click it and set the right address (empty = the server that served the page)**; the panel also falls back to that server by itself after two failed attempts |
+| Workflows never move, Telegram stays silent, no clients appear | usually the same cause as above: the panel is not connected, so no client is registered and nothing is pushed | fix `Server:`, then re-push |
+| Telegram notifications stop | server cannot reach `api.telegram.org`, or the saved Admin config has no token/chat id | **Logs tab → Server log** shows the exact error (`Request error: TLS/SSL...`, `401 Unauthorized`, `chat not found`); `config.py` values are used until an Admin save overrides them |
 | Panel opens, LPV push fails with *Failed to fetch* | `SERVER_DOMAIN` set to a domain that does not resolve here | `python main.py --fix-env`, restart |
 | Login always says *Invalid credentials* | `ADMIN_PASSWORD_HASH=` blank or malformed | `python main.py --set-password` |
 | Works on the server, refused from phone/laptop | bound to `127.0.0.1`, or firewall | `python main.py --network`, then open the firewall port |
 | Port/bind address is not what `config.py` says | a `.env` overrides it | `python main.py --check` shows the source; `--ignore-env` to bypass |
 | Everything disconnects over and over | the app is restarting repeatedly | `./deploy/doctor.sh`; set `auto_update = False` in `config.py`, restart once |
 | `/health` answers but the UI is stale | a deploy landed while a session was live | reconnect; restarts drop live sessions by design |
+
+### Where the reason is written down
+
+* **Logs tab → Server log** (in the panel): the server's last 300 warnings and
+  errors plus the effective Telegram state, LPV counts and build stamp. Same
+  data over HTTP: `GET /api/diagnostics/server` (admin token).
+* **The process log** now defaults to `WARNING` (it used to default to
+  `ERROR`, which hid every "why did it stop" line). `LOG_LEVEL=INFO` or
+  `DEBUG` in the environment for more.
+* `GET /health` never fails because an optional subsystem is broken; it
+  reports `build.revision`, uptime and auto-update state.
+
+### The remembered backend
+
+`Admin.html`, `mini-admin.html` and `client.html` all remember the backend in
+`localStorage` under `lpv_server_endpoint`. An address typed without a scheme
+(`192.168.1.5:8446`) now keeps the page's own scheme instead of being forced
+to `https://`, and if it is stale the panel and the viewer retry against the
+origin that served them. Clear it from the login screen (`Server:` → empty) or
+in the browser devtools if you ever need to start over.
 
 ---
 
@@ -337,6 +360,7 @@ node tests/test_link_base.cjs        # link-base rewriting in both panels
 node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
 node tests/test_page_guard.cjs       # per-page click guard (interaction allowlist)
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
+node tests/test_backend_address.cjs  # "Connection error": backend address handling
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
 python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup

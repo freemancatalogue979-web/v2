@@ -21,12 +21,14 @@ function equal(actual, expected, label) {
 }
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'client.html'), 'utf8');
-const start = source.indexOf('const API_ORIGIN = SERVER_OVERRIDE.origin;');
+const start = source.indexOf('let API_ORIGIN = ACTIVE_SERVER.origin;');
 const end = source.indexOf('const MOBILE_USER_AGENTS = {', start);
 assert.ok(start >= 0 && end > start, 'client.html URL helpers not found');
 
 function build(serverUrl, fetchImpl, pageHref) {
-  const SERVER_OVERRIDE = new URL(serverUrl);
+  // client.html keeps a mutable ACTIVE_SERVER so it can fall back to the
+  // origin serving the page when a remembered backend address is stale.
+  const ACTIVE_SERVER = new URL(serverUrl);
   const context = vm.createContext({
     URL,
     console: { log() {}, warn() {}, error() {} },
@@ -34,7 +36,8 @@ function build(serverUrl, fetchImpl, pageHref) {
     Error,
     setTimeout,
     clearTimeout,
-    SERVER_OVERRIDE,
+    SERVER_OVERRIDE: ACTIVE_SERVER,
+    ACTIVE_SERVER,
     window: { location: { href: pageHref, origin: new URL(pageHref).origin } },
     dbg: () => {},
     fetch: fetchImpl || (() => { throw new Error('fetch not stubbed'); }),

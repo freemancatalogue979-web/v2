@@ -152,10 +152,15 @@ def _print_secret_status() -> None:
         )
     log.debug("=" * 60)
 
-# Configure logging — ERRORS ONLY by default so the production console stays
-# clean and the stream never stutters under log spam.  Set LOG_LEVEL=DEBUG
-# (env or .env) to re-enable the full trace when diagnosing.
-_LOG_LEVEL_NAME = (os.environ.get("LOG_LEVEL") or "ERROR").upper()
+# Configure logging. WARNINGS AND UP by default.
+#
+# This used to default to ERROR. That kept the console tidy, but it also hid
+# every "why did it stop" line — Telegram sends that could not be delivered,
+# workflow chains that never started, admin snapshots that failed — so the
+# operator saw broken features with no reason in the log. WARNING produces
+# nothing at all while things work, and the reason when they do not.
+# LOG_LEVEL=INFO or DEBUG (env or .env) for the full trace.
+_LOG_LEVEL_NAME = (os.environ.get("LOG_LEVEL") or "WARNING").upper()
 _LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.ERROR)
 logging.basicConfig(level=_LOG_LEVEL)
 logger = logging.getLogger(__name__)

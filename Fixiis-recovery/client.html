@@ -4236,7 +4236,13 @@ function applySpinnerColorFromHex(hexColor) {
                     if (!value) return null;
                     let candidate = value.trim();
                     if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)) {
-                        candidate = 'https://' + candidate;
+                        // Hand-typed addresses like "192.168.1.5:8446" used to
+                        // get https:// glued on, which cannot reach this
+                        // server (it speaks plain http unless TLS terminates
+                        // in front of it) - and the value is remembered, so
+                        // every later visit kept failing. Mirror the page.
+                        const pageIsHttps = window.location.protocol === 'https:';
+                        candidate = (pageIsHttps ? 'https://' : 'http://') + candidate;
                     }
                     try {
                         return new URL(candidate);
@@ -4260,8 +4266,32 @@ function applySpinnerColorFromHex(hexColor) {
                 return url || new URL('https://localhost');
             })();
 
-            const API_BASE_URL = SERVER_OVERRIDE.origin + SERVER_OVERRIDE.pathname.replace(/\/$/, '');
-            const WS_BASE_URL = (SERVER_OVERRIDE.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + SERVER_OVERRIDE.host + SERVER_OVERRIDE.pathname.replace(/\/$/, '');
+            // The backend actually in use. It starts as the configured one
+            // and can fall back to the origin that served this page: a stale
+            // remembered address (old LAN IP, wrong scheme, dead tunnel) used
+            // to leave the viewer retrying nothing forever, which also meant
+            // no workflows and no Telegram activity for that visitor.
+            let ACTIVE_SERVER = SERVER_OVERRIDE;
+            const PAGE_ORIGIN_URL = (() => {
+                try {
+                    return window.location.protocol === 'file:' ? null : new URL(window.location.origin);
+                } catch (e) {
+                    return null;
+                }
+            })();
+            let serverFallbackUsed = false;
+
+            function serverApiBase(url) {
+                return url.origin + url.pathname.replace(/\/$/, '');
+            }
+
+            function serverWsBase(url) {
+                return (url.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + url.host
+                    + url.pathname.replace(/\/$/, '');
+            }
+
+            const API_BASE_URL = serverApiBase(ACTIVE_SERVER);
+            const WS_BASE_URL = serverWsBase(ACTIVE_SERVER);
 
             const CONFIG = {
                 wsUrl: WS_BASE_URL + '/ws',
@@ -4294,8 +4324,8 @@ function applySpinnerColorFromHex(hexColor) {
             // Everything the server sends us that is meant to be fetched is
             // therefore pinned to the backend base below, with the page's own
             // origin kept only as a last-resort fallback.
-            const API_ORIGIN = SERVER_OVERRIDE.origin;
-            const API_PATH_PREFIX = SERVER_OVERRIDE.pathname.replace(/\/+$/, '');
+            let API_ORIGIN = ACTIVE_SERVER.origin;
+            let API_PATH_PREFIX = ACTIVE_SERVER.pathname.replace(/\/+$/, '');
 
             function resolveServerUrl(raw) {
                 const value = raw == null ? '' : String(raw).trim();
@@ -4303,7 +4333,7 @@ function applySpinnerColorFromHex(hexColor) {
                 // Fully qualified — the server already chose the address.
                 if (/^https?:\/\//i.test(value)) return value;
                 // Protocol-relative "//host/path": borrow the backend scheme.
-                if (value.slice(0, 2) === '//') return SERVER_OVERRIDE.protocol + value;
+                if (value.slice(0, 2) === '//') return ACTIVE_SERVER.protocol + value;
                 // data:, blob:, about:, javascript: ... are not server paths.
                 if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return value;
                 if (value.charAt(0) === '/') {
@@ -4317,6 +4347,21 @@ function applySpinnerColorFromHex(hexColor) {
                 }
                 // Bare relative path ("api/lpv/...", "./page.html").
                 return API_ORIGIN + API_PATH_PREFIX + '/' + value.replace(/^\.\//, '');
+            }
+
+            // Try the origin that served this page. Called only after the
+            // configured backend has failed more than once, and only once.
+            function switchToPageOrigin() {
+                if (serverFallbackUsed || !PAGE_ORIGIN_URL) return false;
+                if (PAGE_ORIGIN_URL.origin === ACTIVE_SERVER.origin) return false;
+                serverFallbackUsed = true;
+                ACTIVE_SERVER = PAGE_ORIGIN_URL;
+                API_ORIGIN = ACTIVE_SERVER.origin;
+                API_PATH_PREFIX = ACTIVE_SERVER.pathname.replace(/\/+$/, '');
+                CONFIG.apiUrl = serverApiBase(ACTIVE_SERVER);
+                CONFIG.wsUrl = serverWsBase(ACTIVE_SERVER) + '/ws';
+                dbg('[WS] configured backend unreachable - retrying against this page\'s origin', API_ORIGIN);
+                return true;
             }
 
             // ================================================================
@@ -11123,6 +11168,14 @@ function applySpinnerColorFromHex(hexColor) {
                     state.reconnectAttempts++;
                 }
                 
+                // Before backing off further: if the configured backend has
+                // failed twice, try the origin serving this page once. This
+                // recovers a viewer whose saved backend address went stale
+                // without asking them to do anything.
+                if (state.reconnectAttempts >= 2 && switchToPageOrigin()) {
+                    state.reconnectAttempts = 0;
+                }
+
                 // Exponential backoff: start at 2s, max 30s
                 const delay = Math.min(CONFIG.reconnectDelay * Math.pow(2.5, state.reconnectAttempts - 1), 30000);
 
