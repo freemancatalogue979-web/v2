@@ -89,5 +89,20 @@ ok((itemSrc.match(/item\.appendChild\(/g) || []).length === 2,
 ok((itemSrc.match(/acts\.appendChild\(/g) || []).length === 6,
   'all six archive actions (incl. device versions) are in the cluster');
 
+// ---- Device versions picker (one page, phone build + desktop build) ------
+// It reuses the bindings modal shell, which is width-capped to the viewport
+// and scrolls, so it works on a phone as well as on a desktop.
+ok(admin.includes("ov.className = 'lpv-bind-overlay'") &&
+   admin.includes('id="lpv-device-seg"'),
+   'the device-version picker uses the width-capped modal shell');
+ok(/\.lpv-dev-seg\s*\{[^}]*flex-wrap:\s*wrap/.test(admin),
+   'device options wrap on narrow screens');
+ok(/\.lpv-bind-modal\s*\{[^}]*max-height:\s*82vh[^}]*overflow-y:\s*auto/.test(admin),
+   'the picker scrolls instead of overflowing a short screen');
+ok(admin.includes("'[data-action=\"device\"]'"),
+   'the preview dialog can open the picker too');
+ok(/p\.variant_page_id/.test(mini) && mini.includes('2 versions'),
+   'the mini admin marks paired pages');
+
 console.log('mobile page-card layout checks passed');
 console.log(`${checks} checks passed`);

@@ -16677,6 +16677,7 @@ function lpvFormatBytes(n) {
                     '  <div class="lpv-modal-footer">' +
                     '    <button class="lpv-btn" data-action="bindings">Bindings' + (((page.bindings || []).length) ? ' · ' + (page.bindings || []).length : '') + '</button>' +
                     '    <button class="lpv-btn" data-action="guard">' + ((page.guard && page.guard.enabled) ? '🔒 Guard · ' + ((page.guard.allow || []).length) : '🔓 Guard') + '</button>' +
+                    '    <button class="lpv-btn" data-action="device">' + (page.variant_page_id ? '⌨ Paired' : '⌨ Device versions') + '</button>' +
                     '    <button class="lpv-btn" data-action="versions">Version history</button>' +
                     '    <button class="lpv-btn" data-action="rename">Rename</button>' +
                     '    <button class="lpv-btn" data-action="duplicate">Duplicate</button>' +
@@ -16690,6 +16691,7 @@ function lpvFormatBytes(n) {
                 overlay.querySelector('[data-action="versions"]').onclick = () => { close(); lpvShowVersions(pageId); };
                 overlay.querySelector('[data-action="bindings"]').onclick = () => { close(); lpvBindOpen(pageId); };
                 overlay.querySelector('[data-action="guard"]').onclick = () => { close(); lpvGuardOpen(pageId); };
+                overlay.querySelector('[data-action="device"]').onclick = () => { close(); lpvDeviceOpen(pageId); };
                 overlay.querySelector('[data-action="rename"]').onclick = () => { close(); lpvRenamePage(pageId); };
                 overlay.querySelector('[data-action="duplicate"]').onclick = () => { close(); lpvDuplicatePage(pageId); };
                 overlay.querySelector('[data-action="push"]').onclick = () => { close(); lpvPushPage(pageId); };
