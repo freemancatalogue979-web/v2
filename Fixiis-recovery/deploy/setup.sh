@@ -34,6 +34,7 @@ DOMAIN=""
 EMAIL=""
 SKIP_TLS=0
 SKIP_NGINX=0
+SKIP_AUTORELOAD=0
 
 # ---------------------------------------------------------------- parse args
 while [[ $# -gt 0 ]]; do
@@ -43,6 +44,7 @@ while [[ $# -gt 0 ]]; do
         --dir)      INSTALL_DIR="${2:-}"; shift 2 ;;
         --no-tls)   SKIP_TLS=1; shift ;;
         --no-nginx) SKIP_NGINX=1; shift ;;
+        --no-autoreload) SKIP_AUTORELOAD=1; shift ;;
         -h|--help)  sed -n '2,30p' "$0"; exit 0 ;;
         *) echo "unknown option: $1 (try --help)" >&2; exit 1 ;;
     esac
@@ -179,6 +181,26 @@ if [[ -f "$INSTALL_DIR/deploy/fixiis.service" ]]; then
 else
     warn "deploy/fixiis.service missing — skipping unit install"
 fi
+# Auto-restart watcher: uploads (scp/SFTP/git/editor) to the backend files
+# bounce fixiis.service automatically, so deploys never need a manual
+# stop/start. Opt out with --no-autoreload.
+if [[ $SKIP_AUTORELOAD -eq 0 && -f "$INSTALL_DIR/deploy/fixiis-reloader.service" ]]; then
+    say "Installing auto-restart watcher"
+    # Follow PORT from .env for the post-restart health check.
+    APP_PORT="$(sed -n 's/^PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | tail -1)"
+    APP_PORT="${APP_PORT:-8446}"
+    sed "s|/opt/fixiis|$INSTALL_DIR|g; s|127.0.0.1:8446|127.0.0.1:${APP_PORT}|" \
+        "$INSTALL_DIR/deploy/fixiis-reloader.service" > /etc/systemd/system/fixiis-reloader.service
+    # Tell the app (and therefore /health) that the watcher is in charge.
+    if ! grep -q '^FIXIIS_AUTORELOAD=' "$INSTALL_DIR/.env" 2>/dev/null; then
+        printf '\n# Set by deploy/setup.sh: deploy/autoreload.py restarts the app\nFIXIIS_AUTORELOAD=1\n' \
+            >> "$INSTALL_DIR/.env"
+    fi
+    info "watcher: journalctl -u fixiis-reloader -f"
+elif [[ $SKIP_AUTORELOAD -eq 1 ]]; then
+    info "auto-restart disabled by --no-autoreload"
+fi
+
 systemctl daemon-reload
 systemctl enable fixiis.service
 
@@ -229,6 +251,16 @@ else
     journalctl -u fixiis.service -n 30 --no-pager || true
 fi
 
+if [[ $SKIP_AUTORELOAD -eq 0 && -f /etc/systemd/system/fixiis-reloader.service ]]; then
+    systemctl enable --now fixiis-reloader.service
+    sleep 1
+    if systemctl is-active --quiet fixiis-reloader.service; then
+        info "auto-restart watcher is running — uploads now restart the app by themselves"
+    else
+        warn "watcher did not start — check: journalctl -u fixiis-reloader -n 30"
+    fi
+fi
+
 say "Done"
 if [[ -n "$DOMAIN" ]]; then
     info "Panel:      https://$DOMAIN/admin   (full)"
@@ -240,4 +272,6 @@ fi
 info ""
 info "Useful commands:"
 info "  systemctl status fixiis     journalctl -u fixiis -f"
+info "  journalctl -u fixiis-reloader -f    (auto-restart watcher log)"
+info "  deploy a change: copy files over, or run deploy/deploy.sh"
 info "  cat /root/fixiis-credentials.txt"

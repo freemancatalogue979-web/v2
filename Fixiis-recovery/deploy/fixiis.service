@@ -4,6 +4,10 @@ Documentation=https://github.com/freemancatalogue979-web/v2
 After=network-online.target
 Wants=network-online.target
 
+# A restart loop should back off instead of hammering the box.
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
 [Service]
 Type=simple
 User=fixiis
@@ -16,8 +20,15 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/opt/fixiis
 
 ExecStart=/opt/fixiis/venv/bin/python /opt/fixiis/main.py
-ExecReload=/bin/kill -HUP $MAINPID
 
+# Restart=always also covers a crash or an OOM kill, so the box recovers
+# without anyone logging in. Deploys are handled by fixiis-reloader.service
+# (deploy/autoreload.py): it watches the source files and runs
+# `systemctl restart fixiis`, so no manual stop/start is ever needed.
+#
+# There is deliberately no ExecReload: the app has no SIGHUP handler, so
+# `systemctl reload` would kill it. Use `systemctl restart fixiis`, or just
+# copy the files over and let the watcher do it.
 Restart=always
 RestartSec=5
 KillSignal=SIGINT

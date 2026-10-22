@@ -7,6 +7,7 @@ With enhanced profile management and inactive user handling
 import asyncio
 import copy
 import json
+import subprocess
 import time
 import hashlib
 import os
@@ -2603,6 +2604,45 @@ async def mini_admin_page(request: Request):
     return HTMLResponse("<h1>Mini admin page not found</h1>")
 
 
+# Boot stamp — lets you confirm from outside that a deploy actually took
+# effect (and that the auto-restart ran) without shell access:
+#   curl -s localhost:8446/health | jq .build
+_BOOT_TIME = time.time()
+
+
+def _git_revision() -> str:
+    """Current commit of the running checkout, or '' when there is no repo."""
+    try:
+        root = Path(__file__).resolve().parent
+        out = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    try:
+        return (Path(__file__).resolve().parent / "VERSION").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+_BOOT_REVISION = _git_revision()
+
+
+def _build_info() -> Dict[str, Any]:
+    return {
+        "started_at": _BOOT_TIME,
+        "uptime_seconds": round(time.time() - _BOOT_TIME, 1),
+        "pid": os.getpid(),
+        "revision": _BOOT_REVISION,
+        # True when deploy/autoreload.py is installed: a file upload will
+        # restart this process automatically.
+        "autoreload": os.environ.get("FIXIIS_AUTORELOAD", "") not in ("", "0", "false", "False"),
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -2628,6 +2668,10 @@ async def health_check():
         response["asset_cache"] = get_global_asset_manager().stats()
     except Exception:
         pass
+
+    # Build/restart stamp: after deploying, compare `build.revision` and
+    # `build.uptime_seconds` to see whether the new code is live.
+    response["build"] = _build_info()
 
     return JSONResponse(response)
 

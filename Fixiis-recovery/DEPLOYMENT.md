@@ -380,6 +380,100 @@ survives; anything you edited directly in `config.py` does not.
 
 ---
 
+## Deploy without stopping or starting anything
+
+The backend runs as a long-lived systemd process, so copying files onto the
+box used to require a manual `systemctl restart`. That is now automatic:
+`deploy/autoreload.py` runs as **`fixiis-reloader.service`**, watches the
+install directory, and restarts `fixiis.service` a few seconds after the
+files change.
+
+Any transport works — `scp`, SFTP, rsync, a hosting panel's file manager, a
+git checkout, or `deploy/deploy.sh`:
+
+```bash
+# from your machine
+scp api.py client.html root@server:/opt/fixiis/
+# that's it — the new code is live within ~5 seconds
+
+# or, if you push to GitHub and pull on the server
+sudo /opt/fixiis/deploy/deploy.sh          # pull + let the watcher restart
+sudo /opt/fixiis/deploy/deploy.sh --restart-now   # pull + restart immediately
+```
+
+### What triggers a restart
+
+| Watched | Never triggers |
+|---|---|
+| `*.py`, `*.html`, `.env`, `requirements.txt` | `lpv/`, `logs/`, `data/`, `cache/`, `profiles/` |
+| — | `*.sqlite3`, `*.log`, `persistent_links.json`, `*.pyc` |
+| — | `venv/`, `__pycache__/`, `.git/`, `node_modules/`, `build/` |
+| — | `tests/`, `deploy/` (editing these must not bounce production) |
+
+Runtime directories are ignored on purpose — the app writes to them while
+it runs, and watching them would restart the service forever. A burst of
+uploads is debounced (3 s quiet period, 10 s minimum between restarts), so
+a 20-file deploy restarts **once**.
+
+### If the upload is broken, the old code keeps serving
+
+Every changed `.py` is compile-checked first. A syntax error logs
+
+```
+ERROR api.py does not compile — NOT restarting: SyntaxError: ...
+```
+
+and leaves the running process untouched, so a half-finished SFTP transfer
+cannot take the site down. Fix the file and save it again — the next change
+restarts normally.
+
+### Confirming a deploy landed
+
+```bash
+curl -s http://127.0.0.1:8446/health | jq .build
+# {
+#   "started_at": 1792658205.29,
+#   "uptime_seconds": 12.4,
+#   "pid": 2127,
+#   "revision": "ca62024",
+#   "autoreload": true
+# }
+```
+
+`uptime_seconds` resetting is the proof the restart ran; `revision` is the
+commit of the checkout that is actually running.
+
+### Watching it happen
+
+```bash
+journalctl -u fixiis-reloader -f     # "change detected: api.py" → "restarting"
+journalctl -u fixiis -f              # the app's own startup log
+```
+
+### Turning it off / changing the command
+
+```bash
+sudo systemctl disable --now fixiis-reloader    # back to manual restarts
+```
+
+Other process managers work too — the restart command is configurable:
+
+```bash
+python3 deploy/autoreload.py --dir /opt/fixiis --restart-cmd "systemctl restart fixiis"
+python3 deploy/autoreload.py --dir /opt/fixiis --restart-cmd "pm2 restart fixiis"
+python3 deploy/autoreload.py --dir /opt/fixiis --restart-cmd "supervisorctl restart fixiis"
+python3 deploy/autoreload.py --dir /opt/fixiis --dry-run --once   # what would happen?
+```
+
+`deploy/setup.sh` installs and enables the watcher automatically; skip it
+with `--no-autoreload` if you prefer manual control.
+
+> Restarting drops live sessions (open browser streams and LPV pushes
+> reconnect on their own, but an in-flight workflow stops). Deploy between
+> runs, or wait for the workflow to finish.
+
+---
+
 ## Troubleshooting
 
 **Service starts then dies immediately.**

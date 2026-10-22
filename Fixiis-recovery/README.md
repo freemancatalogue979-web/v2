@@ -159,6 +159,7 @@ node tests/test_link_base.cjs        # link-base rewriting in both panels
 node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
 node tests/test_page_guard.cjs       # per-page click guard (interaction allowlist)
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
+python3 tests/test_autoreload.py     # deploy watcher: what restarts the app
 ```
 
 ### 2. Server boots
