@@ -367,12 +367,33 @@ certbot renew --dry-run          # verify auto-renewal works
 systemctl status certbot.timer   # renewal is scheduled
 ```
 
-Updating:
+### First start without setup.sh
+
+If you copied the files by hand instead of running `deploy/setup.sh`:
 
 ```bash
-cd /opt/fixiis && sudo git pull
-sudo venv/bin/pip install -r requirements.txt
-sudo systemctl restart fixiis
+cd /opt/fixiis
+sudo -u fixiis python3 main.py --setup   # creates venv/ and installs requirements
+sudo -u fixiis python3 main.py --check   # python, packages, .env, port, Chrome
+```
+
+`main.py` is self-contained: it switches into the code directory, creates and
+re-enters `venv/`, installs whatever `requirements.txt` is missing, copies
+`.env.example` to `.env` on the first run and creates the runtime folders.
+The manual `python -m venv` / `pip install` dance is optional.
+
+The service unit runs with `FIXIIS_AUTO_SETUP=1`, so a deploy that adds a
+dependency installs it on the next restart instead of failing the boot.
+Run `sudo -u fixiis python3 main.py --check` any time you want a report on
+packages, `.env`, permissions, port and Chrome.
+
+### Updating
+
+```bash
+sudo /opt/fixiis/deploy/deploy.sh          # pull; the watcher restarts the app
+# or, after a manual upload:
+sudo git pull && sudo venv/bin/pip install -r requirements.txt
+# no restart needed - fixiis-reloader notices the changed files
 ```
 
 Note: `git pull` will overwrite `config.py`. Anything you set in `.env`

@@ -3,6 +3,15 @@ Main Entry Point - Neo Browser Streaming Server
 Pure CDP Screencast - No GPU encoding required
 With Memory Optimization, Swap Space Management, and Cgroup Isolation
 
+Run it with a single command:
+
+    python main.py
+
+bootstrap.py (imported below) takes care of the rest: it switches to this
+folder, uses venv/ or .venv/ when one exists, installs missing packages on
+first run, creates .env from the template and makes the data directories.
+Flags: --check  --setup  --no-install  --port N  --host H  --open  --help
+
 Modular structure:
 - telegram_bot.py: Telegram bot functionality
 - memory_manager.py: Memory management and cgroup isolation
@@ -23,6 +32,18 @@ from typing import Optional
 # Add current directory to path
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Zero-setup pass. Must run before uvicorn/config are imported: it fixes the
+# working directory, may re-exec into the project virtualenv, installs
+# missing packages, creates .env and applies --port/--host. It is a no-op on
+# an already-configured machine, so systemd starts stay fast.
+from bootstrap import (
+    prepare as _prepare_startup,
+    banner as _startup_banner,
+    open_when_ready as _open_when_ready,
+)
+
+STARTUP = _prepare_startup()
 
 # Auto-load .env if present, BEFORE importing config so the env-var
 # mappings pick up the values. We do a minimal dotenv loader here so
@@ -246,6 +267,12 @@ class Server:
         )
 
         self.server = uvicorn.Server(config)
+
+        # --open: pop the admin console in the operator's browser as soon as
+        # the port accepts connections (headless boxes just skip it).
+        if STARTUP.open_browser:
+            _open_when_ready(self.config.port, "/admin")
+
         await self.server.serve()
 
         await self.shutdown_event.wait()
@@ -477,9 +504,20 @@ async def check_port_available(port: int) -> bool:
             return False
 
 
+def _tunnel_url() -> str:
+    """Public tunnel URL to show in the banner, or '' when it is off."""
+    try:
+        if CONFIG.cloudflare_tunnel and CONFIG.tunnel_hostname:
+            return f"https://{CONFIG.tunnel_hostname}"
+    except Exception:
+        pass
+    return ""
+
+
 async def main():
     """Main entry point with restart support"""
     port = CONFIG.port
+    announced = False
 
     while True:
         # Kill existing processes on port
@@ -488,6 +526,21 @@ async def main():
             await asyncio.sleep(2)
             if await check_port_available(port):
                 break
+
+        # Tell the operator where to go, once the port is actually ours.
+        if STARTUP.show_banner and not announced:
+            announced = True
+            _startup_banner(CONFIG.host, port, tunnel=_tunnel_url())
+
+        # First run only: a fresh .env still has the template's default
+        # password. Say so on stderr so it also lands in the service journal.
+        if STARTUP.created_env:
+            STARTUP.created_env = False
+            print(
+                "  .env was created from the template - set ADMIN_PASSWORD_HASH "
+                "and JWT_SECRET_KEY in it before exposing this server.",
+                file=sys.stderr, flush=True,
+            )
 
         # Create server instance
         server = Server()
@@ -504,6 +557,14 @@ async def main():
         except KeyboardInterrupt:
             break
         except Exception:
+            # A silent exit(1) is impossible to debug from a service log.
+            import traceback
+            traceback.print_exc()
+            print(
+                "\nStartup failed. Run 'python main.py --check' for a "
+                "diagnosis of packages, .env, permissions and the port.",
+                file=sys.stderr, flush=True,
+            )
             sys.exit(1)
 
 

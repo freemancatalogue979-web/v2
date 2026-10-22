@@ -13,6 +13,14 @@ profiles/
 lpv/
 cache/
 
+# Virtualenvs — main.py creates .venv/ on first run, deploy/setup.sh uses venv/
+venv/
+.venv/
+env/
+
+# Runtime state created on start (persistent links, settings overrides)
+data/
+
 # Caches
 __pycache__/
 *.pyc

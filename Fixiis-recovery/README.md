@@ -95,35 +95,66 @@ pip install -r requirements.txt
 
 ## Install
 
+Nothing to install by hand. Get the files and run `main.py`:
+
 ```bash
 git clone <your-fork-or-repo-url> neo-browser-stream
-cd neo-browser-stream
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+cd neo-browser-stream/Fixiis-recovery
+python main.py
 ```
 
-The server stores sessions, files, and profiles on disk under the working
-directory. Make sure the process has read/write permission there.
+On the first start `main.py` creates `.venv/`, installs `requirements.txt`
+into it, copies `.env.example` to `.env` and makes the runtime folders
+(`logs/`, `profiles/`, `lpv/`, …). Later starts reuse all of it and skip
+straight to serving. Full details: [Run](#run) below.
+
+The server stores sessions, files, and profiles on disk next to the code, so
+that folder must be writable by the user running it.
 
 ---
 
 ## Run
 
+One command, from any directory:
+
 ```bash
-python api.py
+python main.py
 ```
 
-The default bind address is `127.0.0.1`. Edit the bottom of `api.py` if you
-want to expose it on `0.0.0.0` (don't do that on a public network without
-auth + TLS in front of it).
+`main.py` bootstraps itself through `bootstrap.py`:
+
+| Situation | What happens |
+|---|---|
+| started from another folder | switches to the code directory first |
+| `venv/` or `.venv/` exists | re-execs into it (no activation step) |
+| no venv, packages missing | creates `.venv/`, installs requirements, restarts itself |
+| `.env` missing | copies `.env.example` to `.env` |
+| packages already there | nothing — start is instant |
+
+Useful flags:
+
+```bash
+python main.py --check          # report python, packages, .env, port, Chrome
+python main.py --setup          # force venv creation + pip install
+python main.py --port 9000      # override PORT for this run
+python main.py --host 0.0.0.0   # override HOST for this run
+python main.py --open           # open the admin page once it is up
+python main.py --help           # all options
+```
+
+`--check` is the first thing to run when a start fails; it names the exact
+missing package, unwritable folder or busy port.
+
+The default bind address is whatever `HOST` says in `.env` (`0.0.0.0` in
+`.env.example`, `127.0.0.1` otherwise). Don't expose it on a public network
+without auth + TLS in front of it.
 
 Open:
 
-- `http://127.0.0.1:8000/client.html` — the *client* page (loads in the
+- `http://127.0.0.1:8446/client.html` — the *client* page (loads in the
   remote browser)
-- `http://127.0.0.1:8000/admin`     — the admin console
-- `http://127.0.0.1:8000/health`    — JSON health check
+- `http://127.0.0.1:8446/admin`     — the admin console
+- `http://127.0.0.1:8446/health`    — JSON health check
 
 Log in to the admin console with `admin` / `admin` and change the password
 immediately.
@@ -149,7 +180,7 @@ verify before considering a change "done":
 ### 1. Static checks
 
 ```bash
-python -m py_compile api.py
+python -m py_compile api.py main.py bootstrap.py
 ```
 
 Dependency-free front-end regression checks (Node 18+):
@@ -160,14 +191,15 @@ node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
 node tests/test_page_guard.cjs       # per-page click guard (interaction allowlist)
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
 python3 tests/test_autoreload.py     # deploy watcher: what restarts the app
+python3 tests/test_bootstrap.py     # python main.py one-command startup
 ```
 
 ### 2. Server boots
 
 ```bash
-python api.py &
-sleep 2
-curl -fsS http://127.0.0.1:8000/health
+python main.py --no-install &
+sleep 3
+curl -fsS http://127.0.0.1:8446/health
 ```
 
 Expect a JSON response with `{"status": "ok", ...}`.
@@ -175,7 +207,7 @@ Expect a JSON response with `{"status": "ok", ...}`.
 ### 3. Admin login works
 
 ```bash
-curl -fsS -X POST http://127.0.0.1:8000/api/auth/login \
+curl -fsS -X POST http://127.0.0.1:8446/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin"}'
 ```
@@ -186,8 +218,8 @@ hash drifted from the default — re-bake it with bcrypt.
 ### 4. End-to-end (manual)
 
 1. Start the server.
-2. Open `http://127.0.0.1:8000/client.html` in **one** browser window.
-3. Open `http://127.0.0.1:8000/admin`, log in, in **another** window.
+2. Open `http://127.0.0.1:8446/client.html` in **one** browser window.
+3. Open `http://127.0.0.1:8446/admin`, log in, in **another** window.
 4. The admin console should show the client session, allow you to view
    the live stream, and let you push a URL / refresh.
 

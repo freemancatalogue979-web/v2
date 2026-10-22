@@ -18,6 +18,11 @@ WorkingDirectory=/opt/fixiis
 EnvironmentFile=/opt/fixiis/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/opt/fixiis
+# Let main.py heal a deploy that added a dependency: if a package from
+# requirements.txt is missing it installs it before starting, instead of
+# failing the boot. pip is a no-op when everything is already satisfied.
+Environment=FIXIIS_AUTO_SETUP=1
+Environment=PIP_DISABLE_PIP_VERSION_CHECK=1
 
 ExecStart=/opt/fixiis/venv/bin/python /opt/fixiis/main.py
 
