@@ -427,85 +427,65 @@ survives; anything you edited directly in `config.py` does not.
 
 ---
 
-## Auto-restart on upload (optional, off by default)
+## Auto update (one switch in config.py, off by default)
 
-By default restarts are manual and explicit:
-
-```bash
-sudo systemctl restart fixiis      # after uploading/pulling new code
-```
-
-`deploy/autoreload.py` can do that for you. It runs as
-**`fixiis-reloader.service`**, watches the install directory, and restarts
-`fixiis.service` a few seconds after a source file changes. It is **opt-in**,
-because a restart drops live sessions — so it should be a deliberate choice,
-not a surprise on a box that is mid-run.
+Restarting after a deploy is manual unless you ask for auto update:
 
 ```bash
-sudo /opt/fixiis/deploy/autoreload.sh status     # what is it doing now?
-sudo /opt/fixiis/deploy/autoreload.sh off        # stop it (app keeps running)
-sudo /opt/fixiis/deploy/autoreload.sh on         # enable it
-sudo /opt/fixiis/deploy/autoreload.sh uninstall  # remove the unit entirely
+sudo systemctl restart fixiis      # after uploading or pulling new code
 ```
 
-`off` is the important one: it stops the watcher and prevents it from
-starting at boot, and **does not touch the running app** — no downtime, no
-dropped sessions, no state to restore. Manual `systemctl restart fixiis`
-keeps working exactly as before.
+To have the app restart itself when its files change, set one line in
+`config.py`:
 
-`deploy/setup.sh` no longer enables it. On a fresh install add
-`--autoreload` if you want it (`--no-autoreload` is still accepted and is
-now the default):
-
-```bash
-sudo deploy/setup.sh --domain panel.example.com --email you@example.com --autoreload
+```python
+    auto_update: bool = False       # <- change to True
 ```
 
-### What it watches, when you do enable it
+then restart once (`sudo systemctl restart fixiis`). From then on an upload,
+a `git pull` or an editor save is picked up within a few seconds: the app
+closes its sessions, re-execs itself and comes back on the same port. Same
+process, same unit — systemd keeps tracking it, nothing to install.
+
+It is off by default because a restart closes every live session.
+
+**Rules it follows** (no configuration needed):
 
 | Watched | Never triggers |
 |---|---|
 | `*.py`, `*.html`, `.env`, `requirements.txt` | `lpv/`, `logs/`, `data/`, `cache/`, `profiles/` |
 | — | `*.sqlite3`, `*.log`, `persistent_links.json`, `*.pyc` |
 | — | `venv/`, `__pycache__/`, `.git/`, `node_modules/`, `build/` |
-| — | `tests/`, `deploy/` (editing these must not bounce production) |
+| — | `tests/`, `deploy/` |
 
-Runtime directories are ignored on purpose — the app writes to them while
-it runs, and watching them would restart the service forever. A burst of
-uploads is debounced (3 s quiet period, 10 s minimum between restarts), there
-is a budget of **8 restarts per 10 minutes** (after that it stops touching the
-service and says why), and every changed `.py` is compile-checked first: a
-broken upload logs `NOT restarting` and leaves the old code serving.
+Runtime folders are ignored on purpose — the app writes to them while it
+runs, so watching them would restart it forever. Changes are debounced (3 s of
+quiet, so a 20-file deploy restarts once), there are at most 8 restarts per
+10 minutes, and every changed `.py` is compile-checked first: a broken upload
+logs `NOT restarting` and the working process keeps serving.
 
-### Checking whether it is the thing misbehaving
+**Is it on?** `curl -s http://127.0.0.1:8446/health | jq .build.auto_update`,
+or `python main.py --check` (prints `auto update (from config.py)`), or watch
+the log:
 
 ```bash
-sudo ./deploy/doctor.sh          # services, restart counts, .env, port, logs
-sudo ./deploy/doctor.sh --watch  # follow both logs live
-journalctl -u fixiis-reloader -f # the watcher's own log
+journalctl -u fixiis -f      # [auto-update] change detected: api.py ...
 ```
 
-If the doctor shows the app restarting over and over, turn the watcher off
-first (`deploy/autoreload.sh off`) and see whether the flapping stops. If it
-does, the files are changing (sync client, editor auto-save, a deploy loop) —
-the watcher is only reporting that.
+**Suspect it is restarting too much?** Set `auto_update = False`, restart
+once, and watch `sudo ./deploy/doctor.sh` — it reports restart counts and flags
+a flap.
 
 ### Confirming a deploy landed
 
 ```bash
 curl -s http://127.0.0.1:8446/health | jq .build
 # { "started_at": ..., "uptime_seconds": 12.4, "pid": 2127,
-#   "revision": "946668d", "autoreload": false }
+#   "revision": "459efd4", "auto_update": false }
 ```
 
-`uptime_seconds` resetting proves the process restarted; `revision` is the
-commit actually running; `autoreload` says whether the watcher is on.
-
-> Restarting drops live sessions (open browser streams and LPV pushes
-> reconnect on their own, but an in-flight workflow stops). Deploy between
-> runs, or wait for the workflow to finish.
-
----
+`revision` is the commit actually running; `uptime_seconds` resetting proves
+the process restarted.
 
 ## Troubleshooting
 

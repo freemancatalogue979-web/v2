@@ -57,6 +57,19 @@ class UltraConfig:
     #            to the app). Changing this needs a restart.
     host: str = "0.0.0.0"
     port: int = 8446
+
+    # Auto update
+    # -----------
+    # True  -> when a source file (.py/.html/.env) in this folder changes,
+    #          the app restarts itself so the change takes effect. Handy
+    #          when you upload files or `git pull` on the server.
+    # False -> changes take effect only when you restart it yourself:
+    #          Ctrl+C and `python main.py`, or `systemctl restart fixiis`.
+    #
+    # OFF by default, because a restart closes every live session.
+    auto_update: bool = False
+    auto_update_interval: float = 2.0   # seconds between scans
+    auto_update_debounce: float = 3.0   # quiet time after the last change
     public_ip: str = "20.248.121.116"
     server_domain: str = "simplify-hospitality.it.com"  # Domain name for server URL (e.g., "example.com")
     use_https: bool = False  # Use HTTPS instead of HTTP
@@ -268,6 +281,7 @@ class UltraConfig:
         env_mappings = {
             "HOST": ("host", str),
             "PORT": ("port", int),
+            "AUTO_UPDATE": ("auto_update", lambda x: x.lower() in ("1", "true", "yes", "on")),
             "PUBLIC_IP": ("public_ip", str),
             "SERVER_DOMAIN": ("server_domain", str),
             "USE_HTTPS": ("use_https", lambda x: x.lower() == "true"),

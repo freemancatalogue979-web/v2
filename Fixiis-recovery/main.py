@@ -182,6 +182,9 @@ class Server:
         self.cloudflare_process = None
         self.server = None
         self.telegram_bot = None
+        self.autoupdater = None
+        self._restart_requested = False
+        self._loop = None
 
     def setup_signal_handlers(self):
         """Setup graceful shutdown handlers"""
@@ -278,6 +281,11 @@ class Server:
         )
 
         self.server = uvicorn.Server(config)
+        self._loop = asyncio.get_running_loop()
+
+        # config.py: auto_update = True restarts the app when its own files
+        # change. Off by default, because a restart closes live sessions.
+        self.start_autoupdate()
 
         # --open: pop the admin console in the operator's browser as soon as
         # the port accepts connections (headless boxes just skip it).
@@ -287,6 +295,46 @@ class Server:
         await self.server.serve()
 
         await self.shutdown_event.wait()
+        # 42 tells main() to re-exec this process (restart), so either a
+        # panel restart or auto_update actually comes back up.
+        return 42 if self._restart_requested else None
+
+    # ---------------------------------------------------------------- update
+    def start_autoupdate(self):
+        """Start the file watcher when config.py asks for it."""
+        if not getattr(self.config, "auto_update", False):
+            return
+        try:
+            import autoupdate
+
+            self.autoupdater = autoupdate.start(
+                Path(__file__).resolve().parent,
+                on_change=self._on_sources_changed,
+                interval=getattr(self.config, "auto_update_interval", 2.0),
+                debounce=getattr(self.config, "auto_update_debounce", 3.0),
+                log=lambda msg: logger.warning("[auto-update] %s", msg),
+            )
+        except Exception as exc:
+            logger.error("[auto-update] could not start watcher: %s", exc)
+
+    def _on_sources_changed(self, files):
+        """Called from the watcher thread; hand the restart to the loop."""
+        if self._loop is None:
+            return
+        self._loop.call_soon_threadsafe(self.request_restart, files)
+
+    def request_restart(self, reason=None):
+        """Restart gracefully: stop serving, then let main() re-exec us."""
+        if self._restart_requested:
+            return
+        self._restart_requested = True
+        if reason:
+            logger.warning("[restart] %s", reason)
+        if self.autoupdater is not None:
+            self.autoupdater.stop()
+        if self.server is not None:
+            self.server.should_exit = True
+        self.shutdown_event.set()
 
     async def shutdown(self):
         """Graceful shutdown"""
@@ -404,6 +452,7 @@ class Server:
             logger.error(f"Error clearing port: {e}")
         
         # Step 5: Signal server to exit with restart code
+        self._restart_requested = True
         if hasattr(self, 'server'):
             self.server.should_exit = True
         
@@ -515,6 +564,31 @@ async def check_port_available(port: int) -> bool:
             return False
 
 
+def _reexec():
+    """Replace this process with a fresh one running the same command.
+
+    Used for restarts, so they work the same whether the app was started by
+    systemd, by a shell, on Windows or on Linux: same PID under systemd (so
+    the unit keeps tracking it), new code loaded, no supervisor required.
+    """
+    argv = [sys.executable, str(Path(__file__).resolve())] + sys.argv[1:]
+    logger.warning("[restart] re-executing: %s", " ".join(argv))
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(sys.executable, argv)
+    except Exception as exc:
+        # execv is unavailable on some platforms: start a child and leave.
+        logger.error("[restart] exec failed (%s) - starting a child process", exc)
+        subprocess.Popen(argv, close_fds=True)
+        os._exit(0)
+
+
 def _tunnel_url() -> str:
     """Public tunnel URL to show in the banner, or '' when it is off."""
     try:
@@ -542,6 +616,14 @@ async def main():
         if STARTUP.show_banner and not announced:
             announced = True
             _startup_banner(CONFIG.host, port, tunnel=_tunnel_url())
+            print(
+                "  auto update: "
+                + ("ON  - source changes restart the app (config.py)"
+                   if getattr(CONFIG, "auto_update", False)
+                   else "OFF - restart yourself after changes (config.py: auto_update = True)"),
+                flush=True,
+            )
+            print("", flush=True)
 
         # First run only: a fresh .env still has the template's default
         # password. Say so on stderr so it also lands in the service journal.
@@ -559,10 +641,15 @@ async def main():
         # Start server
         try:
             exit_code = await server.start()
-            # If exit_code is 42, restart the server
+            # 42 = restart (panel button or auto_update): close everything
+            # properly, then re-exec ourselves with the new code.
             if exit_code == 42:
-                logger.debug("Restarting server...")
-                await asyncio.sleep(2)
+                try:
+                    await server.shutdown()   # sessions, browsers, tunnel, cgroups
+                except Exception as exc:
+                    logger.error("[restart] cleanup error: %s", exc)
+                await asyncio.sleep(1)
+                _reexec()          # does not return on success
                 continue
             break
         except KeyboardInterrupt:

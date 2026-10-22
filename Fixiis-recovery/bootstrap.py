@@ -41,9 +41,14 @@ Usage
 Where settings come from
 ------------------------
 ``config.py`` is the source of truth and works on its own: no ``.env`` is
-created or needed for HOST, PORT and the rest. A ``.env`` is only read when
-*you* made one (deploy/setup.sh does), and it merely overrides config.py.
-``--ignore-env`` runs from config.py alone without touching or deleting it.
+created or needed for HOST, PORT, ``auto_update`` and the rest. A ``.env`` is
+only read when *you* made one (deploy/setup.sh does), and it merely overrides
+config.py. ``--ignore-env`` runs from config.py alone without touching it.
+
+Auto update (restart when files change) is one line in config.py::
+
+    auto_update = True      # default False
+
 
 Environment overrides
 ---------------------
@@ -704,7 +709,7 @@ def env_value(key: str, default: str = "", root: Path = ROOT) -> str:
 
 CONFIG_SETTINGS = (
     "host", "port", "server_domain", "public_ip", "use_https",
-    "cloudflare_tunnel", "tunnel_hostname",
+    "cloudflare_tunnel", "tunnel_hostname", "auto_update",
 )
 
 
@@ -999,6 +1004,19 @@ def diagnose(
 
     line("settings from", "config.py" + (" (.env ignored)" if env_is_ignored() else
                                          (" + .env overrides" if ENV_FILE.exists() else " only")))
+
+    auto_update, auto_src = effective("AUTO_UPDATE", None)
+    if auto_update is None:
+        auto_update = config_values().get("auto_update", False)
+        auto_src = "config.py"
+    elif auto_src == "default":
+        auto_src = "config.py"
+    enabled = str(auto_update).strip().lower() in ("1", "true", "yes", "on")
+    line(
+        f"auto update (from {auto_src})",
+        "ON - a file change restarts the app (closes live sessions)"
+        if enabled else "off - restart yourself after changes",
+    )
 
     password_hash, hash_src = effective("ADMIN_PASSWORD_HASH", "")
     if password_hash:

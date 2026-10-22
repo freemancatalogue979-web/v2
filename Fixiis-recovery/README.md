@@ -162,6 +162,29 @@ python main.py --help           # all options
 `--check` is the first thing to run when a start fails; it names the exact
 missing package, unwritable folder or busy port.
 
+### Auto update: restart when files change
+
+One line in `config.py`, off by default:
+
+```python
+    auto_update: bool = False      # True -> restart when a source file changes
+```
+
+With `True`, uploading a file or running `git pull` on the server is enough —
+the app closes its sessions, re-execs itself and comes back a few seconds
+later with the new code. Nothing to install: no systemd unit, no scripts.
+
+It is off by default because a restart closes live sessions; leave it off if
+you would rather choose the moment (`sudo systemctl restart fixiis`).
+Runtime folders (`lpv/`, `logs/`, `profiles/` …) never trigger it, changes are
+debounced, there are at most 8 restarts per 10 minutes, and a file that does
+not compile is reported instead of being loaded.
+
+```bash
+curl -s localhost:8446/health | jq .build.auto_update   # true / false
+python main.py --check                                  # says which file it came from
+```
+
 ### Changing the port, the host or any other setting
 
 Edit `config.py` and restart. That file is the source of truth:
@@ -266,7 +289,7 @@ python main.py --fix-env          # repair placeholder/blank .env values
 | Login always says *Invalid credentials* | `ADMIN_PASSWORD_HASH=` blank or malformed | `python main.py --set-password` |
 | Works on the server, refused from phone/laptop | bound to `127.0.0.1`, or firewall | `python main.py --network`, then open the firewall port |
 | Port/bind address is not what `config.py` says | a `.env` overrides it | `python main.py --check` shows the source; `--ignore-env` to bypass |
-| Everything disconnects over and over | the service is restarting repeatedly | `./deploy/doctor.sh`; `sudo deploy/autoreload.sh off` to rule out the auto-restart |
+| Everything disconnects over and over | the app is restarting repeatedly | `./deploy/doctor.sh`; set `auto_update = False` in `config.py`, restart once |
 | `/health` answers but the UI is stale | a deploy landed while a session was live | reconnect; restarts drop live sessions by design |
 
 ---
@@ -289,7 +312,7 @@ node tests/test_link_base.cjs        # link-base rewriting in both panels
 node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
 node tests/test_page_guard.cjs       # per-page click guard (interaction allowlist)
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
-python3 tests/test_autoreload.py     # deploy watcher: what restarts the app
+python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup
 ```
 

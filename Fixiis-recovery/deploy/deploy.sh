@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Pull the configured branch onto this server and hand off to the watcher.
+# Pull the configured branch onto this server and restart the app.
 #
-#   sudo ./deploy/deploy.sh                 # pull + let the watcher restart
-#   sudo ./deploy/deploy.sh --restart-now   # pull + restart immediately
+#   sudo ./deploy/deploy.sh                 # pull + restart
+#   sudo ./deploy/deploy.sh --no-restart    # pull only (auto_update may do it)
 #   sudo ./deploy/deploy.sh --branch main
 #
-# The reloader (deploy/autoreload.py, installed by deploy/setup.sh) notices
-# the changed files within a couple of seconds and restarts fixiis.service,
-# so you never stop/start anything by hand. `--restart-now` just takes the
-# waiting out of the equation.
+# With `auto_update = True` in config.py the app restarts itself as soon as
+# the files land, so the restart step is skipped automatically.
 #
 # Hook it up however you like:
 #   - run it by hand after a push,
@@ -22,7 +20,7 @@ set -euo pipefail
 INSTALL_DIR="${INSTALL_DIR:-/opt/fixiis}"
 BRANCH="${BRANCH:-}"
 SUBDIR="Fixiis-recovery"
-RESTART_NOW=0
+RESTART_NOW=1
 QUIET=0
 
 say()  { [[ $QUIET -eq 1 ]] || printf '\033[1;36m==> %s\033[0m\n' "$*"; }
@@ -35,6 +33,7 @@ while [[ $# -gt 0 ]]; do
         --branch)      BRANCH="${2:-}"; shift 2 ;;
         --dir)         INSTALL_DIR="${2:-}"; shift 2 ;;
         --restart-now) RESTART_NOW=1; shift ;;
+        --no-restart)  RESTART_NOW=0; shift ;;
         --quiet)       QUIET=1; shift ;;
         -h|--help)     sed -n '2,22p' "$0"; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
@@ -85,15 +84,23 @@ if git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null | grep -q 'requirements.t
     fi
 fi
 
+auto_update_on() {
+    grep -qE '^[[:space:]]*auto_update[[:space:]]*=[[:space:]]*True' "$INSTALL_DIR/config.py" 2>/dev/null
+}
+
 if [[ $RESTART_NOW -eq 1 ]]; then
-    say "Restarting fixiis.service"
-    systemctl restart fixiis || die "restart failed"
-    sleep 3
-    systemctl is-active --quiet fixiis && info "service is running" || \
-        warn "service not active — check: journalctl -u fixiis -n 50"
+    if auto_update_on; then
+        info "auto_update is on - the app restarts itself after the new files"
+        info "(give it a few seconds, or: sudo systemctl restart fixiis)"
+    else
+        say "Restarting fixiis.service"
+        systemctl restart fixiis || die "restart failed"
+        sleep 3
+        systemctl is-active --quiet fixiis && info "service is running" || \
+            warn "service not active — check: journalctl -u fixiis -n 50"
+    fi
 else
-    info "the reloader will restart the service within a few seconds"
-    info "watch it with: journalctl -u fixiis-reloader -f"
+    info "no restart requested"
 fi
 
 # ----------------------------------------------------------------------------
@@ -106,5 +113,5 @@ fi
 #   HOOK
 #   chmod +x /srv/fixiis.git/hooks/post-receive
 #
-# Checking out is enough — the watcher sees the new files and restarts.
+# Then: sudo systemctl restart fixiis  (or set auto_update = True once).
 # ----------------------------------------------------------------------------

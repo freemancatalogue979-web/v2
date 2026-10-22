@@ -11,7 +11,6 @@ set -uo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/fixiis}"
 UNIT="${UNIT:-fixiis}"
-RELOADER="${RELOADER:-fixiis-reloader}"
 WATCH=0
 [[ "${1:-}" == "--watch" ]] && WATCH=1
 
@@ -28,8 +27,8 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 if [[ $WATCH -eq 1 ]]; then
-    bold "Following $RELOADER and $UNIT (Ctrl+C to stop)"
-    exec journalctl -u "$RELOADER" -u "$UNIT" -f -n 20 --no-pager
+    bold "Following $UNIT (Ctrl+C to stop)"
+    exec journalctl -u "$UNIT" -f -n 20 --no-pager
 fi
 
 bold "Fixiis doctor - $(date)"
@@ -38,7 +37,7 @@ printf '  host: %s\n' "$(hostname)"
 
 # ---------------------------------------------------------------- services
 head2 "Services"
-for unit in "$UNIT" "$RELOADER"; do
+for unit in "$UNIT"; do
     state="$(systemctl is-active "$unit" 2>/dev/null || true)"
     enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
     if [[ "$state" == "active" ]]; then
@@ -60,7 +59,6 @@ show_restarts() {
     fi
 }
 show_restarts "$UNIT"
-show_restarts "$RELOADER"
 
 recent_restarts="$(journalctl -u "$UNIT" --since '10 min ago' --no-pager 2>/dev/null | grep -c 'Started\|Starting' || true)"
 if [[ "${recent_restarts:-0}" =~ ^[0-9]+$ ]] && [[ "$recent_restarts" -ge 4 ]]; then
@@ -153,16 +151,19 @@ fi
 head2 "Last 15 lines of $UNIT"
 journalctl -u "$UNIT" -n 15 --no-pager 2>/dev/null | sed 's/^/  /' || meh "no journal for $UNIT"
 
-head2 "Last 15 lines of $RELOADER (the auto-restart watcher)"
-journalctl -u "$RELOADER" -n 15 --no-pager 2>/dev/null | sed 's/^/  /' || meh "no journal for $RELOADER"
+head2 "Auto update"
+if grep -qE '^\s*auto_update\s*=\s*True' "$INSTALL_DIR/config.py" 2>/dev/null; then
+    meh "enabled in config.py - source changes restart the app"
+else
+    ok "disabled in config.py - restarts are manual (systemctl restart $UNIT)"
+fi
 
 # ---------------------------------------------------------------- verdict
 head2 "What to do next"
-printf '  If %s is flapping:  sudo deploy/autoreload.sh off\n' "$RELOADER"
-printf '                       (the app keeps running; restarts become manual again)\n'
-printf '  Turn auto-restart back on:        sudo deploy/autoreload.sh on\n'
-printf '  Remove it completely:             sudo deploy/autoreload.sh uninstall\n' 
+printf '  If %s is flapping:  set auto_update = False in config.py, then\n' "$UNIT"
+printf '                       sudo systemctl restart %s   (one manual restart)\n' "$UNIT"
 printf '  Repair a broken .env:             cd %s && sudo -u fixiis python3 main.py --fix-env\n' "$INSTALL_DIR"
 printf '  Full environment report:          cd %s && sudo -u fixiis python3 main.py --check\n' "$INSTALL_DIR"
 printf '  Follow the logs:                  %s --watch\n' "$0"
+printf '  Deploy by hand:                   sudo systemctl restart %s\n' "$UNIT"
 echo

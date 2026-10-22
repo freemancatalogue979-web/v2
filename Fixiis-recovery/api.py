@@ -2618,6 +2618,16 @@ async def mini_admin_page(request: Request):
 _BOOT_TIME = time.time()
 
 
+def _auto_update_enabled() -> bool:
+    """Read config.py's auto_update flag without importing anything new."""
+    try:
+        from config import CONFIG
+
+        return bool(getattr(CONFIG, "auto_update", False))
+    except Exception:
+        return False
+
+
 def _git_revision() -> str:
     """Current commit of the running checkout, or '' when there is no repo."""
     try:
@@ -2645,9 +2655,10 @@ def _build_info() -> Dict[str, Any]:
         "uptime_seconds": round(time.time() - _BOOT_TIME, 1),
         "pid": os.getpid(),
         "revision": _BOOT_REVISION,
-        # True when deploy/autoreload.py is installed: a file upload will
-        # restart this process automatically.
-        "autoreload": os.environ.get("FIXIIS_AUTORELOAD", "") not in ("", "0", "false", "False"),
+        # config.py: auto_update = True means a file change restarts this
+        # process by itself. Off by default.
+        "auto_update": _auto_update_enabled(),
+        "autoreload": _auto_update_enabled(),   # old name, same value
     }
 
 

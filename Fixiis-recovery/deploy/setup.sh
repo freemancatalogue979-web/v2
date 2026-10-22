@@ -20,9 +20,9 @@
 #   6. nginx reverse proxy + Let's Encrypt
 #   7. firewall
 #
-# Restarts after an upload are MANUAL by default. Add --autoreload to install
-# the watcher that restarts the app when files change (it drops live sessions,
-# so it is opt-in), or switch it on/off later with deploy/autoreload.sh.
+# Restarts after an upload are MANUAL by default. To have the app restart
+# itself when files change, set `auto_update = True` in config.py and restart
+# once. That is the only switch - there is no unit or script to install.
 #
 # Idempotent: safe to re-run. Re-running skips anything already installed.
 # ============================================================================
@@ -38,10 +38,6 @@ DOMAIN=""
 EMAIL=""
 SKIP_TLS=0
 SKIP_NGINX=0
-# The auto-restart watcher is OPT-IN. Changing files under the app while a
-# live session is running drops that session, so it is not something to
-# switch on for every install: --autoreload enables it.
-ENABLE_AUTORELOAD=0
 
 # ---------------------------------------------------------------- parse args
 while [[ $# -gt 0 ]]; do
@@ -51,8 +47,6 @@ while [[ $# -gt 0 ]]; do
         --dir)      INSTALL_DIR="${2:-}"; shift 2 ;;
         --no-tls)   SKIP_TLS=1; shift ;;
         --no-nginx) SKIP_NGINX=1; shift ;;
-        --autoreload)    ENABLE_AUTORELOAD=1; shift ;;
-        --no-autoreload) ENABLE_AUTORELOAD=0; shift ;;   # kept for old notes
         -h|--help)  sed -n '2,30p' "$0"; exit 0 ;;
         *) echo "unknown option: $1 (try --help)" >&2; exit 1 ;;
     esac
@@ -198,25 +192,13 @@ if [[ -f "$INSTALL_DIR/deploy/fixiis.service" ]]; then
 else
     warn "deploy/fixiis.service missing — skipping unit install"
 fi
-# Auto-restart watcher (opt-in): uploads (scp/SFTP/git/editor) to the backend
-# files bounce fixiis.service automatically. Off by default because a restart
-# drops live sessions; enable later with:
-#   sudo deploy/autoreload.sh on
-if [[ $ENABLE_AUTORELOAD -eq 1 ]]; then
-    if [[ -f "$INSTALL_DIR/deploy/autoreload.sh" ]]; then
-        info "auto-restart watcher requested (--autoreload)"
-    else
-        warn "deploy/autoreload.sh missing — skipping watcher install"
-    fi
-else
-    # Make sure a watcher installed by an earlier version is not left running.
-    if [[ -f /etc/systemd/system/fixiis-reloader.service ]]; then
-        systemctl disable --now fixiis-reloader.service >/dev/null 2>&1 || true
-        info "auto-restart watcher is OFF (an earlier install had it on)"
-        info "turn it on later with: sudo $INSTALL_DIR/deploy/autoreload.sh on"
-    else
-        info "auto-restart watcher: not installed (manual restarts only)"
-    fi
+# Auto update is a setting in config.py (auto_update = False on a fresh
+# install), not a service. Just make sure an old watcher unit is not left
+# running from a previous version.
+if [[ -f /etc/systemd/system/fixiis-reloader.service ]]; then
+    systemctl disable --now fixiis-reloader.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/fixiis-reloader.service
+    info "removed the old auto-restart unit (use config.py: auto_update = True)"
 fi
 
 systemctl daemon-reload
@@ -269,10 +251,6 @@ else
     journalctl -u fixiis.service -n 30 --no-pager || true
 fi
 
-if [[ $ENABLE_AUTORELOAD -eq 1 && -f "$INSTALL_DIR/deploy/autoreload.sh" ]]; then
-    INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/deploy/autoreload.sh" on \
-        || warn "watcher did not start — see: journalctl -u fixiis-reloader -n 30"
-fi
 
 say "Done"
 if [[ -n "$DOMAIN" ]]; then
@@ -285,7 +263,7 @@ fi
 info ""
 info "Useful commands:"
 info "  systemctl status fixiis     journalctl -u fixiis -f"
-info "  auto-restart:    sudo deploy/autoreload.sh status|on|off"
+info "  auto update:     config.py -> auto_update = True (off by default)"
 info "  deploy a change: copy files over, or run deploy/deploy.sh"
 info "  health check:    sudo -u fixiis python3 main.py --check"
 info "  manual start:    sudo -u fixiis python3 main.py   (sets itself up)"

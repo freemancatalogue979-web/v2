@@ -23,17 +23,21 @@ Environment=PYTHONPATH=/opt/fixiis
 # failing the boot. pip is a no-op when everything is already satisfied.
 Environment=FIXIIS_AUTO_SETUP=1
 Environment=PIP_DISABLE_PIP_VERSION_CHECK=1
+# Auto update is controlled by config.py, never by the environment, so the
+# switch lives in exactly one place.
+Environment=AUTO_UPDATE=
 
 ExecStart=/opt/fixiis/venv/bin/python /opt/fixiis/main.py
 
 # Restart=always also covers a crash or an OOM kill, so the box recovers
-# without anyone logging in. Deploys are handled by fixiis-reloader.service
-# (deploy/autoreload.py): it watches the source files and runs
-# `systemctl restart fixiis`, so no manual stop/start is ever needed.
+# without anyone logging in.
+#
+# Deploys: `systemctl restart fixiis`, or set `auto_update = True` in
+# config.py once and the app restarts itself when its files change (it
+# re-execs in place, so this unit keeps tracking the same PID).
 #
 # There is deliberately no ExecReload: the app has no SIGHUP handler, so
-# `systemctl reload` would kill it. Use `systemctl restart fixiis`, or just
-# copy the files over and let the watcher do it.
+# `systemctl reload` would kill it. Use `systemctl restart fixiis`.
 Restart=always
 RestartSec=5
 KillSignal=SIGINT
