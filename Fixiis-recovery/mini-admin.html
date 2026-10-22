@@ -2156,6 +2156,32 @@ function renderPages(){
             </select>
             <div class="desc">Uses the device the visitor connected with.</div>
           </div>
+          <div>
+            <label class="field-lab">Bubble does</label>
+            <select class="sel" id="stChatMode">
+              <option value="chat" ${st.chat_mode==='redirect'?'':'selected'}>Open the chat</option><option value="redirect" ${st.chat_mode==='redirect'?'selected':''}>Go to a page or link</option>
+            </select>
+            <div class="desc">“Go to a page or link” turns the bubble into a shortcut.</div>
+          </div>
+          <div>
+            <label class="field-lab">Goes to</label>
+            <select class="sel" id="stChatKind">
+              <option value="link" ${st.chat_redirect_kind==='page'?'':'selected'}>A link</option><option value="page" ${st.chat_redirect_kind==='page'?'selected':''}>An archived page</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-lab">Link</label>
+            <input class="inp" id="stChatUrl" value="${esc(st.chat_redirect_url||'')}"
+                   placeholder="https://example.com/offer" spellcheck="false">
+          </div>
+          <div>
+            <label class="field-lab">Archived page</label>
+            <select class="sel" id="stChatPage">
+              <option value="">— pick a page —</option>
+              ${pages.map(pg => `<option value="${esc(pg.id)}" ${st.chat_redirect_page_id===pg.id?'selected':''}>${esc(pg.name)}</option>`).join('')}
+            </select>
+            <div class="desc">${pages.length ? 'Pressing the bubble shows this page.' : 'No pages yet — upload one in the full Admin panel.'}</div>
+          </div>
         </div>
         <div style="margin-top:14px"><button class="btn primary" id="stSave">Save these settings</button></div>
       </div>
@@ -2170,6 +2196,10 @@ function renderPages(){
         auto_workflow_id: $('#stAutoWf').value,
         chat_enabled: $('#stChat').checked,
         chat_devices: $('#stChatDevices').value,
+        chat_mode: $('#stChatMode').value,
+        chat_redirect_kind: $('#stChatKind').value,
+        chat_redirect_url: ($('#stChatUrl').value || '').trim(),
+        chat_redirect_page_id: $('#stChatPage').value || '',
       });
       toast('Saved', 'ok');
       loadSettings();

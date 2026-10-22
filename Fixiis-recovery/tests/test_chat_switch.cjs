@@ -68,6 +68,12 @@ ok(/\$\('settings-chat-devices'\)\.value\s+=/.test(admin),
 
 ok(/id="stChat"/.test(mini), 'mini: the switch is reachable from a phone');
 ok(/id="stChatDevices"/.test(mini), 'mini: the device choice too');
+ok(/id="settings-chat-mode"/.test(admin), 'Admin: the bubble mode is in the Settings tab too');
+ok(/id="settings-chat-page"/.test(admin), 'Admin: the Settings tab can pick an archived page');
+ok(/id="settings-chat-url"/.test(admin), 'Admin: the Settings tab can take a link');
+ok(/chat_redirect_page_id:/.test(admin), 'Admin: the chosen page is saved with the tab settings');
+ok(/id="stChatMode"/.test(mini), 'mini: the bubble mode is reachable from a phone');
+ok(/id="stChatPage"/.test(mini), 'mini: the archive list is reachable from a phone');
 ok(/chat_enabled: \$\('#stChat'\)\.checked/.test(mini), 'mini: the switch is saved');
 ok(/chat_devices: \$\('#stChatDevices'\)\.value/.test(mini), 'mini: the device choice is saved');
 

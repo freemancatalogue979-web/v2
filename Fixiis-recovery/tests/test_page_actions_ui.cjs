@@ -92,17 +92,22 @@ const cctx = vm.createContext({ document: chatDom.window.document, String });
 vm.runInContext(slice('function lpvChatSettingsPaint() {', 'async function lpvChatSettingsSave'),
                 cctx);
 const cd = chatDom.window.document;
-cctx.lpvChatSettingsPaint();
-ok(cd.getElementById('lpv-chat-link-row').style.display === 'none', 'chat mode shows no redirect target');
-ok(cd.getElementById('lpv-chat-redirect-kind').disabled === true, 'the target kind is disabled in chat mode');
-cd.getElementById('lpv-chat-mode').value = 'redirect';
+// The target is picked by kind, not by mode: you can set it up while the
+// bubble is still in chat mode, then switch the bubble over later.
+cd.getElementById('lpv-chat-mode').value = 'chat';
 cd.getElementById('lpv-chat-redirect-kind').value = 'link';
 cctx.lpvChatSettingsPaint();
-ok(cd.getElementById('lpv-chat-link-row').style.display === '', 'redirect + link shows the URL');
+ok(cd.getElementById('lpv-chat-redirect-kind').disabled === false, 'the target kind is editable in chat mode too');
+ok(cd.getElementById('lpv-chat-link-row').style.display === '', 'chat + link shows the URL box');
 ok(cd.getElementById('lpv-chat-page-row').style.display === 'none', 'and hides the page picker');
 cd.getElementById('lpv-chat-redirect-kind').value = 'page';
 cctx.lpvChatSettingsPaint();
-ok(cd.getElementById('lpv-chat-page-row').style.display === '', 'redirect + page shows the picker');
+ok(cd.getElementById('lpv-chat-page-row').style.display === '', 'chat + page shows the picker');
 ok(cd.getElementById('lpv-chat-link-row').style.display === 'none', 'and hides the URL');
+cd.getElementById('lpv-chat-mode').value = 'redirect';
+cd.getElementById('lpv-chat-redirect-kind').value = 'link';
+cctx.lpvChatSettingsPaint();
+ok(cd.getElementById('lpv-chat-link-row').style.display === '', 'redirect + link still shows the URL');
+ok(cd.getElementById('lpv-chat-page-row').style.display === 'none', 'and still hides the page picker');
 
 console.log('page actions UI: ' + checks + ' checks passed');

@@ -397,13 +397,24 @@ Settings → **Live chat bubble** (or mini panel → Pages → Advanced):
 | **Show chat on live pages** | OFF removes the bubble for every visitor, on every page. ON brings it back. |
 | **Show it on** | `Both` (default), `Desktop only`, `Mobile only` |
 | **Bubble does** | `Open the chat` (default), or `Go to a page or link` |
+| **Goes to** | `A link` or `An archived page` |
+| **Link** / **Archived page** | The URL box, or a list of your archives (`name (vN)`) |
 
 **Two modes.** In *chat* mode the bubble opens the conversation panel. In
 *redirect* mode the bubble is a shortcut: pressing it shows an archived page
 (through the normal push path, so bindings and guard still apply) or sends the
-visitor to a link — no conversation, no thread. The full set of bubble
-controls lives in **Live pages → Chat → Bubble settings**; the Settings tab
-keeps the on/off switch and the device choice.
+visitor to a link — no conversation, no thread.
+
+The target is picked the same way in all three places it can be set —
+**Settings → Live chat bubble**, **Live pages → Chat → Bubble settings**, and
+the mini panel under **Pages → Advanced** — and the list of pages is fetched
+fresh each time it opens, so an archive uploaded a minute ago is already there.
+The rows follow **Goes to**, not **Bubble does**: you can choose the page or
+paste the link while the bubble is still opening the chat, then flip the mode
+when you are ready. A page that was deleted after being chosen stays listed as
+`(missing page) …` instead of disappearing silently, so you can see what to fix.
+The switch itself is never a prerequisite — a chosen target is saved with the
+rest of the settings and used the moment the bubble is set to redirect.
 
 The device is the same one that picks a page's phone/desktop build — the
 device the visitor actually connected with, not the window size. Both
@@ -417,7 +428,9 @@ switch mid-session. While chat is off, anything a stale widget tried to send
 is ignored.
 
 Over HTTP: `POST /api/settings` with `{"chat_enabled": true, "chat_devices":
-"desktop"}` (also `mobile`, `both`). A bad device value is stored as `both`
+"desktop"}` (also `mobile`, `both`), plus `chat_mode` (`chat`|`redirect`),
+`chat_redirect_kind` (`link`|`page`), `chat_redirect_url` and
+`chat_redirect_page_id`. A bad device value is stored as `both`
 rather than wedging the setting.
 
 ---
@@ -543,6 +556,7 @@ node tests/test_login_diagnostics.cjs     # a rejected sign-in says why
 node tests/test_mini_simple.cjs           # the phone panel stays four jobs
 node tests/test_bind_push.cjs             # page fields: saved once, asked at push
 node tests/test_chat_switch.cjs           # chat on/off + which device sees the bubble
+node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; skipped otherwise)
 node tests/test_page_actions.cjs          # archive edit, click actions, action step
 node tests/test_page_actions_ui.cjs       # the action editor + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step

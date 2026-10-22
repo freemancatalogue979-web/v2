@@ -8851,6 +8851,37 @@
                             Device is the one the visitor connected with — the same one that picks a
                             page's phone or desktop build. Ignored while chat is off.
                         </div>
+
+                        <div class="settings-row" style="display:flex; align-items:center; gap:10px; padding:8px 0; margin-top:6px;">
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Bubble does</div>
+                            <select id="settings-chat-mode" class="lpv-input" style="flex:1; max-width:260px;">
+                                <option value="chat">Open the chat</option>
+                                <option value="redirect">Go to a page or link</option>
+                            </select>
+                        </div>
+
+                        <div class="settings-row" style="display:flex; align-items:center; gap:10px; padding:8px 0;">
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Goes to</div>
+                            <select id="settings-chat-kind" class="lpv-input" style="flex:1; max-width:260px;">
+                                <option value="link">A link</option>
+                                <option value="page">An archived page</option>
+                            </select>
+                        </div>
+
+                        <div class="settings-row" id="settings-chat-page-row" style="display:flex; align-items:center; gap:10px; padding:8px 0;">
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Archived page</div>
+                            <select id="settings-chat-page" class="lpv-input" style="flex:1; max-width:340px;"></select>
+                            <button class="lpv-btn" id="settings-chat-refresh" title="Reload the archive list">Refresh</button>
+                        </div>
+
+                        <div class="settings-row" id="settings-chat-url-row" style="display:flex; align-items:center; gap:10px; padding:8px 0;">
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Link</div>
+                            <input type="text" id="settings-chat-url" class="lpv-input" style="flex:1; max-width:420px;"
+                                   placeholder="https://example.com/offer" spellcheck="false" />
+                        </div>
+                        <div id="settings-chat-target-hint" style="color:var(--text-muted); font-size:11px; margin-left:150px; margin-top:-4px;">
+                            Pressing the bubble shows that page (its bindings and guard still apply) or opens the link.
+                        </div>
                     </div>
 
                     <!-- ============== DOM Capture Engine ============== -->
@@ -9127,6 +9158,7 @@
                                     </select>
                                 </div>
                             </div>
+                            <div id="lpv-chat-target-note" style="font-size:10.5px;color:var(--text-muted)"></div>
                             <div class="lpv-chat-grid">
                                 <div>
                                     <label class="lpv-label">Name shown</label>
@@ -17617,6 +17649,87 @@ function lpvFormatBytes(n) {
             }
 
             // ----- Chat bubble settings (what it is, what it does) -----
+            // Both places that show these controls (Settings tab and the Chat
+            // pane) read the same archive list and paint the same way, so
+            // choosing a page cannot behave differently between them.
+
+            // Always a fresh, unfiltered list: the Archive tab may hold the
+            // result of a search, which is not what a picker should offer.
+            async function lpvChatArchive(force) {
+                if (!force && (LPV_STATE.archive || []).length) return LPV_STATE.archive;
+                try {
+                    const r = await serverFetch('/api/lpv/archive?limit=200');
+                    const j = await r.json();
+                    if (r.ok && Array.isArray(j.pages)) LPV_STATE.archive = j.pages;
+                } catch (e) { /* keep what we have */ }
+                return LPV_STATE.archive || [];
+            }
+
+            // Fill a page picker. A saved page that is no longer in the
+            // archive stays selectable (labelled), so opening the settings
+            // never silently forgets what the operator chose.
+            function lpvChatFillPages(sel, selectedId) {
+                if (!sel) return;
+                const keep = (selectedId === undefined || selectedId === null) ? sel.value : String(selectedId);
+                const pages = LPV_STATE.archive || [];
+                sel.innerHTML = '';
+                const head = document.createElement('option');
+                head.value = '';
+                head.textContent = pages.length ? '— pick a page —' : 'No pages yet — upload one in Archive';
+                sel.appendChild(head);
+                pages.forEach(pg => {
+                    const opt = document.createElement('option');
+                    opt.value = pg.id;
+                    opt.textContent = pg.name + (pg.version ? ' (v' + pg.version + ')' : '');
+                    sel.appendChild(opt);
+                });
+                if (keep && !pages.some(pg => pg.id === keep)) {
+                    const gone = document.createElement('option');
+                    gone.value = keep;
+                    gone.textContent = '(missing page) ' + String(keep).slice(0, 8) + '…';
+                    sel.appendChild(gone);
+                }
+                sel.value = keep || '';
+                if (!sel.value) sel.selectedIndex = 0;
+            }
+
+            // Settings tab: show the row for whichever target is chosen.
+            // The row is visible even in chat mode, so the target can be set
+            // up first and switched on afterwards.
+            function lpvChatTargetPaint() {
+                const $ = (id) => document.getElementById(id);
+                if (!$('settings-chat-kind')) return;
+                const kind = $('settings-chat-kind').value;
+                $('settings-chat-kind').disabled = false;
+                $('settings-chat-page-row').style.display = (kind === 'page') ? '' : 'none';
+                $('settings-chat-url-row').style.display = (kind === 'link') ? '' : 'none';
+                const hint = $('settings-chat-target-hint');
+                if (hint) {
+                    const on = $('settings-chat-mode') && $('settings-chat-mode').value === 'redirect';
+                    hint.textContent = on
+                        ? 'Pressing the bubble shows that page (its bindings and guard still apply) or opens the link.'
+                        : 'Saved now; it is used as soon as “Bubble does” is set to “Go to a page or link”.';
+                }
+            }
+
+            // The Settings tab lives in a later script block, so the pieces it
+            // needs are published on window rather than left closure-scoped.
+            window.lpvChatFillPages = lpvChatFillPages;
+            window.lpvChatTargetPaint = lpvChatTargetPaint;
+            window.lpvChatArchive = lpvChatArchive;
+
+            async function lpvChatSettingsPaintAll(force) {
+                await lpvChatArchive(!!force);
+                lpvChatFillPages(document.getElementById('lpv-chat-redirect-page'));
+                lpvChatFillPages(document.getElementById('settings-chat-page'));
+                lpvChatTargetPaint();
+                lpvChatSettingsPaint();
+            }
+
+            window.lpvChatSettingsPaintAll = function (force) {
+                return lpvChatSettingsPaintAll(force);
+            };
+
             async function lpvChatSettingsLoad() {
                 const $ = (id) => document.getElementById(id);
                 if (!$('lpv-chat-enabled')) return;
@@ -17634,24 +17747,12 @@ function lpvFormatBytes(n) {
                     $('lpv-chat-bubble-color').value = st.chat_bubble_color || '';
                     $('lpv-chat-text-color').value = st.chat_text_color || '';
                     $('lpv-chat-greeting').value = st.chat_greeting || '';
-                    // Page choices come from the archive list, which the
-                    // Archive tab keeps current.
-                    if (!(LPV_STATE.archive || []).length) {
-                        try {
-                            const ar = await serverFetch('/api/lpv/archive?limit=200');
-                            const aj = await ar.json();
-                            if (ar.ok) LPV_STATE.archive = aj.pages || [];
-                        } catch (e) { /* keep whatever we had */ }
-                    }
-                    const pageSel = $('lpv-chat-redirect-page');
-                    pageSel.innerHTML = '<option value="">— pick a page —</option>';
-                    (LPV_STATE.archive || []).forEach(pg => {
-                        const opt = document.createElement('option');
-                        opt.value = pg.id;
-                        opt.textContent = pg.name;
-                        pageSel.appendChild(opt);
-                    });
-                    pageSel.value = st.chat_redirect_page_id || '';
+                    // Page choices: a fresh list every time this pane opens,
+                    // so a page uploaded a second ago is already selectable.
+                    await lpvChatArchive(true);
+                    lpvChatFillPages($('lpv-chat-redirect-page'), st.chat_redirect_page_id || '');
+                    lpvChatFillPages($('settings-chat-page'), st.chat_redirect_page_id || '');
+                    lpvChatTargetPaint();
                     lpvChatSettingsPaint();
                 } catch (e) {
                     const status = document.getElementById('lpv-chat-settings-status');
@@ -17659,15 +17760,22 @@ function lpvFormatBytes(n) {
                 }
             }
 
-            // Redirect mode only needs the row that matches the chosen kind.
+            // The Chat pane shows the same rows, on the same rule: the target
+            // kind decides which one, whether or not redirect mode is on yet.
             function lpvChatSettingsPaint() {
                 const $ = (id) => document.getElementById(id);
                 if (!$('lpv-chat-mode')) return;
-                const redirect = $('lpv-chat-mode').value === 'redirect';
                 const kind = $('lpv-chat-redirect-kind').value;
-                $('lpv-chat-link-row').style.display = (redirect && kind === 'link') ? '' : 'none';
-                $('lpv-chat-page-row').style.display = (redirect && kind === 'page') ? '' : 'none';
-                $('lpv-chat-redirect-kind').disabled = !redirect;
+                $('lpv-chat-link-row').style.display = (kind === 'link') ? '' : 'none';
+                $('lpv-chat-page-row').style.display = (kind === 'page') ? '' : 'none';
+                $('lpv-chat-redirect-kind').disabled = false;
+                const hint = $('lpv-chat-target-note');
+                if (hint) {
+                    const on = $('lpv-chat-mode').value === 'redirect';
+                    hint.textContent = on
+                        ? 'Pressing the bubble shows this page or opens this link.'
+                        : 'Saved now; it is used as soon as “Bubble does” is set to “Go to a page or link”.';
+                }
             }
 
             async function lpvChatSettingsSave() {
@@ -17706,10 +17814,23 @@ function lpvFormatBytes(n) {
                     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
                     if (status) status.textContent = 'Saved — live for every visitor now';
                     setTimeout(() => { if (status) status.textContent = ''; }, 2600);
+                    // Same settings are shown in the Settings tab; refresh it
+                    // so the two never disagree.
+                    try {
+                        const sr = await serverFetch('/api/settings');
+                        if (sr.ok) {
+                            const sj = await sr.json();
+                            if (typeof window.applySettingsToUI === 'function') {
+                                window.applySettingsToUI(sj.settings || {});
+                            }
+                        }
+                    } catch (e) { /* non-fatal */ }
                 } catch (e) {
                     if (status) status.textContent = 'Save failed: ' + e.message;
                 }
             }
+
+            window.lpvChatSettingsLoad = function () { return lpvChatSettingsLoad(); };
 
             (function wireChatSettings() {
                 const on = () => {
@@ -17718,6 +17839,23 @@ function lpvFormatBytes(n) {
                     $('lpv-chat-mode').addEventListener('change', lpvChatSettingsPaint);
                     $('lpv-chat-redirect-kind').addEventListener('change', lpvChatSettingsPaint);
                     $('lpv-chat-settings-save').addEventListener('click', lpvChatSettingsSave);
+                    const refresh = $('lpv-chat-refresh');
+                    if (refresh) refresh.addEventListener('click', () => lpvChatSettingsPaintAll(true)
+                        .then(() => { const st = $('lpv-chat-settings-status'); if (st) st.textContent = 'Page list refreshed'; }));
+
+                    // The Settings tab carries the same controls as a proper
+                    // form, saved with that tab's own Save button.
+                    const mode = $('settings-chat-mode');
+                    const kind = $('settings-chat-kind');
+                    const paint = () => {
+                        if (typeof window.lpvChatTargetPaint === 'function') window.lpvChatTargetPaint();
+                    };
+                    if (mode) mode.addEventListener('change', paint);
+                    if (kind) kind.addEventListener('change', paint);
+                    const srefresh = $('settings-chat-refresh');
+                    if (srefresh) srefresh.addEventListener('click', () => {
+                        if (typeof window.lpvChatSettingsPaintAll === 'function') window.lpvChatSettingsPaintAll(true);
+                    });
                 };
                 if (document.readyState === 'loading') {
                     document.addEventListener('DOMContentLoaded', on);
@@ -19349,12 +19487,25 @@ function lpvFormatBytes(n) {
                 if ($('settings-chat-enabled'))    $('settings-chat-enabled').checked      = !!s.chat_enabled;
                 if ($('settings-chat-devices'))    $('settings-chat-devices').value        =
                     (['both', 'desktop', 'mobile'].indexOf(s.chat_devices) >= 0 ? s.chat_devices : 'both');
+                if ($('settings-chat-mode'))       $('settings-chat-mode').value           =
+                    (s.chat_mode === 'redirect' ? 'redirect' : 'chat');
+                if ($('settings-chat-kind'))       $('settings-chat-kind').value           =
+                    (s.chat_redirect_kind === 'page' ? 'page' : 'link');
+                if ($('settings-chat-url'))        $('settings-chat-url').value            = s.chat_redirect_url || '';
+                if ($('settings-chat-page') && typeof window.lpvChatFillPages === 'function') {
+                    window.lpvChatFillPages($('settings-chat-page'), s.chat_redirect_page_id || '');
+                }
+                if (typeof window.lpvChatTargetPaint === 'function') window.lpvChatTargetPaint();
                 if ($('settings-lpv-tab-title'))   $('settings-lpv-tab-title').value       = s.lpv_tab_title || '';
                 if ($('settings-lpv-favicon-url')) $('settings-lpv-favicon-url').value     = s.lpv_favicon_url || '';
                 if (typeof updateLpvFaviconPreview === 'function') updateLpvFaviconPreview();
                 const fp = $('settings-file-path');
                 if (fp) fp.textContent = SETTINGS_STATE.file || '—';
             }
+
+            // Published so the chat pane (an earlier script block) can refresh
+            // these fields after it saves the same settings.
+            window.applySettingsToUI = applySettingsToUI;
 
             async function settingsLoad() {
                 try {
@@ -19364,6 +19515,10 @@ function lpvFormatBytes(n) {
                     SETTINGS_STATE.current = j.settings || {};
                     SETTINGS_STATE.file = j.settings_file || null;
                     applySettingsToUI(SETTINGS_STATE.current);
+                    // Page pickers in the chat group need the archive list.
+                    if (typeof window.lpvChatSettingsPaintAll === 'function') {
+                        await window.lpvChatSettingsPaintAll(true);
+                    }
                 } catch (e) {
                     setStatus('Load failed: ' + e.message, 'err');
                 }
@@ -19377,6 +19532,10 @@ function lpvFormatBytes(n) {
                     lpv_default_page:            (document.getElementById('settings-lpv-default-page').value || '_default.html').trim(),
                     chat_enabled:                document.getElementById('settings-chat-enabled').checked,
                     chat_devices:                (document.getElementById('settings-chat-devices').value || 'both'),
+                    chat_mode:                   (document.getElementById('settings-chat-mode') || {}).value || 'chat',
+                    chat_redirect_kind:          (document.getElementById('settings-chat-kind') || {}).value || 'link',
+                    chat_redirect_url:           ((document.getElementById('settings-chat-url') || {}).value || '').trim(),
+                    chat_redirect_page_id:       (document.getElementById('settings-chat-page') || {}).value || '',
                     lpv_tab_title:               (document.getElementById('settings-lpv-tab-title').value || '').trim(),
                     lpv_favicon_url:             (document.getElementById('settings-lpv-favicon-url').value || '').trim(),
                 };
@@ -19394,6 +19553,10 @@ function lpvFormatBytes(n) {
                     const j = await r.json();
                     SETTINGS_STATE.current = j.settings || body;
                     applySettingsToUI(SETTINGS_STATE.current);
+                    // Keep the Chat pane's copy of these controls in step.
+                    if (typeof lpvChatSettingsLoad === 'function') {
+                        try { await lpvChatSettingsLoad(); } catch (e) { /* non-fatal */ }
+                    }
                     setStatus('Saved ✓', 'ok');
                     setTimeout(() => setStatus(''), 2000);
                 } catch (e) {
