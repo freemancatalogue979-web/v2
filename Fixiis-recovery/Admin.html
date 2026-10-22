@@ -15509,7 +15509,7 @@ function lpvFormatBytes(n) {
                         '  <div class="lpv-dev-label">Other devices get</div>' +
                         '  <select class="lpv-dev-select" id="lpv-device-variant"><option value="">— same page (no pairing) —</option></select>' +
                         '  <div class="lpv-bind-foot">' +
-                        '    <button class="lpv-btn" id="lpv-device-unpair">Unpair</button>' +
+                        '    <button class="lpv-btn" id="lpv-device-unpair" title="Clears the pairing — press Save to apply">Unpair</button>' +
                         '    <button class="lpv-btn primary" id="lpv-device-save">Save</button>' +
                         '  </div>' +
                         '  <div class="lpv-bind-hint">A workflow only needs to reference <b>one</b> of the two pages — the device decides which build is delivered. Example: a phone build paired with its desktop build, or just this page for everybody.</div>' +
@@ -15572,7 +15572,17 @@ function lpvFormatBytes(n) {
                         lpvDeviceRole = j.device || 'any';
                         lpvDeviceSegPaint();
                         sel.disabled = lpvDeviceRole === 'any';
-                        if (j.variant_page_id) sel.value = j.variant_page_id;
+                        if (j.variant_page_id) {
+                            // The search box may have filtered the paired page
+                            // out of the list — keep it selectable anyway.
+                            if (!Array.from(sel.options).some(o => o.value === j.variant_page_id)) {
+                                const opt = document.createElement('option');
+                                opt.value = j.variant_page_id;
+                                opt.textContent = (j.variant_page_name || j.variant_page_id) + '  (paired)';
+                                sel.appendChild(opt);
+                            }
+                            sel.value = j.variant_page_id;
+                        }
                     }
                 } catch (e) { /* offline: keep the cached values */ }
             }
