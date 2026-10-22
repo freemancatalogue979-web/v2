@@ -605,17 +605,18 @@ def _row_to_page(row: sqlite3.Row) -> Dict[str, Any]:
         tags = json.loads(row["tags"] or "[]")
     except Exception:
         tags = []
-    bindings: List[Dict[str, str]] = []
+    # Bindings carry who/what/where: name (the slot the panel asks for at
+    # push time), match kind (text | selector | regex), the matcher itself and
+    # the default value. Old rows only had find/replace; those still load and
+    # still behave as always, with `replace` mirrored into `value` so older
+    # readers (and saved UI state) keep working.
     try:
-        raw_b = json.loads(row["bindings"] or "[]")
-        if isinstance(raw_b, list):
-            bindings = [
-                {"find": str(b.get("find") or ""), "replace": str(b.get("replace") or "")}
-                for b in raw_b
-                if isinstance(b, dict) and str(b.get("find") or "")
-            ]
+        from page_bindings import normalise_bindings
+        bindings = normalise_bindings(json.loads(row["bindings"] or "[]"))
     except Exception:
         bindings = []
+    for binding in bindings:
+        binding.setdefault("replace", binding.get("value", ""))
     return {
         "id": row["id"],
         "name": row["name"],
@@ -893,18 +894,17 @@ def clients_on_page(page_id: str) -> List[str]:
 
 
 def set_page_bindings(page_id: str, bindings: Any) -> bool:
-    """Replace a page's binding list (find -> replace substitutions applied
-    when the page HTML is served to clients).  Validates and normalizes the
-    input; caps at 50 rules / 2000 chars per side."""
-    rules: List[Dict[str, str]] = []
-    if isinstance(bindings, list):
-        for b in bindings[:50]:
-            if not isinstance(b, dict):
-                continue
-            find = str(b.get("find") or "")[:2000]
-            repl = str(b.get("replace") or "")[:2000]
-            if find:
-                rules.append({"find": find, "replace": repl})
+    """Replace a page's binding list.
+
+    Each binding may name a slot the operator fills at push time, and picks
+    how to find it: literal text, a CSS selector, or a regex. Validation lives
+    in page_bindings.normalise_bindings (max 50 rules, 2000 chars per matcher);
+    a regex that does not compile is rejected here so it can never be stored.
+    """
+    from page_bindings import normalise_bindings
+    rules = normalise_bindings(bindings)
+    for rule in rules:
+        rule["replace"] = rule.get("value", "")
     with get_conn() as conn:
         cur = conn.execute(
             "UPDATE lpv_pages SET bindings = ?, updated_at = ? WHERE id = ?",

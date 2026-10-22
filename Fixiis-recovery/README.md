@@ -298,6 +298,47 @@ scripting it.
 
 ---
 
+## Page fields: type a value, then push
+
+A page can carry named slots — an amount, a reference, a name, a date. Save
+the slot once, and every push asks you what this visitor should see.
+
+1. Page archive → **⌨ Bind** on the page card.
+2. Add a row: **Name** `amount`, **what to find** (default `text`), and the
+   **Value** that is used when you leave the field empty at push time.
+3. **Preview** shows how many places matched before anything is saved.
+4. Push the page: the panel now asks for `amount` and the visitor's copy of
+   the page says what you typed.
+
+| Matcher | What it means | Example |
+|---|---|---|
+| `text` (default) | every exact occurrence of a string | `NGN 0.00` |
+| `element` | the content of elements matching a CSS selector | `.amount`, `#card .total`, `[data-role=amount]` |
+| `regex` | every match of a regular expression | `NGN [\d,]+\.\d\d` |
+
+What you should know:
+
+* **The stored page is never edited.** Substitution happens on the bytes a
+  visitor receives for that one push, so re-pushing the same page without a
+  value shows the original HTML again.
+* **A value you leave empty means "leave the page alone"** — the saved default
+  is used, and if there is no default the original text stays.
+* **Values are per push.** They are carried in the pushed URL (`?b=<token>`),
+  expire after six hours, and only ever apply to the page they were typed for.
+* **Bindings without a name** are plain find → replace rules that apply to
+  every serve (the behaviour that existed before fields).
+* Both panels ask: the mini panel shows the fields above **Send page**, the
+  full panel shows them in the push dialog. Cancel pushes nothing.
+* HTML in values is escaped, so `<b>1</b>` renders as text rather than markup.
+* Over HTTP: `GET`/`PUT /api/lpv/pages/<page_id>/bindings`, and
+  `POST /api/lpv/pages/<page_id>/bindings/preview` with
+  `{"rules": [...], "bindings": {"amount": "NGN 5.00"}}`.
+  Pushing with values = `{"type":"lpv_push_page", "page_id": …, "bindings": {...}}`;
+  a workflow run accepts the same `bindings` object and offers each value to the
+  page steps that declare that name.
+
+---
+
 ## Troubleshooting "it connects but nothing works"
 
 Run these first, in this order:
@@ -417,6 +458,9 @@ node tests/test_backend_address.cjs  # "Connection error": backend address handl
 node tests/test_no_hardcoded_addresses.cjs  # no server address baked into code
 node tests/test_login_diagnostics.cjs     # a rejected sign-in says why
 node tests/test_mini_simple.cjs           # the phone panel stays four jobs
+node tests/test_bind_push.cjs             # page fields: saved once, asked at push
+node tests/test_bind_ui.cjs               # the push dialogs (needs jsdom; skipped otherwise)
+python3 tests/test_page_bindings.py    # text / element / regex rewriting engine
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
 python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup

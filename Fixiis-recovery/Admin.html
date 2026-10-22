@@ -6610,6 +6610,25 @@
         .lpv-bind-del { background: rgba(255,255,255,0.07); border: 1px solid var(--border); color: rgba(255,255,255,0.75); border-radius: 8px; width: 32px; height: 32px; cursor: pointer; flex-shrink: 0; }
         .lpv-bind-del:hover { background: rgba(239,68,68,0.18); }
         .lpv-bind-foot { display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+        .lpv-bind-legend { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5; }
+        .lpv-bind-legend b { color: var(--text-secondary); }
+        .lpv-bind-row { align-items: flex-start; }
+        .lpv-bind-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+        .lpv-bind-matchline { display: flex; gap: 6px; }
+        .lpv-bind-matchline input { flex: 1; min-width: 0; }
+        .lpv-bind-match { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 8px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; flex-shrink: 0; }
+        .lpv-bind-prev { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg-input); font-size: 11px; color: var(--text-secondary); }
+        .lpv-bind-prev-head { font-weight: 700; color: var(--text, #fff); margin-bottom: 6px; }
+        .lpv-bind-prev-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-top: 1px dashed rgba(255,255,255,0.07); }
+        .lpv-bind-prev-row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .lpv-bind-prev-row.hit span:last-child { color: #46c98b; }
+        .lpv-bind-prev-row.miss span:last-child { color: #e0a33e; }
+        .lpv-bind-prev-tip { margin-top: 6px; color: var(--text-muted); font-size: 10px; }
+        .lpv-val-row { display: flex; flex-direction: column; gap: 5px; }
+        .lpv-val-row > span { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+        .lpv-val-row input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 13px; outline: none; }
+        .lpv-val-row input:focus { border-color: rgba(74,144,217,0.55); }
+        .lpv-vals-modal { width: min(420px, 92vw); }
         /* Device versions: one page, a phone build and a desktop build. */
         .lpv-dev-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); margin: 2px 0 6px; }
         .lpv-dev-seg { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -15682,17 +15701,27 @@ function lpvFormatBytes(n) {
                         '  <div class="lpv-bind-head"><div class="lpv-bind-title">🔗 Page Bindings</div>' +
                         '    <button class="lpv-btn" id="lpv-bind-close">✕</button></div>' +
                         '  <div class="lpv-bind-page" id="lpv-bind-page"></div>' +
+                        '  <div class="lpv-bind-legend">' +
+                        '    <span><b>Name</b> — the field the panel asks for when pushing (leave empty for a fixed rewrite)</span>' +
+                        '    <span><b>Find</b> — what to look for: text, a CSS selector, or a regex</span>' +
+                        '    <span><b>Value</b> — what to write when the field is left empty</span>' +
+                        '  </div>' +
                         '  <div class="lpv-bind-rows" id="lpv-bind-rows"></div>' +
                         '  <div class="lpv-bind-foot">' +
                         '    <button class="lpv-btn" id="lpv-bind-add">＋ Add binding</button>' +
+                        '    <button class="lpv-btn" id="lpv-bind-preview">Preview</button>' +
                         '    <button class="lpv-btn primary" id="lpv-bind-save">Save bindings</button>' +
                         '  </div>' +
-                        '  <div class="lpv-bind-hint">Every matching text in the page HTML is replaced when the page is SERVED to a client (the stored original is never modified). Example: find <b>me.com</b> → replace <b>you.com</b>. Bindings apply to all future pushes.</div>' +
+                        '  <div class="lpv-bind-prev" id="lpv-bind-prev" hidden></div>' +
+                        '  <div class="lpv-bind-hint">Rewriting happens when the page is SERVED to a client — the stored original is never modified. ' +
+                        'A named binding becomes a field in the push dialog: whatever the operator types there is what that visitor sees. ' +
+                        'Examples: selector <code>.amount</code>, text <code>me.com</code>, regex <code>\\$[0-9,]+\\.[0-9]{2}</code>.</div>' +
                         '</div>';
                     document.body.appendChild(ov);
                     ov.addEventListener('mousedown', (ev) => { if (ev.target === ov) lpvBindClose(); });
                     document.getElementById('lpv-bind-close').onclick = lpvBindClose;
-                    document.getElementById('lpv-bind-add').onclick = () => lpvBindAddRow('', '');
+                    document.getElementById('lpv-bind-add').onclick = () => lpvBindAddRow({});
+                    document.getElementById('lpv-bind-preview').onclick = lpvBindPreview;
                     document.getElementById('lpv-bind-save').onclick = lpvBindSave;
                 }
                 return ov;
@@ -15713,27 +15742,37 @@ function lpvFormatBytes(n) {
                     if (r.ok && Array.isArray(j.bindings)) bindings = j.bindings;
                 } catch (e) { /* fall back to cached */ bindings = (page && page.bindings) || []; }
                 rows.innerHTML = '';
-                if (!bindings.length) lpvBindAddRow('', '');
-                else bindings.forEach(b => lpvBindAddRow(b.find, b.replace));
+                if (!bindings.length) lpvBindAddRow({});
+                else bindings.forEach(b => lpvBindAddRow(b));
             }
 
-            function lpvBindAddRow(find, replace) {
+            // One saved binding = name (a push-time field), what to find
+            // (text / selector / regex), and the value to write. Text is the
+            // default because that is what an operator reaches for.
+            function lpvBindAddRow(b) {
+                b = b || {};
                 const rows = document.getElementById('lpv-bind-rows');
                 const empty = rows.querySelector('.lpv-bind-empty');
                 if (empty) empty.remove();
                 const row = document.createElement('div');
                 row.className = 'lpv-bind-row';
-                const f = document.createElement('input');
-                f.placeholder = 'Find (what the HTML has — e.g. me.com)';
-                f.value = find || '';
-                f.className = 'lpv-bind-find';
-                const arrow = document.createElement('span');
-                arrow.className = 'lpv-bind-arrow';
-                arrow.textContent = '→';
-                const r = document.createElement('input');
-                r.placeholder = 'Replace with (what the client sees — e.g. you.com)';
-                r.value = replace || '';
-                r.className = 'lpv-bind-repl';
+                row.innerHTML =
+                    '<div class="lpv-bind-fields">' +
+                    '  <input class="lpv-bind-name" placeholder="Name (optional — e.g. amount)" spellcheck="false">' +
+                    '  <div class="lpv-bind-matchline">' +
+                    '    <select class="lpv-bind-match">' +
+                    '      <option value="text">text</option>' +
+                    '      <option value="selector">element</option>' +
+                    '      <option value="regex">regex</option>' +
+                    '    </select>' +
+                    '    <input class="lpv-bind-find" placeholder="Find in the page — e.g. NGN 0.00" spellcheck="false">' +
+                    '  </div>' +
+                    '  <input class="lpv-bind-repl" placeholder="Value (default, or what the client sees)" spellcheck="false">' +
+                    '</div>';
+                row.querySelector('.lpv-bind-name').value = b.name || '';
+                row.querySelector('.lpv-bind-match').value = (b.match || 'text');
+                row.querySelector('.lpv-bind-find').value = b.find || '';
+                row.querySelector('.lpv-bind-repl').value = (b.value != null ? b.value : b.replace) || '';
                 const del = document.createElement('button');
                 del.className = 'lpv-bind-del';
                 del.textContent = '✕';
@@ -15742,8 +15781,67 @@ function lpvFormatBytes(n) {
                     if (!rows.querySelector('.lpv-bind-row'))
                         rows.innerHTML = '<div class="lpv-bind-empty">No bindings — page is served as-is</div>';
                 };
-                row.appendChild(f); row.appendChild(arrow); row.appendChild(r); row.appendChild(del);
+                row.appendChild(del);
                 rows.appendChild(row);
+            }
+
+            function lpvBindReadRows() {
+                const bindings = [];
+                for (const row of document.querySelectorAll('#lpv-bind-rows .lpv-bind-row')) {
+                    const find = row.querySelector('.lpv-bind-find').value;
+                    const name = row.querySelector('.lpv-bind-name').value.trim();
+                    const value = row.querySelector('.lpv-bind-repl').value;
+                    if (!find) continue;
+                    const one = {
+                        name: name,
+                        match: row.querySelector('.lpv-bind-match').value || 'text',
+                        find: find,
+                        value: value
+                    };
+                    bindings.push(one);
+                }
+                return bindings;
+            }
+
+            // Show the operator the page with these bindings applied, so a
+            // typo in a regex is caught before it reaches a client.
+            async function lpvBindPreview() {
+                if (!lpvBindPageId) return;
+                const out = document.getElementById('lpv-bind-prev');
+                out.hidden = false;
+                out.textContent = 'Rendering…';
+                try {
+                    const rowsNow = lpvBindReadRows();
+                    const values = {};
+                    rowsNow.forEach(b => { if (b.name && b.value) values[b.name] = b.value; });
+                    const resp = await serverFetch('/api/lpv/pages/' + lpvBindPageId + '/bindings/preview', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rules: rowsNow, bindings: values })
+                    });
+                    const j = await resp.json();
+                    if (!resp.ok) throw new Error(j.error || ('HTTP ' + resp.status));
+                    const rep = j.report || {};
+                    const hits = (rep.applied || []).length;
+                    const misses = (rep.skipped || []).length;
+                    out.innerHTML =
+                        '<div class="lpv-bind-prev-head">' + hits + ' matched · ' + misses + ' not applied · ' +
+                        (rep.total_replacements || 0) + ' replacement(s)</div>' +
+                        (rep.applied || []).map(r => '<div class="lpv-bind-prev-row hit">' +
+                            '<span>' + lpvEsc(r.name) + ' · ' + lpvEsc(r.match) + '</span>' +
+                            '<span>' + (r.count || 0) + ' replaced</span></div>').join('') +
+                        (rep.skipped || []).map(r => '<div class="lpv-bind-prev-row miss">' +
+                            '<span>' + lpvEsc(r.name) + '</span>' +
+                            '<span>' + lpvEsc(r.why || 'skipped') + '</span></div>').join('') +
+                        '<div class="lpv-bind-prev-tip">Preview uses the rows above, saved or not. Open the page to see it in full.</div>';
+                } catch (e) {
+                    out.textContent = 'Preview failed: ' + e.message;
+                }
+            }
+
+            function lpvEsc(v) {
+                return String(v == null ? '' : v)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             }
 
             function lpvBindClose() {
@@ -15754,13 +15852,7 @@ function lpvFormatBytes(n) {
 
             async function lpvBindSave() {
                 if (!lpvBindPageId) return;
-                const rows = Array.from(document.querySelectorAll('#lpv-bind-rows .lpv-bind-row'));
-                const bindings = [];
-                for (const row of rows) {
-                    const f = row.querySelector('.lpv-bind-find').value;
-                    const r = row.querySelector('.lpv-bind-repl').value;
-                    if (f) bindings.push({ find: f, replace: r });
-                }
+                const bindings = lpvBindReadRows();
                 try {
                     const resp = await serverFetch('/api/lpv/pages/' + lpvBindPageId + '/bindings', {
                         method: 'PUT',
@@ -16217,16 +16309,66 @@ function lpvFormatBytes(n) {
                 showToast('Live session ended → ' + cid.slice(-8), 'info');
             }
 
-            function lpvPushPage(pageId) {
+            // A page with named bindings cannot be pushed blind: the operator
+            // must say what this visitor should see. One field per name, saved
+            // default pre-filled; leaving it empty keeps the page's own value.
+            function lpvAskValues(page) {
+                const fields = (page.bindings || []).filter(b => b && b.name);
+                if (!fields.length) return Promise.resolve({});
+                return new Promise(resolve => {
+                    const ov = document.createElement('div');
+                    ov.className = 'lpv-bind-overlay open';
+                    ov.innerHTML =
+                        '<div class="lpv-bind-modal lpv-vals-modal">' +
+                        '  <div class="lpv-bind-head"><span class="lpv-bind-title">Send ' + escapeHtml(page.name) + '</span></div>' +
+                        '  <div class="lpv-bind-page">These values replace what the stored page says — the original is untouched.</div>' +
+                        '  <div class="lpv-bind-rows">' +
+                        fields.map(b =>
+                            '<label class="lpv-val-row">' +
+                            '  <span>' + escapeHtml(b.label || b.name) + '</span>' +
+                            '  <input class="lpv-val" data-name="' + escapeHtml(b.name) + '" value="' + escapeHtml(b.value || '') + '" ' +
+                            '         placeholder="' + escapeHtml(b.value || 'value') + '" spellcheck="false" autocomplete="off">' +
+                            '</label>').join('') +
+                        '  </div>' +
+                        '  <div class="lpv-bind-foot">' +
+                        '    <button class="lpv-btn" data-act="cancel">Cancel</button>' +
+                        '    <button class="lpv-btn primary" data-act="send">Send</button>' +
+                        '  </div>' +
+                        '</div>';
+                    const done = (values) => { ov.remove(); resolve(values); };
+                    ov.querySelector('[data-act="cancel"]').onclick = () => done(null);
+                    ov.querySelector('[data-act="send"]').onclick = () => {
+                        const out = {};
+                        ov.querySelectorAll('.lpv-val').forEach(inp => {
+                            const v = inp.value.trim();
+                            if (v) out[inp.dataset.name] = v;
+                        });
+                        done(out);
+                    };
+                    ov.addEventListener('keydown', e => {
+                        if (e.key === 'Enter') ov.querySelector('[data-act="send"]').click();
+                        if (e.key === 'Escape') done(null);
+                    });
+                    document.body.appendChild(ov);
+                    const first = ov.querySelector('.lpv-val');
+                    if (first) first.focus();
+                });
+            }
+
+            async function lpvPushPage(pageId) {
                 const cid = LPV_STATE.selectedClient;
                 if (!cid) { showToast('Select a client first', 'error'); return; }
                 if (!LPV_STATE.lpvClients.has(cid)) {
                     showToast('Start a live session for this visitor first', 'warning');
                     return;
                 }
-                if (!lpvSendWS({ type: 'lpv_push_page', client_id: cid, page_id: pageId })) return;
-                const page = LPV_STATE.archive.find(p => p.id === pageId);
-                showToast('Pushing ' + (page ? page.name : 'page') + '…', 'info', { duration: 1500 });
+                const page = LPV_STATE.archive.find(p => p.id === pageId) || { name: 'page' };
+                const values = await lpvAskValues(page);
+                if (values === null) return;                 // cancelled
+                const msg = { type: 'lpv_push_page', client_id: cid, page_id: pageId };
+                if (Object.keys(values).length) msg.bindings = values;
+                if (!lpvSendWS(msg)) return;
+                showToast('Pushing ' + page.name + '…', 'info', { duration: 1500 });
             }
 
             function lpvUpdateSessionPill() {

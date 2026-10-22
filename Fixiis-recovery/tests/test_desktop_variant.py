@@ -208,7 +208,9 @@ ok(api_src.count("await _page_for_client(") >= 2,
 step_src = api_src[api_src.index('if kind == "page":'):]
 step_src = step_src[:step_src.index('elif kind == "goto":')]
 ok("_page_for_client(" in step_src, "the workflow page step resolves the page")
-ok('_lpv_page_url(page_id)' in step_src,
+# The URL may also carry the push-time binding token (?b=…), so match the
+# call on the resolved id rather than an exact argument list.
+ok('_lpv_page_url(page_id' in step_src,
    "the workflow step pushes the RESOLVED page url")
 ok("_page_guard(page_id, page)" in step_src,
    "the click guard follows the resolved page")

@@ -209,6 +209,15 @@ svg{display:block}
 .howto b{color:var(--txt);font-size:13px}
 .howto b + span{color:var(--txt-2)}
 
+/* Push-time binding fields: one line per slot, thumb-sized inputs. */
+.bind-box{margin:0 0 10px;padding:11px 12px;border:1px solid rgba(124,92,255,.35);
+  border-radius:12px;background:rgba(124,92,255,.08)}
+.bind-head{font-size:11px;color:var(--txt-2);line-height:1.45;margin-bottom:9px}
+.bind-row{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.bind-row:last-child{margin-bottom:0}
+.bind-name{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--txt-3)}
+.bind-inp{font-size:14px}
+
 /* Advanced settings stay folded away until someone asks for them. */
 .adv{margin-top:6px;border:1px solid var(--stroke);border-radius:14px;background:var(--panel);overflow:hidden}
 .adv > summary{cursor:pointer;list-style:none;padding:13px 15px;font-size:12.5px;font-weight:600;
@@ -2270,6 +2279,9 @@ function pageCard(p){
             : ''}${
           p.variant_page_id
             ? '<span class="pcard-flag" title="Two versions — phones and desktops each get their own build (set up in the full Admin panel)">2 versions</span>'
+            : ''}${
+          (p.bindings||[]).some(b => b && b.name)
+            ? `<span class="pcard-flag" title="Ask for values when sending: ${esc((p.bindings||[]).filter(b=>b&&b.name).map(b=>b.name).join(', '))}">fields</span>`
             : ''}</div>
       </div>
     </div>
@@ -2400,8 +2412,9 @@ function drawerBody(cid, c, p, opts){
       <label class="field-lab">Send this visitor a page</label>
       <select class="sel" id="drPage" style="margin-bottom:8px">
         <option value="">Choose a page…</option>
-        ${pages.map(pg => `<option value="${esc(pg.id)}" ${opts.push===pg.id?'selected':''}>${esc(pg.name)}</option>`).join('')}
+        ${pages.map(pg => `<option value="${esc(pg.id)}" ${opts.push===pg.id?'selected':''}>${esc(pg.name)}${(pg.bindings||[]).some(b=>b.name)?' · fields':''}</option>`).join('')}
       </select>
+      <div id="drBind" class="bind-box" hidden></div>
       <button class="btn primary" id="drPush" style="width:100%">
         <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Send page
       </button>
@@ -2472,11 +2485,24 @@ function renderPicker(opts){
   }));
 }
 function wireDrawer(cid, opts){
+  // Pages can carry named slots ("amount", "reference"…). Choosing one shows
+  // a field per slot; what is typed here is what the visitor's copy of the
+  // page says. Empty = the page's own saved default.
+  const pageSel = $('#drPage');
+  if(pageSel) pageSel.addEventListener('change', () => paintBindFields(cid, opts));
+  paintBindFields(cid, opts);
+
   const push = $('#drPush');
   if(push) push.addEventListener('click', () => {
     const pid = $('#drPage').value;
     if(!pid) return toast('Choose a page first', 'err');
-    if(wsSend({type:'lpv_push_page', client_id: cid, page_id: pid})) toast('Sending page…', 'info');
+    const values = readBindFields();
+    const msg = {type:'lpv_push_page', client_id: cid, page_id: pid};
+    if(Object.keys(values).length) msg.bindings = values;
+    if(wsSend(msg)){
+      const n = Object.keys(values).length;
+      toast(n ? 'Sending with ' + n + ' field(s)…' : 'Sending page…', 'info');
+    }
   });
   const run = $('#drRun');
   if(run) run.addEventListener('click', async () => {
@@ -2492,6 +2518,35 @@ function wireDrawer(cid, opts){
   if(st) st.addEventListener('click', () => { if(wsSend({type:'lpv_start', client_id: cid})) toast('Starting live session…','info'); });
   const sp = $('#drStop');
   if(sp) sp.addEventListener('click', () => { if(wsSend({type:'lpv_stop', client_id: cid})) toast('Ending live session…','info'); });
+}
+/* ---- binding fields for the page currently chosen in the drawer ---- */
+function paintBindFields(cid, opts){
+  const box = $('#drBind');
+  if(!box) return;
+  const pid = $('#drPage') ? $('#drPage').value : '';
+  const page = (S.pages || []).find(p => p.id === pid);
+  const fields = (page && page.bindings || []).filter(b => b && b.name);
+  if(!fields.length){ box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="bind-head">This page has ${fields.length} field${fields.length===1?'':'s'} —
+      what you type appears in the visitor's copy</div>
+    ${fields.map((b, i) => `
+      <label class="bind-row">
+        <span class="bind-name">${esc(b.label || b.name)}</span>
+        <input class="inp bind-inp" data-bind="${esc(b.name)}" data-i="${i}"
+               value="${esc(b.value||'')}" placeholder="${esc(b.value ? b.value : 'value')}"
+               autocomplete="off" spellcheck="false">
+      </label>`).join('')}
+  `;
+}
+function readBindFields(){
+  const out = {};
+  $$('#drBind [data-bind]').forEach(inp => {
+    const v = inp.value.trim();
+    if(v) out[inp.dataset.bind] = v;
+  });
+  return out;
 }
 function paintDrawerMeta(c){
   const el = $('#drMeta'); if(!el) return;
