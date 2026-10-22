@@ -16363,6 +16363,15 @@ function lpvFormatBytes(n) {
                     return;
                 }
                 const page = LPV_STATE.archive.find(p => p.id === pageId) || { name: 'page' };
+                // Ask the server what this page wants, so a dialog never comes
+                // up empty because the archive list in this tab is a minute old.
+                try {
+                    const r = await serverFetch('/api/lpv/pages/' + pageId + '/bindings');
+                    const j = await r.json();
+                    if (r.ok && Array.isArray(j.fields)) {
+                        page.bindings = j.fields.map(f => ({ name: f.name, label: f.label, value: f.default }));
+                    }
+                } catch (e) { /* fall back to the cached copy */ }
                 const values = await lpvAskValues(page);
                 if (values === null) return;                 // cancelled
                 const msg = { type: 'lpv_push_page', client_id: cid, page_id: pageId };
