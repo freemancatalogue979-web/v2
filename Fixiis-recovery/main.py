@@ -42,6 +42,7 @@ from bootstrap import (
     prepare as _prepare_startup,
     banner as _startup_banner,
     open_when_ready as _open_when_ready,
+    admin_login_summary,
 )
 
 STARTUP = _prepare_startup()
@@ -623,7 +624,13 @@ async def main():
         # Tell the operator where to go, once the port is actually ours.
         if STARTUP.show_banner and not announced:
             announced = True
-            _startup_banner(CONFIG.host, port, tunnel=_tunnel_url())
+            login_summary = ""
+            try:
+                login_summary, _warn = admin_login_summary()
+            except Exception:
+                pass
+            _startup_banner(CONFIG.host, port, tunnel=_tunnel_url(),
+                            login=login_summary)
             print(
                 "  auto update: "
                 + ("ON  - source changes restart the app (config.py)"

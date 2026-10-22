@@ -162,6 +162,8 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Rate limiter configuration
 # Rate limiter configuration
+from slowapi.errors import RateLimitExceeded
+
 limiter = Limiter(key_func=get_remote_address)
 
 # Try to import psutil for server info
@@ -675,6 +677,30 @@ async def lifespan(app: FastAPI):
     # Load sessions from storage on startup
     asyncio.create_task(load_server_sessions())
 
+    # Say out loud what the admin login will accept. A broken hash is the
+    # one failure the operator cannot diagnose from the panel: every
+    # password is rejected, and it looks exactly like forgetting it.
+    try:
+        problem = _hash_problem()
+        source = _password_hash_source()
+        if problem:
+            logger.error(
+                "[Auth] ADMIN_PASSWORD_HASH from %s is unusable (%s) - no "
+                "password can log in. Fix on this machine: "
+                "python main.py --set-password",
+                source, problem,
+            )
+        elif source == 'built-in default':
+            logger.warning(
+                "[Auth] using the built-in admin login: user 'admin', "
+                "password 'admin' (a fresh checkout default). Change it with: "
+                "python main.py --set-password"
+            )
+        else:
+            logger.info("[Auth] admin user '%s', password set in %s", ADMIN_USERNAME, source)
+    except Exception:
+        pass
+
     # CDP screencast watchdog — restarts admin screencast when page changes (new tab)
     async def _screencast_watchdog():
         while True:
@@ -726,6 +752,46 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(title="Neo Browser Stream", version="2.0.0", lifespan=lifespan)
 app.state.limiter = limiter
+
+
+def client_host(request: Request) -> str:
+    """Who is asking, honouring one reverse-proxy hop (nginx, tunnel)."""
+    try:
+        forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+    except Exception:
+        pass
+    try:
+        return request.client.host or "unknown"
+    except Exception:
+        return "unknown"
+
+
+# Consecutive rejected logins per address. Not a security control (the
+# limiter below is); it decides when the panel starts offering the reset
+# command instead of repeating "Invalid credentials".
+_LOGIN_FAILURES: Dict[str, int] = {}
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Answer the limit as JSON.
+
+    slowapi's default is a plain-text 429; the panels parse JSON, so a
+    throttled login surfaced as "Invalid credentials" - the operator
+    retried a *correct* password and stayed locked out.
+    """
+    return JSONResponse(
+        {
+            "success": False,
+            "reason": "rate_limited",
+            "message": "Too many attempts - wait a minute and try again",
+            "hint": "The server is reachable; it is only refusing rapid retries.",
+        },
+        status_code=429,
+        headers={"Retry-After": "60"},
+    )
 
 
 # Simple SVG favicon to avoid 404 errors
@@ -4237,11 +4303,39 @@ async def send_telegram_admin_message(request: Request):
 # Admin Authentication
 # ==============================
 
-ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
+ADMIN_USERNAME = (os.environ.get('ADMIN_USERNAME') or 'admin').strip()
 # Same reasoning: `ADMIN_PASSWORD_HASH=` (blank) in .env must fall back to
 # the built-in hash instead of locking the operator out of the panel.
+#
+# That built-in hash is bcrypt("admin"). It is a convenience for a fresh
+# checkout on a private network, not a secret - `python main.py --check`
+# says so out loud, and `--set-password` replaces it.
 DEFAULT_ADMIN_PASSWORD_HASH = '$2b$12$K9Xm2pQ4rT7vN8wL3jH6e.nSuc39Ma1gWXoznLSkhTeaL9F1CfDne'
-ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH') or DEFAULT_ADMIN_PASSWORD_HASH
+ADMIN_PASSWORD_HASH = (os.environ.get('ADMIN_PASSWORD_HASH') or DEFAULT_ADMIN_PASSWORD_HASH).strip()
+
+
+def _password_hash_source() -> str:
+    """Where the admin hash came from, for the log and the login hint."""
+    if (os.environ.get('ADMIN_PASSWORD_HASH') or '').strip():
+        return 'environment/.env'
+    return 'built-in default'
+
+
+def _hash_problem() -> str:
+    """Why the configured hash cannot be used, or '' when it is usable.
+
+    A malformed hash used to fail silently: every login answered "Invalid
+    credentials" and the only trace was one error line, so the operator
+    retyped a correct password forever. Name it at startup instead.
+    """
+    value = ADMIN_PASSWORD_HASH
+    if value.startswith(('$2a$', '$2b$', '$2y$')):
+        if len(value) == 60:
+            return ''
+        return f'bcrypt hash has {len(value)} characters, expected 60'
+    if len(value) == 32 and all(c in '0123456789abcdefABCDEF' for c in value):
+        return ''  # legacy MD5, supported
+    return 'not a bcrypt hash ($2...) or an MD5 digest'
 
 
 async def verify_recaptcha(token: str) -> bool:
@@ -4316,17 +4410,23 @@ async def login(request: Request):
         # Verify password with bcrypt
         # Support both bcrypt hashes (new) and legacy MD5 (for migration)
         password_valid = False
-        
+        hash_error = ''
         stored_hash = ADMIN_PASSWORD_HASH.encode()
-        
+
         # Check if it's a bcrypt hash (starts with $2a$, $2b$, or $2y$)
         if stored_hash.startswith(b'$2'):
             try:
                 password_valid = bcrypt.checkpw(password.encode(), stored_hash)
             except Exception as e:
                 # A malformed hash is a configuration mistake, not a crash:
-                # answer 401 so the panel shows "Invalid credentials".
-                logger.error(f"[Auth] ADMIN_PASSWORD_HASH is not a valid bcrypt hash: {e}")
+                # answer 401, but say WHY in the log and in the response so
+                # the operator stops retyping a correct password.
+                hash_error = str(e)
+                logger.error(
+                    "[Auth] the admin password hash (%s) cannot be used: %s "
+                    "- reset it with: python main.py --set-password",
+                    _password_hash_source(), e,
+                )
                 password_valid = False
         else:
             # Legacy MD5 support (deprecated - migrate to bcrypt)
@@ -4334,21 +4434,59 @@ async def login(request: Request):
             password_valid = (legacy_hash == ADMIN_PASSWORD_HASH)
             if password_valid:
                 logger.warning(f"Login with legacy MD5 hash - recommend regenerating ADMIN_PASSWORD_HASH with bcrypt")
-        
+
         if username == ADMIN_USERNAME and password_valid:
             access_token = create_access_token(data={"sub": username})
-            logger.debug(f"Successful login for user: {username}")
+            _LOGIN_FAILURES.pop(client_host(request), None)
+            logger.info("[Auth] login ok for user %s", username)
             return JSONResponse({
                 "success": True,
                 "token": access_token,
                 "message": "Login successful"
             })
+
+        # One clear line per rejected attempt, naming the actual cause: the
+        # log used to say "Failed login attempt" for a wrong username, a
+        # wrong password and a broken hash alike.
+        host = client_host(request)
+        failures = _LOGIN_FAILURES.get(host, 0) + 1
+        _LOGIN_FAILURES[host] = failures
+        if username != ADMIN_USERNAME:
+            reason, message = 'unknown_user', 'Unknown user'
+            logger.warning(
+                "[Auth] login rejected: no user named %r (the account is %r)",
+                username, ADMIN_USERNAME,
+            )
+        elif hash_error:
+            reason = 'hash_unusable'
+            message = 'The server\'s admin password is misconfigured'
+            logger.warning(
+                "[Auth] login rejected for %r: the stored password hash (%s) "
+                "is unusable, so no password can match. Reset it with: "
+                "python main.py --set-password",
+                username, _password_hash_source(),
+            )
         else:
-            logger.warning(f"Failed login attempt for user: {username}")
-            return JSONResponse({
-                "success": False,
-                "message": "Invalid credentials"
-            }, status_code=401)
+            reason, message = 'bad_password', 'Wrong password'
+            logger.warning(
+                "[Auth] login rejected for %r: wrong password (%d failed "
+                "attempt(s) from %s). If it is forgotten, reset it on the "
+                "server with: python main.py --set-password",
+                username, failures, host,
+            )
+
+        hint = ''
+        if reason in ('bad_password', 'hash_unusable') and failures >= 2:
+            hint = ('On the server, run: python main.py --set-password '
+                    '(then restart the app). The panel is reaching the '
+                    'server fine - this is only the password.')
+        return JSONResponse({
+            "success": False,
+            "reason": reason,
+            "message": f"{message} for '{username}'" if reason == 'bad_password' else message,
+            "hint": hint,
+            "attempts": failures,
+        }, status_code=401)
     except Exception as e:
         logger.error(f"Login error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -9121,14 +9259,30 @@ async def admin_websocket_endpoint(websocket: WebSocket):
         
         # Surface the server's recent warnings straight away: the operator
         # should not have to go looking to learn that a feature is failing.
+        #
+        # Admin-only: this socket is opened by the login screen too (it is
+        # the "Connected to server" indicator), and the first thing it used
+        # to leak was "Failed login attempt for user: admin" - server
+        # internals shown to whoever loaded the panel, signed in or not.
+        # The panels pass ?token=<jwt>; without a valid one they simply do
+        # not get the warnings frame.
         try:
-            recent = list(_RECENT_LOG)[-5:] if _RECENT_LOG else []
-            if recent:
-                await websocket.send_json({
-                    "type": "server_warnings",
-                    "count": len(_RECENT_LOG),
-                    "recent": recent,
-                })
+            token = websocket.query_params.get("token", "")
+            authorised = False
+            if token:
+                try:
+                    payload = verify_jwt_token(token)
+                    authorised = bool(payload and payload.get("sub") == ADMIN_USERNAME)
+                except Exception:
+                    authorised = False
+            if authorised:
+                recent = list(_RECENT_LOG)[-5:] if _RECENT_LOG else []
+                if recent:
+                    await websocket.send_json({
+                        "type": "server_warnings",
+                        "count": len(_RECENT_LOG),
+                        "recent": recent,
+                    })
         except Exception:
             pass
 

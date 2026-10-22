@@ -41,6 +41,20 @@ That installs Chrome, Python deps, Playwright browsers, systemd, nginx and a
 Let's Encrypt certificate. It prints a generated admin password **once** and
 saves it to `/root/fixiis-credentials.txt`.
 
+**Lost that password?** The panel will say *Wrong password for 'admin'* (not
+"Connection error" — those are different messages now). Reset it on the server
+and restart:
+
+```bash
+cat /root/fixiis-credentials.txt        # if you still have it
+cd /opt/fixiis && sudo -u fixiis venv/bin/python main.py --set-password
+sudo systemctl restart fixiis
+```
+
+`--set-password` asks for the new one, writes a bcrypt hash into `.env` and
+prints it once. `venv/bin/python main.py --check` prints which user exists and
+whether the stored hash is usable at all.
+
 Prerequisite: `panel.example.com` must already resolve to the server's IP, or
 the certificate step fails.
 

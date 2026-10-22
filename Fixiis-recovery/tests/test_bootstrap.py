@@ -607,6 +607,62 @@ class Banner(unittest.TestCase):
         self.assertIn("https://x.trycloudflare.com", out.getvalue())
 
 
+class AdminLoginSummary(unittest.TestCase):
+    """A locked-out operator must be able to see what the login accepts."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self._saved = {k: os.environ.pop(k, None)
+                       for k in ("ADMIN_PASSWORD_HASH", "ADMIN_USERNAME", "FIXIIS_IGNORE_ENV")}
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.tmp.cleanup()
+
+    def test_hash_validity(self):
+        good = "$2b$12$K9Xm2pQ4rT7vN8wL3jH6e.nSuc39Ma1gWXoznLSkhTeaL9F1CfDne"
+        self.assertTrue(bootstrap.is_usable_password_hash(good))
+        self.assertTrue(bootstrap.is_usable_password_hash("a" * 32))      # legacy MD5
+        self.assertFalse(bootstrap.is_usable_password_hash(""))
+        self.assertFalse(bootstrap.is_usable_password_hash("admin"))      # plain text
+        self.assertFalse(bootstrap.is_usable_password_hash("$2b$12$short"))
+        self.assertFalse(bootstrap.is_usable_password_hash("$2b$12$" + "x" * 80))
+
+    def test_no_env_means_the_built_in_default(self):
+        text, warn = bootstrap.admin_login_summary(self.root)
+        self.assertIn("default password: admin", text)
+        self.assertIn("--set-password", text)
+        self.assertTrue(warn, "using the shipped default is worth a warning")
+
+    def test_a_good_hash_is_reported_as_set(self):
+        (self.root / ".env").write_text(
+            "ADMIN_PASSWORD_HASH=" + "$2b$12$K9Xm2pQ4rT7vN8wL3jH6e.nSuc39Ma1gWXoznLSkhTeaL9F1CfDne" + "\n",
+            encoding="utf-8")
+        text, warn = bootstrap.admin_login_summary(self.root)
+        self.assertIn("password set in .env", text)
+        self.assertIn("--set-password", text, "a forgotten password needs a way out")
+        self.assertFalse(warn)
+
+    def test_an_unusable_hash_says_no_password_can_work(self):
+        (self.root / ".env").write_text("ADMIN_PASSWORD_HASH=admin\n", encoding="utf-8")
+        text, warn = bootstrap.admin_login_summary(self.root)
+        self.assertIn("unusable", text)
+        self.assertTrue(warn)
+
+    def test_banner_prints_the_login_line(self):
+        out = io.StringIO()
+        bootstrap.banner("0.0.0.0", 8446, stream=out, machine_ip="198.51.100.10",
+                         login="user 'admin' - default password: admin")
+        self.assertIn("login", out.getvalue())
+        self.assertIn("default password: admin", out.getvalue())
+
+
 class OptionalPackagesDoNotBlockStartup(unittest.TestCase):
     def test_only_critical_missing_packages_stop_the_boot(self):
         saved = {k: os.environ.get(k) for k in

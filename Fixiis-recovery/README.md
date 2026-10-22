@@ -314,11 +314,30 @@ python main.py --fix-env          # repair placeholder/blank .env values
 | Workflows never move, Telegram stays silent, no clients appear | usually the same cause as above: the panel is not connected, so no client is registered and nothing is pushed | fix `Server:`, then re-push |
 | Telegram notifications stop | server cannot reach `api.telegram.org`, or the saved Admin config has no token/chat id | **Logs tab → Server log** shows the exact error (`Request error: TLS/SSL...`, `401 Unauthorized`, `chat not found`); `config.py` values are used until an Admin save overrides them |
 | Panel opens, LPV push fails with *Failed to fetch* | `SERVER_DOMAIN` set to a domain that does not resolve here | `python main.py --fix-env`, restart |
-| Login always says *Invalid credentials* | `ADMIN_PASSWORD_HASH=` blank or malformed | `python main.py --set-password` |
+| Login says *Invalid credentials* / *Wrong password for 'admin'* | the password is not the one the server has — `deploy/setup.sh` writes a **random** one and prints it only once (`/root/fixiis-credentials.txt`); a blank or malformed hash also rejects every password | `python main.py --set-password` on the server, then restart. The panel now says *which* it is, and after two rejections it offers this command. `python main.py --check` prints the user and where the password lives |
+| Login says *Too many attempts* | 5 sign-ins a minute per address | wait a minute; the server was reachable all along |
 | Works on the server, refused from phone/laptop | bound to `127.0.0.1`, or firewall | `python main.py --network`, then open the firewall port |
 | Port/bind address is not what `config.py` says | a `.env` overrides it | `python main.py --check` shows the source; `--ignore-env` to bypass |
 | Everything disconnects over and over | the app is restarting repeatedly | `./deploy/doctor.sh`; set `auto_update = False` in `config.py`, restart once |
 | `/health` answers but the UI is stale | a deploy landed while a session was live | reconnect; restarts drop live sessions by design |
+
+### If you cannot log in
+
+`Invalid credentials` is never a connection problem — a connection problem says
+*Connection error* or *Cannot reach …*. It means the server did not accept the
+password, and there are only three ways that happens. The panel tells them
+apart now:
+
+| Panel says | Meaning | What to run on the server |
+|---|---|---|
+| *Wrong password for 'admin'* | the account exists, the password is not the stored one (the usual case: `setup.sh` generated a random one) | `python main.py --set-password` |
+| *Unknown user* | the username is not `admin` (or `ADMIN_USERNAME` was changed) | `python main.py --check` shows the real user |
+| *The server's admin password is misconfigured* | the stored hash is unusable, so **no** password can work | `python main.py --set-password` |
+
+`python main.py --set-password` asks for a new password (Enter = generate one),
+stores a bcrypt hash in `.env`, and prints it once. Restart afterwards:
+`python main.py`. With no `.env` at all the built-in login is `admin` / `admin`,
+which `--check` and the startup banner both state out loud.
 
 ### Where the reason is written down
 
@@ -385,6 +404,7 @@ node tests/test_page_guard.cjs       # per-page click guard (interaction allowli
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
 node tests/test_backend_address.cjs  # "Connection error": backend address handling
 node tests/test_no_hardcoded_addresses.cjs  # no server address baked into code
+node tests/test_login_diagnostics.cjs     # a rejected sign-in says why
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
 python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup
@@ -408,8 +428,28 @@ curl -fsS -X POST http://127.0.0.1:8446/api/auth/login \
   -d '{"username":"admin","password":"admin"}'
 ```
 
-Expect `{"success": true, "token": "..."}`. A `401` means the password
-hash drifted from the default — re-bake it with bcrypt.
+Expect `{"success": true, "token": "..."}`.
+
+A `401` is not a connection problem, and the body now says which one it is:
+
+```json
+{"success": false, "reason": "bad_password",
+ "message": "Wrong password for 'admin'", "hint": "", "attempts": 1}
+```
+
+`reason` is `bad_password`, `unknown_user` or `hash_unusable`; from the second
+rejection `hint` carries the fix (`python main.py --set-password`). A `429`
+means five sign-ins a minute were used up. See
+[If you cannot log in](#if-you-cannot-log-in).
+
+### A password must not travel in the clear
+
+`http://<public-ip>:8446/admin` puts the admin password, the JWT and every
+captured page on the wire unencrypted. On a LAN that is a choice; over the
+internet it is not. Put TLS in front of the app (nginx —
+`deploy/nginx.conf` — a Cloudflare tunnel, or `use_https = True` behind a proxy
+that terminates TLS) and open the panel over `https://`. The panel follows the
+page scheme for its backend address, so it keeps working after the switch.
 
 ### 4. End-to-end (manual)
 

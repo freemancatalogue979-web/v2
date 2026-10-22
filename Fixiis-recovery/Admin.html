@@ -409,6 +409,21 @@
             display: block;
         }
 
+        /* Second line under a rejected sign-in: what to DO about it.
+           Wraps on a phone instead of pushing the form sideways. */
+        .login-hint {
+            display: none;
+            color: var(--text-secondary, #9aa0a6);
+            font-size: 12px;
+            line-height: 1.45;
+            text-align: center;
+            margin-top: 8px;
+            padding: 0 12px;
+            max-width: 100%;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
         
         .header {
             grid-column: 1 / -1;
@@ -10030,18 +10045,36 @@
                 const username = document.getElementById('username')?.value || '';
                 const password = document.getElementById('password')?.value || '';
                 const loginErrorEl = document.getElementById('loginError');
+                const submitBtn = loginForm.querySelector('button[type="submit"], .login-btn');
 
-                // Optimistic local unlock so the UI feels snappy even
-                // when the server is slow.  We'll still hit /api/auth/login
-                // in the background; if it fails we revert the local flag
-                // and re-show the overlay.  serverFetch will start
-                // attaching the bearer as soon as the token lands.
-                localStorage.setItem('admin_auth', 'authenticated');
-                isLoggedIn = true;
-                if (loginOverlay) loginOverlay.classList.add('hidden');
-                document.body.classList.add('authenticated');
-                connect();
-                showToast('Welcome back!', 'success');
+                // Ask the server FIRST. This used to unlock the whole panel
+                // optimistically, connect and say "Welcome back!", then
+                // throw the operator back to the login screen on a 401 -
+                // which reads like the panel is broken rather than the
+                // password being wrong.
+                function fail(message, hint) {
+                    localStorage.removeItem('admin_auth');
+                    localStorage.removeItem('admin_jwt');
+                    isLoggedIn = false;
+                    if (loginOverlay) loginOverlay.classList.remove('hidden');
+                    document.body.classList.remove('authenticated');
+                    if (ws) { try { ws.close(); } catch (_) {} }
+                    if (loginErrorEl) {
+                        loginErrorEl.textContent = message;
+                        loginErrorEl.classList.add('visible');
+                        let hintEl = document.getElementById('loginHint');
+                        if (!hintEl) {
+                            hintEl = document.createElement('div');
+                            hintEl.id = 'loginHint';
+                            hintEl.className = 'login-hint';
+                            loginErrorEl.insertAdjacentElement('afterend', hintEl);
+                        }
+                        hintEl.textContent = hint || '';
+                        hintEl.style.display = hint ? 'block' : 'none';
+                    }
+                }
+
+                if (submitBtn) { submitBtn.disabled = true; submitBtn.dataset.label = submitBtn.textContent; submitBtn.textContent = 'Signing in...'; }
 
                 try {
                     const r = await fetch(SERVER_API_BASE + normalizeServerPath('/api/auth/login'), {
@@ -10056,28 +10089,47 @@
                         body: JSON.stringify({ username, password, recaptcha_token: '' }),
                     });
                     const data = await r.json().catch(() => ({}));
+
                     if (r.ok && data && data.token) {
                         localStorage.setItem('admin_jwt', data.token);
+                        localStorage.setItem('admin_auth', 'authenticated');
+                        isLoggedIn = true;
+                        if (loginErrorEl) loginErrorEl.classList.remove('visible');
+                        const hintEl = document.getElementById('loginHint');
+                        if (hintEl) hintEl.style.display = 'none';
+                        if (loginOverlay) loginOverlay.classList.add('hidden');
+                        document.body.classList.add('authenticated');
+                        connect();      // now with the bearer attached
+                        showToast('Welcome back!', 'success');
                     } else if (r.status === 401) {
-                        // Server-side auth actually failed.  Roll the
-                        // optimistic unlock back and surface the error.
-                        localStorage.removeItem('admin_auth');
-                        localStorage.removeItem('admin_jwt');
-                        isLoggedIn = false;
-                        if (loginOverlay) loginOverlay.classList.remove('hidden');
-                        document.body.classList.remove('authenticated');
-                        if (ws) { try { ws.close(); } catch (_) {} }
-                        if (loginErrorEl) {
-                            loginErrorEl.textContent = (data && (data.message || data.error)) || 'Invalid credentials. Please try again.';
-                            loginErrorEl.classList.add('visible');
-                        }
+                        fail(
+                            (data && (data.message || data.error)) || 'Invalid credentials. Please try again.',
+                            (data && data.hint) || ''
+                        );
+                    } else if (r.status === 429) {
+                        fail(
+                            (data && data.message) || 'Too many attempts. Wait a minute and try again.',
+                            (data && data.hint) || 'The server is reachable - it is only refusing rapid retries.'
+                        );
+                    } else {
+                        fail(
+                            'Server answered ' + r.status + ' to the sign-in request',
+                            (data && (data.hint || data.message)) || 'Check the server log (Logs -> Server log).'
+                        );
                     }
                 } catch (err) {
-                    // Network error — keep the optimistic unlock so the
-                    // operator can still poke around offline-ish, but
-                    // flag the missing token so the next guarded request
-                    // can decide what to do.
+                    // A real connection problem - say which address failed,
+                    // the same way the socket does.
                     console.warn('[auth] login request failed:', err);
+                    fail(
+                        'Cannot reach the server at ' + serverHost(SERVER_ACTIVE),
+                        'Check Server: below (empty = this page\'s own address) and that the app is running.'
+                    );
+                } finally {
+                    if (submitBtn) {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = submitBtn.dataset.label || 'Sign In';
+                    }
                 }
             });
         }
@@ -10780,8 +10832,15 @@
         }
 
         function connect() {
-            const wsUrl = serverWebSocketUrl('/admin');
-            
+            // The server only streams its recent warnings to an
+            // authenticated socket; the socket itself stays open so the
+            // login screen can still show "Connected to server".
+            let wsUrl = serverWebSocketUrl('/admin');
+            try {
+                const jwt = localStorage.getItem('admin_jwt');
+                if (jwt) wsUrl += '?token=' + encodeURIComponent(jwt);
+            } catch (e) { /* storage blocked: warnings just stay hidden */ }
+
             try {
                 ws = new WebSocket(wsUrl);
                 ws.binaryType = 'arraybuffer';
@@ -10844,6 +10903,7 @@
                             // The server had warnings (Telegram, workflows,
                             // connections) — say so once instead of leaving
                             // the operator to guess why something is silent.
+                            if (!isLoggedIn) return;   // never pre-login
                             const n = message.count || (message.recent || []).length;
                             const first = (message.recent || [])[0] || {};
                             showToast('Server reported ' + n + ' warning(s) — ' + (first.message || 'see Logs → Server log'), 'warning');

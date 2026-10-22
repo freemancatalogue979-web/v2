@@ -150,6 +150,8 @@ svg{display:block}
 @keyframes spin{to{transform:rotate(360deg)}}
 .login-error{color:var(--red);font-size:12.5px;text-align:center;margin-top:16px;display:none}
 .login-error.visible{display:block;animation:shake .4s}
+/* what to do about a rejected sign-in; wraps on a phone */
+.login-hint{color:var(--muted,#9aa0a6);font-size:11.5px;line-height:1.45;margin-top:8px;overflow-wrap:anywhere}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
 .login-foot{margin-top:22px;text-align:center;font-size:11px;color:var(--txt-3);letter-spacing:.02em}
 
@@ -1336,11 +1338,25 @@ async function doLogin(u, p){
       boot();
       toast('Welcome back', 'ok');
     } else {
-      err.textContent = j.message || 'Invalid credentials. Please try again.';
+      // Say which failure it is and what to do about it. "Invalid
+      // credentials" alone sent people looking for a connection problem.
+      err.innerHTML = '';
+      const line = document.createElement('div');
+      line.textContent = j.message || 'Invalid credentials. Please try again.';
+      err.appendChild(line);
+      if(j.hint){
+        const hint = document.createElement('div');
+        hint.className = 'login-hint';
+        hint.textContent = j.hint;
+        err.appendChild(hint);
+      }
+      if(r.status === 429 && !j.message){
+        line.textContent = 'Too many attempts - wait a minute and try again.';
+      }
       err.classList.add('visible');
     }
   } catch(e){
-    err.textContent = 'Cannot reach the server.';
+    err.textContent = 'Cannot reach ' + (SERVER_URL ? SERVER_URL.host : 'the server') + ' - check the backend address.';
     err.classList.add('visible');
   } finally {
     btn.classList.remove('busy'); btn.disabled = false;
@@ -1434,10 +1450,15 @@ function setWsStatus(state){
   txt.textContent = state==='on' ? 'Live' : state==='warn' ? 'Reconnecting…' : 'Offline';
   S.wsUp = state==='on';
 }
+function withToken(path){
+  // The server only sends its recent warnings to an authenticated socket.
+  const t = S.token || localStorage.getItem('mini_admin_token') || '';
+  return t ? path + (path.indexOf('?') === -1 ? '?' : '&') + 'token=' + encodeURIComponent(t) : path;
+}
 function connectAdmin(){
   if(S.ws && (S.ws.readyState === 0 || S.ws.readyState === 1)) return;
   let ws;
-  try { ws = new WebSocket(wsUrl('/admin')); }
+  try { ws = new WebSocket(withToken(wsUrl('/admin'))); }
   catch(e){ setWsStatus('off'); setTimeout(connectAdmin, 3000); return; }
   S.ws = ws;
   ws.onopen = () => {
@@ -1470,7 +1491,7 @@ function closeSocket(){
 }
 function connectManager(){
   let ws;
-  try { ws = new WebSocket(wsUrl('/ws/manager')); }
+  try { ws = new WebSocket(withToken(wsUrl('/ws/manager'))); }
   catch(e){ return; }
   S.mgr = ws;
   ws.onmessage = ev => {

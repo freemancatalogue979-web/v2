@@ -677,6 +677,21 @@ def port_free(port: int, host: str = "") -> bool:
     return True
 
 
+def is_usable_password_hash(value: str) -> bool:
+    """True when ``value`` is a bcrypt hash (or a legacy MD5 digest).
+
+    Anything else - a placeholder, a truncated paste, a quoted value, a
+    plain-text password typed by mistake - makes every login fail, and the
+    panel can then only answer "Invalid credentials".
+    """
+    value = (value or "").strip()
+    if value.startswith(("$2a$", "$2b$", "$2y$")):
+        return len(value) == 60
+    if len(value) == 32 and all(c in "0123456789abcdefABCDEF" for c in value):
+        return True
+    return False
+
+
 def env_file_values(root: Path = ROOT) -> Dict[str, str]:
     """KEY=VALUE pairs from .env, without touching the process environment.
 
@@ -928,23 +943,35 @@ def diagnose(
         else:
             line("SERVER_DOMAIN", "unset (URLs use the address you connect to)")
 
-        password_hash = values.get("ADMIN_PASSWORD_HASH", "")
-        if password_hash:
-            line("admin password", "custom hash set in .env")
-        else:
-            line(
-                "admin password",
-                "built-in default (user 'admin')",
-                warn=True,
-                hint="anyone who knows the default can log in. Fix: python main.py --fix-env",
-            )
-
         jwt_value = values.get("JWT_SECRET_KEY", "")
         line(
             "JWT secret",
             "set" if jwt_value else "not set (random one generated on next start)",
             warn=not jwt_value,
             hint="" if jwt_value else "python main.py --fix-env",
+        )
+
+    # The login, stated plainly: which user, where the password comes from,
+    # and the one command that changes it. "Invalid credentials" with no
+    # explanation is the most common lockout there is.
+    hash_value = "" if env_is_ignored() else values.get("ADMIN_PASSWORD_HASH", "")
+    hash_value = (hash_value or os.environ.get("ADMIN_PASSWORD_HASH", "")).strip()
+    admin_user = (os.environ.get("ADMIN_USERNAME") or "admin").strip()
+    if not hash_value:
+        line(
+            "admin login",
+            f"user '{admin_user}' - built-in default password: admin",
+            warn=True,
+            hint="change it: python main.py --set-password",
+        )
+    elif is_usable_password_hash(hash_value):
+        line("admin login", f"user '{admin_user}' - password set in .env")
+    else:
+        line(
+            "admin login",
+            f"user '{admin_user}' - the stored hash is unusable, so NO password works",
+            warn=True,
+            hint="fix it: python main.py --set-password",
         )
 
     # --check never modifies anything, so no repair pass here.
@@ -1057,12 +1084,37 @@ def diagnose(
 # --------------------------------------------------------------------------
 # startup banner
 # --------------------------------------------------------------------------
+def admin_login_summary(root: Path = ROOT) -> Tuple[str, bool]:
+    """What the admin login accepts, and whether that is worth a warning.
+
+    * no hash anywhere -> the built-in default ('admin'), warn: change it
+    * a hash in .env   -> custom password, but say where it is, because the
+                          only copy of the password is in the operator's
+                          notes (/root/fixiis-credentials.txt from setup.sh)
+    * unusable hash    -> warn loudly: no password can ever work
+    """
+    values = {} if env_is_ignored() else env_file_values(root)
+    value = (values.get("ADMIN_PASSWORD_HASH") or
+             os.environ.get("ADMIN_PASSWORD_HASH", "")).strip()
+    user = (os.environ.get("ADMIN_USERNAME") or "admin").strip()
+    if not value:
+        return (f"user '{user}' - default password: admin  "
+                f"(change: python main.py --set-password)", True)
+    if not is_usable_password_hash(value):
+        return (f"user '{user}' - stored hash is unusable, no password works  "
+                f"(fix: python main.py --set-password)", True)
+    where = "environment" if os.environ.get("ADMIN_PASSWORD_HASH") else ".env"
+    return (f"user '{user}' - password set in {where}  "
+            f"(forgotten? python main.py --set-password)", False)
+
+
 def banner(
     host: str,
     port: int,
     tunnel: str = "",
     stream: Optional[TextIO] = None,
     machine_ip: Optional[str] = None,
+    login: str = "",
 ) -> None:
     """Print the URLs an operator needs right after a successful start.
 
@@ -1099,6 +1151,8 @@ def banner(
     if tunnel:
         lines.append(f"    {'tunnel':<7} {tunnel}")
     lines.append(f"    {'stop':<7} Ctrl+C")
+    if login:
+        lines.append(f"    {'login':<7} {login}")
 
     if no_detected_ip:
         lines += [
