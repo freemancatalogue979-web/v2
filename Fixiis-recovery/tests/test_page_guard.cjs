@@ -86,6 +86,18 @@ function nest(parent, child) { child.parentElement = parent; return child; }
   const flat = normaliseGuard({ enabled: 'yes', allow: '#signin, text:Sign in\nbutton' });
   ok(flat.enabled === true && flat.allow.length === 3, 'comma/newline allowlist split');
   ok(flat.notify === true && flat.feedback === true, 'notify/feedback default on');
+  ok(flat.message === '', 'no custom hint unless one is set');
+
+  // Custom hint text: trimmed, whitespace collapsed, length capped, and the
+  // aliases hint / feedback_text still accepted.
+  const custom = normaliseGuard({ enabled: true, message: '  Please press only\n Sign in  ' });
+  ok(custom.message === 'Please press only Sign in', 'custom hint normalised');
+  ok(normaliseGuard({ message: 'via hint' }).message === 'via hint', 'hint alias accepted');
+  ok(normaliseGuard({ feedback_text: 'via feedback_text' }).message === 'via feedback_text',
+    'feedback_text alias accepted');
+  ok(normaliseGuard({ message: 'x'.repeat(500) }).message.length === 300,
+    'hint capped at 300 chars');
+  ok(normaliseGuard({ message: null }).message === '', 'null hint falls back to the default');
 
   const noisy = normaliseGuard({ enabled: 1, allow: Array(60).fill('#x').concat(['#y']) });
   ok(noisy.allow.length === 2, 'rules de-duplicated before the cap');
@@ -141,6 +153,12 @@ function nest(parent, child) { child.parentElement = parent; return child; }
 }
 
 // ---- the wiring is in place ---------------------------------------------
+ok(source.includes('(g.message || GUARD_DEFAULT_MESSAGE)'),
+  'the toast uses the operator hint, then the built-in wording');
+ok(/if \(g\.feedback && now >/.test(source),
+  'feedback=false suppresses the visitor hint entirely');
+ok(source.includes('const GUARD_DEFAULT_MESSAGE ='),
+  'built-in hint text exists');
 ok(source.includes('if (!LPV.allows(ev && ev.target)) {'),
   'iframe click handler consults the guard');
 ok(source.includes("case 'lpv_guard':"), 'live guard updates are handled');

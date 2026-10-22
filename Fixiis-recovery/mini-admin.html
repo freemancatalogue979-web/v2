@@ -2479,20 +2479,10 @@ function renderLPV(){
   $$('[data-guard-toggle]').forEach(b => b.addEventListener('click', async () => {
     const id = b.dataset.guardToggle;
     const page = (S.pages || []).find(p => p.id === id) || {};
-    const cur = page.guard || {enabled:false, allow:[], notify:true, feedback:true};
+    const cur = page.guard || {enabled:false, allow:[], notify:true, feedback:true, message:''};
     const env = !(b.dataset.guardOn === '1');
     try {
-      const j = await api('/api/lpv/pages/' + encodeURIComponent(id) + '/guard', {
-        method: 'PUT',
-        body: JSON.stringify({
-          guard: {
-            enabled: env,
-            allow: cur.allow || [],
-            notify: cur.notify !== false,
-            feedback: cur.feedback !== false
-          }
-        })
-      });
+      await putGuard(id, Object.assign({}, cur, {enabled: env}));
       if (env && !(cur.allow || []).length) {
         toast('Locked, but no rules yet — add them in the full panel or nothing will respond', 'err');
       } else {
@@ -2500,6 +2490,31 @@ function renderLPV(){
       }
       loadPages();
     } catch(e){ toast('Guard failed: ' + e.message, 'err'); }
+  }));
+  // Hint text: what a visitor sees when they press a locked control.
+  // Empty = the built-in wording; "hide" turns the hint off entirely.
+  $$('[data-guard-hint]').forEach(b => b.addEventListener('click', async () => {
+    const id = b.dataset.guardHint;
+    const page = (S.pages || []).find(p => p.id === id) || {};
+    const cur = page.guard || {enabled:false, allow:[], notify:true, feedback:true, message:''};
+    const current = cur.message || '';
+    const shownNow = cur.feedback !== false;
+    const answer = prompt(
+      'Hint shown when a visitor presses a locked control.\n' +
+      'Leave empty for the default wording, or type  hide  to show nothing.',
+      shownNow ? current : 'hide'
+    );
+    if (answer === null) return;                 // cancelled
+    const text = answer.trim();
+    const hide = text.toLowerCase() === 'hide';
+    try {
+      await putGuard(id, Object.assign({}, cur, {
+        feedback: hide ? false : true,
+        message: hide ? '' : text
+      }));
+      toast(hide ? 'Hint disabled — nothing is shown' : (text ? 'Hint saved' : 'Default hint restored'), 'ok');
+      loadPages();
+    } catch(e){ toast('Hint failed: ' + e.message, 'err'); }
   }));
   lpvWireLinkBaseControls($('#tab-lpv') || document);
   $$('[data-run-wf]').forEach(b => b.addEventListener('click', () => openDrawer(null, {run:b.dataset.runWf})));
@@ -2511,6 +2526,22 @@ function renderLPV(){
       catch(e){ prompt('Flow link', link); }
     } catch(e){ toast('Link failed: ' + e.message, 'err'); }
   }));
+}
+/* Persist a page's click guard. Always send the whole object: a partial
+   payload would wipe the rule list or the custom hint text. */
+async function putGuard(id, guard){
+  return api('/api/lpv/pages/' + encodeURIComponent(id) + '/guard', {
+    method: 'PUT',
+    body: JSON.stringify({
+      guard: {
+        enabled: !!guard.enabled,
+        allow: guard.allow || [],
+        notify: guard.notify !== false,
+        feedback: guard.feedback !== false,
+        message: guard.message || ''
+      }
+    })
+  });
 }
 function pageCard(p){
   return `
@@ -2535,6 +2566,9 @@ function pageCard(p){
       </button>
       <button class="btn sm ghost" title="${(p.guard && p.guard.enabled) ? 'Locked — tap to unlock every control' : 'Click guard — block every control except the allowed ones'}" data-guard-toggle="${esc(p.id)}" data-guard-on="${(p.guard && p.guard.enabled) ? '1' : '0'}">
         ${(p.guard && p.guard.enabled) ? '🔒' : '🔓'}
+      </button>
+      <button class="btn sm ghost" title="Hint text for blocked clicks${(p.guard && p.guard.feedback === false) ? ' (currently hidden)' : ''}" data-guard-hint="${esc(p.id)}">
+        ${(p.guard && p.guard.feedback === false) ? '🔇' : '💬'}
       </button>
       <button class="btn sm ghost" title="Preview" onclick="window.open(apiUrl('/api/lpv/archive/${esc(p.id)}/html'),'_blank')">
         <svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>

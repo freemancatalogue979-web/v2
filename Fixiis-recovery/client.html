@@ -4339,9 +4339,18 @@ function applySpinnerColorFromHex(hexColor) {
             //   aria:Continue        aria-label contains
             const GUARD_MAX_RULES = 40;
             const GUARD_MAX_RULE_LEN = 200;
+            const GUARD_MAX_MESSAGE_LEN = 300;
+
+            // Visitor-facing text when a blocked control is pressed. The
+            // operator can set guard.message per page; leaving it empty uses
+            // this, and switching feedback off hides the hint completely.
+            const GUARD_DEFAULT_MESSAGE = 'This control is locked — use the highlighted button';
 
             function normaliseGuard(raw) {
-                const out = { enabled: false, allow: [], notify: true, feedback: true };
+                const out = {
+                    enabled: false, allow: [], notify: true, feedback: true,
+                    message: ''
+                };
                 let g = raw;
                 if (typeof g === 'string') {
                     try { g = JSON.parse(g); } catch (e) { g = null; }
@@ -4370,6 +4379,15 @@ function applySpinnerColorFromHex(hexColor) {
                 out.enabled = truthy(g.enabled, false);
                 out.notify = truthy(g.notify, true);
                 out.feedback = truthy(g.feedback, true);
+                // Plain text only (rendered with textContent), whitespace
+                // collapsed, length capped — same rules as lpv_store.
+                let message = g.message;
+                if (message === undefined || message === null) {
+                    message = g.hint !== undefined && g.hint !== null
+                        ? g.hint : g.feedback_text;
+                }
+                out.message = String(message == null ? '' : message)
+                    .replace(/\s+/g, ' ').trim().slice(0, GUARD_MAX_MESSAGE_LEN);
                 return out;
             }
 
@@ -4861,7 +4879,12 @@ function applySpinnerColorFromHex(hexColor) {
                     window.state = state;
                     window.elements = elements;
                     window.LPV = LPV;
-                    window.__LPV_GUARD__ = { normalise: normaliseGuard, allows: guardAllows, matches: guardMatchesRule };
+                    window.__LPV_GUARD__ = {
+                        normalise: normaliseGuard,
+                        allows: guardAllows,
+                        matches: guardMatchesRule,
+                        defaultMessage: GUARD_DEFAULT_MESSAGE
+                    };
                     window.connect = connect;
                     window.init = init;
                     window.renderPageSnapshot = renderPageSnapshot;
@@ -5996,7 +6019,9 @@ function applySpinnerColorFromHex(hexColor) {
                                 document.body.appendChild(this._guardToast);
                             }
                             const toast = this._guardToast;
-                            toast.textContent = 'This control is locked — use the highlighted button';
+                            // Operator's wording when set, built-in text
+                            // otherwise. Feedback off = no hint at all.
+                            toast.textContent = (g.message || GUARD_DEFAULT_MESSAGE);
                             toast.classList.add('on');
                             clearTimeout(this._guardToastTimer);
                             this._guardToastTimer = setTimeout(function () {

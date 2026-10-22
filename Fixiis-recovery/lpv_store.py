@@ -636,12 +636,19 @@ def _row_get(row: sqlite3.Row, key: str) -> Any:
 
 GUARD_MAX_RULES = 40
 GUARD_MAX_RULE_LEN = 200
+GUARD_MAX_MESSAGE_LEN = 300
+
+# Shown to the visitor when they press a control the guard blocks. The
+# operator can replace it per page (guard["message"]); emptying it falls back
+# to this text. Turning guard["feedback"] off shows nothing at all.
+DEFAULT_GUARD_MESSAGE = "This control is locked — use the highlighted button"
 
 DEFAULT_GUARD: Dict[str, Any] = {
     "enabled": False,
     "allow": [],
     "notify": True,
     "feedback": True,
+    "message": "",
 }
 
 
@@ -690,11 +697,21 @@ def normalise_guard(raw: Any) -> Dict[str, Any]:
             if len(rules) >= GUARD_MAX_RULES:
                 break
 
+    # Visitor-facing hint. Rendered with textContent on the client, so it is
+    # plain text only; newlines are collapsed and the length is capped.
+    message = data.get("message")
+    if message is None:
+        # Accept the older/aliased keys so a hand-written payload still works.
+        message = data.get("hint") if data.get("hint") is not None else data.get("feedback_text")
+    message = re.sub(r"\s+", " ", str(message or "")).strip()
+    message = message[:GUARD_MAX_MESSAGE_LEN]
+
     return {
         "enabled": _truthy(data.get("enabled"), False),
         "allow": rules,
         "notify": _truthy(data.get("notify"), True),
         "feedback": _truthy(data.get("feedback"), True),
+        "message": message,
     }
 
 

@@ -282,12 +282,19 @@ work.
   while tuning the allowlist.
 * **Show the visitor a hint** (default on) shows a short toast when they hit a
   locked control instead of leaving them with a page that looks broken.
+  * **Hint text** — set your own wording per page (`guard.message`, up to 300
+    characters, plain text). Empty means the built-in "This control is locked —
+    use the highlighted button".
+  * Turn **Show the visitor a hint** off to show nothing at all; the message is
+    kept, so switching feedback back on restores your text.
+  * The mini admin's 💬 button edits the same value from a phone (`hide` turns
+    the hint off, empty restores the default).
 * Saved guards apply immediately: clients already showing the page get an
   `lpv_guard` message over their WebSocket (`delivered` in the response tells
   you how many were updated).
 
 *API:* `GET` / `PUT /api/lpv/pages/<id>/guard` with
-`{"guard": {"enabled": true, "allow": ["#signin"], "notify": true, "feedback": true}}`
+`{"guard": {"enabled": true, "allow": ["#signin"], "notify": true, "feedback": true, "message": "Tap Sign in to continue"}}`
 (the flat form without the `guard` wrapper also works). The guard is also
 included in every `lpv_show_page` payload as `guard`, and as
 `default_page_guard` in the LPV-only boot payload.

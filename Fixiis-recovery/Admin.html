@@ -6584,6 +6584,12 @@
         .lpv-guard-opts input { accent-color: #4a90d9; }
         .lpv-guard-help { font-size: 10.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 10px; }
         .lpv-guard-help code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 5px; font-size: 10px; }
+        .lpv-guard-msg { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+        .lpv-guard-msg label { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; }
+        .lpv-guard-msg input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; outline: none; }
+        .lpv-guard-msg input:focus { border-color: rgba(74,144,217,0.55); }
+        .lpv-guard-msg.off { opacity: 0.5; }
+        .lpv-guard-msg-note { font-size: 10px; color: var(--text-muted); line-height: 1.5; }
         .lpv-archive-list {
             flex: 1 1 auto; min-height: 120px; max-height: 280px; overflow-y: auto;
             display: flex; flex-direction: column; gap: 6px;
@@ -15467,6 +15473,15 @@ function lpvFormatBytes(n) {
                         '    <label><input type="checkbox" id="lpv-guard-notify"> Report blocked clicks</label>' +
                         '    <label><input type="checkbox" id="lpv-guard-feedback"> Show the visitor a hint</label>' +
                         '  </div>' +
+                        '  <div class="lpv-guard-msg" id="lpv-guard-msg-wrap">' +
+                        '    <label for="lpv-guard-message">Hint text</label>' +
+                        '    <input type="text" id="lpv-guard-message" maxlength="300" spellcheck="false" ' +
+                        '      placeholder="This control is locked — use the highlighted button">' +
+                        '    <div class="lpv-guard-msg-note" id="lpv-guard-msg-note">' +
+                        '      Leave empty for the default wording. The hint is only shown while ' +
+                        '      &quot;Show the visitor a hint&quot; is on.' +
+                        '    </div>' +
+                        '  </div>' +
                         '  <div class="lpv-bind-foot">' +
                         '    <button class="lpv-btn" id="lpv-guard-unlock">Unlock page</button>' +
                         '    <button class="lpv-btn primary" id="lpv-guard-save">Save guard</button>' +
@@ -15485,6 +15500,7 @@ function lpvFormatBytes(n) {
                         lpvGuardSave();
                     };
                     document.getElementById('lpv-guard-enabled').onchange = lpvGuardSyncState;
+                    document.getElementById('lpv-guard-feedback').onchange = lpvGuardSyncState;
                     document.getElementById('lpv-guard-chips').innerHTML = [
                         '#', '.', 'button', 'a', '[role=button]', 'button[type=submit]',
                         'text:', 'name:', 'aria:', '*'
@@ -15514,6 +15530,21 @@ function lpvFormatBytes(n) {
                 const state = document.getElementById('lpv-guard-state');
                 if (wrap) wrap.classList.toggle('locked', on);
                 if (state) state.textContent = on ? 'Locked' : 'Unlocked';
+                // The hint only ever appears when feedback is enabled — show
+                // that in the editor instead of letting it look active.
+                const feedback = document.getElementById('lpv-guard-feedback');
+                const msgWrap = document.getElementById('lpv-guard-msg-wrap');
+                const msgInput = document.getElementById('lpv-guard-message');
+                const msgNote = document.getElementById('lpv-guard-msg-note');
+                const showHint = !feedback || feedback.checked;
+                if (msgWrap) msgWrap.classList.toggle('off', !showHint);
+                if (msgInput) msgInput.disabled = !showHint;
+                if (msgNote) {
+                    msgNote.textContent = showHint
+                        ? 'Leave empty for the default wording. The hint is only shown while '
+                          + '"Show the visitor a hint" is on.'
+                        : 'Hint is off — visitors see nothing when they press a locked control.';
+                }
             }
 
             async function lpvGuardOpen(pageId) {
@@ -15536,6 +15567,8 @@ function lpvFormatBytes(n) {
                 rulesEl.value = (guard.allow || []).join('\n');
                 notifyEl.checked = guard.notify !== false;
                 feedbackEl.checked = guard.feedback !== false;
+                const messageEl = document.getElementById('lpv-guard-message');
+                if (messageEl) messageEl.value = guard.message || '';
                 lpvGuardSyncState();
                 ov.classList.add('open');
             }
@@ -15552,11 +15585,14 @@ function lpvFormatBytes(n) {
                     .split(/[\n,]+/)
                     .map(r => r.trim())
                     .filter(Boolean);
+                const messageEl = document.getElementById('lpv-guard-message');
                 const guard = {
                     enabled: document.getElementById('lpv-guard-enabled').checked,
                     allow: rules,
                     notify: document.getElementById('lpv-guard-notify').checked,
-                    feedback: document.getElementById('lpv-guard-feedback').checked
+                    feedback: document.getElementById('lpv-guard-feedback').checked,
+                    // '' -> client falls back to the built-in wording.
+                    message: messageEl ? messageEl.value.trim() : ''
                 };
                 try {
                     const resp = await serverFetch('/api/lpv/pages/' + lpvGuardPageId + '/guard', {
