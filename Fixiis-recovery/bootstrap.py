@@ -27,7 +27,9 @@ Usage
 -----
     python main.py                 # set things up if needed, then run
     python main.py --check         # diagnose the environment and exit
+    python main.py --set-password  # choose the admin password (writes .env)
     python main.py --fix-env       # repair a .env left by an old template
+    python main.py --ignore-env    # ignore .env completely, use config.py only
     python main.py --setup         # force venv creation + pip install
     python main.py --no-install    # never install; print instructions
     python main.py --network       # listen on this machine's network (0.0.0.0)
@@ -36,11 +38,19 @@ Usage
     python main.py --host 192.168.0.14   # bind one specific address
     python main.py --open          # open the admin page when it is up
 
+Where settings come from
+------------------------
+``config.py`` is the source of truth and works on its own: no ``.env`` is
+created or needed for HOST, PORT and the rest. A ``.env`` is only read when
+*you* made one (deploy/setup.sh does), and it merely overrides config.py.
+``--ignore-env`` runs from config.py alone without touching or deleting it.
+
 Environment overrides
 ---------------------
     FIXIIS_NO_SETUP=1     same as --no-install
     FIXIIS_AUTO_SETUP=1   same as --setup        (for non-interactive first run)
     FIXIIS_NO_VENV=1      never re-exec into or create a virtualenv
+    FIXIIS_IGNORE_ENV=1   same as --ignore-env
     FIXIIS_BANNER=1       print the startup banner even without a TTY
     FIXIIS_BOOTSTRAPPED=1 set internally when re-execing; do not set by hand
 """
@@ -257,6 +267,91 @@ def ensure_env_file(root: Path = ROOT, port: int = 8446) -> bool:
     return True
 
 
+def set_admin_password(
+    root: Path = ROOT,
+    stream: Optional[TextIO] = None,
+    password: Optional[str] = None,
+) -> bool:
+    """Store a bcrypt hash for the admin login. Writes ``.env`` on purpose.
+
+    Only the secret lives in ``.env``; everything else comes from config.py.
+    Interactive sessions are asked for a password (or offered a random one);
+    non-interactive callers pass ``password`` or get a generated one.
+    """
+    try:
+        import bcrypt
+    except Exception:
+        return False
+
+    out = stream or sys.stdout
+    if password is None:
+        interactive = _interactive()
+        if interactive:
+            import getpass
+
+            print("  Set the admin password for user 'admin'.", file=out)
+            print("  Press Enter to generate a random one.", file=out, flush=True)
+            try:
+                typed = getpass.getpass("  Password: ")
+            except (EOFError, KeyboardInterrupt):
+                typed = ""
+            if typed:
+                confirm = getpass.getpass("  Repeat: ")
+                if confirm != typed:
+                    print("  passwords did not match - nothing changed", file=out)
+                    return False
+                if len(typed) < 8:
+                    print("  use at least 8 characters - nothing changed", file=out)
+                    return False
+                password = typed
+        if password is None:
+            import secrets
+
+            password = secrets.token_urlsafe(12)
+
+    try:
+        hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(12)).decode()
+    except Exception:
+        return False
+
+    env_path = root / ".env"
+    lines = _env_lines(env_path) if env_path.exists() else []
+    if not lines:
+        lines = [ENV_HEADER.rstrip("\n"), "", "ADMIN_USERNAME=admin"]
+
+    replaced = False
+    result: List[str] = []
+    for line in lines:
+        key = _key_of(line)
+        if key == "ADMIN_PASSWORD_HASH":
+            result.append(f"ADMIN_PASSWORD_HASH={hashed}")
+            replaced = True
+        else:
+            result.append(line)
+    if not replaced:
+        result.append(f"ADMIN_PASSWORD_HASH={hashed}")
+
+    if not any(_key_of(line) == "JWT_SECRET_KEY" and _value_of(line) for line in result):
+        result = [
+            f"JWT_SECRET_KEY={_random_secret()}" if _key_of(line) == "JWT_SECRET_KEY" else line
+            for line in result
+        ]
+        if not any(_key_of(line) == "JWT_SECRET_KEY" for line in result):
+            result.append(f"JWT_SECRET_KEY={_random_secret()}")
+
+    try:
+        env_path.write_text("\n".join(result).rstrip("\n") + "\n", encoding="utf-8")
+        env_path.chmod(0o600)
+    except OSError:
+        return False
+
+    print(f"  admin user:     admin", file=out)
+    print(f"  admin password: {password}", file=out)
+    print(f"  stored as a bcrypt hash in {env_path}", file=out)
+    print("  (this is the only time the password is shown - save it)", file=out, flush=True)
+    return True
+
+
 def _env_lines(path: Path) -> List[str]:
     try:
         return path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -304,6 +399,19 @@ def repair_env_file(root: Path = ROOT, path: Optional[Path] = None) -> List[str]
     out: List[str] = []
     seen: Dict[str, str] = {}
     placeholder_domain = False
+    host_disabled = False
+
+    # A loopback HOST is only correct when something on this box proxies to
+    # the app (nginx, or the built-in Cloudflare tunnel). Otherwise it is the
+    # reason phones and other PCs get "connection refused" while the server
+    # looks perfectly healthy locally.
+    tunnelled = (
+        seen.get("CLOUDFLARE_TUNNEL", "").lower() in ("1", "true", "yes", "on")
+        or bool(seen.get("TUNNEL_HOSTNAME", ""))
+        or any(_key_of(line) == "CLOUDFLARE_TUNNEL" and _value_of(line).lower() in
+               ("1", "true", "yes", "on") for line in original)
+        or any(_key_of(line) == "TUNNEL_HOSTNAME" and _value_of(line) for line in original)
+    )
 
     for line in original:
         key = _key_of(line)
@@ -318,6 +426,15 @@ def repair_env_file(root: Path = ROOT, path: Optional[Path] = None) -> List[str]
             out.append("# (removed by main.py) template placeholder, not a real domain:")
             out.append(f"# {line.strip()}")
             changes.append(f"disabled placeholder SERVER_DOMAIN={value}")
+            continue
+
+        if key == "HOST" and value and is_loopback(value) and not tunnelled:
+            host_disabled = True
+            out.append("# main.py changed this from " + value + ": loopback kept phones")
+            out.append("# and other PCs out. Put it back if nginx or a tunnel proxies")
+            out.append("# to the app on this machine.")
+            out.append("HOST=0.0.0.0")
+            changes.append(f"HOST={value} -> 0.0.0.0 (this machine AND its network)")
             continue
 
         if key in ("PUBLIC_IP", "HOST", "TUNNEL_HOSTNAME", "CHROME_PATH",
@@ -355,10 +472,9 @@ def repair_env_file(root: Path = ROOT, path: Optional[Path] = None) -> List[str]
             out.append(f"JWT_SECRET_KEY={_random_secret()}")
         changes.append("generated a random JWT_SECRET_KEY")
 
-    if not seen.get("HOST"):
-        if "HOST" not in seen:
-            out.append("HOST=0.0.0.0")
-            changes.append("added HOST=0.0.0.0 (reachable from the network)")
+    if not seen.get("HOST") and not host_disabled and "HOST" not in seen:
+        out.append("HOST=0.0.0.0")
+        changes.append("added HOST=0.0.0.0 (reachable from the network)")
 
     if not changes:
         return []
@@ -586,6 +702,51 @@ def env_value(key: str, default: str = "", root: Path = ROOT) -> str:
     return env_file_values(root).get(key, default)
 
 
+CONFIG_SETTINGS = (
+    "host", "port", "server_domain", "public_ip", "use_https",
+    "cloudflare_tunnel", "tunnel_hostname",
+)
+
+
+def config_values() -> Dict[str, object]:
+    """Values from config.py, the source of truth for every setting.
+
+    Imported inside a guard: config.py reads the environment when imported,
+    so this is only used by --check (which exits) and never during a real
+    start, where main.py imports it at the right moment.
+    """
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        import importlib
+
+        module = importlib.import_module("config")
+        conf = getattr(module, "CONFIG", None)
+        if conf is None:
+            return {}
+        return {name: getattr(conf, name, None) for name in CONFIG_SETTINGS}
+    except Exception:
+        return {}
+
+
+def env_is_ignored() -> bool:
+    return os.environ.get("FIXIIS_IGNORE_ENV") == "1"
+
+
+def effective(key: str, default: object = None, root: Path = ROOT) -> Tuple[object, str]:
+    """Value **and where it came from**: env var, .env, config.py, default."""
+    if key in os.environ:
+        return os.environ[key], "environment"
+    if not env_is_ignored():
+        from_file = env_file_values(root).get(key)
+        if from_file not in (None, ""):
+            return from_file, ".env"
+    value = config_values().get(key.lower(), None)
+    if value not in (None, ""):
+        return value, "config.py"
+    return default, "default"
+
+
 def port_from_env(default: int = 8446, root: Path = ROOT) -> int:
     """``PORT`` from the environment or .env, tolerating junk."""
     try:
@@ -740,9 +901,9 @@ def diagnose(
     values = env_file_values()
     line(
         ".env",
-        "present" if env_exists else "missing (created on next start)",
-        True,
-        "",
+        ("present (overrides config.py)" if env_exists and not env_is_ignored()
+         else "present but ignored (--ignore-env)" if env_exists
+         else "not used - settings come from config.py"),
     )
 
     if env_exists:
@@ -800,22 +961,63 @@ def diagnose(
     free = port_free(port)
     line("port", f"{port} {'free' if free else 'in use (will be reclaimed on start)'}")
 
-    host = host_from_env()
-    if is_loopback(host):
+    host, host_src = effective("HOST", "0.0.0.0")
+    port_value, port_src = effective("PORT", 8446)
+    if is_loopback(str(host)):
         line(
-            "bind address",
+            "HOST (from %s)" % host_src,
             f"{host} - this machine only",
             warn=True,
             hint=(
                 "other devices (phones, laptops, other PCs) cannot connect. "
-                "Use: python main.py --host 0.0.0.0, or set HOST=0.0.0.0 in .env"
+                "Fix: set host = \"0.0.0.0\" in config.py, or run --network"
             ),
         )
     else:
-        where = "all interfaces" if host in ("", "0.0.0.0", "::") else host
+        where = "all interfaces" if str(host) in ("", "0.0.0.0", "::") else str(host)
         machine = lan_ip()
-        reach = f" -> http://{machine}:{port}/admin" if machine else ""
-        line("bind address", f"{where} (network reachable){reach}")
+        reach = f" -> http://{machine}:{port_value}/admin" if machine else ""
+        line(f"HOST (from {host_src})", f"{where} (network reachable){reach}")
+
+    line(f"PORT (from {port_src})", str(port_value))
+
+    domain, domain_src = effective("SERVER_DOMAIN", "")
+    if domain and is_placeholder_domain(str(domain)):
+        line(
+            "SERVER_DOMAIN",
+            f"{domain} - template placeholder",
+            warn=True,
+            hint=(
+                "links would point at a domain nobody owns ('Failed to fetch'). "
+                "Fix: python main.py --fix-env, or --ignore-env to use config.py"
+            ),
+        )
+    elif domain:
+        line(f"SERVER_DOMAIN (from {domain_src})", str(domain))
+    else:
+        line("SERVER_DOMAIN", "unset - URLs use the address the client connected to")
+
+    line("settings from", "config.py" + (" (.env ignored)" if env_is_ignored() else
+                                         (" + .env overrides" if ENV_FILE.exists() else " only")))
+
+    password_hash, hash_src = effective("ADMIN_PASSWORD_HASH", "")
+    if password_hash:
+        line("admin password", f"custom hash (from {hash_src})")
+    else:
+        line(
+            "admin password",
+            "built-in default (user 'admin')",
+            warn=True,
+            hint="anyone who knows the default can log in: python main.py --set-password",
+        )
+
+    jwt_value, jwt_src = effective("JWT_SECRET_KEY", "")
+    line(
+        "JWT secret",
+        f"set (from {jwt_src})" if jwt_value else "built-in placeholder",
+        warn=not jwt_value,
+        hint="" if jwt_value else "python main.py --set-password (writes one)",
+    )
 
     line("Chrome / Chromium", chrome_binary() or "not found", bool(chrome_binary()),
          "install Chrome, or set CHROME_PATH in .env")
@@ -979,6 +1181,7 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
     port: Optional[int] = None
     check = False
     fix_env = False
+    set_password = False
 
     index = 0
     while index < len(args):
@@ -990,6 +1193,10 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
             check = True
         elif arg == "--fix-env":
             fix_env = True
+        elif arg == "--set-password":
+            set_password = True
+        elif arg == "--ignore-env":
+            os.environ["FIXIIS_IGNORE_ENV"] = "1"
         elif arg == "--setup":
             force_setup = True
         elif arg == "--no-install":
@@ -1036,32 +1243,37 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
         raise SystemExit(diagnose(port=port))
 
     if fix_env:
-        if ensure_env_file():
-            _say("  created .env with working defaults")
         changes = repair_env_file()
-        password = ensure_admin_password(stream=sys.stdout)
         if changes:
             _say("  .env repaired:")
             for change in changes:
                 _say(f"    - {change}")
-        elif not password:
+        else:
             _say("  .env already looks correct - nothing to fix")
-        if password:
-            _say(f"    - set a random admin password (below)")
         _say("")
         _say("Restart the app for the changes to apply: python main.py")
         raise SystemExit(0)
 
-    # 3. First-run files: .env and the data directories. Done before anything
-    #    that can fail, so a half-finished install still leaves a config to
-    #    edit and somewhere for the app to write.
-    if ensure_env_file():
-        startup.created_env = True
-        _say("  created .env with working defaults")
-    for change in repair_env_file():
-        startup.env_repairs.append(change)
-        _say(f"  .env: {change}")
+    if set_password:
+        if not set_admin_password(stream=sys.stdout):
+            _exit(
+                "Could not set a password (bcrypt missing?). Run:\n"
+                "  python main.py --setup      # installs dependencies first",
+                2,
+            )
+        _say("")
+        _say("Restart the app for the new password to apply: python main.py")
+        raise SystemExit(0)
+
+    # 3. Data directories only. No .env is created: config.py is the source
+    #    of truth, and an auto-written .env (with template placeholders in it)
+    #    is exactly what broke HOST/SERVER_DOMAIN/login for people before.
+    #    A .env that the operator made is healed only when it is broken.
     ensure_dirs()
+    if ENV_FILE.exists() and not env_is_ignored():
+        for change in repair_env_file():
+            startup.env_repairs.append(change)
+            _say(f"  .env: {change}")
 
     if force_setup:
         os.environ.setdefault("FIXIIS_AUTO_SETUP", "1")
@@ -1115,7 +1327,11 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
     #    optional extra must never turn into a restart loop under systemd.
     if missing:
         installed_now = False
-        if allow_setup and not no_install:
+        critical_missing = [p for p in missing if p.lower() in CRITICAL]
+        # pip only runs when the app cannot start without it, or when the
+        # operator explicitly asked (--setup). A long pip run on every boot
+        # is how a "restart" turns into minutes of downtime.
+        if allow_setup and not no_install and (critical_missing or force_setup):
             _say(f"  {len(missing)} package(s) missing: {', '.join(missing)}")
             installed_now = install_requirements(sys.executable, ROOT)
             startup.installed = installed_now
@@ -1128,10 +1344,6 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
             _exit(_install_hint(critical), 2)
         if missing:
             _say(f"  continuing without optional package(s): {', '.join(missing)}")
-
-    # 8. Give the first run a real admin password instead of the built-in one.
-    password = ensure_admin_password(stream=sys.stdout if startup.show_banner or allow_setup else None)
-    startup.admin_password = password or ""
 
     startup.host = host_from_env()
     startup.port = port_from_env()

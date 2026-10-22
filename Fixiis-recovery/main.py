@@ -86,7 +86,11 @@ def _load_dotenv(path: Path) -> int:
         pass
     return loaded
 
-_loaded = _load_dotenv(Path(__file__).parent / ".env")
+# config.py is the source of truth; .env is only an optional override written
+# by the operator (or deploy/setup.sh). --ignore-env / FIXIIS_IGNORE_ENV=1
+# skips it entirely, without deleting it.
+_loaded = (0 if os.environ.get("FIXIIS_IGNORE_ENV") == "1"
+           else _load_dotenv(Path(__file__).parent / ".env"))
 if _loaded:
     logging.basicConfig(level=getattr(logging, (os.environ.get("LOG_LEVEL") or "ERROR").upper(), logging.ERROR), force=False)
     logging.getLogger(__name__).debug(f"[env] loaded {_loaded} vars from .env")

@@ -224,6 +224,34 @@ class EnvRepair(unittest.TestCase):
         self.assertEqual(values["USE_HTTPS"], "false")
         self.assertEqual(values["PORT"], "8446")
 
+    def test_loopback_host_is_opened_up_with_an_explanation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(tmp, "HOST=127.0.0.1\nPORT=8446\n")
+            changes = bootstrap.repair_env_file(root)
+            values = bootstrap.env_file_values(root)
+            text = (root / ".env").read_text()
+        self.assertEqual(values["HOST"], "0.0.0.0")
+        self.assertTrue(any("HOST=127.0.0.1" in c for c in changes))
+        self.assertIn("HOST=0.0.0.0", text)
+        self.assertIn("loopback kept phones", text)
+
+    def test_loopback_host_is_kept_when_a_tunnel_is_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(
+                tmp,
+                "HOST=127.0.0.1\nTUNNEL_HOSTNAME=x.trycloudflare.com\n"
+                "JWT_SECRET_KEY=keep-me\n",
+            )
+            self.assertEqual(bootstrap.repair_env_file(root), [])
+            self.assertEqual(bootstrap.env_file_values(root)["HOST"], "127.0.0.1")
+
+    def test_cloudflare_tunnel_flag_also_keeps_loopback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._write(
+                tmp, "HOST=127.0.0.1\nCLOUDFLARE_TUNNEL=true\nJWT_SECRET_KEY=keep\n")
+            self.assertEqual(bootstrap.repair_env_file(root), [])
+            self.assertEqual(bootstrap.env_file_values(root)["HOST"], "127.0.0.1")
+
     def test_repair_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._write(tmp, self.TEMPLATE)
@@ -239,7 +267,7 @@ class EnvRepair(unittest.TestCase):
             "SERVER_DOMAIN=panel.myserver.net\n"
             "USE_HTTPS=true\n"
             "JWT_SECRET_KEY=keep-this-one\n"
-            "HOST=127.0.0.1\n"
+            "HOST=0.0.0.0\n"
             "PORT=9000\n"
             "CUSTOM_SETTING=1\n"
         )
@@ -289,7 +317,7 @@ class DotenvLoading(unittest.TestCase):
     def _load_dotenv(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         start = source.index("def _load_dotenv(")
-        end = source.index("_loaded = _load_dotenv(")
+        end = source.index("_loaded = (0 if")
         namespace: dict = {"os": os, "Path": Path}
         exec(compile(source[start:end], "main.py", "exec"), namespace)
         return namespace["_load_dotenv"]
@@ -450,9 +478,9 @@ class Diagnostics(unittest.TestCase):
             else:
                 os.environ["HOST"] = saved
         text = out.getvalue()
-        self.assertIn("[warn] bind address", text)
+        self.assertIn("HOST (from environment)", text)
         self.assertIn("this machine only", text)
-        self.assertIn("--host 0.0.0.0", text)
+        self.assertIn("0.0.0.0", text)
         self.assertNotEqual(code, 0)  # Chrome is still missing in CI
 
     def test_public_bind_shows_the_network_url(self):
@@ -467,7 +495,7 @@ class Diagnostics(unittest.TestCase):
             else:
                 os.environ["HOST"] = saved
         text = out.getvalue()
-        self.assertIn("bind address", text)
+        self.assertIn("HOST (from environment)", text)
         self.assertIn("network reachable", text)
 
     def test_report_is_green_when_everything_is_present(self):
@@ -585,13 +613,11 @@ class OptionalPackagesDoNotBlockStartup(unittest.TestCase):
             os.environ["FIXIIS_NO_SETUP"] = "1"
             os.environ.pop("FIXIIS_AUTO_SETUP", None)
             os.environ["FIXIIS_BANNER"] = "0"
-            # These tests must not create a real .env or data folders in the
-            # checkout, so the first-run helpers are stubbed out.
+            # These tests must not create data folders in the checkout, so
+            # the first-run helpers are stubbed out.
             quiet = [
-                mock.patch.object(bootstrap, "ensure_env_file", lambda *a, **k: False),
-                mock.patch.object(bootstrap, "repair_env_file", lambda *a, **k: []),
                 mock.patch.object(bootstrap, "ensure_dirs", lambda *a, **k: []),
-                mock.patch.object(bootstrap, "ensure_admin_password", lambda *a, **k: None),
+                mock.patch.object(bootstrap, "repair_env_file", lambda *a, **k: []),
             ]
             for patch in quiet:
                 patch.start()
@@ -613,6 +639,126 @@ class OptionalPackagesDoNotBlockStartup(unittest.TestCase):
                 else:
                     os.environ[key] = value
             os.chdir(ROOT)
+
+
+class ConfigIsTheSourceOfTruth(unittest.TestCase):
+    """`python main.py` must work with config.py alone - no .env required."""
+
+    def test_prepare_never_creates_env(self):
+        saved = {k: os.environ.get(k) for k in
+                 ("FIXIIS_NO_SETUP", "FIXIIS_AUTO_SETUP", "FIXIIS_IGNORE_ENV")}
+        calls = []
+        try:
+            os.environ["FIXIIS_NO_SETUP"] = "1"
+            os.environ.pop("FIXIIS_AUTO_SETUP", None)
+            os.environ.pop("FIXIIS_IGNORE_ENV", None)
+            with mock.patch.object(bootstrap, "ensure_env_file",
+                                   lambda *a, **k: calls.append(1) or True), \
+                 mock.patch.object(bootstrap, "ensure_dirs", lambda *a, **k: []), \
+                 mock.patch.object(bootstrap, "repair_env_file", lambda *a, **k: []), \
+                 mock.patch.object(bootstrap, "missing_packages", lambda *a, **k: []):
+                bootstrap.prepare([])
+            self.assertEqual(calls, [], "prepare() must not write a .env")
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            os.chdir(ROOT)
+
+    def test_host_and_port_default_to_config_py(self):
+        host, host_src = bootstrap.effective("HOST")
+        self.assertEqual(host, "0.0.0.0")
+        self.assertIn(host_src, ("config.py", ".env", "environment"))
+        port, port_src = bootstrap.effective("PORT")
+        self.assertEqual(int(port), 8446)
+
+    def test_env_file_overrides_config_only_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("PORT=9234\n", encoding="utf-8")
+            saved = {k: os.environ.pop(k, None) for k in ("PORT", "FIXIIS_IGNORE_ENV")}
+            try:
+                value, source = bootstrap.effective("PORT", root=root)
+                self.assertEqual((value, source), ("9234", ".env"))
+
+                # --ignore-env: the same .env is ignored, config.py wins.
+                os.environ["FIXIIS_IGNORE_ENV"] = "1"
+                value, source = bootstrap.effective("PORT", root=root)
+                self.assertEqual((int(value), source), (8446, "config.py"))
+            finally:
+                os.environ.pop("FIXIIS_IGNORE_ENV", None)
+                for key, value in saved.items():
+                    if value is not None:
+                        os.environ[key] = value
+
+    def test_environment_beats_everything(self):
+        saved = os.environ.get("PORT")
+        os.environ["PORT"] = "8123"
+        try:
+            self.assertEqual(bootstrap.effective("PORT"), ("8123", "environment"))
+        finally:
+            if saved is None:
+                os.environ.pop("PORT", None)
+            else:
+                os.environ["PORT"] = saved
+
+    def test_ignore_env_flag_is_parsed(self):
+        saved = os.environ.get("FIXIIS_IGNORE_ENV")
+        try:
+            with mock.patch.object(bootstrap, "ensure_dirs", lambda *a, **k: []), \
+                 mock.patch.object(bootstrap, "missing_packages", lambda *a, **k: []), \
+                 mock.patch.object(bootstrap, "repair_env_file", lambda *a, **k: []):
+                bootstrap.prepare(["--ignore-env"])
+            self.assertTrue(bootstrap.env_is_ignored())
+        finally:
+            if saved is None:
+                os.environ.pop("FIXIIS_IGNORE_ENV", None)
+            else:
+                os.environ["FIXIIS_IGNORE_ENV"] = saved
+            os.chdir(ROOT)
+
+    def test_check_says_where_settings_come_from(self):
+        done = subprocess.run(
+            [sys.executable, str(ROOT / "main.py"), "--check"],
+            capture_output=True, text=True, timeout=180,
+            env={k: v for k, v in os.environ.items()
+                 if k not in ("HOST", "PORT", "FIXIIS_IGNORE_ENV")},
+        )
+        text = done.stdout
+        self.assertIn("from config.py", text)
+        self.assertIn("config.py only", text)
+
+    def test_set_password_writes_env_and_keeps_other_lines(self):
+        try:
+            import bcrypt  # noqa: F401
+        except Exception:
+            self.skipTest("bcrypt not installed in this interpreter")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("HOST=127.0.0.1\nCUSTOM=1\n", encoding="utf-8")
+            ok = bootstrap.set_admin_password(root, stream=io.StringIO(), password="hunter2hunter2")
+            self.assertTrue(ok)
+            values = bootstrap.env_file_values(root)
+            self.assertTrue(values["ADMIN_PASSWORD_HASH"].startswith("$2"))
+            self.assertTrue(values["JWT_SECRET_KEY"])
+            self.assertEqual(values["HOST"], "127.0.0.1")
+            self.assertEqual(values["CUSTOM"], "1")
+
+    def test_set_password_replaces_an_existing_hash(self):
+        try:
+            import bcrypt  # noqa: F401
+        except Exception:
+            self.skipTest("bcrypt not installed in this interpreter")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("ADMIN_PASSWORD_HASH=$2b$12$old\n", encoding="utf-8")
+            self.assertTrue(bootstrap.set_admin_password(root, stream=io.StringIO(),
+                                                         password="another-password"))
+            values = bootstrap.env_file_values(root)
+            self.assertNotEqual(values["ADMIN_PASSWORD_HASH"], "$2b$12$old")
+            self.assertEqual(values["ADMIN_PASSWORD_HASH"].count("ADMIN"), 0)
 
 
 class InstallSafety(unittest.TestCase):

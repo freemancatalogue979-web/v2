@@ -367,6 +367,24 @@ certbot renew --dry-run          # verify auto-renewal works
 systemctl status certbot.timer   # renewal is scheduled
 ```
 
+### Settings: config.py first
+
+`config.py` is the source of truth (`host = "0.0.0.0"`, `port = 8446`).
+`deploy/setup.sh` writes a `.env` for the secrets (admin password hash, JWT
+secret) and the domain; that file only *overrides* `config.py`. Nothing is
+written automatically at startup except the repair below.
+
+```bash
+sudo -u fixiis python3 main.py --check        # every value + where it came from
+sudo -u fixiis python3 main.py --set-password # change the admin password
+sudo -u fixiis python3 main.py --ignore-env   # ignore .env, use config.py only
+sudo -u fixiis python3 main.py --fix-env      # repair a broken .env
+```
+
+At startup a `.env` that would break the app is repaired once and the change
+is printed: a template placeholder domain, a loopback `HOST` when nothing
+proxies to the app, a blank secret. Real values are never touched.
+
 ### First start without setup.sh
 
 If you copied the files by hand instead of running `deploy/setup.sh`:

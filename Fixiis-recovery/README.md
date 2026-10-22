@@ -103,8 +103,10 @@ cd neo-browser-stream/Fixiis-recovery
 python main.py
 ```
 
-On the first start `main.py` creates `.venv/`, installs `requirements.txt`
-into it, copies `.env.example` to `.env` and makes the runtime folders
+Settings live in **`config.py`** — `host = "0.0.0.0"`, `port = 8446` — and
+that is all a run needs. Nothing is written to a `.env` for you: no placeholders,
+no generated secrets, no surprises. On the first start `main.py` creates
+`.venv/`, installs `requirements.txt` into it and makes the runtime folders
 (`logs/`, `profiles/`, `lpv/`, …). Later starts reuse all of it and skip
 straight to serving. Full details: [Run](#run) below.
 
@@ -128,13 +130,26 @@ python main.py
 | started from another folder | switches to the code directory first |
 | `venv/` or `.venv/` exists | re-execs into it (no activation step) |
 | no venv, packages missing | creates `.venv/`, installs requirements, restarts itself |
-| `.env` missing | copies `.env.example` to `.env` |
+| `.env` missing | nothing to do — `config.py` is used as-is |
+| `.env` present but broken | placeholders/blank secrets are repaired, once |
 | packages already there | nothing — start is instant |
+
+Settings and their precedence:
+
+```
+environment variable  >  .env (if you made one)  >  config.py  >  built-in
+```
+
+`--check` prints which of those each value came from, so there is never a
+guess about why the port or bind address is what it is.
 
 Useful flags:
 
 ```bash
-python main.py --check          # report python, packages, .env, bind, port, Chrome
+python main.py --check          # report python, packages, settings source, port, Chrome
+python main.py --set-password   # choose the admin password (writes only that to .env)
+python main.py --ignore-env     # ignore .env entirely - run from config.py
+python main.py --fix-env        # repair a .env left by an old template
 python main.py --setup          # force venv creation + pip install
 python main.py --network        # listen on the whole network (0.0.0.0)
 python main.py --local          # listen on 127.0.0.1 only
@@ -146,6 +161,20 @@ python main.py --help           # all options
 
 `--check` is the first thing to run when a start fails; it names the exact
 missing package, unwritable folder or busy port.
+
+### Changing the port, the host or any other setting
+
+Edit `config.py` and restart. That file is the source of truth:
+
+```python
+    host: str = "0.0.0.0"   # every interface: this machine and its network
+    port: int = 8446
+```
+
+No `.env` is required. If one exists (created by you or by
+`deploy/setup.sh`), it only *overrides* `config.py` — and if it contains a
+template placeholder, a loopback `HOST` while nothing proxies to the app, or
+a blank secret, it gets repaired once at startup and the change is printed.
 
 ### Reaching it from a phone or another PC
 
@@ -198,13 +227,17 @@ immediately.
 
 ### Environment variables
 
-| Variable               | Default                | Purpose                                          |
+Nothing below has to be set: these are `.env` keys, and every one of them
+has a working default in `config.py`. Set one only when you need to
+override it.
+
+| Variable               | Default (config.py)    | Purpose                                          |
 |------------------------|------------------------|--------------------------------------------------|
 | `HOST`                 | `0.0.0.0`              | Bind address. `127.0.0.1` = this machine only     |
 | `PORT`                 | `8446`                 | HTTP port                                         |
 | `ADMIN_USERNAME`       | `admin`                | Admin login username                              |
-| `ADMIN_PASSWORD_HASH`  | bcrypt hash of `admin` | bcrypt `$2b$…` hash; `main.py` generates one on first run |
-| `JWT_SECRET_KEY`       | random on first run    | Signs admin session tokens. Rotate if it leaks    |
+| `ADMIN_PASSWORD_HASH`  | bcrypt hash of `admin` | Set yours with `python main.py --set-password`    |
+| `JWT_SECRET_KEY`       | built-in placeholder   | Signs admin tokens; `--set-password` writes one   |
 | `SERVER_DOMAIN`        | _unset_                | Only set it to a domain that really resolves here |
 | `PUBLIC_IP`            | _unset_                | Same rule; used in absolute links/reports         |
 | `USE_HTTPS`            | `false`                | `true` only when TLS terminates in front of the app |
@@ -230,8 +263,9 @@ python main.py --fix-env          # repair placeholder/blank .env values
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Panel opens, LPV push fails with *Failed to fetch* | `SERVER_DOMAIN` set to a domain that does not resolve here | `python main.py --fix-env`, restart |
-| Login always says *Invalid credentials* | `ADMIN_PASSWORD_HASH=` blank or malformed | `python main.py --fix-env` |
-| Works on the server, refused from phone/laptop | bound to `127.0.0.1`, or firewall | `--network`, then open the firewall port |
+| Login always says *Invalid credentials* | `ADMIN_PASSWORD_HASH=` blank or malformed | `python main.py --set-password` |
+| Works on the server, refused from phone/laptop | bound to `127.0.0.1`, or firewall | `python main.py --network`, then open the firewall port |
+| Port/bind address is not what `config.py` says | a `.env` overrides it | `python main.py --check` shows the source; `--ignore-env` to bypass |
 | Everything disconnects over and over | the service is restarting repeatedly | `./deploy/doctor.sh`; `sudo systemctl stop fixiis-reloader` to pause auto-restarts |
 | `/health` answers but the UI is stale | a deploy landed while a session was live | reconnect; restarts drop live sessions by design |
 

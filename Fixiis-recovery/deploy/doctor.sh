@@ -131,6 +131,20 @@ if command -v curl >/dev/null; then
     fi
 fi
 
+# ---------------------------------------------------------------- app check
+head2 "App check (python main.py --check)"
+PY_BIN=""
+for cand in "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/.venv/bin/python" python3; do
+    if [[ -x "$cand" ]] || command -v "$cand" >/dev/null 2>&1; then PY_BIN="$cand"; break; fi
+done
+if [[ -n "$PY_BIN" && -f "$INSTALL_DIR/main.py" ]]; then
+    if ! ( cd "$INSTALL_DIR" && "$PY_BIN" main.py --check 2>&1 | sed 's/^/  /' ); then
+        meh "the app check reported a problem (see above)"
+    fi
+else
+    meh "cannot run main.py --check (no python or main.py in $INSTALL_DIR)"
+fi
+
 # ---------------------------------------------------------------- logs
 head2 "Last 15 lines of $UNIT"
 journalctl -u "$UNIT" -n 15 --no-pager 2>/dev/null | sed 's/^/  /' || meh "no journal for $UNIT"

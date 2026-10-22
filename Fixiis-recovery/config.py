@@ -39,9 +39,22 @@ def is_placeholder_host(host: str) -> bool:
 class UltraConfig:
     """Server configuration for Maximum CPU/GPU Performance Browser Streaming"""
 
-    # Application
+    # ------------------------------------------------------------------
+    # THE SETTINGS THAT MATTER FOR RUNNING THE APP
+    #
+    # This file is the source of truth. Nothing else has to exist for
+    # `python main.py` to serve on this host and port: no .env, no nginx.
+    # A .env only overrides these values if you (or deploy/setup.sh) made
+    # one; `python main.py --check` prints the effective value of each
+    # setting and which of the three places it came from.
+    # ------------------------------------------------------------------
     app_name: str = "Neo Browser Stream"
     version: str = "2.0-Neo"
+
+    # 0.0.0.0  = listen on every interface: this machine AND every device
+    #            on its network (phone, laptop, another PC).
+    # 127.0.0.1 = this machine only (use it when nginx or a tunnel proxies
+    #            to the app). Changing this needs a restart.
     host: str = "0.0.0.0"
     port: int = 8446
     public_ip: str = "20.248.121.116"
