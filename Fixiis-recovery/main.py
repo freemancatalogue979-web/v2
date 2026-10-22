@@ -163,6 +163,9 @@ def _print_secret_status() -> None:
 _LOG_LEVEL_NAME = (os.environ.get("LOG_LEVEL") or "WARNING").upper()
 _LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.ERROR)
 logging.basicConfig(level=_LOG_LEVEL)
+# basicConfig() does nothing when a handler already exists (api.py adds its
+# recent-log buffer at import), so set the level explicitly as well.
+logging.getLogger().setLevel(_LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 # Every module (ours + third-party) follows the same level; nothing is

@@ -10840,6 +10840,15 @@
                         // appends to the open conversation). Done here rather
                         // than inside handleMessage so the chat UI keeps
                         // working regardless of that chain's type tests.
+                        if (message && message.type === 'server_warnings') {
+                            // The server had warnings (Telegram, workflows,
+                            // connections) — say so once instead of leaving
+                            // the operator to guess why something is silent.
+                            const n = message.count || (message.recent || []).length;
+                            const first = (message.recent || [])[0] || {};
+                            showToast('Server reported ' + n + ' warning(s) — ' + (first.message || 'see Logs → Server log'), 'warning');
+                            console.warn('[server]', message.recent);
+                        }
                         if (message && message.type === 'chat_message') {
                             try {
                                 window.dispatchEvent(

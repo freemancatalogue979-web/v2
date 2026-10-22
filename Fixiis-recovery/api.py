@@ -71,9 +71,23 @@ class _RecentLogHandler(logging.Handler):
 
 def _install_recent_log_handler() -> None:
     try:
+        root = logging.getLogger()
         handler = _RecentLogHandler()
         handler.setLevel(logging.WARNING)
-        logging.getLogger().addHandler(handler)
+        root.addHandler(handler)
+        # api.py is imported before main.py configures logging, and
+        # basicConfig() refuses to install a console handler once the root
+        # logger has one. Without this the warnings would be captured for the
+        # panel but never printed — the opposite of the point.
+        has_console = any(
+            isinstance(h, logging.StreamHandler) and not isinstance(h, _RecentLogHandler)
+            for h in root.handlers
+        )
+        if not has_console:
+            console = logging.StreamHandler()
+            console.setLevel(logging.WARNING)
+            console.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+            root.addHandler(console)
     except Exception:
         pass
 
@@ -9105,6 +9119,19 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                 except Exception:
                     pass
         
+        # Surface the server's recent warnings straight away: the operator
+        # should not have to go looking to learn that a feature is failing.
+        try:
+            recent = list(_RECENT_LOG)[-5:] if _RECENT_LOG else []
+            if recent:
+                await websocket.send_json({
+                    "type": "server_warnings",
+                    "count": len(_RECENT_LOG),
+                    "recent": recent,
+                })
+        except Exception:
+            pass
+
         # Send all stored client profiles (historical data from before admin connected)
         try:
             all_profiles = await get_all_client_profiles()
