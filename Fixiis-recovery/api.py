@@ -4478,8 +4478,9 @@ async def login(request: Request):
         hint = ''
         if reason in ('bad_password', 'hash_unusable') and failures >= 2:
             hint = ('On the server, run: python main.py --set-password '
-                    '(then restart the app). The panel is reaching the '
-                    'server fine - this is only the password.')
+                    '(or --reset-password to go back to admin/admin), then '
+                    'restart the app. The panel is reaching the server '
+                    'fine - this is only the password.')
         return JSONResponse({
             "success": False,
             "reason": reason,

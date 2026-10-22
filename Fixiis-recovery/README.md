@@ -336,8 +336,19 @@ apart now:
 
 `python main.py --set-password` asks for a new password (Enter = generate one),
 stores a bcrypt hash in `.env`, and prints it once. Restart afterwards:
-`python main.py`. With no `.env` at all the built-in login is `admin` / `admin`,
-which `--check` and the startup banner both state out loud.
+`python main.py`.
+
+**Want the plain `admin` / `admin` back?** Then stop overriding it:
+
+```bash
+python main.py --reset-password     # removes ADMIN_PASSWORD_HASH from .env
+python main.py                      # restart
+```
+
+That is the built-in login, so it is deliberately weak — anyone who can reach
+the panel can use it. `--check` and the startup banner both say when it is in
+use. Set a real password again with `--set-password` once you are back in
+(the default is too short for `--set-password` to store, by design).
 
 ### Where the reason is written down
 

@@ -655,6 +655,34 @@ class AdminLoginSummary(unittest.TestCase):
         self.assertIn("unusable", text)
         self.assertTrue(warn)
 
+    def test_reset_password_removes_the_override(self):
+        good = "$2b$12$K9Xm2pQ4rT7vN8wL3jH6e.nSuc39Ma1gWXoznLSkhTeaL9F1CfDne"
+        (self.root / ".env").write_text(
+            "# kept\nHOST=0.0.0.0\nADMIN_PASSWORD_HASH=" + good +
+            "\nJWT_SECRET_KEY=abc\n", encoding="utf-8")
+        out = io.StringIO()
+        self.assertTrue(bootstrap.clear_admin_password(self.root, stream=out))
+        text = (self.root / ".env").read_text(encoding="utf-8")
+        self.assertNotIn("ADMIN_PASSWORD_HASH", text)
+        self.assertIn("HOST=0.0.0.0", text)
+        self.assertIn("JWT_SECRET_KEY=abc", text)
+        self.assertIn("admin", out.getvalue())
+        # and the effective login is the default again
+        summary, _warn = bootstrap.admin_login_summary(self.root)
+        self.assertIn("default password: admin", summary)
+
+    def test_reset_password_is_idempotent(self):
+        (self.root / ".env").write_text("HOST=0.0.0.0\n", encoding="utf-8")
+        out = io.StringIO()
+        self.assertTrue(bootstrap.clear_admin_password(self.root, stream=out))
+        self.assertIn("nothing to remove", out.getvalue())
+        self.assertIn("HOST=0.0.0.0", (self.root / ".env").read_text())
+
+    def test_reset_password_without_env_says_it_is_already_the_default(self):
+        out = io.StringIO()
+        self.assertTrue(bootstrap.clear_admin_password(self.root, stream=out))
+        self.assertIn("already in use", out.getvalue())
+
     def test_banner_prints_the_login_line(self):
         out = io.StringIO()
         bootstrap.banner("0.0.0.0", 8446, stream=out, machine_ip="198.51.100.10",

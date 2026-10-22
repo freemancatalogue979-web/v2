@@ -28,6 +28,7 @@ Usage
     python main.py                 # set things up if needed, then run
     python main.py --check         # diagnose the environment and exit
     python main.py --set-password  # choose the admin password (writes .env)
+    python main.py --reset-password # go back to the built-in admin/admin
     python main.py --fix-env       # repair a .env left by an old template
     python main.py --ignore-env    # ignore .env completely, use config.py only
     python main.py --setup         # force venv creation + pip install
@@ -354,6 +355,63 @@ def set_admin_password(
     print(f"  admin password: {password}", file=out)
     print(f"  stored as a bcrypt hash in {env_path}", file=out)
     print("  (this is the only time the password is shown - save it)", file=out, flush=True)
+    return True
+
+
+def clear_admin_password(root: Path = ROOT, stream: Optional[TextIO] = None) -> bool:
+    """Go back to the built-in login: user ``admin``, password ``admin``.
+
+    Removes ``ADMIN_PASSWORD_HASH`` from ``.env`` so nothing overrides the
+    built-in hash. Deliberately blunt: when the generated password is lost,
+    "type a new one" is a worse answer than "get me back in".
+
+    The password is weak on purpose - it is the documented default. Callers
+    are told to set a real one afterwards.
+    """
+    out = stream or sys.stdout
+    env_path = root / ".env"
+    removed = False
+    kept: List[str] = []
+    try:
+        lines = _env_lines(env_path) if env_path.exists() else []
+    except OSError:
+        lines = []
+    for line in lines:
+        if _key_of(line) == "ADMIN_PASSWORD_HASH":
+            removed = True
+            continue
+        kept.append(line)
+
+    if removed:
+        try:
+            text = "\n".join(kept).rstrip("\n")
+            env_path.write_text((text + "\n") if text else "", encoding="utf-8")
+            env_path.chmod(0o600)
+        except OSError as exc:
+            print(f"  could not write {env_path}: {exc}", file=out)
+            return False
+
+    print(f"  admin user:     admin", file=out)
+    print(f"  admin password: admin   (built-in default)", file=out)
+    if removed:
+        print(f"  {env_path} no longer overrides it", file=out)
+    elif env_path.exists():
+        print(f"  {env_path} had no admin hash - nothing to remove", file=out)
+    else:
+        print(f"  no .env - the built-in default was already in use", file=out)
+
+    # A hash in the real environment (systemd Environment=, a shell export)
+    # still wins over the file we just cleaned.
+    if (os.environ.get("ADMIN_PASSWORD_HASH") or "").strip():
+        print(
+            "  WARNING: ADMIN_PASSWORD_HASH is also set in the environment\n"
+            "           (systemd unit or shell export) - remove it there too,\n"
+            "           or it keeps overriding the default.",
+            file=out,
+        )
+    print("", file=out)
+    print("  Anyone who can reach the panel can now log in as admin/admin.", file=out)
+    print("  Set a real one when you are back in: python main.py --set-password", file=out)
     return True
 
 
@@ -926,53 +984,10 @@ def diagnose(
          else "not used - settings come from config.py"),
     )
 
-    if env_exists:
-        domain = values.get("SERVER_DOMAIN", "")
-        if domain and is_placeholder_domain(domain):
-            line(
-                "SERVER_DOMAIN",
-                f"{domain} - template placeholder",
-                warn=True,
-                hint=(
-                    "the app would build share/LPV URLs from a domain that does "
-                    "not exist ('Failed to fetch'). Fix: python main.py --fix-env"
-                ),
-            )
-        elif domain:
-            line("SERVER_DOMAIN", domain)
-        else:
-            line("SERVER_DOMAIN", "unset (URLs use the address you connect to)")
-
-        jwt_value = values.get("JWT_SECRET_KEY", "")
-        line(
-            "JWT secret",
-            "set" if jwt_value else "not set (random one generated on next start)",
-            warn=not jwt_value,
-            hint="" if jwt_value else "python main.py --fix-env",
-        )
-
-    # The login, stated plainly: which user, where the password comes from,
-    # and the one command that changes it. "Invalid credentials" with no
-    # explanation is the most common lockout there is.
-    hash_value = "" if env_is_ignored() else values.get("ADMIN_PASSWORD_HASH", "")
-    hash_value = (hash_value or os.environ.get("ADMIN_PASSWORD_HASH", "")).strip()
-    admin_user = (os.environ.get("ADMIN_USERNAME") or "admin").strip()
-    if not hash_value:
-        line(
-            "admin login",
-            f"user '{admin_user}' - built-in default password: admin",
-            warn=True,
-            hint="change it: python main.py --set-password",
-        )
-    elif is_usable_password_hash(hash_value):
-        line("admin login", f"user '{admin_user}' - password set in .env")
-    else:
-        line(
-            "admin login",
-            f"user '{admin_user}' - the stored hash is unusable, so NO password works",
-            warn=True,
-            hint="fix it: python main.py --set-password",
-        )
+    # (.env's own SERVER_DOMAIN / JWT / password are reported by the
+    # effective-value rows further down, which also name where the value came
+    # from. Printing them here as well produced two contradictory-looking
+    # lines for the same setting.)
 
     # --check never modifies anything, so no repair pass here.
 
@@ -1045,23 +1060,23 @@ def diagnose(
         if enabled else "off - restart yourself after changes",
     )
 
-    password_hash, hash_src = effective("ADMIN_PASSWORD_HASH", "")
-    if password_hash:
-        line("admin password", f"custom hash (from {hash_src})")
-    else:
-        line(
-            "admin password",
-            "built-in default (user 'admin')",
-            warn=True,
-            hint="anyone who knows the default can log in: python main.py --set-password",
-        )
+    # One row, stated plainly: which user, where the password comes from and
+    # how to change (or drop) it. "Invalid credentials" with no explanation is
+    # the most common lockout there is.
+    login_text, login_warn = admin_login_summary()
+    line(
+        "admin login",
+        login_text,
+        warn=login_warn,
+        hint="go back to admin/admin: python main.py --reset-password" if login_warn else "",
+    )
 
     jwt_value, jwt_src = effective("JWT_SECRET_KEY", "")
     line(
         "JWT secret",
         f"set (from {jwt_src})" if jwt_value else "built-in placeholder",
         warn=not jwt_value,
-        hint="" if jwt_value else "python main.py --set-password (writes one)",
+        hint="" if jwt_value else "python main.py --fix-env (writes one)",
     )
 
     line("Chrome / Chromium", chrome_binary() or "not found", bool(chrome_binary()),
@@ -1254,6 +1269,7 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
     check = False
     fix_env = False
     set_password = False
+    reset_password = False
 
     index = 0
     while index < len(args):
@@ -1267,6 +1283,8 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
             fix_env = True
         elif arg == "--set-password":
             set_password = True
+        elif arg in ("--reset-password", "--default-password"):
+            reset_password = True
         elif arg == "--ignore-env":
             os.environ["FIXIIS_IGNORE_ENV"] = "1"
         elif arg == "--setup":
@@ -1324,6 +1342,13 @@ def prepare(argv: Optional[Sequence[str]] = None) -> Startup:
             _say("  .env already looks correct - nothing to fix")
         _say("")
         _say("Restart the app for the changes to apply: python main.py")
+        raise SystemExit(0)
+
+    if reset_password:
+        if not clear_admin_password(stream=sys.stdout):
+            _exit("Could not clear the stored admin password (check .env permissions)", 2)
+        _say("")
+        _say("Restart the app for it to apply: python main.py")
         raise SystemExit(0)
 
     if set_password:

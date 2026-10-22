@@ -55,7 +55,8 @@ const boot = read('bootstrap.py');
 ok(/def is_usable_password_hash\(/.test(boot), 'hash validity has one definition');
 ok(/def admin_login_summary\(/.test(boot), 'the login summary has one definition');
 ok(/"admin login"/.test(boot), '--check prints an admin login row');
-ok(/built-in default password: admin/.test(boot), '--check names the built-in default');
+ok(/default password: admin/.test(boot), '--check names the built-in default');
+ok(/--reset-password/.test(boot), '--check offers going back to the built-in login');
 ok(/"login"|'login'/.test(boot) && /lines\.append\(f"    \{'login'/.test(boot),
    'the startup banner shows the login line');
 ok(/--set-password/.test(boot), 'the summary points at the reset command');

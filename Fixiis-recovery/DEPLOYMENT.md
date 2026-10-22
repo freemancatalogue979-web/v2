@@ -55,6 +55,17 @@ sudo systemctl restart fixiis
 prints it once. `venv/bin/python main.py --check` prints which user exists and
 whether the stored hash is usable at all.
 
+To go back to the built-in `admin` / `admin` (no password to look up), drop the
+override and restart:
+
+```bash
+cd /opt/fixiis && sudo -u fixiis venv/bin/python main.py --reset-password
+sudo systemctl restart fixiis
+```
+
+That login is public knowledge — fine for a LAN test, not for a box on a public
+IP. Set a real password with `--set-password` as soon as you are in.
+
 Prerequisite: `panel.example.com` must already resolve to the server's IP, or
 the certificate step fails.
 
