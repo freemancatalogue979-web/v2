@@ -21,7 +21,11 @@ ok()    { printf '  [ok]   %s\n' "$*"; }
 bad()   { printf '  [!!]   %s\n' "$*"; }
 meh()   { printf '  [??]   %s\n' "$*"; }
 
-command -v systemctl >/dev/null || { bad "systemctl not found - this script is for the systemd deploy"; exit 1; }
+if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemctl not found - this script is for the systemd deploy." >&2
+    echo "On this machine the app runs from a shell: python main.py" >&2
+    exit 1
+fi
 
 if [[ $WATCH -eq 1 ]]; then
     bold "Following $RELOADER and $UNIT (Ctrl+C to stop)"
@@ -154,9 +158,10 @@ journalctl -u "$RELOADER" -n 15 --no-pager 2>/dev/null | sed 's/^/  /' || meh "n
 
 # ---------------------------------------------------------------- verdict
 head2 "What to do next"
-printf '  If %s is flapping:  sudo systemctl stop %s\n' "$RELOADER" "$RELOADER"
+printf '  If %s is flapping:  sudo deploy/autoreload.sh off\n' "$RELOADER"
 printf '                       (the app keeps running; restarts become manual again)\n'
-printf '  Stop the auto-restart for good:   sudo systemctl disable --now %s\n' "$RELOADER"
+printf '  Turn auto-restart back on:        sudo deploy/autoreload.sh on\n'
+printf '  Remove it completely:             sudo deploy/autoreload.sh uninstall\n' 
 printf '  Repair a broken .env:             cd %s && sudo -u fixiis python3 main.py --fix-env\n' "$INSTALL_DIR"
 printf '  Full environment report:          cd %s && sudo -u fixiis python3 main.py --check\n' "$INSTALL_DIR"
 printf '  Follow the logs:                  %s --watch\n' "$0"

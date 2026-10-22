@@ -266,7 +266,7 @@ python main.py --fix-env          # repair placeholder/blank .env values
 | Login always says *Invalid credentials* | `ADMIN_PASSWORD_HASH=` blank or malformed | `python main.py --set-password` |
 | Works on the server, refused from phone/laptop | bound to `127.0.0.1`, or firewall | `python main.py --network`, then open the firewall port |
 | Port/bind address is not what `config.py` says | a `.env` overrides it | `python main.py --check` shows the source; `--ignore-env` to bypass |
-| Everything disconnects over and over | the service is restarting repeatedly | `./deploy/doctor.sh`; `sudo systemctl stop fixiis-reloader` to pause auto-restarts |
+| Everything disconnects over and over | the service is restarting repeatedly | `./deploy/doctor.sh`; `sudo deploy/autoreload.sh off` to rule out the auto-restart |
 | `/health` answers but the UI is stale | a deploy landed while a session was live | reconnect; restarts drop live sessions by design |
 
 ---

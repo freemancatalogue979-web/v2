@@ -413,39 +413,55 @@ packages, `.env`, permissions, port and Chrome.
 ### Updating
 
 ```bash
-sudo /opt/fixiis/deploy/deploy.sh          # pull; the watcher restarts the app
-# or, after a manual upload:
-sudo git pull && sudo venv/bin/pip install -r requirements.txt
-# no restart needed - fixiis-reloader notices the changed files
+cd /opt/fixiis && sudo git pull
+sudo venv/bin/pip install -r requirements.txt   # only if requirements changed
+sudo systemctl restart fixiis
 ```
+
+That is the whole deploy: pull, install, restart. If the auto-restart watcher
+is enabled (see below) the last line is optional — it restarts the app for
+you a few seconds after the files change.
 
 Note: `git pull` will overwrite `config.py`. Anything you set in `.env`
 survives; anything you edited directly in `config.py` does not.
 
 ---
 
-## Deploy without stopping or starting anything
+## Auto-restart on upload (optional, off by default)
 
-The backend runs as a long-lived systemd process, so copying files onto the
-box used to require a manual `systemctl restart`. That is now automatic:
-`deploy/autoreload.py` runs as **`fixiis-reloader.service`**, watches the
-install directory, and restarts `fixiis.service` a few seconds after the
-files change.
-
-Any transport works — `scp`, SFTP, rsync, a hosting panel's file manager, a
-git checkout, or `deploy/deploy.sh`:
+By default restarts are manual and explicit:
 
 ```bash
-# from your machine
-scp api.py client.html root@server:/opt/fixiis/
-# that's it — the new code is live within ~5 seconds
-
-# or, if you push to GitHub and pull on the server
-sudo /opt/fixiis/deploy/deploy.sh          # pull + let the watcher restart
-sudo /opt/fixiis/deploy/deploy.sh --restart-now   # pull + restart immediately
+sudo systemctl restart fixiis      # after uploading/pulling new code
 ```
 
-### What triggers a restart
+`deploy/autoreload.py` can do that for you. It runs as
+**`fixiis-reloader.service`**, watches the install directory, and restarts
+`fixiis.service` a few seconds after a source file changes. It is **opt-in**,
+because a restart drops live sessions — so it should be a deliberate choice,
+not a surprise on a box that is mid-run.
+
+```bash
+sudo /opt/fixiis/deploy/autoreload.sh status     # what is it doing now?
+sudo /opt/fixiis/deploy/autoreload.sh off        # stop it (app keeps running)
+sudo /opt/fixiis/deploy/autoreload.sh on         # enable it
+sudo /opt/fixiis/deploy/autoreload.sh uninstall  # remove the unit entirely
+```
+
+`off` is the important one: it stops the watcher and prevents it from
+starting at boot, and **does not touch the running app** — no downtime, no
+dropped sessions, no state to restore. Manual `systemctl restart fixiis`
+keeps working exactly as before.
+
+`deploy/setup.sh` no longer enables it. On a fresh install add
+`--autoreload` if you want it (`--no-autoreload` is still accepted and is
+now the default):
+
+```bash
+sudo deploy/setup.sh --domain panel.example.com --email you@example.com --autoreload
+```
+
+### What it watches, when you do enable it
 
 | Watched | Never triggers |
 |---|---|
@@ -456,93 +472,34 @@ sudo /opt/fixiis/deploy/deploy.sh --restart-now   # pull + restart immediately
 
 Runtime directories are ignored on purpose — the app writes to them while
 it runs, and watching them would restart the service forever. A burst of
-uploads is debounced (3 s quiet period, 10 s minimum between restarts), so
-a 20-file deploy restarts **once**.
+uploads is debounced (3 s quiet period, 10 s minimum between restarts), there
+is a budget of **8 restarts per 10 minutes** (after that it stops touching the
+service and says why), and every changed `.py` is compile-checked first: a
+broken upload logs `NOT restarting` and leaves the old code serving.
 
-### If the upload is broken, the old code keeps serving
+### Checking whether it is the thing misbehaving
 
-Every changed `.py` is compile-checked first. A syntax error logs
-
+```bash
+sudo ./deploy/doctor.sh          # services, restart counts, .env, port, logs
+sudo ./deploy/doctor.sh --watch  # follow both logs live
+journalctl -u fixiis-reloader -f # the watcher's own log
 ```
-ERROR api.py does not compile — NOT restarting: SyntaxError: ...
-```
 
-and leaves the running process untouched, so a half-finished SFTP transfer
-cannot take the site down. Fix the file and save it again — the next change
-restarts normally.
+If the doctor shows the app restarting over and over, turn the watcher off
+first (`deploy/autoreload.sh off`) and see whether the flapping stops. If it
+does, the files are changing (sync client, editor auto-save, a deploy loop) —
+the watcher is only reporting that.
 
 ### Confirming a deploy landed
 
 ```bash
 curl -s http://127.0.0.1:8446/health | jq .build
-# {
-#   "started_at": 1792658205.29,
-#   "uptime_seconds": 12.4,
-#   "pid": 2127,
-#   "revision": "ca62024",
-#   "autoreload": true
-# }
+# { "started_at": ..., "uptime_seconds": 12.4, "pid": 2127,
+#   "revision": "946668d", "autoreload": false }
 ```
 
-`uptime_seconds` resetting is the proof the restart ran; `revision` is the
-commit of the checkout that is actually running.
-
-### If connections start failing after a deploy
-
-Two different things can look like "the app is broken", and they have
-different fixes:
-
-```bash
-sudo ./deploy/doctor.sh          # read-only: services, restarts, .env, port, logs
-sudo ./deploy/doctor.sh --watch  # follow both logs live
-```
-
-* **The app is restarting over and over** - the doctor prints
-  `restarts=N` and flags it. The watcher has a budget (8 restarts per
-  10 minutes by default, then it stops touching the service and logs why),
-  so a runaway editor/sync client cannot bounce it forever. Pause the
-  watcher without stopping the app:
-
-  ```bash
-  sudo systemctl stop fixiis-reloader      # app keeps running, restarts manual again
-  sudo systemctl start fixiis-reloader     # back on
-  ```
-
-* **The app is up but the UI cannot reach the API** - usually a `.env`
-  with placeholder values. `SERVER_DOMAIN=panel.example.com` makes the
-  app build absolute URLs pointing at a domain nobody owns, and a blank
-  `ADMIN_PASSWORD_HASH` makes every login fail:
-
-  ```bash
-  cd /opt/fixiis && sudo -u fixiis python3 main.py --check
-  cd /opt/fixiis && sudo -u fixiis python3 main.py --fix-env
-  sudo systemctl restart fixiis
-  ```
-
-### Watching it happen
-
-```bash
-journalctl -u fixiis-reloader -f     # "change detected: api.py" → "restarting"
-journalctl -u fixiis -f              # the app's own startup log
-```
-
-### Turning it off / changing the command
-
-```bash
-sudo systemctl disable --now fixiis-reloader    # back to manual restarts
-```
-
-Other process managers work too — the restart command is configurable:
-
-```bash
-python3 deploy/autoreload.py --dir /opt/fixiis --restart-cmd "systemctl restart fixiis"
-python3 deploy/autoreload.py --dir /opt/fixiis --restart-cmd "pm2 restart fixiis"
-python3 deploy/autoreload.py --dir /opt/fixiis --restart-cmd "supervisorctl restart fixiis"
-python3 deploy/autoreload.py --dir /opt/fixiis --dry-run --once   # what would happen?
-```
-
-`deploy/setup.sh` installs and enables the watcher automatically; skip it
-with `--no-autoreload` if you prefer manual control.
+`uptime_seconds` resetting proves the process restarted; `revision` is the
+commit actually running; `autoreload` says whether the watcher is on.
 
 > Restarting drops live sessions (open browser streams and LPV pushes
 > reconnect on their own, but an in-flight workflow stops). Deploy between

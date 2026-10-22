@@ -201,6 +201,45 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(self.marker.exists(), "dry-run must not run the restart command")
 
 
+class SwitchedOffByDefault(unittest.TestCase):
+    """The watcher must be opt-in: an install must not enable it silently."""
+
+    def _read(self, rel):
+        return (HERE.parent / rel).read_text(encoding="utf-8")
+
+    def test_setup_does_not_enable_the_watcher_by_default(self):
+        setup = self._read("deploy/setup.sh")
+        self.assertIn("ENABLE_AUTORELOAD=0", setup)
+        self.assertIn("--autoreload)", setup)
+        self.assertNotIn("systemctl enable --now fixiis-reloader.service", setup)
+
+    def test_switch_script_exists_and_is_executable(self):
+        script = HERE.parent / "deploy" / "autoreload.sh"
+        self.assertTrue(script.exists())
+        self.assertTrue(os.access(script, os.X_OK), "deploy/autoreload.sh must be executable")
+        body = script.read_text(encoding="utf-8")
+        for action in ("off", "on", "status", "uninstall"):
+            self.assertIn(action, body)
+
+    def test_off_does_not_touch_the_app_unit(self):
+        body = self._read("deploy/autoreload.sh")
+        # Turning the watcher off must never stop/restart fixiis.service.
+        # Comments and info/warn messages may mention it; executed lines may not.
+        commands = [
+            line.strip() for line in body.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+            and "info " not in line and "warn " not in line
+        ]
+        for line in commands:
+            self.assertNotIn("systemctl stop fixiis", line)
+            self.assertNotIn("systemctl restart fixiis", line)
+        self.assertIn('systemctl disable --now "$UNIT"', body)
+
+    def test_setup_disables_a_watcher_left_by_an_older_install(self):
+        setup = self._read("deploy/setup.sh")
+        self.assertIn("systemctl disable --now fixiis-reloader.service", setup)
+
+
 if __name__ == "__main__":
     failed = unittest.main(exit=False, verbosity=1).result
     total = failed.testsRun
