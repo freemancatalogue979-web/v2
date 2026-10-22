@@ -408,6 +408,33 @@ select.sel option{background:#12141c;color:#f3f5f9}
   stroke-linecap:round;stroke-linejoin:round}
 .p-chips{display:flex;flex-wrap:wrap;gap:4px}
 
+.pcard-desc{font-size:11.5px;color:var(--txt-2);margin-bottom:10px;min-height:32px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pcard-desc.empty{min-height:32px}
+
+/* ---------- page card meta + action bar ----------
+   The action bar is a class now (it used to be an inline flex row). With
+   three icon buttons plus Push, a flex row of fixed-ish buttons overflowed
+   the card on a phone and squeezed "Push" to nothing. The icons are a
+   fixed-size group; Push takes whatever is left and clips its label. */
+.pcard-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px;
+  font-size:10.5px;color:var(--txt-3);line-height:1.4}
+.pcard-flag{display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:700;
+  padding:1px 6px;border-radius:99px;white-space:nowrap;
+  background:rgba(123,182,240,.14);color:#9ec8f7;border:1px solid rgba(123,182,240,.32)}
+.pcard-flag.muted{background:rgba(255,255,255,.06);color:var(--txt-3);border-color:var(--stroke)}
+.pcard-flag svg{width:10px;height:10px;stroke:currentColor;fill:none;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.pcard-acts{display:flex;align-items:stretch;gap:6px;min-width:0}
+.pcard-acts .pcard-push{flex:1 1 auto;min-width:0;overflow:hidden}
+.pcard-acts .pcard-push svg{flex:none}
+.pcard-icons{display:flex;align-items:stretch;gap:6px;flex:0 0 auto}
+.pcard-ic{flex:0 0 auto;padding:6px 9px;min-width:0}
+.pcard-ic svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.9;
+  stroke-linecap:round;stroke-linejoin:round}
+.pcard-ic.on{color:#9ec8f7;border-color:rgba(123,182,240,.45);background:rgba(123,182,240,.12)}
+.pcard-ic.off{color:var(--txt-3)}
+
 /* ---------- toggle ---------- */
 .tg{display:inline-flex;align-items:center;gap:11px;cursor:pointer;user-select:none}
 .tg input{display:none}
@@ -640,7 +667,7 @@ select.sel option{background:#12141c;color:#f3f5f9}
   .view{padding:14px 14px calc(84px + env(safe-area-inset-bottom,0px))}
   .grid{gap:11px}
   .g2,.g3,.g4,.g-auto,.g-page{grid-template-columns:1fr}
-  .card{padding:15px;border-radius:16px}
+  .card{padding:14px;border-radius:16px}
   .ccard,.pcard{padding:15px;border-radius:16px}
   .sec-head{gap:8px;flex-wrap:wrap}
   .sec-head .hint{display:none}
@@ -659,6 +686,18 @@ select.sel option{background:#12141c;color:#f3f5f9}
   /* touch targets */
   .btn{min-height:44px}
   .btn.sm{min-height:40px}
+
+  /* page cards: no blank description gap, tighter text */
+  .pcard-desc{font-size:11px;margin-bottom:8px;min-height:0}
+  .pcard-desc.empty{display:none}
+  .pcard-meta{font-size:10px}
+
+  /* page cards: fixed-width icon buttons, Push absorbs the rest */
+  .pcard-acts{gap:5px}
+  .pcard-icons{gap:5px}
+  .pcard-ic{width:40px;min-width:40px;padding:0;min-height:40px}
+  .pcard-ic svg{width:16px;height:16px}
+  .pcard-acts .pcard-push{padding:6px 10px;font-size:12px}
   .cc-acts{gap:8px}
   .cc-acts .btn{min-height:44px}
   .cc-acts .btn.ghost{flex:0 0 44px}
@@ -2544,35 +2583,51 @@ async function putGuard(id, guard){
   });
 }
 function pageCard(p){
+  const g = p.guard || {};
+  const locked = !!g.enabled;
+  const rules = (g.allow || []).length;
+  const hintOff = g.feedback === false;
+  const lockIcon = locked
+    ? '<svg viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 018 0v3.5"/></svg>'
+    : '<svg viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 017-2.6"/></svg>';
+  const hintIcon = hintOff
+    ? '<svg viewBox="0 0 24 24"><path d="M4 5l16 14"/><path d="M9 9.5V8l7-3v9"/><path d="M4 10v4a1 1 0 001 1h3l4 3"/></svg>'
+    : '<svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.4 8.4 0 01-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.4 8.4 0 013.8-.9h.5a8.5 8.5 0 018 8z"/></svg>';
   return `
   <div class="card hov" style="padding:16px">
     <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
       <div class="avatar" style="width:32px;height:32px;border-radius:10px;font-size:12px">${esc(initials(p.name))}</div>
       <div style="min-width:0;flex:1">
         <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</div>
-        <div style="font-size:10.5px;color:var(--txt-3)">v${p.version||1} · ${esc(bytes(p.size_bytes))}${
-          (p.guard && p.guard.enabled)
-            ? ` · <span title="Click guard on — only ${(p.guard.allow||[]).length} allowlisted control(s) respond" style="color:#7bb6f0">🔒 ${(p.guard.allow||[]).length} allowed</span>`
+        <div class="pcard-meta">v${p.version||1} · ${esc(bytes(p.size_bytes))}${
+          locked
+            ? `<span class="pcard-flag" title="Click guard on — only ${rules} allowlisted control(s) respond">`
+              + '<svg viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/>'
+              + '<path d="M8 10.5V7a4 4 0 018 0v3.5"/></svg>' + rules + ' allowed</span>'
+            : ''}${
+          hintOff
+            ? '<span class="pcard-flag muted" title="Blocked-click hint is off">hint off</span>'
             : ''}</div>
       </div>
     </div>
-    ${p.description ? `<div style="font-size:11.5px;color:var(--txt-2);margin-bottom:10px;min-height:32px;
-      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(p.description)}</div>`
-      : `<div style="min-height:32px"></div>`}
+    ${p.description ? `<div class="pcard-desc">${esc(p.description)}</div>`
+      : `<div class="pcard-desc empty"></div>`}
     ${(p.tags||[]).length ? `<div class="p-chips" style="margin-bottom:11px">${p.tags.slice(0,3).map(t=>`<span class="chip c">${esc(t)}</span>`).join('')}</div>` : ''}
-    <div style="display:flex;gap:6px">
-      <button class="btn sm primary" style="flex:1" data-push-page="${esc(p.id)}">
+    <div class="pcard-acts">
+      <button class="btn sm primary pcard-push" data-push-page="${esc(p.id)}">
         <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Push
       </button>
-      <button class="btn sm ghost" title="${(p.guard && p.guard.enabled) ? 'Locked — tap to unlock every control' : 'Click guard — block every control except the allowed ones'}" data-guard-toggle="${esc(p.id)}" data-guard-on="${(p.guard && p.guard.enabled) ? '1' : '0'}">
-        ${(p.guard && p.guard.enabled) ? '🔒' : '🔓'}
-      </button>
-      <button class="btn sm ghost" title="Hint text for blocked clicks${(p.guard && p.guard.feedback === false) ? ' (currently hidden)' : ''}" data-guard-hint="${esc(p.id)}">
-        ${(p.guard && p.guard.feedback === false) ? '🔇' : '💬'}
-      </button>
-      <button class="btn sm ghost" title="Preview" onclick="window.open(apiUrl('/api/lpv/archive/${esc(p.id)}/html'),'_blank')">
-        <svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-      </button>
+      <div class="pcard-icons">
+        <button class="btn sm ghost pcard-ic ${locked ? 'on' : ''}" title="${locked ? 'Locked — tap to unlock every control' : 'Click guard — block every control except the allowed ones'}" data-guard-toggle="${esc(p.id)}" data-guard-on="${locked ? '1' : '0'}" aria-label="${locked ? 'Unlock page' : 'Lock page'}">
+          ${lockIcon}
+        </button>
+        <button class="btn sm ghost pcard-ic ${hintOff ? 'off' : ''}" title="Hint text for blocked clicks${hintOff ? ' (currently hidden)' : ''}" data-guard-hint="${esc(p.id)}" aria-label="Blocked-click hint">
+          ${hintIcon}
+        </button>
+        <button class="btn sm ghost pcard-ic" title="Preview" onclick="window.open(apiUrl('/api/lpv/archive/${esc(p.id)}/html'),'_blank')" aria-label="Preview page">
+          <svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
     </div>
   </div>`;
 }

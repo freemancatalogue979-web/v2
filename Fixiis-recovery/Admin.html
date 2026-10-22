@@ -6599,14 +6599,26 @@
             gap: 8px; padding: 8px 10px;
             background: var(--bg-input); border: 1px solid var(--border);
             border-radius: 6px;
+            /* The action cluster grew (bindings, guard, push, delete). Letting
+               the row wrap keeps the card intact on narrow panels instead of
+               letting the buttons squeeze the page name out of view. */
+            flex-wrap: wrap;
         }
-        .lpv-archive-item .meta { display: flex; flex-direction: column; min-width: 0; }
+        .lpv-archive-item .meta { display: flex; flex-direction: column; min-width: 0; flex: 1 1 120px; }
         .lpv-archive-item .name {
             font-family: 'Space Grotesk', sans-serif; font-size: 12px;
             color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .lpv-archive-item .sub { font-size: 10px; color: var(--text-muted); }
         .lpv-archive-item .lpv-btn { padding: 4px 10px; font-size: 11px; flex-shrink: 0; }
+        .lpv-acts { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; }
+        .lpv-acts .lpv-btn { margin-left: 0 !important; }
+        @media (max-width: 900px) {
+            .lpv-archive-item { align-items: stretch; }
+            .lpv-archive-item .meta { flex: 1 1 100%; }
+            .lpv-acts { flex: 1 1 100%; justify-content: stretch; gap: 5px; }
+            .lpv-acts .lpv-btn { flex: 1 1 auto; padding: 6px 4px; font-size: 10.5px; min-width: 0; }
+        }
         .lpv-archive-upload details summary {
             cursor: pointer; font-size: 12px; color: var(--text-secondary);
             padding: 6px 0; user-select: none;
@@ -6873,6 +6885,11 @@
         .lpv-modal-footer {
             padding: 10px 16px; border-top: 1px solid var(--border);
             display: flex; gap: 8px; justify-content: flex-end;
+            flex-wrap: wrap;
+        }
+        @media (max-width: 640px) {
+            .lpv-modal-footer { justify-content: stretch; }
+            .lpv-modal-footer .lpv-btn { flex: 1 1 calc(50% - 4px); padding: 8px 6px; font-size: 11px; }
         }
 
         /* Version list */
@@ -15268,55 +15285,59 @@ function lpvFormatBytes(n) {
                     meta.appendChild(sub);
                     item.appendChild(meta);
 
+                    // All actions live in one cluster so the card can wrap it
+                    // onto a second line on a phone instead of squeezing the
+                    // page name/buttons out of the card.
+                    const acts = document.createElement('div');
+                    acts.className = 'lpv-acts';
+
                     const previewBtn = document.createElement('button');
                     previewBtn.className = 'lpv-btn';
                     previewBtn.textContent = '⋯';
                     previewBtn.title = 'Preview & actions';
                     previewBtn.onclick = () => lpvPreviewPage(page.id);
-                    item.appendChild(previewBtn);
+                    acts.appendChild(previewBtn);
 
                     const bindBtn = document.createElement('button');
                     bindBtn.className = 'lpv-btn';
-                    bindBtn.style.marginLeft = '6px';
                     const _nBind = (page.bindings || []).length;
-                    bindBtn.textContent = _nBind ? 'Bindings · ' + _nBind : 'Bindings';
+                    // Short labels: the tooltip carries the detail.
+                    bindBtn.textContent = _nBind ? 'Bind · ' + _nBind : 'Bind';
                     bindBtn.title = _nBind
                         ? _nBind + ' binding(s) — find → replace applied when this page is served'
                         : 'Bindings — rewrite text/links when this page is served (find → replace)';
                     bindBtn.onclick = () => lpvBindOpen(page.id);
-                    item.appendChild(bindBtn);
+                    acts.appendChild(bindBtn);
 
                     const guardBtn = document.createElement('button');
                     guardBtn.className = 'lpv-btn';
-                    guardBtn.style.marginLeft = '6px';
                     const _guard = page.guard || {};
                     const _guardLocked = !!_guard.enabled;
                     const _guardRules = (_guard.allow || []).length;
                     guardBtn.textContent = _guardLocked
-                        ? '🔒 Guard · ' + _guardRules
-                        : '🔓 Guard';
+                        ? '🔒 ' + _guardRules
+                        : '🔓';
                     guardBtn.title = _guardLocked
                         ? 'Locked — only ' + _guardRules + ' allowlisted control(s) can be clicked'
                         : 'Click guard — block every control except the ones you allow (e.g. just Sign in)';
                     guardBtn.onclick = () => lpvGuardOpen(page.id);
-                    item.appendChild(guardBtn);
+                    acts.appendChild(guardBtn);
 
                     const pushBtn = document.createElement('button');
                     pushBtn.className = 'lpv-btn primary';
-                    pushBtn.style.marginLeft = '6px';
                     pushBtn.textContent = 'Push';
                     pushBtn.disabled = !LPV_STATE.selectedClient;
                     pushBtn.onclick = () => lpvPushPage(page.id);
-                    item.appendChild(pushBtn);
+                    acts.appendChild(pushBtn);
 
                     const delBtn = document.createElement('button');
                     delBtn.className = 'lpv-btn danger';
-                    delBtn.style.marginLeft = '6px';
                     delBtn.textContent = '✕';
                     delBtn.title = 'Delete';
                     delBtn.onclick = () => lpvDeletePage(page.id);
-                    item.appendChild(delBtn);
+                    acts.appendChild(delBtn);
 
+                    item.appendChild(acts);
                     list.appendChild(item);
                 });
             }
