@@ -366,23 +366,47 @@ Over HTTP: `GET /api/lpv/archive/<id>/source` (raw, admin only) and
 
 ## Click actions: "if they click this, take them there"
 
-A page can map a specific control to somewhere else. On the page card press
-**⚡** (or **⋯ → Actions**):
+Actions belong to the **page**, not to a workflow: they travel with the HTML
+wherever that page is pushed. On the page card (Archive tab) press **⚡**
+(or **⋯ → Actions**):
 
 | Field | Meaning |
 |---|---|
-| **Control** | what to watch, using the same rules as the click guard: `text:Sign in`, `.btn-next`, `#submit`, `a[href*="/go"]`, `button[type=submit]` |
+| **🎯 Pick** | opens the page and lets you click the real button — the rule is filled in for you |
+| **Control** | or type it, using the same rules as the click guard: `text:Sign in`, `.btn-next`, `#submit`, `a[href*="/go"]`, `button[type=submit]` |
 | **go to a page** | show another archived page (bindings, guard and its phone/desktop version all still apply) |
-| **open a link** | send the visitor to an external URL |
+| **open a link** | send the visitor to an external address — `google.com` is accepted and read as `https://google.com` |
 
-A mapped control works **even on a locked page** — the mapping is the
-permission — and it is checked before the guard. Every click is recorded in
-the activity log as `page_action`.
+Picking prefers a stable identifier (`#checkout`, `name:next`), then the
+visitor's own words (`text:Sign in`), so the rule stays readable in the panel
+afterwards.
 
-In the **workflow editor** the same idea is a step: **+ Action**. It arms the
-rule on whatever page the visitor is looking at when the chain reaches it,
-then either continues immediately (`wait 0`) or waits up to N seconds for the
-click before moving on — so the next step runs on the page the click opened.
+**The click cannot be swallowed.** The mapping is checked before the click
+guard and before the page's own handlers, so it fires:
+
+* on a **locked** page — the mapping is the permission, and a mapped control
+  is drawn as allowed rather than as a dead button;
+* when the page's own `href` or `onclick` says something else — the mapped
+  target is the one used, because the click is captured and the default
+  action is cancelled;
+* when the click lands on the icon or text *inside* the button.
+
+A **link** target travels with the page, so the visitor is moved immediately —
+no round trip to wait on. A **page** target still comes from the server (that
+is where the HTML, its bindings and its device build are); the click shows the
+spinner at once, and if that page was deleted in the meantime the visitor is
+told instead of being left with a button that does nothing. Every click is
+recorded in the activity log as `page_action`; a miss is recorded as
+`page_action_skipped` with the reason (`stale_page`, `no_actions`,
+`index_out_of_range`, `rule_not_found`, `target_missing`).
+
+Saving actions updates visitors who are already on that page, and actions
+saved on one build of a **device pair** also apply when a visitor is served
+the paired build.
+
+**Workflows no longer offer an `+ Action` step.** Old saved flows that already
+have one keep running and the step is shown read-only, with a reminder to move
+it onto the page.
 
 Over HTTP: `GET`/`PUT /api/lpv/pages/<id>/actions`.
 
@@ -557,9 +581,10 @@ node tests/test_mini_simple.cjs           # the phone panel stays four jobs
 node tests/test_bind_push.cjs             # page fields: saved once, asked at push
 node tests/test_chat_switch.cjs           # chat on/off + which device sees the bubble
 node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; skipped otherwise)
-node tests/test_page_actions.cjs          # archive edit, click actions, action step
-node tests/test_page_actions_ui.cjs       # the action editor + chat modes (needs jsdom)
+node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
+node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step
+python3 tests/test_click_action_resolution.py  # which rule a click runs (drift, device pairs)
 python3 tests/test_chat.py             # the chat switch's decision table
 node tests/test_bind_ui.cjs               # the push dialogs (needs jsdom; skipped otherwise)
 python3 tests/test_page_bindings.py    # text / element / regex rewriting engine

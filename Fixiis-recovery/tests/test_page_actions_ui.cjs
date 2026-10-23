@@ -42,7 +42,7 @@ const ctx = vm.createContext({
   Object, String, Array, JSON, console, Date,
 });
 ctx.lpvActionsPageId = 'p1';
-vm.runInContext(slice('function lpvActionRow(a) {', '// Read the editor rows') +
+vm.runInContext(slice('function lpvActionRow(a, archive) {', '// Read the editor rows') +
                 slice('function lpvActionsRead(rows) {', 'async function lpvActionsOpen'),
                 ctx);
 
@@ -56,6 +56,46 @@ ok(row.querySelector('.lpv-act-page').value === 'p2', 'row keeps the chosen page
 ok(row.querySelector('.lpv-act-url').style.display === 'none', 'the link input is hidden for a page target');
 const opts = [...row.querySelectorAll('.lpv-act-page option')].map((o) => o.value);
 ok(!opts.includes('p1'), 'a page cannot link to itself');
+ok(row.querySelector('.lpv-act-pick') && /Pick/.test(row.querySelector('.lpv-act-pick').textContent),
+   'the row can pick its control instead of typing a selector');
+
+// ---- the picker turns a clicked control into a rule ---------------------
+const pickCtx = vm.createContext({ document: doc, String, Object, Array, console });
+vm.runInContext(slice('function lpvPickRule(node) {', 'function lpvActionPick(row) {'), pickCtx);
+function el(html) {
+  const host = doc.createElement('div');
+  host.innerHTML = html;
+  return host.firstElementChild;
+}
+ok(pickCtx.lpvPickRule(el('<button id="go-next">Next</button>')) === '#go-next',
+   'a stable id wins');
+ok(pickCtx.lpvPickRule(el('<input type="submit" value="Continue">')) === 'text:Continue',
+   'an unnamed submit button is matched by its own word');
+ok(pickCtx.lpvPickRule(el('<button name="checkout">  Pay  now </button>')) === 'name:checkout',
+   'a name attribute is used when there is one');
+ok(pickCtx.lpvPickRule(el('<a href="/x" aria-label="Sign in">&#8594;</a>')) === 'aria:Sign in',
+   'an icon-only link falls back to its aria label');
+const wrapped = el('<button id="cta"><span><b>Get started</b></span></button>');
+ok(pickCtx.lpvPickRule(wrapped.querySelector('b')) === '#cta',
+   'clicking the text inside a button picks the button');
+
+// ---- the picker overlay itself ------------------------------------------
+const pickUi = vm.createContext({ document: doc, String, Object, Array, console,
+                                  SERVER_API_BASE: '' });
+pickUi.lpvActionsPageId = 'p1';
+vm.runInContext(slice('function lpvActionPick(row) {', 'async function lpvActionsOpen'), pickUi);
+const pickRow = ctx.lpvActionRow({});
+doc.body.appendChild(pickRow);
+pickUi.lpvActionPick(pickRow);
+const ov = doc.querySelector('.lpv-bind-overlay.open');
+ok(!!ov && !!ov.querySelector('#lpv-pick-frame'), 'the picker previews the page in a frame');
+ok(/\/api\/lpv\/archive\/p1\/html/.test(ov.querySelector('#lpv-pick-frame').getAttribute('src')),
+   'the preview is this page');
+ok(ov.querySelector('#lpv-pick-frame').getAttribute('sandbox') === 'allow-same-origin',
+   'the page cannot run its own scripts inside the picker');
+ov.querySelector('#lpv-pick-close').click();
+ok(!doc.querySelector('.lpv-pick-modal'), 'closing the picker leaves nothing behind');
+pickRow.remove();
 
 // ---- switching to a link swaps which input is usable --------------------
 const doSel = row.querySelector('.lpv-act-do');

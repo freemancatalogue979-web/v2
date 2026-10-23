@@ -87,10 +87,17 @@ const runnerAction = api.slice(api.indexOf('elif kind == "action":'),
 ok(/"type": "lpv_arm_action"/.test(runnerAction), 'the runner arms the rule on the client');
 ok(/await asyncio\.wait_for\(fired_event\.wait\(\), timeout=wait_secs\)/.test(runnerAction),
    'it can wait for the click before carrying on');
-ok(admin.includes('id="lpv-wf-add-action"'), 'the workflow editor has a + Action button');
-ok(/data-step-field="action_match"/.test(admin), 'the step renders its matcher');
-ok(/data-step-field="action_do"/.test(admin), 'and its target kind');
-ok(/s\.kind === 'action'/.test(admin), 'the step renders itself');
+// The step was retired from the editor: "click this -> go there" belongs to
+// the page it happens on, not to one workflow that has to be at the right
+// step. Old saved flows still render (read-only) and still run.
+ok(!admin.includes('id="lpv-wf-add-action"'), 'the workflow editor no longer offers an + Action step');
+ok(!admin.includes('data-step-field="action_match"'),
+   'and the step no longer has editable fields in a workflow');
+ok(/s\.kind === 'action'/.test(admin), 'an old flow with that step still renders');
+ok(/action \(old step\)/.test(admin), 'the retired step says so instead of looking editable');
+ok(/now set on the archive page/.test(admin), 'and points at where actions live now');
+ok(/id="lpv-wf-add-page"/.test(admin) && /id="lpv-wf-add-redirect"/.test(admin),
+   'the other workflow steps are untouched');
 
 // ---- 4. the client: click -> server -------------------------------------
 ok(/function guardMatchesRule\(/.test(client), 'the client has the guard rule matcher');
@@ -136,6 +143,63 @@ ok(actionHit(state, { matches: 'something else' }).hit === false,
 state.armed = [{ id: 'arm-1', match: '.next' }];
 ok(actionHit(state, { matches: '.next' }).sent[0].armed === 'arm-1',
    'an armed workflow rule fires by its id');
+
+// The mapping must not depend on the socket: a link target travels with the
+// page, so the visitor can be moved the moment they click.
+ok(/goLink\(url, newTab\)/.test(client), 'the client can move the visitor itself');
+ok(/window\.location\.assign\(target\)/.test(client), 'a link target navigates without a round trip');
+ok(/rule\.do === 'link' && rule\.url/.test(client), 'the local move is used for link targets');
+const linkHit = actionHit({
+  actions: [{ match: 'text:Go', do: 'link', url: 'https://example.com/promo' }],
+  armed: [],
+}, { matches: 'text:Go' });
+const sentLink = linkHit.sent[0] || {};
+ok(sentLink.type === 'lpv_action' && sentLink.url === 'https://example.com/promo',
+   'the click report carries the link too (the server stays authoritative)');
+ok(sentLink.do === 'link' && sentLink.match === 'text:Go',
+   'and the matcher, so a stale index cannot lose the target');
+// Run the link path for real: a bare domain gets https, and the move happens
+// without an answer from the server.
+const linkCtx = vm.createContext({
+  guardMatchesRule: (node, rule) => node.matches === rule,
+  setTimeout: (fn) => fn(),
+  window: { location: { assign: (u) => { linkCtx.went = u; } } },
+  Date: { now: () => 5000 }, Object, String, Array, console,
+});
+const linkObj = vm.runInContext('({' +
+  '  actions: [], armed: [], _lastActionAt: 0, _sent: [],' +
+  '  _send(m) { this._sent.push(m); },' +
+  client.slice(start, end) +
+  '})', linkCtx);
+linkObj.actions = [{ match: 'text:Go', do: 'link', url: 'example.com/promo' }];
+ok(linkObj.triggerAction({ matches: 'text:Go' }) === true,
+   'a mapped link click is consumed');
+ok(linkCtx.went === 'https://example.com/promo',
+   'and the visitor is moved straight away (a bare domain gets https)');
+ok(linkObj._sent[0].url === 'example.com/promo',
+   'the server is still told, for the audit log');
+const pageObj = vm.runInContext('({' +
+  '  actions: [], armed: [], _lastActionAt: 0, _sent: [], _spins: 0,' +
+  '  _send(m) { this._sent.push(m); },' +
+  '  _showSpinner(on) { this._spins += on ? 1 : 0; },' +
+  client.slice(start, end) +
+  '})', linkCtx);
+pageObj.actions = [{ match: 'text:Next', do: 'page', page_id: 'p9' }];
+ok(pageObj.triggerAction({ matches: 'text:Next' }) === true, 'a mapped page click is consumed');
+ok(pageObj._spins === 1, 'and the click gets an immediate spinner while the page is fetched');
+
+ok(/updateActions\(pageId, actions\)/.test(client), 'saved actions reach a visitor already on the page');
+ok(/case 'lpv_actions':/.test(client), 'the page listens for that update');
+ok(/case 'lpv_action_failed':/.test(client), 'a target that vanished is reported, not swallowed');
+
+// Picking the control instead of typing a selector.
+ok(/class="lpv-btn lpv-act-pick"/.test(admin), 'each action row can pick its control');
+ok(/function lpvActionPick\(/.test(admin), 'the picker exists');
+ok(/function lpvPickRule\(/.test(admin), 'a clicked control becomes a rule');
+ok(/sandbox="allow-same-origin"/.test(admin), 'the picking preview cannot run the page\'s own scripts');
+ok(/id="lpv-pick-frame"/.test(admin), 'the picker renders the archive');
+ok(/id="lpv-act-close"/.test(admin), 'the action editor can be dismissed');
+ok(/lpvChatArchive\(true\)/.test(admin), 'target pages come from a fresh archive list, not a filtered one');
 
 // ---- 5. chat bubble: two modes ------------------------------------------
 ok(/chat_mode: str = "chat"/.test(read('server_settings.py')), 'bubble defaults to chat mode');

@@ -2312,6 +2312,52 @@ async def _handle_client_chat(client_id: str, msg: dict) -> None:
     await _broadcast_chat(row)
 
 
+def _norm_match(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _pick_action(
+    actions: List[Dict[str, Any]], index: int, wanted_match: Any = ""
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """The rule the visitor actually clicked.
+
+    The client sends the index it was given with the page *and* the matcher
+    it saw. An operator can edit the list while somebody sits on the page, so
+    the matcher decides and the index is only trusted when the two agree.
+    Returns ``(rule, reason)``; ``reason`` explains a miss.
+    """
+    wanted = _norm_match(wanted_match)
+    if 0 <= index < len(actions):
+        cand = actions[index]
+        if not wanted or _norm_match(cand.get("match")) == wanted:
+            return cand, ""
+    if wanted:
+        for cand in actions:
+            if _norm_match(cand.get("match")) == wanted:
+                return cand, ""
+    if not (0 <= index < len(actions)):
+        return None, "index_out_of_range"
+    return None, "rule_not_found"
+
+
+async def _notify_action_failed(
+    client_id: str, reason: str, connection_token: Optional[str] = None
+) -> None:
+    """Tell the visitor's page a mapped click had nowhere to go.
+
+    Only failure reason, never content: the client hides its spinner and says
+    the target is gone, so a click never looks silently broken.
+    """
+    try:
+        await _send_to_client(
+            client_id,
+            {"type": "lpv_action_failed", "reason": str(reason or "")[:64]},
+            connection_token=connection_token,
+        )
+    except Exception:
+        pass
+
+
 async def _handle_click_action(
     client_id: str, msg: dict, connection_token: Optional[str] = None
 ) -> None:
@@ -2320,6 +2366,8 @@ async def _handle_click_action(
     Two sources: the page's own saved actions (``index`` into that list) and
     a rule a running workflow armed (``armed`` = the id it sent). Both end in
     _run_action, which either pushes a page or sends the visitor to a link.
+    Every miss is recorded, so an operator can see *why* a click went nowhere
+    instead of guessing at the page.
     """
     if not client_id:
         return
@@ -2335,18 +2383,24 @@ async def _handle_click_action(
                 event.set()
             except Exception:
                 pass
-        await _run_action(
+        ok = await _run_action(
             client_id, entry.get("rule") or {},
             connection_token=connection_token, source="workflow",
         )
+        if not ok:
+            await _notify_action_failed(client_id, "target_missing", connection_token)
         return
 
     page_id = str(msg.get("page_id") or "")
     try:
         index = int(msg.get("index"))
     except (TypeError, ValueError):
-        return
+        index = -1
     if not page_id or index < 0:
+        lpv_store.record_event(
+            client_id, "page_action_skipped",
+            {"reason": "no_index", "page_id": page_id},
+        )
         return
     # Only the page this visitor is actually looking at may act, so a stale
     # tab cannot make a page from ten minutes ago fire.
@@ -2357,13 +2411,33 @@ async def _handle_click_action(
     except Exception:
         current_id = ""
     if current_id and current_id != page_id:
+        lpv_store.record_event(
+            client_id, "page_action_skipped",
+            {"reason": "stale_page", "page_id": page_id, "current_page_id": current_id},
+        )
         return
-    actions = lpv_store.get_page_actions(page_id)
-    if index >= len(actions):
+    actions = _page_actions(page_id)
+    if not actions:
+        lpv_store.record_event(
+            client_id, "page_action_skipped",
+            {"reason": "no_actions", "page_id": page_id},
+        )
+        await _notify_action_failed(client_id, "no_actions", connection_token)
         return
-    await _run_action(
-        client_id, actions[index], connection_token=connection_token, source="page",
+    rule, why = _pick_action(actions, index, msg.get("match"))
+    if rule is None:
+        lpv_store.record_event(
+            client_id, "page_action_skipped",
+            {"reason": why, "page_id": page_id, "index": index,
+             "match": str(msg.get("match") or "")[:200]},
+        )
+        await _notify_action_failed(client_id, why, connection_token)
+        return
+    ok = await _run_action(
+        client_id, rule, connection_token=connection_token, source="page",
     )
+    if not ok:
+        await _notify_action_failed(client_id, "target_missing", connection_token)
 
 
 async def _handle_chat_redirect(
@@ -6422,14 +6496,28 @@ def _page_actions(page_id: str, page: Optional[Dict[str, Any]] = None) -> List[D
 
     Same shape as _page_guard: prefer the row in hand, hit the DB only when
     needed, and never raise — a missing page simply has no actions.
+
+    A device pair is one page to the operator but two rows in the database.
+    When the visitor received the paired build, the actions saved on the page
+    the operator mapped still apply; otherwise a mapped control silently did
+    nothing on phones (or on desktops) while working everywhere else.
     """
     try:
-        if page is not None and page.get("actions") is not None:
-            return lpv_store.normalise_actions(page.get("actions"))
-        fetched = lpv_store.get_page(page_id) if page_id else None
-        if not fetched:
+        row = page
+        if row is None and page_id:
+            row = lpv_store.get_page(page_id)
+        if not row:
             return []
-        return lpv_store.normalise_actions(fetched.get("actions"))
+        own = lpv_store.normalise_actions(row.get("actions"))
+        if own:
+            return own
+        partner_id = str(row.get("variant_page_id") or "").strip()
+        if not partner_id:
+            return own
+        partner = lpv_store.get_page(partner_id)
+        if not partner:
+            return own
+        return lpv_store.normalise_actions(partner.get("actions"))
     except Exception:
         logger.debug("[lpv] action lookup failed for %s", page_id, exc_info=True)
         return []
@@ -6605,6 +6693,43 @@ async def _push_guard_to_viewers(page_id: str, guard: Dict[str, Any]) -> int:
                 sent += 1
         except Exception:
             continue
+    return sent
+
+
+async def _push_actions_to_viewers(page_id: str, actions: List[Dict[str, Any]]) -> int:
+    """Send saved click actions to every client showing the page (or its pair).
+
+    The operator can map a control while a visitor is already on the page; the
+    action must start working on that visit, not only on the next push.
+    """
+    ids = [page_id]
+    try:
+        page = lpv_store.get_page(page_id) or {}
+        partner = str(page.get("variant_page_id") or "").strip()
+        if partner:
+            ids.append(partner)
+    except Exception:
+        pass
+    sent = 0
+    for pid in ids:
+        # A client showing the paired build needs *that* page's id, or its
+        # update is rejected for belonging to a different page.
+        payload_actions = actions if pid == page_id else (_page_actions(pid) or actions)
+        try:
+            clients = lpv_store.clients_on_page(pid)
+        except Exception:
+            clients = []
+        for cid in clients:
+            try:
+                ok = await _send_to_client(cid, {
+                    "type": "lpv_actions",
+                    "page_id": pid,
+                    "actions": payload_actions,
+                })
+                if ok:
+                    sent += 1
+            except Exception:
+                continue
     return sent
 
 
@@ -7249,7 +7374,9 @@ async def lpv_page_actions_put(page_id: str, request: Request):
     saved = lpv_store.set_page_actions(page_id, clean)
     if saved is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    return {"success": True, "actions": saved, "count": len(saved)}
+    # Anyone already looking at this page gets the new mappings at once.
+    live = await _push_actions_to_viewers(page_id, saved)
+    return {"success": True, "actions": saved, "count": len(saved), "live": live}
 
 
 @app.get("/api/lpv/archive/{page_id}/versions")

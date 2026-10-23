@@ -6638,8 +6638,22 @@
             padding: 10px 12px; color: var(--text, #fff); font-family: ui-monospace, 'Space Grotesk', monospace;
             font-size: 12px; line-height: 1.5; outline: none; white-space: pre; }
         .lpv-edit-area:focus { border-color: rgba(74,144,217,0.55); }
-        .lpv-act-row { display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px;
+        .lpv-archive-hint { font-size: 10.5px; line-height: 1.5; color: var(--text-muted);
+            padding: 2px 2px 8px; }
+        .lpv-archive-hint b { color: var(--text, #fff); font-weight: 700; }
+        .lpv-act-row { display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px; flex-wrap: wrap;
             border: 1px solid var(--border); border-radius: 10px; background: var(--bg-input); }
+        /* Pick-a-control preview: the operator clicks the real button instead
+           of guessing a selector. */
+        .lpv-pick-modal { width: min(980px, 96vw); height: min(84vh, 900px); display: flex;
+            flex-direction: column; overflow: hidden; }
+        .lpv-pick-frame { flex: 1 1 auto; min-height: 220px; margin-top: 10px; border: 1px solid var(--border);
+            border-radius: 10px; overflow: hidden; background: #fff; }
+        .lpv-pick-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+        .lpv-pick-picked { margin-top: 10px; font-size: 11px; color: var(--text-muted);
+            font-family: ui-monospace, 'Space Grotesk', monospace; word-break: break-word; }
+        .lpv-pick-picked.good { color: #6ee7b7; }
+        .lpv-pick-picked.bad { color: #fca5a5; }
         .lpv-act-match { flex: 1 1 220px; min-width: 0; }
         .lpv-act-line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         .lpv-act-do, .lpv-act-page, .lpv-act-url { background: var(--bg-panel, #14161f); border: 1px solid var(--border);
@@ -9263,6 +9277,8 @@
                             <button class="lpv-btn" id="lpv-archive-refresh">Refresh</button>
                         </div>
                         <div class="lpv-tags" id="lpv-tag-pills"></div>
+                        <div class="lpv-archive-hint">⚡ on a page = <b>click actions</b>: press it to say “this button on the page takes the visitor to …”.
+                            Actions travel with the page and still fire when the page is locked.</div>
                         <div class="lpv-archive-list" id="lpv-archive-list">
                             <div class="lpv-empty">No pages in archive yet</div>
                         </div>
@@ -16144,14 +16160,17 @@ function lpvFormatBytes(n) {
             let lpvActionsPageId = null;
 
             // One editor row: the control to watch, and where it goes.
-            function lpvActionRow(a) {
+            function lpvActionRow(a, archive) {
                 a = a || { match: '', do: 'page' };
+                const pages = archive || (typeof LPV_STATE !== 'undefined' && LPV_STATE.archive) || [];
                 const row = document.createElement('div');
                 row.className = 'lpv-act-row';
                 row.innerHTML =
                     '<input class="lpv-act-match" spellcheck="false" ' +
                     '       placeholder="Control — text:Sign in, .btn-next, #submit" value="">' +
                     '<div class="lpv-act-line">' +
+                    '  <button class="lpv-btn lpv-act-pick" type="button" ' +
+                    '          title="Pick the control by clicking it in a preview of this page">🎯 Pick</button>' +
                     '  <select class="lpv-act-do">' +
                     '    <option value="page">go to a page</option>' +
                     '    <option value="link">open a link</option>' +
@@ -16163,8 +16182,8 @@ function lpvFormatBytes(n) {
                 const doSel = row.querySelector('.lpv-act-do');
                 const pageSel = row.querySelector('.lpv-act-page');
                 const urlInp = row.querySelector('.lpv-act-url');
-                (LPV_STATE.archive || []).forEach(p => {
-                    if (p.id === lpvActionsPageId) return;   // no self-loops
+                (pages || []).forEach(p => {
+                    if (!p || !p.id || p.id === lpvActionsPageId) return;   // no self-loops
                     const opt = document.createElement('option');
                     opt.value = p.id;
                     opt.textContent = p.name;
@@ -16180,6 +16199,8 @@ function lpvFormatBytes(n) {
                 };
                 doSel.onchange = paint;
                 paint();
+                const pick = row.querySelector('.lpv-act-pick');
+                if (pick) pick.onclick = () => lpvActionPick(row);
                 const del = document.createElement('button');
                 del.className = 'lpv-bind-del';
                 del.textContent = '✕';
@@ -16207,26 +16228,130 @@ function lpvFormatBytes(n) {
                 return out;
             }
 
+            // The rule the guard/actions understand for a control the
+            // operator just clicked. A stable id wins; otherwise the visitor's
+            // own words ("text:Sign in") are the most readable matcher.
+            function lpvPickRule(node) {
+                if (!node) return '';
+                let el = node;
+                const sel = 'a, button, ui-button, input, select, textarea, [role="button"], [data-action], [onclick]';
+                try { if (el.closest) el = el.closest(sel) || el; } catch (e) { /* not a selector */ }
+                const attr = (name) => {
+                    try { return el.getAttribute ? (el.getAttribute(name) || '').trim() : ''; }
+                    catch (e) { return ''; }
+                };
+                const id = String(el.id || '').trim();
+                if (id && /^[A-Za-z][\w:.-]*$/.test(id)) return '#' + id;
+                const name = attr('name');
+                if (name) return 'name:' + name;
+                // An <input type=submit> has no text: its value is what the
+                // visitor reads.
+                const text = String(el.textContent || '').replace(/\s+/g, ' ').trim()
+                    || attr('value');
+                const aria = attr('aria-label');
+                // A one-glyph label ("→", "✕") is not a matcher anybody can
+                // read later; the accessible name is.
+                const words = (text.match(/[A-Za-z0-9]/g) || []).length;
+                if (words >= 2) return 'text:' + text.slice(0, 60);
+                if (aria) return 'aria:' + aria.slice(0, 60);
+                if (text) return 'text:' + text.slice(0, 60);
+                const cls = String(typeof el.className === 'string' ? el.className : '')
+                    .trim().split(/\s+/).filter(Boolean);
+                if (cls.length) return '.' + cls[0];
+                return String(el.tagName || '').toLowerCase();
+            }
+
+            // Pick a control by clicking it. The preview is sandboxed without
+            // scripts, so the archived page cannot swallow the click or
+            // navigate away while the operator is choosing.
+            function lpvActionPick(row) {
+                const pageId = lpvActionsPageId;
+                const input = row && row.querySelector('.lpv-act-match');
+                if (!pageId || !input) return;
+                const base = (typeof SERVER_API_BASE !== 'undefined' ? SERVER_API_BASE : '');
+                const ov = document.createElement('div');
+                ov.className = 'lpv-bind-overlay open';
+                ov.innerHTML =
+                    '<div class="lpv-bind-modal lpv-pick-modal">' +
+                    '  <div class="lpv-bind-head"><span class="lpv-bind-title">Pick a control</span>' +
+                    '    <button class="lpv-btn" id="lpv-pick-close" aria-label="Close">✕</button></div>' +
+                    '  <div class="lpv-bind-page">Click the button or link that should move the visitor.</div>' +
+                    '  <div class="lpv-pick-frame"><iframe id="lpv-pick-frame" title="Pick a control" ' +
+                    '       sandbox="allow-same-origin" src="' + base + '/api/lpv/archive/' + pageId + '/html"></iframe></div>' +
+                    '  <div class="lpv-pick-picked" id="lpv-pick-picked">Nothing picked yet.</div>' +
+                    '</div>';
+                document.body.appendChild(ov);
+                const close = () => ov.remove();
+                const picked = ov.querySelector('#lpv-pick-picked');
+                ov.querySelector('#lpv-pick-close').onclick = close;
+                ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+                const frame = ov.querySelector('#lpv-pick-frame');
+                let hovered = null;
+                frame.addEventListener('load', () => {
+                    let idoc = null;
+                    try { idoc = frame.contentDocument; } catch (e) { idoc = null; }
+                    if (!idoc || !idoc.body) {
+                        picked.textContent = 'This page cannot be previewed here — type the control into the box instead.';
+                        picked.classList.add('bad');
+                        return;
+                    }
+                    const control = (node) => {
+                        try { return node.closest('a, button, ui-button, input, select, textarea, [role="button"], [data-action], [onclick]') || node; }
+                        catch (e) { return node; }
+                    };
+                    const mark = (node) => {
+                        if (hovered && hovered.style) hovered.style.outline = '';
+                        hovered = node || null;
+                        if (hovered && hovered.style) {
+                            hovered.style.outline = '2px solid #4a90d9';
+                            hovered.style.outlineOffset = '1px';
+                        }
+                    };
+                    idoc.addEventListener('mouseover', (ev) => mark(control(ev.target)), true);
+                    idoc.addEventListener('click', (ev) => {
+                        try {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            ev.stopImmediatePropagation();
+                        } catch (e) { /* ignore */ }
+                        const rule = lpvPickRule(ev.target);
+                        if (!rule) return;
+                        input.value = rule;
+                        try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+                        close();
+                        showToast('Picked ' + rule, 'success');
+                    }, true);
+                });
+            }
+
             async function lpvActionsOpen(pageId) {
                 lpvActionsPageId = pageId;
                 const page = (LPV_STATE.archive || []).find(p => p.id === pageId) || {};
+                // Targets must list every archive, not just what the search
+                // box on the Archive tab happens to be showing.
+                let archive = (LPV_STATE.archive || []);
+                try {
+                    archive = await lpvChatArchive(true);
+                } catch (e) { /* the cached list will do */ }
                 const ov = document.createElement('div');
                 ov.className = 'lpv-bind-overlay open';
                 ov.innerHTML =
                     '<div class="lpv-bind-modal">' +
-                    '  <div class="lpv-bind-head"><span class="lpv-bind-title">Click actions</span></div>' +
+                    '  <div class="lpv-bind-head"><span class="lpv-bind-title">Click actions</span>' +
+                    '    <button class="lpv-btn" id="lpv-act-close" aria-label="Close">✕</button></div>' +
                     '  <div class="lpv-bind-page">' + escapeHtml(page.name || pageId) + '</div>' +
                     '  <div class="lpv-bind-legend">' +
-                    '    <span><b>Control</b> — the same rules as the click guard: <code>text:Sign in</code>, <code>.btn</code>, <code>#next</code>, <code>a[href*="/go"]</code></span>' +
-                    '    <span><b>Then</b> — show another archived page, or open a link</span>' +
+                    '    <span><b>Control</b> — press <b>🎯 Pick</b> and click the button on the page, or type a rule: <code>text:Sign in</code>, <code>.btn</code>, <code>#next</code></span>' +
+                    '    <span><b>Then</b> — show another archived page, or send the visitor to a link</span>' +
                     '  </div>' +
                     '  <div class="lpv-bind-rows" id="lpv-act-rows"></div>' +
                     '  <div class="lpv-bind-foot">' +
                     '    <button class="lpv-btn" id="lpv-act-add">＋ Add action</button>' +
                     '    <button class="lpv-btn primary" id="lpv-act-save">Save actions</button>' +
                     '  </div>' +
-                    '  <div class="lpv-bind-hint">A mapped control works even on a locked page — the mapping is the permission. ' +
-                    'The target page is served through the normal push path, so its bindings, guard and device version still apply.</div>' +
+                    '  <div class="lpv-bind-hint">The mapping wins over the page itself: the clicked control opens the target even if the page is locked, ' +
+                    'and even when its own <code>href</code> says something else. The target page is served through the normal push path, ' +
+                    'so its bindings, guard and device version still apply.</div>' +
                     '</div>';
                 document.body.appendChild(ov);
                 const rows = ov.querySelector('#lpv-act-rows');
@@ -16239,13 +16364,14 @@ function lpvFormatBytes(n) {
                     actions = page.actions || [];
                 }
                 if (!actions.length) actions = [{ match: '', do: 'page' }];
-                actions.forEach(a => rows.appendChild(lpvActionRow(a)));
+                actions.forEach(a => rows.appendChild(lpvActionRow(a, archive)));
                 ov.querySelector('#lpv-act-add').onclick = () => {
                     const empty = rows.querySelector('.lpv-bind-empty');
                     if (empty) empty.remove();
-                    rows.appendChild(lpvActionRow({ match: '', do: 'page' }));
+                    rows.appendChild(lpvActionRow({ match: '', do: 'page' }, archive));
                 };
                 const close = () => ov.remove();
+                ov.querySelector('#lpv-act-close').onclick = close;
                 ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
                 ov.querySelector('#lpv-act-save').onclick = async () => {
                     const out = lpvActionsRead(rows);
@@ -18032,7 +18158,6 @@ function lpvFormatBytes(n) {
                     '  <button class="lpv-btn" id="lpv-wf-add-page">+ Page</button>' +
                     '  <button class="lpv-btn" id="lpv-wf-add-redirect">+ Redirect</button>' +
                     '  <button class="lpv-btn" id="lpv-wf-add-goto">+ Goto</button>' +
-                    '  <button class="lpv-btn" id="lpv-wf-add-action" title="If the visitor clicks a control on the page, take them to a page or a link">+ Action</button>' +
                     '  <button class="lpv-btn" id="lpv-wf-add-wait">+ Wait</button>' +
                     '  <div style="flex: 1 1 auto;"></div>' +
                     '  <button class="lpv-btn" id="lpv-wf-cancel">Cancel</button>' +
@@ -18172,24 +18297,18 @@ function lpvFormatBytes(n) {
                             body = '<span style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); background:rgba(74,163,255,0.08); border:1px solid rgba(74,163,255,0.18); padding:3px 8px; border-radius:999px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> goto</span> '
                                 + '<input type="text" data-step-field="goto_url" data-step-i="' + i + '" placeholder="https://www.google.com" value="' + escapeHtml(s.url || s.page_url || '') + '" style="min-width:220px; flex:1;" /> ';
                         } else if (s.kind === 'action') {
-                            // "If they click this, go there." The matcher is a
-                            // guard rule; the target is a page or a link.
-                            const isLink = (s.do === 'link');
-                            body = '<span style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.18); padding:3px 8px; border-radius:999px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg> action</span> '
-                                + '<input type="text" data-step-field="action_match" data-step-i="' + i + '" '
-                                + 'placeholder="click on: text:Sign in, .btn-next, #submit" value="' + escapeHtml(s.match || '') + '" style="min-width:170px; flex:1;" /> '
-                                + '<select data-step-field="action_do" data-step-i="' + i + '">'
-                                + '  <option value="page"' + (isLink ? '' : ' selected') + '>→ page</option>'
-                                + '  <option value="link"' + (isLink ? ' selected' : '') + '>→ link</option>'
-                                + '</select> '
-                                + '<select data-step-field="action_page" data-step-i="' + i + '" style="' + (isLink ? 'display:none;' : '') + ' max-width:170px;">'
-                                + '  <option value="">— pick a page —</option>' + pageOptions
-                                + '</select> '
-                                + '<input type="text" data-step-field="action_url" data-step-i="' + i + '" '
-                                + 'placeholder="https://example.com" value="' + escapeHtml(s.url || '') + '" style="' + (isLink ? '' : 'display:none;') + ' min-width:170px; flex:1;" /> '
-                                + '<span style="color:var(--text-muted); font-size:11px;" title="Seconds to wait for that click before carrying on. 0 = arm it and continue immediately.">wait</span> '
-                                + '<input type="number" min="0" max="3600" data-step-field="action_wait" data-step-i="' + i + '" value="' + (s.wait_seconds || 0) + '" style="width:62px;" /> '
-                                + '<span style="color:var(--text-muted); font-size:11px;">s</span>';
+                            // Retired step. "Click this -> go there" lives on
+                            // the archive page now, so it travels with the page
+                            // instead of depending on a workflow being at the
+                            // right step. Old flows still run; the step is
+                            // read-only here so nothing is silently rewritten.
+                            const target = (s.do === 'link')
+                                ? (s.url || '(no link)')
+                                : (s.page_name || s.page_id || '(no page)');
+                            body = '<span style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); background:rgba(148,163,184,0.10); border:1px solid rgba(148,163,184,0.22); padding:3px 8px; border-radius:999px;">action (old step)</span> '
+                                + '<span style="color:var(--text-muted); font-size:11px;">'
+                                + escapeHtml(s.match || '(no control)') + ' → ' + escapeHtml(target)
+                                + ' · now set on the archive page — remove this step</span>';
                         } else {
                             body = '<input type="number" min="0" max="60" data-step-field="sleep_seconds" data-step-i="' + i + '" value="' + (s.sleep_seconds || 1) + '" style="width: 70px;" /> sec';
                         }
@@ -18215,25 +18334,6 @@ function lpvFormatBytes(n) {
                             el.oninput = () => { initial.steps[i].wait_seconds = parseInt(el.value, 10) || 0; };
                         } else if (el.dataset.stepField === 'goto_url') {
                             el.oninput = () => { initial.steps[i].url = el.value.trim(); };
-                        } else if (el.dataset.stepField === 'action_match') {
-                            el.oninput = () => { initial.steps[i].match = el.value.trim(); };
-                        } else if (el.dataset.stepField === 'action_url') {
-                            el.oninput = () => { initial.steps[i].url = el.value.trim(); };
-                        } else if (el.dataset.stepField === 'action_wait') {
-                            el.oninput = () => { initial.steps[i].wait_seconds = parseInt(el.value, 10) || 0; };
-                        } else if (el.dataset.stepField === 'action_do') {
-                            el.value = initial.steps[i].do || 'page';
-                            el.onchange = () => {
-                                initial.steps[i].do = el.value;
-                                renderSteps();
-                            };
-                        } else if (el.dataset.stepField === 'action_page') {
-                            el.value = initial.steps[i].page_id || '';
-                            el.onchange = () => {
-                                initial.steps[i].page_id = el.value;
-                                const opt = el.options[el.selectedIndex];
-                                initial.steps[i].page_name = opt ? opt.textContent : '';
-                            };
                         } else {
                             el.oninput = () => { initial.steps[i].sleep_seconds = parseInt(el.value, 10) || 0; };
                         }
@@ -18287,16 +18387,6 @@ function lpvFormatBytes(n) {
                     const _gotoBtn = editor.querySelector('#lpv-wf-add-goto');
                     if (_gotoBtn) _gotoBtn.onclick = () => {
                         initial.steps.push({ kind: 'goto', url: 'https://www.google.com' });
-                        renderSteps();
-                    };
-                } catch (e) {}
-                try {
-                    const _actBtn = editor.querySelector('#lpv-wf-add-action');
-                    if (_actBtn) _actBtn.onclick = () => {
-                        // Armed on whatever page is in front of the visitor
-                        // when the chain reaches this step.
-                        initial.steps.push({ kind: 'action', match: 'text:', do: 'page',
-                                             page_id: '', page_name: '', url: '', wait_seconds: 0 });
                         renderSteps();
                     };
                 } catch (e) {}

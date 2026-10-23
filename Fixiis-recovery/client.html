@@ -6080,34 +6080,117 @@ function applySpinnerColorFromHex(hexColor) {
                     return true;
                 },
 
+                // Live update when the operator saves this page's actions
+                // while a visitor is already looking at it. Armed workflow
+                // rules are untouched: they belong to this page, not to the
+                // saved list.
+                updateActions(pageId, actions) {
+                    const currentId = this.currentPage && this.currentPage.id;
+                    if (pageId && currentId && pageId !== currentId) return false;
+                    this.actions = Array.isArray(actions) ? actions.slice(0, 40) : [];
+                    try {
+                        const frames = this.container
+                            ? this.container.querySelectorAll('iframe[data-lpv-frame]')
+                            : [];
+                        for (let i = 0; i < frames.length; i++) {
+                            this._markAllowed(frames[i].contentDocument);
+                        }
+                    } catch (e) { /* detached frame */ }
+                    return true;
+                },
+
                 matchAction(el) {
                     if (!el) return null;
-                    for (let i = 0; i < this.armed.length; i++) {
-                        if (guardMatchesRule(el, this.armed[i].match)) {
-                            return { armed: this.armed[i].id };
+                    // A click usually lands on a <span>/<svg> inside the
+                    // button, so match the control the visitor believes they
+                    // pressed as well as the raw node.
+                    const nodes = [el];
+                    try {
+                        if (typeof guardActionable === 'function') {
+                            const control = guardActionable(el);
+                            if (control && control !== el) nodes.push(control);
                         }
-                    }
-                    for (let i = 0; i < this.actions.length; i++) {
-                        const rule = this.actions[i];
-                        if (rule && guardMatchesRule(el, rule.match)) return { index: i };
+                    } catch (e) { /* ignore */ }
+                    for (let n = 0; n < nodes.length; n++) {
+                        const node = nodes[n];
+                        for (let i = 0; i < this.armed.length; i++) {
+                            if (guardMatchesRule(node, this.armed[i].match)) {
+                                return { armed: this.armed[i].id };
+                            }
+                        }
+                        for (let i = 0; i < this.actions.length; i++) {
+                            const rule = this.actions[i];
+                            if (rule && guardMatchesRule(node, rule.match)) return { index: i };
+                        }
                     }
                     return null;
                 },
 
+                // Send the visitor to an external address. Used when a mapped
+                // control's target is a link: the address travels with the
+                // page, so nothing has to come back over the socket first.
+                goLink(url, newTab) {
+                    let target = String(url || '').trim();
+                    if (!target) return false;
+                    if (!/^[a-z][a-z0-9+.-]*:/i.test(target)) target = 'https://' + target;
+                    try {
+                        if (newTab) {
+                            try {
+                                const opened = window.open(target, '_blank', 'noopener');
+                                if (opened) return true;   // this tab stays put
+                            } catch (e) { /* popup blocked: fall through */ }
+                        }
+                        // Leave the overlay first: if the browser restores
+                        // this page from bfcache the visitor would otherwise
+                        // land on a dead page.
+                        try { this.stop(); } catch (e) { /* not started */ }
+                        window.location.assign(target);
+                        return true;
+                    } catch (e) {
+                        return false;
+                    }
+                },
+
                 // Returns true when the click was consumed by an action, so
                 // the caller can stop the page's own handler from also
-                // running (the operator's mapping wins).
+                // running (the operator's mapping wins — including the
+                // page's own href and its click guard).
                 triggerAction(el) {
                     const hit = this.matchAction(el);
                     if (!hit) return false;
                     const now = Date.now();
                     if (now - (this._lastActionAt || 0) < 800) return true;
                     this._lastActionAt = now;
-                    this._send(Object.assign({
+                    const rule = (hit.index !== undefined ? this.actions[hit.index] : null) || null;
+                    const msg = Object.assign({
                         type: 'lpv_action',
                         page_id: this.currentPage && this.currentPage.id,
                         page_name: this.currentPage && this.currentPage.name,
-                    }, hit));
+                    }, hit);
+                    // Carry the target with the report. The server re-reads
+                    // its own copy (it stays authoritative), but it can still
+                    // act when its stored index has drifted — an action
+                    // edited while this visitor sat on the page.
+                    if (rule) {
+                        msg.match = rule.match;
+                        msg.do = rule.do;
+                        if (rule.page_id) msg.target_page_id = rule.page_id;
+                        if (rule.url) msg.url = rule.url;
+                    }
+                    this._send(msg);
+                    if (rule && rule.do === 'link' && rule.url) {
+                        const self = this;
+                        const go = function () { self.goLink(rule.url, !!rule.new_tab); };
+                        try { setTimeout(go, 0); } catch (e) { go(); }
+                    } else if (rule) {
+                        // A page target still comes from the server; show the
+                        // spinner so the click has an immediate answer.
+                        try {
+                            if (typeof this._showSpinner === 'function') {
+                                this._showSpinner(true, 'click');
+                            }
+                        } catch (e) { /* cosmetic */ }
+                    }
                     return true;
                 },
 
@@ -6158,6 +6241,17 @@ function applySpinnerColorFromHex(hexColor) {
                             allowed = false;
                             for (let k = 0; k < g.allow.length; k++) {
                                 if (guardMatchesRule(el, g.allow[k])) { allowed = true; break; }
+                            }
+                            // A mapped control is allowed by definition: the
+                            // operator said what it does, so it must not look
+                            // (or behave) like a blocked one.
+                            if (!allowed) {
+                                for (let k = 0; k < this.actions.length; k++) {
+                                    if (this.actions[k] && guardMatchesRule(el, this.actions[k].match)) {
+                                        allowed = true;
+                                        break;
+                                    }
+                                }
                             }
                         }
                         try {
@@ -6211,6 +6305,35 @@ function applySpinnerColorFromHex(hexColor) {
                             page_name: this.pageName || '',
                         },
                     });
+                },
+
+                // A short-lived message over the pushed page. Used when a
+                // mapped control cannot go anywhere (the target page was
+                // deleted after the visitor was sent the page) so the click
+                // never looks silently broken.
+                _say(text) {
+                    if (!text) return;
+                    try {
+                        if (!this._sayToast) {
+                            this._sayToast = this._el('div', { id: 'lpv-guard-toast' }, []);
+                            document.body.appendChild(this._sayToast);
+                        }
+                        const toast = this._sayToast;
+                        toast.textContent = text;
+                        toast.classList.add('on');
+                        clearTimeout(this._sayTimer);
+                        this._sayTimer = setTimeout(function () {
+                            toast.classList.remove('on');
+                        }, 2600);
+                    } catch (e) { /* cosmetic only */ }
+                },
+
+                actionFailed(reason) {
+                    try { this._showSpinner(false); } catch (e) { /* not showing */ }
+                    const why = String(reason || '');
+                    this._say(why === 'page_missing' || why === 'target_missing'
+                        ? 'That page is no longer available.'
+                        : 'That action did not go through.');
                 },
 
                 _send(message) {
@@ -7908,6 +8031,22 @@ function applySpinnerColorFromHex(hexColor) {
                         } catch (e) {
                             console.error('LPV guard update failed:', e);
                         }
+                        break;
+                    case 'lpv_actions':
+                        // Operator saved new click actions for the page the
+                        // visitor is already on.
+                        try {
+                            LPV.updateActions(message.page_id, message.actions);
+                        } catch (e) {
+                            console.error('LPV actions update failed:', e);
+                        }
+                        break;
+                    case 'lpv_action_failed':
+                        // The mapping fired but the target is gone; say so
+                        // instead of leaving a dead-looking click.
+                        try {
+                            LPV.actionFailed(message.reason);
+                        } catch (e) { /* cosmetic */ }
                         break;
                     case 'lpv_workflow_branding':
                         // Workflow chain start: logo + spinner color for this
