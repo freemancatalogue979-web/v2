@@ -403,6 +403,9 @@ select.sel option{background:#12141c;color:#f3f5f9}
   border:1px solid var(--stroke);border-radius:8px;padding:6px 9px;margin-bottom:12px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
+/* A pushed page's name is a label, not a URL: mono type made "Page One" look
+   like a path. */
+.cc-url.page{font-family:inherit;font-size:12px;font-weight:600;color:var(--txt)}
 .cc-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
 .cc-stat{background:rgba(255,255,255,.035);border-radius:9px;padding:7px 8px;text-align:center}
 .cc-stat b{display:block;font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.3}
@@ -1185,6 +1188,53 @@ function clockTime(ts){
 function hostOf(url){
   try { return new URL(url).hostname.replace(/^www\./,''); } catch { return String(url||'').slice(0,42) || '—'; }
 }
+
+/* ---- "Where is this person?" ---------------------------------------------
+   A page you push is served from /api/lpv/archive/<id>/html, usually as a
+   relative URL, so a raw current_url reads like "the person is on
+   API/lpv/…". That is the server's plumbing, not a place: the visitor is on
+   Page One or Page Two, and the operator needs to read that name at a
+   glance. So resolve the pushed page to its name here, once, and print the
+   name everywhere this panel says where somebody is. A server path is never
+   shown to the person holding the phone. */
+const PUSHED_PAGE_PATH = /\/api\/lpv\/archive\/([^/?#]+)\/html/i;
+
+function pushedPageIdOf(c){
+  const url = c && typeof c.current_url === 'string' && c.current_url !== '--' ? c.current_url : '';
+  const m = url.match(PUSHED_PAGE_PATH);
+  if(m){ try { return decodeURIComponent(m[1]); } catch(e){ return m[1]; } }
+  // Older rows carry the id without a URL; the name still resolves.
+  return c && c.current_page_id ? String(c.current_page_id) : '';
+}
+function storedPageName(id){
+  if(!id) return '';
+  const page = (S.pages || []).find(p => String(p.id) === String(id));
+  return page && page.name ? String(page.name) : '';
+}
+/* A stray title that is really a path would defeat the point. */
+function looksTechnical(text){
+  return /\/api\/|\blpv\b\s*\//i.test(String(text || ''));
+}
+/* { text, isPage, url }: the short label, whether it names one of your pages,
+   and the visitor's real address when it is a website ('' otherwise). */
+function whereIs(c){
+  if(!c) return { text:'Offline — no live session', isPage:false, url:'' };
+  const id = pushedPageIdOf(c);
+  const name = String(c.current_page_name || '').trim() || storedPageName(id);
+  if(name) return { text: name, isPage:true, url:'' };
+  if(id) return { text: 'Page you pushed', isPage:true, url:'' };
+  const url = typeof c.current_url === 'string' && c.current_url !== '--' ? c.current_url : '';
+  if(!url){
+    const title = looksTechnical(c.title) ? '' : String(c.title || '').trim();
+    if(title) return { text: title, isPage:false, url:'' };
+    return { text: c.is_lpv ? 'Waiting — no page sent yet' : 'No page reported yet', isPage:false, url:'' };
+  }
+  // The visitor's own viewer, not a place they have been sent.
+  if(/\/client\.html/i.test(url)) return { text:'Waiting — no page sent yet', isPage:false, url:'' };
+  // Any other path on our own server: still plumbing, never a location.
+  if(/^\/api\//i.test(url)) return { text: c.is_lpv ? 'Page you pushed' : 'Your server', isPage:true, url:'' };
+  return { text: hostOf(url), isPage:false, url };
+}
 function bytes(n){
   n = Number(n)||0;
   if(n < 1024) return n+' B';
@@ -1520,6 +1570,7 @@ function pushFeed(m){
     t: Date.now()/1000,
     client_id: m.client_id,
     event_type: m.event_type,
+    page_id: m.page_id || '',
     page_name: m.page_name || '',
     value: extractValue(m.payload),
   });
@@ -1578,6 +1629,12 @@ async function loadPages(){
     setBadge('Pages', S.pages.length);
   } catch(e){ S.pages = []; }
   if(S.view === 'pages') renderPages();
+  // The cards print a pushed page's NAME, so a list that arrives after the
+  // clients repaints them (and an open drawer's "Currently on").
+  if(S.view === 'clients') renderClients();
+  const sel = S.selected ? S.clients.find(x => x.client_id === S.selected) : null;
+  const now = $('#drNow');
+  if(sel && now) now.textContent = currentPageOf(sel);
 }
 async function loadWorkflows(){
   try {
@@ -1736,7 +1793,9 @@ function clientCard(c){
   const avatarCls = isLpv ? 'lpv' : sleeping ? 'sleep' : '';
   const statusCls = sleeping ? 'a' : isLpv ? 'c' : 'g';
   const statusTxt = sleeping ? 'Idle' : isLpv ? 'On a live page' : 'Browsing';
-  const url = c.current_url && c.current_url !== '--' ? hostOf(c.current_url) : (c.title || 'no page');
+  // Was hostOf(current_url): a relative push URL has no host, so the card
+  // printed "/api/lpv/archive/<id>/html" — see whereIs().
+  const where = whereIs(c);
   return `
   <div class="ccard ${S.selected===id?'sel':''}" data-id="${esc(id)}">
     <div class="cc-top">
@@ -1747,7 +1806,7 @@ function clientCard(c){
       </div>
       <span class="chip ${statusCls}">${esc(mode)}</span>
     </div>
-    <div class="cc-url" title="${esc(c.current_url||'')}">${esc(url)}</div>
+    <div class="cc-url${where.isPage?' page':''}" title="${esc(where.isPage ? where.text : (c.current_url||''))}">${esc(where.text)}</div>
     <div class="cc-stats">
       <div class="cc-stat"><b>${Math.round(c.fps ?? c.streamer_fps ?? 0)}</b><span>FPS</span></div>
       <div class="cc-stat"><b>${fmtDur(c.uptime)}</b><span>Online for</span></div>
@@ -1772,6 +1831,13 @@ function fmtDur(s){
   if(s < 3600) return Math.floor(s/60) + 'm';
   return Math.floor(s/3600) + 'h' + Math.floor((s%3600)/60);
 }
+/* Events record the page id as well as its name; if the page did not report
+   a name, the archive knows it — so the feed says "Page One", not blank. */
+function eventPageName(e){
+  const name = String((e && e.page_name) || '').trim();
+  if(name) return looksTechnical(name) ? '' : name;
+  return storedPageName(e && e.page_id);
+}
 function paintFeed(){
   const el = $('#feed'); if(!el) return;
   if(!S.feed.length){
@@ -1785,7 +1851,7 @@ function paintFeed(){
       <span class="t">${esc(clockTime(e.t))}</span>
       <span class="chip ${tone(e.event_type)}">${esc(eventLabel(e.event_type))}</span>
       <span class="chip m">${esc(shortId(e.client_id,8))}</span>
-      <span class="pg">${esc(e.page_name || '')}</span>
+      <span class="pg">${esc(eventPageName(e))}</span>
       ${e.value ? `<span class="vl" title="${esc(e.value)}">${esc(e.value)}</span>` : ''}
     </div>`).join('');
 }
@@ -2400,7 +2466,7 @@ function openDrawer(cid, opts={}){
   $('#drAvatar').textContent = initials(cid);
   $('#drAvatar').className = 'avatar' + (c && c.is_lpv ? ' lpv' : (c && c.is_sleeping) ? ' sleep' : '');
   $('#drTitle').textContent = shortId(cid, 18);
-  $('#drSub').textContent = (c && c.current_url && c.current_url !== '--') ? c.current_url : (p ? 'offline profile' : '—');
+  $('#drSub').textContent = c ? whereIs(c).text : (p ? 'offline profile' : '—');
 
   $('#drBody').innerHTML = drawerBody(cid, c, p, opts);
   showDrawer(true);
@@ -2431,11 +2497,11 @@ function refreshDrawer(cid){
 }
 
 function currentPageOf(c){
-  if(!c) return 'Offline — no live session';
-  const url = c.current_url && c.current_url !== '--' ? c.current_url : '';
-  if(url) return url;
-  if(c.title) return c.title;
-  return c.is_lpv ? 'Live page (no address reported)' : 'No page reported yet';
+  // The name of the page you sent ("Page One") — never the push URL. A real
+  // website keeps its full address here: which page of a site somebody is on
+  // is useful, and it is what they typed, not our plumbing.
+  const w = whereIs(c);
+  return w.isPage ? w.text : (w.url || w.text);
 }
 function drawerBody(cid, c, p, opts){
   const pages = S.pages || [];
@@ -2640,7 +2706,7 @@ function paintAudit(){
     <div class="feed-item">
       <span class="t">${esc(clockTime(e.timestamp))}</span>
       <span class="chip ${e.event_type.includes('final')?'a':e.event_type.includes('submit')?'g':''}">${esc(eventLabel(e.event_type))}</span>
-      <span class="pg">${esc(e.page_name || '')}</span>
+      <span class="pg">${esc(eventPageName(e))}</span>
       ${extractValue(e.payload) ? `<span class="vl" title="${esc(extractValue(e.payload))}">${esc(extractValue(e.payload))}</span>` : ''}
     </div>`).join('');
 }

@@ -647,6 +647,7 @@ node tests/test_link_base.cjs        # link-base rewriting in both panels
 node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
 node tests/test_page_guard.cjs       # per-page click guard (interaction allowlist)
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
+node tests/test_visitor_location.cjs # a visitor's place is a page NAME, never an /api/ path
 node tests/test_backend_address.cjs  # "Connection error": backend address handling
 node tests/test_no_hardcoded_addresses.cjs  # no server address baked into code
 node tests/test_login_diagnostics.cjs     # a rejected sign-in says why
@@ -757,6 +758,12 @@ both sides for WebSocket errors against `/ws/manager` or `/ws/...`.
   | **Pages** | pick a saved page → pick a visitor → it appears |
   | **Flows** | pick a flow → pick a visitor → it runs in order |
   | **Telegram** | is the bot working, and what should it tell you |
+
+  Each client card says where the person is in the operator's language: the
+  name of the page you sent them ("Page One", "Page Two"), or the site's
+  hostname for a remote browser. The push URL behind it
+  (`/api/lpv/archive/<id>/html`) is never printed — it reads like the visitor
+  is "on the API" and hides which page they are actually sitting on.
 
   "Past visitors" sits one tap inside Clients (it is history, not a fifth
   job). The chat *console* is not part of this panel — it lives in the full
