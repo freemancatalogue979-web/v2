@@ -579,6 +579,42 @@ static host. That output is git-ignored, so the address never enters a commit.
 (they ask once, `?server=…`, or use the origin that served them) — that is what
 the committed `standalone/client.html` is.
 
+### The standalone folder (hosting the panels yourself)
+
+```bash
+./deploy/make-standalone.sh --none            # safe to publish anywhere
+./deploy/make-standalone.sh http://YOUR-SERVER:8446   # bake your address in
+./deploy/make-standalone.sh https://panel.example.com ./my-panels
+```
+
+It writes into `./standalone/` (git-ignored, except the committed
+`client.html`), one folder you can upload as-is:
+
+| File | What it is |
+|---|---|
+| `index.html` | a tiny menu that links to the three pages below (no scripts, no fonts) |
+| `Admin.html` | the full panel |
+| `mini-admin.html` | the phone panel |
+| `client.html` | the page visitors open, if you serve it yourself |
+| `README.txt` | what each file is, how to point it at the server, how to update |
+| `BUILD.txt` | generated-at, commit, sizes and sha1 of each copy |
+
+**Every copy is verified before it is written.** The generator re-checks that
+the page kept its body byte-for-byte, that exactly one address line was added,
+and that a feature marker still exists (`#stChatMode`, `#lpv-archive-list`,
+`#loadingScreen`); a copy that fails any of them aborts the build instead of
+landing in the folder you upload.
+
+Where a copy finds the backend, in order: `?server=http://host:8446` on the
+address you opened → the address this browser used last time → the origin that
+served the file. So panels uploaded to the server itself (or to a domain that
+points at it) need nothing configured at all.
+
+**Updating** is the same command again (never edit the copies), then re-upload
+and compare `BUILD.txt`. `python3 tests/test_standalone.py` fails if the
+committed `standalone/client.html` has drifted from `client.html`, if any copy
+gained a real server address, or if the two-line change became a re-write.
+
 ### The remembered backend
 
 `Admin.html`, `mini-admin.html` and `client.html` all remember the backend in
@@ -619,8 +655,10 @@ node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets,
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step
-python3 tests/test_click_action_resolution.py  # which rule a click runs (drift, device pairs)
+python3 tests/test_click_action_resolution.py  # which rule a click runs (drift, device pairs;
+                                      # needs fastapi, skipped without it)
 python3 tests/test_chat.py             # the chat switch's decision table
+python3 tests/test_standalone.py       # the folder you host: copies + BUILD.txt
 node tests/test_bind_ui.cjs               # the push dialogs (needs jsdom; skipped otherwise)
 python3 tests/test_page_bindings.py    # text / element / regex rewriting engine
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)

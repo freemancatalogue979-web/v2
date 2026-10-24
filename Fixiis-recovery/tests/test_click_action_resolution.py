@@ -38,7 +38,14 @@ lpv_store.LPV_DB_PATH = TMP / "lpv.sqlite3"
 lpv_store.LPV_PAGES_DIR = PAGES_DIR
 lpv_store.init_db()
 
-import api  # noqa: E402
+try:
+    import api  # noqa: E402
+except ModuleNotFoundError as exc:
+    # The click handler lives in the app, so this suite needs the app's own
+    # dependencies (fastapi). Everything else here is stdlib only — skip like
+    # the jsdom suites do rather than fail a bare checkout.
+    print("click action resolution: skipped (%s not installed)" % exc.name)
+    raise SystemExit(0)
 
 
 class PickActionCase(unittest.TestCase):

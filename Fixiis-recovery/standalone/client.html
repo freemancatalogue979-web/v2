@@ -4,6 +4,18 @@
 <script>window.SERVER_ENDPOINT="";</script>
     <meta charset="UTF-8">
     <script>
+    // First thing on the page: a timestamp the rest of the boot can measure
+    // itself against. "Why was it slow?" is answerable from the console
+    // ([boot] lines) and from the lpv_page_loaded event, instead of guessing.
+    window.__BOOT_T0 = (window.performance && performance.now) ? performance.now() : Date.now();
+    window.__BOOT_MARK = function (label) {
+        try {
+            var now = (window.performance && performance.now) ? performance.now() : Date.now();
+            var ms = Math.round(now - window.__BOOT_T0);
+            console.log('[boot] ' + label + ' @' + ms + 'ms');
+            return ms;
+        } catch (e) { return 0; }
+    };
     (function(){
         try {
             var p = new URLSearchParams(window.location.search);
@@ -45,7 +57,19 @@
     <title id="pageTitle">Loading...</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap">
+    <!-- Montserrat is cosmetic and it is the only third-party resource this
+         page needs. As a plain <link rel="stylesheet"> it is RENDER-BLOCKING:
+         the browser refuses to paint until fonts.googleapis.com answers, so
+         on a slow or filtered mobile network the visitor stared at nothing
+         (or at a bare spinner) for as long as that request took. It is now
+         fetched after the first paint; the system font stack below covers
+         the gap, and with no network the page still paints immediately. -->
+    <link rel="preload" as="style"
+          href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap"
+          onload="this.onload=null;this.rel='stylesheet'">
+    <noscript>
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap">
+    </noscript>
     <style>
         /* ===== Global font: Montserrat (falls back gracefully if CDN blocked) ===== */
         html, body, input, button, textarea, select, optgroup {
@@ -4628,13 +4652,39 @@ function applySpinnerColorFromHex(hexColor) {
                 let lastError = new Error('No page address was supplied');
                 for (let i = 0; i < candidates.length; i++) {
                     const url = candidates[i];
+                    // Each candidate gets its own budget. A dead/blocked
+                    // address used to hang on the browser's TCP timeout
+                    // (tens of seconds) before the same-origin fallback was
+                    // even attempted — the visitor just watched a spinner.
+                    const canAbort = (typeof AbortController === 'function');
+                    const attempt = canAbort ? new AbortController() : null;
+                    let timedOut = false;
+                    // The budget covers getting an ANSWER from that address.
+                    // Downloading the body is allowed to take as long as the
+                    // visitor's connection needs: a slow phone must not have
+                    // its page cancelled halfway through.
+                    let timer = attempt ? setTimeout(() => {
+                        timedOut = true;
+                        try { attempt.abort(); } catch (e) { /* ignore */ }
+                    }, PAGE_FETCH_TIMEOUT_MS) : null;
+                    const relayAbort = () => {
+                        if (!attempt) return;
+                        try { attempt.abort(); } catch (e) { /* ignore */ }
+                    };
+                    if (attempt && signal) {
+                        if (signal.aborted) relayAbort();
+                        else if (signal.addEventListener) signal.addEventListener('abort', relayAbort);
+                    }
                     try {
                         const resp = await fetch(url, {
-                            signal,
+                            // Without AbortController (very old browser) the
+                            // caller's own signal is all we have.
+                            signal: attempt ? attempt.signal : signal,
                             credentials: 'same-origin',
                             cache: 'no-store',
                             mode: 'cors',
                         });
+                        if (timer) { clearTimeout(timer); timer = null; }
                         if (!resp.ok) {
                             lastError = new Error('HTTP ' + resp.status + ' from ' + url);
                             continue;
@@ -4655,8 +4705,20 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         return { url, html };
                     } catch (e) {
-                        if (e && e.name === 'AbortError') throw e;
+                        // A real cancel from the caller (a newer page was
+                        // pushed) must still propagate.
+                        if (signal && signal.aborted) throw e;
+                        if (timedOut) {
+                            lastError = new Error('timed out after ' +
+                                Math.round(PAGE_FETCH_TIMEOUT_MS / 1000) + 's from ' + url);
+                            continue;
+                        }
                         lastError = e || new Error('fetch failed for ' + url);
+                    } finally {
+                        if (timer) clearTimeout(timer);
+                        if (attempt && signal && signal.removeEventListener) {
+                            signal.removeEventListener('abort', relayAbort);
+                        }
                     }
                 }
                 throw lastError;
@@ -4684,6 +4746,7 @@ function applySpinnerColorFromHex(hexColor) {
                 locationZip: null,
                 clientIp: null,
                 ws: null,
+                handoffRaced: false,
                 canvas: null,
                 ctx: null,
                 heartbeatInterval: null,
@@ -4943,6 +5006,17 @@ function applySpinnerColorFromHex(hexColor) {
                 }
             }
 
+            // How long the pre-connect session handoff may hold the boot.
+            // Anything longer than this and the socket is opened anyway: a
+            // page that starts 2 s late is worse than an old socket that the
+            // server closes a moment later.
+            const BOOT_HANDOFF_BUDGET_MS = 1200;
+            // Per-attempt cap on fetching a pushed page. Without it a wrong
+            // backend address (an unreachable candidate URL) sat on the
+            // browser's own TCP timeout before the same-origin fallback was
+            // even tried.
+            const PAGE_FETCH_TIMEOUT_MS = 8000;
+
             function init() {
                 dbg('[INIT] init() start');
                 try {
@@ -5055,9 +5129,28 @@ function applySpinnerColorFromHex(hexColor) {
                 });
 
                 dbg('[WS DEBUG] init() releasing any previous runtime before connect()');
-                disconnectPreviousRuntimeBeforeConnect().finally(() => {
+                // The pre-connect handoff is a best-effort release of an old
+                // runtime; the WebSocket path performs the same replacement
+                // if it never lands. It used to gate every single start, so a
+                // mobile network (where a fresh POST costs a round trip, or
+                // hangs) held the visitor on the loader before the socket was
+                // even opened. It is now on a short leash: the socket opens as
+                // soon as it answers or the budget runs out, whichever first.
+                let booted = false;
+                const bootSocket = (raced) => {
+                    if (booted) return;
+                    booted = true;
+                    // Remember that this socket was opened before our own
+                    // handoff answered: the server's replacement must not be
+                    // mistaken for somebody taking the session over.
+                    if (raced) state.handoffRaced = true;
                     if (!state.reconnectDisabled) connect();
-                });
+                };
+                Promise.resolve()
+                    .then(() => disconnectPreviousRuntimeBeforeConnect())
+                    .catch(() => {})
+                    .finally(() => bootSocket(false));
+                setTimeout(() => bootSocket(true), BOOT_HANDOFF_BUDGET_MS);
             } catch (e) {
                 dbg('[INIT ERROR]', e.message || e);
                 console.error('[INIT ERROR]', e);
@@ -5240,6 +5333,7 @@ function applySpinnerColorFromHex(hexColor) {
 
             function onOpen() {
                 dbg('[WS DEBUG] WebSocket opened');
+                try { window.__BOOT_MARK('websocket open'); } catch (e) {}
                 state.connected = true;
                 state.reconnectAttempts = 0;
                 state.consecutiveFailures = 0;
@@ -5331,7 +5425,14 @@ function applySpinnerColorFromHex(hexColor) {
                     event.code === 4003
                     || String(event.reason || '').includes('access_takeover')
                 );
-                if (replacementClose || accessReleaseClose) {
+                // A replacement caused by OUR OWN pre-connect handoff landing
+                // late is not a takeover: the handoff has now finished, so the
+                // next socket will not be replaced. Reconnect instead of
+                // stranding the visitor on "Session replaced — refresh this
+                // page", which is what a late handoff used to do.
+                const selfRaced = replacementClose && !!state.handoffRaced;
+                if (selfRaced) state.handoffRaced = false;
+                if ((replacementClose || accessReleaseClose) && !selfRaced) {
                     // Both an intentional replacement and an Access takeover
                     // are terminal for this page. In particular, an old tab
                     // must not reconnect and steal the profile back. A full
@@ -5588,7 +5689,8 @@ function applySpinnerColorFromHex(hexColor) {
             // z-index so the bubble and panel float above the pushed page.
             //
             // Message shapes (server is the source of truth either way):
-            //   { type:'chat_config',  enabled, bubble_color, text_color,
+            //   { type:'chat_config',  enabled, devices ('both'|'desktop'|'mobile'),
+            //                          bubble_color, text_color,
             //                          logo_url, display_name, greeting }
             //   { type:'chat_message', id, client_id, role, kind, body, code,
             //                          created_at }
@@ -5716,15 +5818,37 @@ function applySpinnerColorFromHex(hexColor) {
                     return fallback;
                 },
 
+                // Does the operator want chat on THIS device? The server
+                // already folds this into `enabled` when it knows the device;
+                // doing it here as well covers a config broadcast to every
+                // socket, and keeps a phone bubble-free when chat is
+                // desktop-only.
+                _deviceAllowed(cfg) {
+                    const mode = String((cfg && cfg.devices) || 'both').toLowerCase();
+                    if (mode !== 'desktop' && mode !== 'mobile') return true;
+                    const mobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|opera mobi/i
+                        .test(navigator.userAgent);
+                    return mode === 'mobile' ? mobile : !mobile;
+                },
+
+                // Is the bubble a shortcut to a page/link instead of chat?
+                redirects() {
+                    return !!(this.cfg && String(this.cfg.mode || 'chat').toLowerCase() === 'redirect');
+                },
+
                 applyConfig(cfg) {
                     if (!cfg || typeof cfg !== 'object') return;
                     this.cfg = cfg;
+                    // Switched to redirect mode while a conversation is open:
+                    // close it, the panel is not part of that mode.
+                    if (this.redirects()) this.toggle(false);
+                    const on = !!cfg.enabled && this._deviceAllowed(cfg);
                     // Nothing on screen yet. This used to be a bare
                     // `if (!this.root) return;`, which ran BEFORE the mount
                     // below and meant the bubble could never be created on
                     // the first config the server ever sent.
                     if (!this.root) {
-                        if (cfg.enabled) this.mount();
+                        if (on) this.mount();
                         return;
                     }
                     const bubble = this._safeColor(cfg.bubble_color, '#7c5cff');
@@ -5733,7 +5857,7 @@ function applySpinnerColorFromHex(hexColor) {
                     this.root.style.setProperty('--lpvch-text', text);
                     this.root.style.setProperty('--lpvch-ring', bubble);
 
-                    if (!cfg.enabled) { this.destroy(); return; }
+                    if (!on) { this.destroy(); return; }
                     if (!this.bubble) { this.mount(); return; }
 
                     // Refresh branding in place.
@@ -5833,7 +5957,20 @@ function applySpinnerColorFromHex(hexColor) {
                     root.style.setProperty('--lpvch-text', textColor);
                     root.style.setProperty('--lpvch-ring', bubbleColor);
 
-                    bubble.addEventListener('click', () => this.toggle());
+                    bubble.addEventListener('click', () => {
+                        // Redirect mode: the bubble is a shortcut, not a
+                        // conversation. The server performs the move so the
+                        // page push keeps its audit trail.
+                        if (this.redirects()) {
+                            try {
+                                if (LPV && typeof LPV._send === 'function') {
+                                    LPV._send({ type: 'chat_redirect' });
+                                }
+                            } catch (e) { /* ignore */ }
+                            return;
+                        }
+                        this.toggle();
+                    });
                     panel.querySelector('.lpvch-close').addEventListener('click', () => this.toggle(false));
                     panel.querySelector('.lpvch-form').addEventListener('submit', (e) => {
                         e.preventDefault();
@@ -5842,7 +5979,8 @@ function applySpinnerColorFromHex(hexColor) {
 
                     // Ask the server for the stored thread so a reconnecting
                     // client sees its history instead of an empty panel.
-                    this.requestHistory();
+                    // Redirect mode has no thread.
+                    if (!this.redirects()) this.requestHistory();
                 },
 
                 destroy() {
@@ -5987,6 +6125,9 @@ function applySpinnerColorFromHex(hexColor) {
                 captureRoot: null,    // Element we attach delegated listeners to
                 currentPage: null,    // { id, name }
                 guard: null,          // active click guard (see normaliseGuard)
+                actions: [],          // this page's click actions (click -> go somewhere)
+                armed: [],            // rules a running workflow armed for this page
+                _lastActionAt: 0,
                 _guardToastUntil: 0,
                 _abortController: null,
                 _monitorBound: false,
@@ -6016,6 +6157,142 @@ function applySpinnerColorFromHex(hexColor) {
                             this._markAllowed(frames[i].contentDocument);
                         }
                     } catch (e) { /* detached frame */ }
+                    return true;
+                },
+
+                // A page may map a control to somewhere else: "click Sign in ->
+                // show the next page", "click here -> open this link". The
+                // rules use the same syntax as the click guard.
+                setActions(actions) {
+                    this.actions = Array.isArray(actions) ? actions.slice(0, 40) : [];
+                    // Armed workflow rules belong to the page that was on
+                    // screen when they were armed.
+                    this.armed = [];
+                },
+
+                armAction(msg) {
+                    if (!msg || !msg.match) return false;
+                    // Only for the page in front of the visitor.
+                    const currentId = this.currentPage && this.currentPage.id;
+                    if (msg.page_id && currentId && msg.page_id !== currentId) return false;
+                    this.armed.push({
+                        id: String(msg.id || ''),
+                        match: String(msg.match || ''),
+                    });
+                    return true;
+                },
+
+                // Live update when the operator saves this page's actions
+                // while a visitor is already looking at it. Armed workflow
+                // rules are untouched: they belong to this page, not to the
+                // saved list.
+                updateActions(pageId, actions) {
+                    const currentId = this.currentPage && this.currentPage.id;
+                    if (pageId && currentId && pageId !== currentId) return false;
+                    this.actions = Array.isArray(actions) ? actions.slice(0, 40) : [];
+                    try {
+                        const frames = this.container
+                            ? this.container.querySelectorAll('iframe[data-lpv-frame]')
+                            : [];
+                        for (let i = 0; i < frames.length; i++) {
+                            this._markAllowed(frames[i].contentDocument);
+                        }
+                    } catch (e) { /* detached frame */ }
+                    return true;
+                },
+
+                matchAction(el) {
+                    if (!el) return null;
+                    // A click usually lands on a <span>/<svg> inside the
+                    // button, so match the control the visitor believes they
+                    // pressed as well as the raw node.
+                    const nodes = [el];
+                    try {
+                        if (typeof guardActionable === 'function') {
+                            const control = guardActionable(el);
+                            if (control && control !== el) nodes.push(control);
+                        }
+                    } catch (e) { /* ignore */ }
+                    for (let n = 0; n < nodes.length; n++) {
+                        const node = nodes[n];
+                        for (let i = 0; i < this.armed.length; i++) {
+                            if (guardMatchesRule(node, this.armed[i].match)) {
+                                return { armed: this.armed[i].id };
+                            }
+                        }
+                        for (let i = 0; i < this.actions.length; i++) {
+                            const rule = this.actions[i];
+                            if (rule && guardMatchesRule(node, rule.match)) return { index: i };
+                        }
+                    }
+                    return null;
+                },
+
+                // Send the visitor to an external address. Used when a mapped
+                // control's target is a link: the address travels with the
+                // page, so nothing has to come back over the socket first.
+                goLink(url, newTab) {
+                    let target = String(url || '').trim();
+                    if (!target) return false;
+                    if (!/^[a-z][a-z0-9+.-]*:/i.test(target)) target = 'https://' + target;
+                    try {
+                        if (newTab) {
+                            try {
+                                const opened = window.open(target, '_blank', 'noopener');
+                                if (opened) return true;   // this tab stays put
+                            } catch (e) { /* popup blocked: fall through */ }
+                        }
+                        // Leave the overlay first: if the browser restores
+                        // this page from bfcache the visitor would otherwise
+                        // land on a dead page.
+                        try { this.stop(); } catch (e) { /* not started */ }
+                        window.location.assign(target);
+                        return true;
+                    } catch (e) {
+                        return false;
+                    }
+                },
+
+                // Returns true when the click was consumed by an action, so
+                // the caller can stop the page's own handler from also
+                // running (the operator's mapping wins — including the
+                // page's own href and its click guard).
+                triggerAction(el) {
+                    const hit = this.matchAction(el);
+                    if (!hit) return false;
+                    const now = Date.now();
+                    if (now - (this._lastActionAt || 0) < 800) return true;
+                    this._lastActionAt = now;
+                    const rule = (hit.index !== undefined ? this.actions[hit.index] : null) || null;
+                    const msg = Object.assign({
+                        type: 'lpv_action',
+                        page_id: this.currentPage && this.currentPage.id,
+                        page_name: this.currentPage && this.currentPage.name,
+                    }, hit);
+                    // Carry the target with the report. The server re-reads
+                    // its own copy (it stays authoritative), but it can still
+                    // act when its stored index has drifted — an action
+                    // edited while this visitor sat on the page.
+                    if (rule) {
+                        msg.match = rule.match;
+                        msg.do = rule.do;
+                        if (rule.page_id) msg.target_page_id = rule.page_id;
+                        if (rule.url) msg.url = rule.url;
+                    }
+                    this._send(msg);
+                    if (rule && rule.do === 'link' && rule.url) {
+                        const self = this;
+                        const go = function () { self.goLink(rule.url, !!rule.new_tab); };
+                        try { setTimeout(go, 0); } catch (e) { go(); }
+                    } else if (rule) {
+                        // A page target still comes from the server; show the
+                        // spinner so the click has an immediate answer.
+                        try {
+                            if (typeof this._showSpinner === 'function') {
+                                this._showSpinner(true, 'click');
+                            }
+                        } catch (e) { /* cosmetic */ }
+                    }
                     return true;
                 },
 
@@ -6066,6 +6343,17 @@ function applySpinnerColorFromHex(hexColor) {
                             allowed = false;
                             for (let k = 0; k < g.allow.length; k++) {
                                 if (guardMatchesRule(el, g.allow[k])) { allowed = true; break; }
+                            }
+                            // A mapped control is allowed by definition: the
+                            // operator said what it does, so it must not look
+                            // (or behave) like a blocked one.
+                            if (!allowed) {
+                                for (let k = 0; k < this.actions.length; k++) {
+                                    if (this.actions[k] && guardMatchesRule(el, this.actions[k].match)) {
+                                        allowed = true;
+                                        break;
+                                    }
+                                }
                             }
                         }
                         try {
@@ -6119,6 +6407,35 @@ function applySpinnerColorFromHex(hexColor) {
                             page_name: this.pageName || '',
                         },
                     });
+                },
+
+                // A short-lived message over the pushed page. Used when a
+                // mapped control cannot go anywhere (the target page was
+                // deleted after the visitor was sent the page) so the click
+                // never looks silently broken.
+                _say(text) {
+                    if (!text) return;
+                    try {
+                        if (!this._sayToast) {
+                            this._sayToast = this._el('div', { id: 'lpv-guard-toast' }, []);
+                            document.body.appendChild(this._sayToast);
+                        }
+                        const toast = this._sayToast;
+                        toast.textContent = text;
+                        toast.classList.add('on');
+                        clearTimeout(this._sayTimer);
+                        this._sayTimer = setTimeout(function () {
+                            toast.classList.remove('on');
+                        }, 2600);
+                    } catch (e) { /* cosmetic only */ }
+                },
+
+                actionFailed(reason) {
+                    try { this._showSpinner(false); } catch (e) { /* not showing */ }
+                    const why = String(reason || '');
+                    this._say(why === 'page_missing' || why === 'target_missing'
+                        ? 'That page is no longer available.'
+                        : 'That action did not go through.');
                 },
 
                 _send(message) {
@@ -6733,6 +7050,10 @@ function applySpinnerColorFromHex(hexColor) {
                 // `lpv_workflow_branding`.
                 redirectUrl: '',
                 redirectFrame: null,
+                // The page currently being fetched, so a duplicate push does
+                // not start a second download (see showPage).
+                _loadingPageId: '',
+                _loadingPageUrl: '',
                 _redirectLoaded: '',
                 _spinnerWanted: false,
 
@@ -6918,13 +7239,31 @@ function applySpinnerColorFromHex(hexColor) {
                     this._setBar('LPV stopped');
                 },
 
-                async showPage(pageId, pageUrl, pageName, guard) {
+                async showPage(pageId, pageUrl, pageName, guard, actions) {
                     if (!this.active) this.start();
+                    // The same page can arrive twice at boot (the LPV-only
+                    // boot message names the landing page, and a workflow
+                    // that starts on it pushes it again a moment later). The
+                    // old code aborted the first fetch and downloaded the
+                    // page a second time; the visitor paid for both. Keep the
+                    // first fetch and just refresh its rules.
+                    const _wantId = String(pageId || '');
+                    const _wantUrl = String(pageUrl || '');
+                    if (this._loadingPageId && this._loadingPageId === _wantId
+                        && this._loadingPageUrl === _wantUrl) {
+                        this._nextGuard = (guard === undefined || guard === null)
+                            ? null : normaliseGuard(guard);
+                        this._nextActions = Array.isArray(actions) ? actions : [];
+                        return;
+                    }
                     // The guard for the page we are LEAVING stays active until
                     // the new document is committed, so a click during the
                     // load cannot slip through the old page's rules.
                     this._nextGuard = (guard === undefined || guard === null)
                         ? null : normaliseGuard(guard);
+                    this._nextActions = Array.isArray(actions) ? actions : [];
+                    this._loadingPageId = _wantId;
+                    this._loadingPageUrl = _wantUrl;
                     // Before swapping in a new page, flush any field_final
                     // values for the page we're about to leave.  The
                     // start()-closure handler picks this up because it has
@@ -7136,6 +7475,18 @@ function applySpinnerColorFromHex(hexColor) {
                                     });
                                 };
                                 innerDoc.addEventListener('click', (ev) => {
+                                    // A control the operator mapped to
+                                    // "go somewhere" wins over everything:
+                                    // the mapping is explicit, so a locked
+                                    // page does not swallow it.
+                                    if (LPV.triggerAction(ev && ev.target)) {
+                                        try {
+                                            ev.preventDefault();
+                                            ev.stopPropagation();
+                                            ev.stopImmediatePropagation();
+                                        } catch (e) { /* ignore */ }
+                                        return;
+                                    }
                                     // Click guard: on a locked page only the
                                     // operator's allowlisted controls may act.
                                     // Everything else is swallowed right here —
@@ -7315,17 +7666,34 @@ function applySpinnerColorFromHex(hexColor) {
                         this.pageName = pageName || '';
                         this.guard = this._nextGuard || normaliseGuard(null);
                         this._nextGuard = null;
+                        // Click actions travel with the page, so the first
+                        // click after a push already knows where to go.
+                        this.setActions(this._nextActions || []);
+                        this._nextActions = null;
                         this._paintGuard();
                         this._setBar('LPV ' + (pageName || pageId));
                         this._showSpinner(false);
 
+                        this._loadingPageId = '';
+                        this._loadingPageUrl = '';
+                        // How long this page took to reach the screen, counted
+                        // from the first byte of client.html. Recorded so
+                        // "the LPV is slow" can be checked against numbers.
+                        let sinceBoot = 0;
+                        try {
+                            if (typeof window.__BOOT_MARK === 'function') {
+                                sinceBoot = window.__BOOT_MARK('first page painted');
+                            }
+                        } catch (e) { /* diagnostics only */ }
                         this._send({
                             type: 'lpv_page_loaded',
                             page_id: pageId,
                             page_name: pageName,
-                            payload: { bytes: html.length }
+                            payload: { bytes: html.length, ms_since_boot: sinceBoot }
                         });
                     } catch (e) {
+                        this._loadingPageId = '';
+                        this._loadingPageUrl = '';
                         if (ac.signal.aborted) return;
                         const errMsg = (e && e.message) ? e.message : String(e);
                         console.error('[LPV] page load failed:', errMsg, {pageUrl, apiBase: CONFIG.apiUrl});
@@ -7726,6 +8094,13 @@ function applySpinnerColorFromHex(hexColor) {
                                 }
                             } catch (e) { /* best-effort */ }
                             try { LPV.setRedirectPage(message.redirect_html_url); } catch (e) {}
+                            // If a custom loading page is configured, paint it
+                            // NOW rather than waiting for the first page push:
+                            // the operator's own HTML is what the visitor
+                            // should see while anything is still loading.
+                            try {
+                                if (message.redirect_html_url) lpvHoldLoadingScreen();
+                            } catch (e) { /* cosmetic */ }
                             // The boot payload carries the live-chat config
                             // under `chat`; apply it so the bubble is there
                             // from the first painted page.
@@ -7745,7 +8120,8 @@ function applySpinnerColorFromHex(hexColor) {
                                     message.default_page || '_default.html',
                                     url,
                                     message.default_page || '_default.html',
-                                    message.default_page_guard
+                                    message.default_page_guard,
+                                    message.default_page_actions
                                 );
                             }
                             console.log('[client] LPV-only mode active; default =', message.default_page);
@@ -7773,10 +8149,21 @@ function applySpinnerColorFromHex(hexColor) {
                                 message.page_id,
                                 message.page_url,
                                 message.page_name,
-                                message.guard
+                                message.guard,
+                                message.actions
                             );
                         } catch (e) {
                             console.error('LPV showPage failed:', e);
+                        }
+                        break;
+                    case 'lpv_arm_action':
+                        // A workflow "action" step: if the visitor presses
+                        // this control on the page in front of them, the
+                        // server takes them to the step's target.
+                        try {
+                            LPV.armAction(message);
+                        } catch (e) {
+                            console.error('LPV arm action failed:', e);
                         }
                         break;
                     case 'lpv_guard':
@@ -7787,6 +8174,22 @@ function applySpinnerColorFromHex(hexColor) {
                         } catch (e) {
                             console.error('LPV guard update failed:', e);
                         }
+                        break;
+                    case 'lpv_actions':
+                        // Operator saved new click actions for the page the
+                        // visitor is already on.
+                        try {
+                            LPV.updateActions(message.page_id, message.actions);
+                        } catch (e) {
+                            console.error('LPV actions update failed:', e);
+                        }
+                        break;
+                    case 'lpv_action_failed':
+                        // The mapping fired but the target is gone; say so
+                        // instead of leaving a dead-looking click.
+                        try {
+                            LPV.actionFailed(message.reason);
+                        } catch (e) { /* cosmetic */ }
                         break;
                     case 'lpv_workflow_branding':
                         // Workflow chain start: logo + spinner color for this
