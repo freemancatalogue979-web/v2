@@ -3004,15 +3004,62 @@ def _client_html_response(request: Request, html_content: str) -> Response:
     return HTMLResponse(html_content, headers=headers)
 
 
+# ---------------------------------------------------------------------------
+# Public pages on/off (server_settings.public_pages_enabled)
+# ---------------------------------------------------------------------------
+# One switch, flipped from the mini panel's header, decides whether the pages a
+# VISITOR opens exist at all. Everything the operator needs to turn it back on
+# (/admin, /mini, /api/*) keeps working — otherwise a switch flipped from a
+# phone would lock that same phone out.
+#
+# The 404 is deliberately indistinguishable from a page that was never there:
+# a closed site must not tell a stranger that somebody is operating it.
+
+_NOT_FOUND_HTML = (
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>404 Not Found</title>"
+    "<style>body{margin:0;min-height:100vh;display:flex;align-items:center;"
+    "justify-content:center;background:#0f1419;color:#e7edf4;"
+    "font:15px/1.5 ui-sans-serif,system-ui,sans-serif}"
+    "div{text-align:center}h1{margin:0 0 6px;font-size:22px}"
+    "p{margin:0;color:#8b9bb0;font-size:13px}</style></head>"
+    "<body><div><h1>404</h1><p>This page could not be found.</p></div></body></html>"
+)
+
+
+def _public_pages_open() -> bool:
+    """True when visitors may open pages. Fails open: a broken settings read
+    must not take the whole site down."""
+    try:
+        return bool(srv_settings.get_settings().public_pages_enabled)
+    except Exception:
+        logger.debug("[settings] public_pages_enabled unreadable; assuming on", exc_info=True)
+        return True
+
+
+def _public_page_closed() -> Response:
+    """The 404 a visitor gets while the switch is off."""
+    return HTMLResponse(
+        _NOT_FOUND_HTML,
+        status_code=404,
+        headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"},
+    )
+
+
 @app.get("/")
 async def home(request: Request):
     """Serve the active remote-browser client UI"""
+    if not _public_pages_open():
+        return _public_page_closed()
     return _render_client_html(request)
 
 
 @app.get("/client.html")
 async def client_page(request: Request):
     """Serve the active remote-browser client UI"""
+    if not _public_pages_open():
+        return _public_page_closed()
     return _render_client_html(request)
 
 
@@ -6934,6 +6981,10 @@ async def lpv_archive_html(page_id: str, b: Optional[str] = None):
     """Raw HTML body — the client runtime fetches this URL to render
     a pushed page. Returns text/html so the browser can inject it
     directly into a container."""
+    if not _public_pages_open():
+        # Same 404 shape as a deleted page: a closed site should not hint
+        # that a page exists behind the switch.
+        return JSONResponse({"error": "not found"}, status_code=404)
     page = lpv_store.get_page(page_id)
     if not page:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -9359,6 +9410,19 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
 async def websocket_endpoint(websocket: WebSocket):
     """Main WebSocket endpoint for streaming"""
     await websocket.accept()
+    # Public pages off: a visitor's tab that is still retrying gets the same
+    # answer as a fresh visit. The viewer shows its "not available" screen and
+    # stops reconnecting instead of hammering the socket forever.
+    if not _public_pages_open():
+        try:
+            await websocket.send_json({"type": "site_disabled"})
+        except Exception:
+            pass
+        try:
+            await websocket.close(code=1008, reason="site_disabled")
+        except Exception:
+            pass
+        return
     # D0 instrumentation (MIGRATION_LIVE_MIRROR.md): log negotiated WS
     # extensions once per connection at DEBUG — permessage-deflate is what
     # keeps full_document frames cheap on the wire.

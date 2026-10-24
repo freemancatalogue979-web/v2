@@ -272,6 +272,42 @@ svg{display:block}
 .icon-btn:hover{background:var(--panel-2);transform:translateY(-1px);border-color:var(--stroke-2)}
 .icon-btn.spin svg{animation:spin 1s linear infinite}
 
+/* ---- visitor pages: the site on/off switch --------------------------------
+   One row, under the title, always visible: is the page visitors open alive
+   or not. When it is off the row turns red and says what a visitor sees, so
+   nobody has to remember what the switch does. */
+.site-row{
+  display:flex;align-items:center;gap:12px;flex:none;
+  padding:10px 26px;border-bottom:1px solid var(--stroke);
+  background:rgba(10,12,18,.28);transition:background .2s,border-color .2s;
+}
+.site-row .site-txt{display:flex;flex-direction:column;line-height:1.32;min-width:0}
+.site-row .site-txt b{font-size:12.5px;font-weight:650;letter-spacing:-.005em}
+.site-row .site-txt span{font-size:10.5px;color:var(--txt-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.site-row .sw{
+  margin-left:auto;width:46px;height:26px;border-radius:99px;flex:none;cursor:pointer;
+  border:1px solid var(--stroke-2);background:rgba(255,255,255,.06);position:relative;
+  padding:0;transition:background .18s,border-color .18s,opacity .18s;
+}
+.site-row .sw::after{
+  content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;
+  background:var(--txt-3);transition:transform .18s var(--ease),background .18s;
+}
+.site-row .sw.on{background:rgba(52,211,153,.22);border-color:rgba(52,211,153,.5)}
+.site-row .sw.on::after{transform:translateX(20px);background:var(--green)}
+.site-row .sw[disabled]{opacity:.55;cursor:wait}
+.site-row.off{background:rgba(120,20,30,.16);border-bottom-color:rgba(244,114,114,.38)}
+.site-row.off .site-txt b{color:#ff9b9b}
+.site-row.off .sw{background:rgba(244,114,114,.16);border-color:rgba(244,114,114,.45)}
+/* the same warning, where an operator is about to send something */
+.howto.off{border-color:rgba(244,114,114,.38);background:rgba(120,20,30,.16)}
+.howto.off b{color:#ff9b9b}
+.site-row .site-tag{
+  font-size:9.5px;font-weight:700;letter-spacing:.1em;padding:3px 7px;border-radius:6px;
+  background:rgba(52,211,153,.16);color:#6ee7b7;flex:none;
+}
+.site-row.off .site-tag{background:rgba(244,114,114,.18);color:#ff9b9b}
+
 .view{flex:1;overflow-y:auto;padding:22px 26px 40px;scroll-behavior:smooth}
 .view::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08)}
 
@@ -644,6 +680,8 @@ select.sel option{background:#12141c;color:#f3f5f9}
   /* header */
   .topbar{padding:11px 14px;gap:9px}
   .topbar h1{font-size:15.5px}
+  .site-row{padding:9px 14px;gap:10px}
+  .site-row .site-txt span{white-space:normal}
   .live-pill{padding:6px 9px}
   .live-pill span{display:none}
   .icon-btn{width:38px;height:38px}
@@ -878,6 +916,19 @@ select.sel option{background:#12141c;color:#f3f5f9}
         <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
       </button>
     </header>
+
+    <!-- Is the page visitors open alive? One switch, always in sight. -->
+    <div class="site-row" id="siteRow">
+      <div class="site-txt">
+        <b id="siteTitle">Visitor pages are live</b>
+        <span id="siteSub">Anyone with your link opens the page</span>
+      </div>
+      <span class="site-tag" id="siteTag">ON</span>
+      <button class="sw on" id="siteSwitch" type="button" role="switch"
+              aria-checked="true" aria-label="Visitor pages"
+              onclick="toggleSitePages()"><i></i></button>
+    </div>
+
     <main class="view" id="view"></main>
   </div>
 </div>
@@ -1556,6 +1607,15 @@ function handleAdminMsg(m){
     case 'lpv_event':
       pushFeed(m);
       break;
+    case 'server_settings_update': {
+      // Another panel (or the desktop console) changed a setting — most
+      // importantly the visitor-pages switch. Repaint instead of waiting for
+      // the next refresh.
+      const next = (m && m.settings) || {};
+      S.settings = Object.assign({}, S.settings, next);
+      paintSitePages(sitePagesOn());
+      break;
+    }
     case 'session_update':
       wsSend({type:'get_clients'});
       break;
@@ -1599,7 +1659,57 @@ async function loadSettings(){
     S.settings = r.settings || {};
     setBadge('Pages', (S.pages || []).length);
   } catch(e){ /* non-fatal */ }
+  paintSitePages(sitePagesOn());
 }
+
+/* ============================================================
+   Visitor pages ON/OFF
+   ------------------------------------------------------------
+   The switch that decides whether the page people open exists at all.
+   Off: /  and /client.html answer 404, pushed pages answer 404, and a
+   visitor's tab that reconnects is told to stop. The panels and the API
+   keep working, so it can always be switched back on from this phone.
+   ============================================================ */
+function sitePagesOn(){
+  const v = S.settings ? S.settings.public_pages_enabled : undefined;
+  return v === undefined || v === null ? true : v !== false;
+}
+function paintSitePages(on){
+  const row = document.getElementById('siteRow');
+  const sw = document.getElementById('siteSwitch');
+  const title = document.getElementById('siteTitle');
+  const sub = document.getElementById('siteSub');
+  const tag = document.getElementById('siteTag');
+  if(!row || !sw) return;
+  row.classList.toggle('off', !on);
+  sw.classList.toggle('on', on);
+  sw.setAttribute('aria-checked', on ? 'true' : 'false');
+  if(tag) tag.textContent = on ? 'ON' : 'OFF';
+  if(title) title.textContent = on ? 'Visitor pages are live' : 'Visitor pages are OFF';
+  if(sub) sub.textContent = on
+    ? 'Anyone with your link opens the page'
+    : 'Anyone opening your link sees 404';
+  // The Pages tab carries the same warning next to the Send buttons.
+  if(S.view === 'pages') renderPages();
+}
+async function toggleSitePages(){
+  const sw = document.getElementById('siteSwitch');
+  const next = !sitePagesOn();
+  if(!next && !confirm('Turn the visitor pages off?\n\nAnyone opening your link will see 404 until you switch this back on.')) return;
+  if(sw) sw.disabled = true;
+  paintSitePages(next);                       // optimistic: it is one tap
+  try {
+    const r = await post('/api/settings', { public_pages_enabled: next });
+    S.settings = Object.assign({}, S.settings, (r && r.settings) || { public_pages_enabled: next });
+    paintSitePages(sitePagesOn());
+    toast(next ? 'Pages back on — your link works again' : 'Pages off — visitors now see 404', next ? 'ok' : 'info');
+  } catch(e){
+    paintSitePages(sitePagesOn());
+    toast('Could not change it: ' + e.message, 'err');
+  }
+  if(sw) sw.disabled = false;
+}
+window.toggleSitePages = toggleSitePages;
 async function loadTelegram(){
   try {
     const r = await get('/api/admin/config/telegram');
@@ -2162,11 +2272,17 @@ function renderPages(){
   const pages = S.pages || [];
   const wfs = S.workflows || [];
 
+  const off = !sitePagesOn();
   box.innerHTML = `
     <div class="howto">
       <b>Send a page</b>
       <span>Tap <b>Send</b> on a page, then tap the visitor who should see it. That is the whole flow.</span>
     </div>
+    ${off ? `<div class="howto off">
+      <b>Visitor pages are off</b>
+      <span>A page sent now will not open for anyone — it answers 404 until you turn
+      <b>Visitor pages</b> back on at the top of the screen.</span>
+    </div>` : ''}
 
     <div class="sec-head">
       <h2>Your pages</h2><span class="hint">${pages.length} saved</span><div class="line"></div>

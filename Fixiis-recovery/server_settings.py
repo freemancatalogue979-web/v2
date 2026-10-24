@@ -81,6 +81,21 @@ class ServerSettings:
     lpv_default_uses_brand_spinner: bool = True
 
     # -------------------------------------------------------------------------
+    # Public pages — the one switch in the mini panel's header
+    # -------------------------------------------------------------------------
+    # When False the pages VISITORS open stop being served:
+    #
+    #   /            and /client.html          -> 404
+    #   /api/lpv/archive/<page>/html           -> 404  (pushed pages included)
+    #   new /ws connections                    -> closed with site_disabled
+    #
+    # The operator surfaces (/admin, /mini) and the API keep working, so the
+    # switch can always be turned back on from a phone. It is deliberately a
+    # plain 404: a closed page must look like a page that is not there, not
+    # like a panel telling the visitor it was switched off.
+    public_pages_enabled: bool = True
+
+    # -------------------------------------------------------------------------
     # LPV page branding (browser tab + favicon)
     # -------------------------------------------------------------------------
     # A pushed LPV page is rendered inside an iframe/blob, so the page's own
@@ -309,6 +324,12 @@ def normalise_setting(key: str, value: Any) -> Any:
         return kind if kind in _CHAT_REDIRECT_KINDS else "link"
     if key in ("chat_redirect_url", "chat_redirect_page_id"):
         return str(value or "").strip()[:2048]
+    if key == "public_pages_enabled":
+        # A form or a hand-edited file can send "false"/"0"/"off"; anything
+        # that is not an explicit no means the pages stay on.
+        if isinstance(value, str):
+            return value.strip().lower() not in ("false", "0", "off", "no", "")
+        return bool(value)
     return value
 
 

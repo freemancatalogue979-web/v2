@@ -412,6 +412,46 @@ Over HTTP: `GET`/`PUT /api/lpv/pages/<id>/actions`.
 
 ---
 
+## Turning the visitor pages off (the one switch in the mini panel)
+
+The mini panel has a single row under its title — **Visitor pages** — with a
+switch. It is the site's power button for the pages *visitors* open:
+
+| Switch | What a visitor gets |
+|---|---|
+| **ON** (default) | the page, as normal |
+| **OFF** | `404 Not Found` — `/`, `/client.html` and every pushed page (`/api/lpv/archive/<id>/html`) |
+
+Turning it off is immediate and needs no restart. Everything the operator
+needs keeps working, so a switch flipped from a phone can always be flipped
+back from the same phone:
+
+| Still served while pages are OFF |
+|---|
+| `/admin`, `/mini` — the panels |
+| `/api/*` — including the login and the settings endpoint behind the switch |
+
+Details that matter in practice:
+
+* **It looks like an ordinary 404** — the page says "This page could not be
+  found" and nothing else. A closed site never tells a visitor that somebody
+  is operating it.
+* **It is not cached** (`Cache-Control: no-store`), so turning it back on is
+  seen on the next load.
+* **A visitor already on a page keeps what is on screen** until they reload;
+  the reload gets the 404, and a tab that reconnects is sent
+  `{"type": "site_disabled"}` and closed instead of retrying forever.
+* **Pushed pages stop too**, so a running workflow cannot quietly deliver the
+  next step to somebody whose site is closed.
+* **Standalone copies** (`standalone/client.html` hosted elsewhere) still
+  load, because they are plain files — but their pages come from the API, so
+  what they render is 404 until the switch is back on.
+* **It fails open**: if the settings file cannot be read, the site stays up.
+* The same setting is `public_pages_enabled` over HTTP —
+  `POST /api/settings {"public_pages_enabled": false}`.
+
+---
+
 ## Live chat bubble: on, off, and which device
 
 Settings → **Live chat bubble** (or mini panel → Pages → Advanced):
@@ -648,6 +688,7 @@ node tests/test_client_lpv_urls.cjs  # standalone client LPV page resolution
 node tests/test_page_guard.cjs       # per-page click guard (interaction allowlist)
 node tests/test_mobile_cards.cjs     # archive cards stay compact on phones
 node tests/test_visitor_location.cjs # a visitor's place is a page NAME, never an /api/ path
+node tests/test_site_switch.cjs     # the visitor-pages ON/OFF switch (needs jsdom)
 node tests/test_backend_address.cjs  # "Connection error": backend address handling
 node tests/test_no_hardcoded_addresses.cjs  # no server address baked into code
 node tests/test_login_diagnostics.cjs     # a rejected sign-in says why
@@ -663,6 +704,7 @@ python3 tests/test_click_action_resolution.py  # which rule a click runs (drift,
                                       # needs fastapi, skipped without it)
 python3 tests/test_chat.py             # the chat switch's decision table
 python3 tests/test_standalone.py       # the folder you host: copies + BUILD.txt
+python3 tests/test_public_pages.py     # pages OFF means 404 for visitors (needs fastapi)
 node tests/test_bind_ui.cjs               # the push dialogs (needs jsdom; skipped otherwise)
 python3 tests/test_page_bindings.py    # text / element / regex rewriting engine
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
