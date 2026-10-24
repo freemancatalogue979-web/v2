@@ -531,36 +531,6 @@ budget on the body: an unreachable backend address can no longer hang the page
 for the browser's own TCP timeout, and a slow phone can still finish
 downloading a big page instead of having it cancelled halfway.
 
-### What the visitor sees first: no black frame on an LPV link
-
-`client.html` has two loading screens, and which one you get depends on where
-the visitor is going:
-
-| The link is… | First frame | Then |
-|---|---|---|
-| a **remote browser** session (`?auth=…` alone, `/` with LPV mode off) | black, site-branded spinner (Gmail, Yahoo, …) | the stream |
-| an **LPV** link (`?workflow=`, `?page=`, `?lpv=1`, any `?auth=…&workflow=…`, or `/` while **lpv_only_mode** is on) | **light backdrop, brand-coloured ring** — the same spinner the LPV runtime draws | the pushed page |
-
-That second row is the fix for a flash every LPV visitor saw: the document used
-to start on the black remote-browser screen and only become branded once the
-boot had run, so the order was *black → white ring → branded ring → page*. The
-document is now marked `data-lpv-boot="1"` **before the first paint** (the
-server sets it when it knows; the head script sets it from the link itself),
-and the stylesheet paints the custom ring from frame one. Nothing changes
-visual state between the boot and the first page.
-
-Details that matter:
-
-* an LPV visitor is **never** branded for the target site — they are not going
-  to that site's login screen, so a Gmail/Yahoo logo would be a lie;
-* a workflow's logo and colour still apply (the logo box stays hidden unless
-  one is configured);
-* if the server only says "LPV" after the page was served (a standalone copy,
-  or the mode switched on meanwhile), the client marks itself on
-  `lpv_only_session` and the same stylesheet takes over immediately;
-* `?lpv=0` / `?lpv=false` means "no", for a link that wants the browser
-  loader.
-
 ---
 
 ## Troubleshooting "it connects but nothing works"
@@ -727,7 +697,6 @@ node tests/test_bind_push.cjs             # page fields: saved once, asked at pu
 node tests/test_chat_switch.cjs           # chat on/off + which device sees the bubble
 node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; skipped otherwise)
 node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
-node tests/test_lpv_first_paint.cjs       # LPV links start on the custom spinner, not black
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step
@@ -736,7 +705,6 @@ python3 tests/test_click_action_resolution.py  # which rule a click runs (drift,
 python3 tests/test_chat.py             # the chat switch's decision table
 python3 tests/test_standalone.py       # the folder you host: copies + BUILD.txt
 python3 tests/test_public_pages.py     # pages OFF means 404 for visitors (needs fastapi)
-python3 tests/test_lpv_first_paint.py   # which links are marked LPV at render (needs fastapi)
 node tests/test_bind_ui.cjs               # the push dialogs (needs jsdom; skipped otherwise)
 python3 tests/test_page_bindings.py    # text / element / regex rewriting engine
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
