@@ -22,6 +22,24 @@
             var wName = p.get('workflow_name') || p.get('name') || p.get('title') || boot.workflowName;
             var wColor = p.get('brand_color') || p.get('color') || boot.color;
             var wLogo = p.get('brand_logo') || p.get('logo') || boot.logoUrl;
+            // Is this link going straight to a pushed page (LPV) rather than
+            // into a remote browser? If so the loader it starts on is the
+            // custom one, so it must be marked BEFORE the first paint —
+            // otherwise the black remote-browser screen flashes first and
+            // only then becomes the branded spinner. The server sets the
+            // same attribute when it knows (lpv_only_mode, a workflow link);
+            // this covers a standalone copy and any link it did not see.
+            var truthy = function (v) {
+                return !!v && ['0', 'false', 'no', 'off'].indexOf(String(v).trim().toLowerCase()) === -1;
+            };
+            var isLpvBoot = !!(boot.workflowName
+                               || truthy(p.get('workflow')) || truthy(p.get('workflow_id'))
+                               || truthy(p.get('lpv')) || truthy(p.get('page')));
+            if (isLpvBoot) {
+                document.documentElement.dataset.lpvBoot = '1';
+            }
+            var brandVar = wColor || '#4285F4';
+            document.documentElement.style.setProperty('--lpv-brand', brandVar);
             if (wName) {
                 document.title = wName;
                 window.__LPV_NAME_PREBOOT__ = wName;
@@ -43,7 +61,7 @@
                 }
                 var s = document.createElement('style');
                 s.id = 'lpv-immediate-style';
-                s.textContent = '.loading-spinner { border: 3px solid rgba(' + r + ',' + g + ',' + b + ',0.18) !important; border-top-color: rgb(' + r + ',' + g + ',' + b + ') !important; } #lpv-root { --lpv-brand: ' + c + ' !important; }';
+                s.textContent = '.loading-spinner { border: 3px solid rgba(' + r + ',' + g + ',' + b + ',0.18) !important; border-top-color: rgb(' + r + ',' + g + ',' + b + ') !important; } #lpv-root, :root { --lpv-brand: ' + c + ' !important; }';
                 document.head.appendChild(s);
             }
         } catch(e){}
@@ -234,6 +252,39 @@
             border-top-color: #ffffff;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
+        }
+
+        /* ---- LPV boot: start on the CUSTOM spinner ----------------------
+           A visitor who opened an LPV link is going to a pushed page, not
+           into a remote browser, so the black loading screen is the wrong
+           first frame: it flashed black for a moment and only then turned
+           into the branded spinner. These rules make the very first paint
+           identical to the spinner the LPV runtime uses (light backdrop,
+           brand-coloured ring, same size and stroke), so nothing changes
+           visual state between the boot and the first pushed page.
+           The attribute is set by the server (it knows lpv_only_mode and
+           workflow links) and by the head script above; `!important` beats
+           the inline colours a late site-branding pass may have written. */
+        html[data-lpv-boot="1"] .loading-screen {
+            background: #ffffff !important;
+        }
+        html[data-lpv-boot="1"] .loading-logo {
+            display: none !important;
+        }
+        html[data-lpv-boot="1"] .loading-logo.has-logo {
+            display: flex !important;
+        }
+        html[data-lpv-boot="1"] .loading-spinner {
+            width: 44px !important;
+            height: 44px !important;
+            border: 3px solid rgba(0, 0, 0, 0.10) !important;
+            border-top: 4px solid var(--lpv-brand, #4285F4) !important;
+            border-right: 4px solid var(--lpv-brand, #4285F4) !important;
+            background: transparent !important;
+        }
+        /* The Microsoft dot-spinner belongs to the remote-browser loader. */
+        html[data-lpv-boot="1"] .loading-spinner.ms-spinner {
+            display: none !important;
         }
 
         @keyframes spin {
@@ -3879,6 +3930,23 @@ function hideTransitionOverlay() {
                     return;
                 }
 
+                // LPV boot: the visitor is going to a pushed page. Do NOT
+                // brand the loader for the target site (a Gmail/Yahoo logo
+                // over a white page is the wrong promise — they never see
+                // that site's login screen), and never repaint the black
+                // remote-browser background. The CSS for
+                // html[data-lpv-boot="1"] already renders the custom
+                // (branded) ring on a light backdrop from the first frame.
+                if (document.documentElement.dataset.lpvBoot === '1') {
+                    loadingScreen.className = 'loading-screen';
+                    loadingLogo.classList.remove('has-logo');
+                    loadingLogo.innerHTML = '';
+                    loadingSpinner.className = 'loading-spinner';
+                    loadingSpinner.innerHTML = '';
+                    loadingSpinner.removeAttribute('style');
+                    return;
+                }
+
                 const brandedLoader = getBrandedLoader(targetUrl);
                 currentBrandColor = getBrandColor(targetUrl) || '#888';
                 
@@ -4041,6 +4109,9 @@ function hideTransitionOverlay() {
 
                     const logoHost = document.getElementById('loadingLogo');
                     if (logoHost) {
+                        // The LPV loader hides an empty logo box; an operator
+                        // logo is allowed to show above the ring.
+                        logoHost.classList.add('has-logo');
                         let host = '';
                         try { host = new URL(b.logoUrl).hostname; } catch (e) {}
                         const fav = host ? ('https://www.google.com/s2/favicons?sz=128&domain=' + encodeURIComponent(host)) : '';
@@ -8078,6 +8149,16 @@ function applySpinnerColorFromHex(hexColor) {
                         // client only ever displays pushed LPV pages.
                         try {
                             window.__LPV_ONLY__ = true;
+                            // This is an LPV visitor: mark the document now so
+                            // the boot loader is the custom (branded) spinner
+                            // even when the server could not know it at render
+                            // time (e.g. lpv_only_mode flipped on after the page
+                            // was served). CSS does the rest; this also clears
+                            // target-site branding the boot may have applied.
+                            try {
+                                document.documentElement.dataset.lpvBoot = '1';
+                                initLoadingScreen('');
+                            } catch (e) { /* cosmetic */ }
                             // Apply workflow metadata before constructing the
                             // LPV overlay so its first spinner frame already
                             // uses the configured palette and the outer tab is

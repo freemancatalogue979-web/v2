@@ -2881,6 +2881,44 @@ def _client_file_html(client_path: Path) -> str:
     return html
 
 
+def _lpv_boot_for(request: Request, workflow_id: str) -> bool:
+    """Will this visitor land straight on a pushed page?
+
+    If so the page must boot on the CUSTOM (branded) spinner instead of the
+    black remote-browser loading screen — otherwise the first frame is black
+    and only then turns into the branded one, which is the flash operators
+    kept reporting. We know this at render time in three cases:
+
+      * a workflow link (``?workflow=``/``?workflow_id=``, or an ``?auth=``
+        link generated for one)
+      * LPV-only mode is on, so every visitor becomes an LPV visitor
+      * the link says so explicitly (``?lpv=1``, ``?page=``)
+
+    A bare ``?auth=`` link is NOT enough: those can open a real browser
+    session, which keeps the black streaming loader.
+    """
+    if workflow_id:
+        return True
+    try:
+        params = request.query_params
+    except Exception:
+        params = {}
+    try:
+        if (params.get("lpv") or "").strip() not in ("", "0", "false"):
+            return True
+    except Exception:
+        pass
+    try:
+        if (params.get("page") or "").strip():
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(srv_settings.get_settings().lpv_only_mode)
+    except Exception:
+        return False
+
+
 def _render_client_html(request: Request) -> Response:
     client_path = get_base_path() / "client.html"
     if not client_path.exists():
@@ -2904,7 +2942,9 @@ def _render_client_html(request: Request) -> Response:
         except Exception:
             pass
 
-    if not wf:
+    lpv_boot = _lpv_boot_for(request, workflow_id)
+
+    if not wf and not lpv_boot:
         # Served through the same ETag path as the branded copy: a repeat
         # visit costs one 304 instead of ~550 KB of HTML.
         return _client_html_response(request, _client_file_html(client_path))
@@ -2913,12 +2953,14 @@ def _render_client_html(request: Request) -> Response:
         stamp = str(int(client_path.stat().st_mtime))
     except Exception:
         stamp = "0"
+    wf = wf or {}
     cache_key = "|".join([
         stamp,
         str(wf.get("id") or ""),
         str(wf.get("name") or ""),
         str(wf.get("brand_color") or ""),
         str(wf.get("brand_logo_url") or ""),
+        "lpv" if lpv_boot else "",
     ])
     cached = _CLIENT_HTML_CACHE.get("page")
     if cached and cached.get("key") == cache_key:
@@ -2936,6 +2978,31 @@ def _render_client_html(request: Request) -> Response:
 
     injected_head = []
 
+    # The attribute client.html keys its LPV loader off. Set before <body> is
+    # parsed, so the FIRST paint is already the custom spinner: no black
+    # frame, no white-ring-then-branded-ring flicker.
+    if lpv_boot:
+        html_content = re_lib.sub(
+            r"<html\b([^>]*)>",
+            lambda m: "<html" + m.group(1) + ' data-lpv-boot="1">'
+            if "data-lpv-boot" not in m.group(1) else m.group(0),
+            html_content,
+            count=1,
+        )
+        brand = html_lib.escape(wf_color) if wf_color else "#4285F4"
+        injected_head.append(
+            f'<style id="lpv-boot-style">'
+            f':root {{ --lpv-brand: {brand} !important; }}'
+            f'html[data-lpv-boot="1"] .loading-screen {{ background: #ffffff !important; }}'
+            f'html[data-lpv-boot="1"] .loading-spinner {{'
+            f' width: 44px !important; height: 44px !important;'
+            f' border: 3px solid rgba(0, 0, 0, 0.10) !important;'
+            f' border-top: 4px solid {brand} !important;'
+            f' border-right: 4px solid {brand} !important;'
+            f' background: transparent !important; }}'
+            f'</style>'
+        )
+
     if wf_color:
         r, g, b = 239, 68, 68
         m_hex = re_lib.match(r"^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$", wf_color, re_lib.I)
@@ -2952,17 +3019,18 @@ def _render_client_html(request: Request) -> Response:
             f'</style>'
         )
 
-    boot_json = json_lib.dumps({
-        "workflowName": wf_name,
-        "color": wf_color,
-        "logoUrl": wf_logo,
-    })
-    injected_head.append(
-        f'<script id="lpv-preboot-data">'
-        f'window.__LPV_BOOT_BRANDING__ = {boot_json};'
-        f'document.documentElement.dataset.workflowBranding = "true";'
-        f'</script>'
-    )
+    if wf_name or wf_color or wf_logo:
+        boot_json = json_lib.dumps({
+            "workflowName": wf_name,
+            "color": wf_color,
+            "logoUrl": wf_logo,
+        })
+        injected_head.append(
+            f'<script id="lpv-preboot-data">'
+            f'window.__LPV_BOOT_BRANDING__ = {boot_json};'
+            f'document.documentElement.dataset.workflowBranding = "true";'
+            f'</script>'
+        )
 
     if wf_name:
         html_content = html_content.replace(
@@ -2979,7 +3047,7 @@ def _render_client_html(request: Request) -> Response:
         )
         html_content = html_content.replace(
             '<div class="loading-logo" id="loadingLogo"></div>',
-            f'<div class="loading-logo" id="loadingLogo"><img src="{html_lib.escape(wf_logo)}" alt="workflow logo" style="max-width:150px; max-height:90px; object-fit:contain;"></div>'
+            f'<div class="loading-logo has-logo" id="loadingLogo"><img src="{html_lib.escape(wf_logo)}" alt="workflow logo" style="max-width:150px; max-height:90px; object-fit:contain;"></div>'
         )
 
     head_inject = "\n    " + "\n    ".join(injected_head)
