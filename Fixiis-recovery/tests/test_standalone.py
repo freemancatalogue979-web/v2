@@ -9,10 +9,10 @@ shipped to a host and opened by visitors:
     copy must never be uploadable
   * "no address" really means no address, so the folder can be published
 
-It also pins the committed `standalone/client.html` to the current
-`client.html`: that file went stale once and shipped an old client page to
-visitors (missing the startup fixes), which is invisible until somebody
-complains that the panel is slow.
+It also keeps the folder *generated*: `standalone/` is ignored by git and holds
+no tracked file, because a baked copy carries a server address. The folder
+cannot be edited into correctness or committed with somebody's address in it;
+regenerating it from the sources is the only supported path.
 
     python3 tests/test_standalone.py
 """
@@ -213,30 +213,42 @@ class GuardCase(unittest.TestCase):
         self.assertIn("no <head>", result.stderr + result.stdout)
 
 
-class CommittedCopyCase(unittest.TestCase):
-    """standalone/client.html is tracked, so it must never lag the source."""
+class GeneratedFolderCase(unittest.TestCase):
+    """standalone/ is build output, never a source of truth in the repo."""
 
-    def test_the_committed_client_page_is_current(self):
-        committed = ROOT / "standalone" / "client.html"
-        if not committed.exists():
-            self.skipTest("standalone/client.html is not in this checkout")
-        source = (ROOT / "client.html").read_text(encoding="utf-8")
-        head_end = source.index(">", source.lower().index("<head")) + 1
-        expected = source[:head_end] + "\n" + (TAG % "") + source[head_end:]
-        self.assertEqual(
-            committed.read_text(encoding="utf-8"), expected,
-            "standalone/client.html is out of date — run ./deploy/make-standalone.sh --none",
+    def test_the_folder_is_ignored_by_git(self):
+        ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        entries = {line.strip() for line in ignore.splitlines()}
+        self.assertIn(
+            "standalone/", entries,
+            "standalone/ must stay git-ignored: a baked copy carries a server address",
         )
 
-    def test_the_committed_client_page_carries_no_address(self):
-        # It is published with the repository, so it must stay the "no
-        # address" variant: a baked copy would put somebody's server in a
-        # commit, which the project forbids everywhere else too.
-        committed = ROOT / "standalone" / "client.html"
-        if not committed.exists():
-            self.skipTest("standalone/client.html is not in this checkout")
-        text = committed.read_text(encoding="utf-8")
-        self.assertIn('window.SERVER_ENDPOINT="";', text)
+    def test_no_file_in_the_folder_is_tracked(self):
+        # A tracked copy is how this went wrong before: it went stale, and a
+        # baked one would publish somebody's address in a commit. The panels
+        # live in a sub-directory of the repository, so ask git rather than
+        # assuming .git sits next to this file.
+        if not shutil.which("git"):
+            self.skipTest("git is not installed")
+        inside = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"], cwd=str(ROOT),
+            capture_output=True, text=True,
+        )
+        if inside.returncode != 0 or inside.stdout.strip() != "true":
+            self.skipTest("not a git checkout")
+        listing = subprocess.run(
+            ["git", "ls-files", "."], cwd=str(ROOT), capture_output=True, text=True,
+        )
+        self.assertEqual(listing.returncode, 0, "git ls-files failed: " + listing.stderr.strip()[:80])
+        tracked = [line for line in listing.stdout.splitlines() if line.strip() in (
+            "standalone/client.html", "standalone/Admin.html", "standalone/mini-admin.html",
+        ) or line.strip().startswith("standalone/") and line.strip().endswith(".html")]
+        self.assertEqual(
+            tracked, [],
+            "standalone/ is generated output - regenerate it with ./deploy/make-standalone.sh "
+            "instead of committing it (a baked copy carries a server address)",
+        )
 
 
 if __name__ == "__main__":

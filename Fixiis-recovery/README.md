@@ -587,8 +587,9 @@ the committed `standalone/client.html` is.
 ./deploy/make-standalone.sh https://panel.example.com ./my-panels
 ```
 
-It writes into `./standalone/` (git-ignored, except the committed
-`client.html`), one folder you can upload as-is:
+It writes into `./standalone/`, one folder you can upload as-is. The folder is
+entirely generated and git-ignored: a baked copy carries your address, so it
+must never end up in a commit.
 
 | File | What it is |
 |---|---|
@@ -606,9 +607,11 @@ and that a feature marker still exists (`#stChatMode`, `#lpv-archive-list`,
 landing in the folder you upload.
 
 Where a copy finds the backend, in order: `?server=http://host:8446` on the
-address you opened → the address this browser used last time → the origin that
-served the file. So panels uploaded to the server itself (or to a domain that
-points at it) need nothing configured at all.
+address you opened → the address baked into the copy by this script → the
+address this browser used last time → the origin that served the file. So a
+copy generated with your address works from any host (or from `file://`), a
+`--none` copy needs a `?server=` hint or a matching origin, and panels served
+by the server itself need nothing configured at all.
 
 **Updating** is the same command again (never edit the copies), then re-upload
 and compare `BUILD.txt`. `python3 tests/test_standalone.py` fails if the

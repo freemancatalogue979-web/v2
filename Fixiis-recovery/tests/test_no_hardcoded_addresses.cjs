@@ -13,7 +13,9 @@
 // Everything else - a private LAN address, a public IP, a tunnel host - is
 // configuration, not code: it belongs in config.py, .env or the panel.
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const assert = require('node:assert/strict');
 
 let checks = 0;
@@ -25,13 +27,15 @@ function ok(cond, label) {
 const root = path.join(__dirname, '..');
 
 // Every file that ships to an operator: all top-level Python modules, the
-// three panels, the generated standalone copy, the deploy assets and the
-// dependency list. Tests and docs are deliberately excluded - they may
-// describe example addresses, and a fixture is not a setting.
+// three panels, the deploy assets and the dependency list. Tests and docs are
+// deliberately excluded - they may describe example addresses, and a fixture
+// is not a setting. Generated build output (standalone/) is excluded too: it
+// is not source, it is git-ignored, and baking an address into it is exactly
+// what it is for.
 const SHIPPED = fs.readdirSync(root)
   .filter((f) => f.endsWith('.py') && fs.statSync(path.join(root, f)).isFile())
   .concat([
-    'client.html', 'Admin.html', 'mini-admin.html', 'standalone/client.html',
+    'client.html', 'Admin.html', 'mini-admin.html',
     '.env.example', 'requirements.txt',
     'deploy/nginx.conf', 'deploy/doctor.sh', 'deploy/setup.sh',
     'deploy/deploy.sh', 'deploy/fixiis.service', 'deploy/make-standalone.sh',
@@ -119,25 +123,28 @@ for (const rel of ['Admin.html', 'mini-admin.html', 'client.html']) {
 // The standalone build may bake ONE address (that is its purpose), but it must
 // still be overridable and it must be the only place - and an empty bake has
 // to mean "ask the page's own origin", not a broken literal.
+//
+// This inspects a freshly generated copy rather than ./standalone/: that folder
+// is build output, git-ignored, and normally holds the address you are hosting
+// (baking one there is supported and expected).
 {
-  const standalone = fs.readFileSync(path.join(root, 'standalone/client.html'), 'utf8');
-  const baked = standalone.match(/window\.SERVER_ENDPOINT\s*=\s*"([^"]*)"/);
-  ok(baked !== null, 'standalone build declares its SERVER_ENDPOINT slot');
-  ok(/lpv_server_endpoint/.test(standalone) && /server=/.test(standalone),
-     'the standalone build can still be overridden (?server= / saved value)');
-  // The copy committed to the repository must not carry anybody's address:
-  // a tunnel or VPS URL in here is stale the moment it changes, and points
-  // every operator who clones the repo at one machine. Bake your own locally
-  // (deploy/make-standalone.sh <url>) - that output is git-ignored.
-  assert.equal(baked[1], '',
-    'the committed standalone copy must carry no address (use ./deploy/make-standalone.sh --none)');
-  checks++;
-}
-
-// The documented way to produce that address-free copy must exist.
-{
-  const script = fs.readFileSync(path.join(root, 'deploy/make-standalone.sh'), 'utf8');
-  ok(/--none/.test(script), 'make-standalone.sh can emit an address-free copy');
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'standalone-guard-'));
+  try {
+    execFileSync('bash', [path.join(root, 'deploy/make-standalone.sh'), '--none', out],
+      { stdio: 'pipe' });
+    const standalone = fs.readFileSync(path.join(out, 'client.html'), 'utf8');
+    const baked = standalone.match(/window\.SERVER_ENDPOINT\s*=\s*"([^"]*)"/);
+    ok(baked !== null, 'standalone build declares its SERVER_ENDPOINT slot');
+    ok(/lpv_server_endpoint/.test(standalone) && /server=/.test(standalone),
+       'the standalone build can still be overridden (?server= / saved value)');
+    // The address-free build must really carry no address: baking your own is
+    // fine locally, but a copy published as-is must not point at one machine.
+    assert.equal(baked[1], '',
+      'deploy/make-standalone.sh --none must emit an address-free copy');
+    checks++;
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+  }
 }
 
 // ---- page addresses must survive an http/https mismatch -----------------

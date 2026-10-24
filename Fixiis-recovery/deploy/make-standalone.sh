@@ -236,6 +236,9 @@ UPDATING THESE FILES
 $(if [[ -n "$SERVER" ]]; then echo "    ./deploy/make-standalone.sh --none   # a copy with no address baked in"; else echo "    ./deploy/make-standalone.sh http://YOUR-SERVER:8446   # bake an address"; fi)
 
   Then re-upload. Compare BUILD.txt to know whether the host is current.
+
+  If your address changes (a tunnel URL is often temporary), regenerate
+  with the new one and re-upload - do not hand-edit the copies.
 EOF
 
 printf '  ok    %-18s %8s  -> %s\n' "README.txt" \
