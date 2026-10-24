@@ -81,6 +81,14 @@ class BuildCase(unittest.TestCase):
             self.assertLess(text.lower().index("<script>window.server_endpoint"),
                             text.lower().index("</head>"),
                             name + " injects outside <head>")
+            # ...and before the code that reads it, so the address is set when
+            # the panel resolves its backend (a hosted copy depends on this).
+            # Both panels and the client accept an address from three places;
+            # the injected tag is only useful if it is read at all.
+            reads = [m.start() for m in re.finditer(r"window\.SERVER_ENDPOINT\)", text)]
+            self.assertTrue(reads, name + " never reads window.SERVER_ENDPOINT")
+            self.assertLess(text.lower().index("<script>window.server_endpoint"),
+                            reads[0], name + " reads the address before it is set")
 
     def test_no_address_is_published_by_default(self):
         for name in PANELS:
