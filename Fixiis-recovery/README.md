@@ -533,6 +533,47 @@ downloading a big page instead of having it cancelled halfway.
 
 ---
 
+## The custom loading page is in the page, not fetched afterwards
+
+A workflow can carry its own **custom loading page** (the spinner you upload in
+the workflow editor, or one of your archived pages). It used to be fetched
+*after* the WebSocket boot, so a visitor opening the link saw the built-in
+black ring first and your spinner a round trip later.
+
+Now the server **embeds that page in the `client.html` it hands out**. The
+document arrives with your spinner already in it, so the browser paints it
+while it is still parsing — nothing else can appear first.
+
+| What you configured | What is in the served page |
+|---|---|
+| Uploaded HTML | your HTML, in an iframe with `srcdoc` |
+| An archived page | the same page you would see, `data-lpv-url` pointing at `/api/lpv/archive/<id>/html` |
+| Nothing (built-in spinner) | nothing added — the page is byte-for-byte what it was, `ETag` unchanged |
+| LPV-only mode with a landing page | the landing page, unless it is the built-in `_default.html` |
+
+How it behaves:
+
+* **It is only a stand-in.** The moment the live runtime has the same page up
+  (`_showRedirect`) or the first pushed page is painted (`showPage`), the
+  embedded copy fades out over 0.18 s and is removed. Only ever one on screen.
+* **The built-in black loader is retired while it is up**, and only then —
+  the rule is scoped with `:has()`, so if the copy is gone the normal loader
+  still works instead of leaving a white screen behind nothing.
+* **Clicks in it still count.** Pressing something inside the spinner sends the
+  same `lpv_spinner` event a `redirect` workflow step waits for, so a flow that
+  advances on "visitor clicked the spinner" keeps working during the hand-over.
+* **Your HTML is escaped and sanitised** on the way in — quotes, `<script>` or
+  `</iframe>` in somebody's spinner cannot break out of the document — and the
+  copy is rebuilt when you change it (the cache key includes the page's hash).
+* A visit with **no** custom loading page is untouched: no markup, no extra
+  stylesheet, the normal `ETag`.
+* The console hook `window.__LPV_DROP_BOOT_LOADING__()` removes the embedded
+  copy by hand if you ever need to see what is underneath.
+
+Tests: `python3 tests/test_boot_loading_embed.py`.
+
+---
+
 ## Troubleshooting "it connects but nothing works"
 
 Run these first, in this order:

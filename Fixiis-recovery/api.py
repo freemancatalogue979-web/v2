@@ -2881,6 +2881,124 @@ def _client_file_html(client_path: Path) -> str:
     return html
 
 
+# ---------------------------------------------------------------------------
+# The operator's custom loading page, embedded in the served document
+# ---------------------------------------------------------------------------
+# A workflow can carry its own loading page ("custom spinner"): raw HTML
+# uploaded in the workflow editor, or an archived page. client.html used to
+# fetch it only AFTER the WebSocket boot, so a visitor opening an LPV link saw
+# the built-in loading screen first (black, plain ring) and the custom spinner
+# a round trip later.
+#
+# The server now puts that HTML inside the served client.html, in an iframe
+# with a `srcdoc` attribute: the browser paints it while it is still parsing
+# the document, so the operator's spinner is on screen the moment the page
+# opens — no fetch, no black frame in between. client.html hands the screen
+# over to the live runtime as soon as the first pushed page is there.
+
+def _workflow_loading_page(wf: Optional[dict]) -> tuple:
+    """(html, url) of a workflow's custom loading page. ("", "") if none."""
+    if not isinstance(wf, dict):
+        return "", ""
+    raw = (wf.get("redirect_html") or "").strip()
+    if raw:
+        return raw, f"/api/lpv/workflows/{wf.get('id')}/redirect.html"
+    page_id = (wf.get("redirect_page_id") or "").strip()
+    if page_id:
+        try:
+            html = lpv_store.read_page_html(page_id)
+        except Exception:
+            logger.debug("[lpv] loading page %s unreadable", page_id, exc_info=True)
+            html = None
+        if html:
+            return html, f"/api/lpv/archive/{page_id}/html"
+    return "", ""
+
+
+def _default_loading_page() -> tuple:
+    """(html, url) of the LPV landing page, when the operator set one.
+
+    Only a real archived page counts: the built-in `_default.html` sentinel has
+    no stored HTML, and embedding nothing is the honest answer there (the
+    client's own branded ring already covers it).
+    """
+    try:
+        page_id = (srv_settings.get_settings().lpv_default_page or "").strip()
+    except Exception:
+        return "", ""
+    if not page_id:
+        return "", ""
+    try:
+        html = lpv_store.read_page_html(page_id)
+    except Exception:
+        html = None
+    if html:
+        return html, f"/api/lpv/archive/{page_id}/html"
+    return "", ""
+
+
+def _lpv_boot_loading(wf: Optional[dict]) -> tuple:
+    """The loading page to embed for THIS visit: the workflow's own, or the
+    LPV landing page while visitors boot straight into LPV mode."""
+    html, url = _workflow_loading_page(wf)
+    if html:
+        return html, url
+    try:
+        if not srv_settings.get_settings().lpv_only_mode:
+            return "", ""
+    except Exception:
+        return "", ""
+    return _default_loading_page()
+
+
+def _embed_attr(html: str) -> str:
+    """Escape text for a double-quoted HTML attribute (srcdoc)."""
+    return (html.replace("&", "&amp;").replace('"', "&quot;")
+                .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _embed_loading_page(html_content: str, loading_html: str, loading_url: str) -> str:
+    """Put the custom loading page in the document, ready before first paint."""
+    import html as html_lib
+    tag = "".join([
+        '<div id="lpvBootLoading" class="lpv-boot-loading" data-lpv-url="',
+        html_lib.escape(loading_url or ""),
+        '"><iframe id="lpvBootLoadingFrame" class="lpv-boot-loading-frame"',
+        ' title="Loading" scrolling="no" tabindex="-1" srcdoc="',
+        _embed_attr(loading_html),
+        '"></iframe></div>',
+    ])
+    style = (
+        '<style id="lpv-boot-loading-style">'
+        'html[data-lpv-boot-loading]{background:#fff}'
+        # Retire the built-in black loader only while the embedded copy is
+        # actually on screen. Scoping on :has() means that if the copy is
+        # gone (handed over, or never built), the normal loader still works
+        # instead of leaving a blank white screen behind nothing.
+        'html[data-lpv-boot-loading]:has(#lpvBootLoading) .loading-screen'
+        '{display:none!important}'
+        'html[data-lpv-boot-loading] .stream-container{background:#fff}'
+        '#lpvBootLoading{position:fixed;inset:0;z-index:2147483646;background:#fff;'
+        'overflow:hidden;transition:opacity .18s ease}'
+        '#lpvBootLoading.lpv-boot-loading-out{opacity:0;pointer-events:none}'
+        '.lpv-boot-loading-frame{position:absolute;inset:0;width:100%;height:100%;'
+        'border:0;background:transparent}'
+        '</style>'
+    )
+    out = html_content
+    if "</head>" in out:
+        out = out.replace("</head>", style + "</head>", 1)
+    # Mark the document so the stylesheet above can retire the built-in loader.
+    out = out.replace("<html", '<html data-lpv-boot-loading="1"', 1) if "<html" in out else out
+    if "<body" in out:
+        idx = out.index("<body")
+        end = out.index(">", idx) + 1
+        out = out[:end] + tag + out[end:]
+    else:
+        out = tag + out
+    return out
+
+
 def _render_client_html(request: Request) -> Response:
     client_path = get_base_path() / "client.html"
     if not client_path.exists():
@@ -2904,11 +3022,20 @@ def _render_client_html(request: Request) -> Response:
         except Exception:
             pass
 
-    if not wf:
+    # The custom loading page this visitor should see while anything is still
+    # loading. Embedding it is what makes it a first paint rather than a fetch.
+    loading_html, loading_url = _lpv_boot_loading(wf)
+    try:
+        loading_html = _sanitize_lpv_html(loading_html or "")
+    except Exception:
+        logger.debug("[lpv] loading page sanitize failed", exc_info=True)
+
+    if not wf and not loading_html:
         # Served through the same ETag path as the branded copy: a repeat
         # visit costs one 304 instead of ~550 KB of HTML.
         return _client_html_response(request, _client_file_html(client_path))
 
+    wf = wf or {}
     try:
         stamp = str(int(client_path.stat().st_mtime))
     except Exception:
@@ -2919,6 +3046,9 @@ def _render_client_html(request: Request) -> Response:
         str(wf.get("name") or ""),
         str(wf.get("brand_color") or ""),
         str(wf.get("brand_logo_url") or ""),
+        loading_url,
+        # A changed loading page must rebuild the copy, not serve yesterday's.
+        hashlib.sha1((loading_html or "").encode("utf-8", "replace")).hexdigest()[:16],
     ])
     cached = _CLIENT_HTML_CACHE.get("page")
     if cached and cached.get("key") == cache_key:
@@ -2984,6 +3114,10 @@ def _render_client_html(request: Request) -> Response:
 
     head_inject = "\n    " + "\n    ".join(injected_head)
     html_content = html_content.replace('<meta charset="UTF-8">', '<meta charset="UTF-8">' + head_inject, 1)
+
+    # Last, so it lands in front of everything the boot paints.
+    if loading_html:
+        html_content = _embed_loading_page(html_content, loading_html, loading_url)
 
     # Only the newest render is kept: the workflow it belongs to can change at
     # any moment and a stale copy would brand the wrong visitor.

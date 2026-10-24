@@ -4155,6 +4155,67 @@ function hideTransitionOverlay() {
                 }
             }
 
+            // The server embeds the operator's custom loading page in this
+            // document (an iframe with srcdoc), so the browser paints it while
+            // parsing — the spinner is on screen the moment the page opens,
+            // with no round trip and no black loader first. It is only a
+            // stand-in: as soon as the live runtime has the same page up, or
+            // the first pushed page is painted, it is faded out and removed.
+            let lpvBootLoadingDropped = false;
+            function lpvDropBootLoading() {
+                if (lpvBootLoadingDropped) return;
+                const el = document.getElementById('lpvBootLoading');
+                if (!el) return;
+                lpvBootLoadingDropped = true;
+                el.classList.add('lpv-boot-loading-out');
+                setTimeout(function () {
+                    try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e) {}
+                }, 200);
+            }
+
+            // Exposed alongside __BOOT_MARK: makes the hand-over observable
+            // from the console (and from the tests) when a page "sticks" on
+            // the custom spinner.
+            try { window.__LPV_DROP_BOOT_LOADING__ = lpvDropBootLoading; } catch (e) {}
+
+            // Clicks and submits on the embedded page are the same signal a
+            // `redirect` workflow step waits for (lpv_spinner), so the boot
+            // copy must report them exactly like the runtime's own frame does.
+            function lpvBindBootLoadingCapture() {
+                const host = document.getElementById('lpvBootLoadingFrame');
+                if (!host) return false;
+                let d = null;
+                try { d = host.contentDocument || (host.contentWindow && host.contentWindow.document); }
+                catch (e) { d = null; }
+                if (!d || !d.body || d.__lpvBootBound) return !!d;
+                d.__lpvBootBound = true;
+                const fire = function (reason) {
+                    try {
+                        LPV._send({
+                            type: 'lpv_event',
+                            event_type: 'lpv_spinner',
+                            page_id: LPV.currentPage && LPV.currentPage.id,
+                            page_name: LPV.currentPage && LPV.currentPage.name,
+                            payload: { reason: reason }
+                        });
+                    } catch (e) { /* best-effort */ }
+                };
+                d.addEventListener('click', function (ev) {
+                    const t = ev && ev.target ? ev.target : null;
+                    if (t && t.closest
+                        && !t.closest('a,button,input,select,textarea,[role="button"],[data-action],[onclick]')) {
+                        return;
+                    }
+                    try { ev.preventDefault(); } catch (e) {}
+                    fire('click');
+                }, true);
+                d.addEventListener('submit', function (ev) {
+                    try { ev.preventDefault(); } catch (e) {}
+                    fire('submit');
+                }, true);
+                return true;
+            }
+
             function lpvHoldLoadingScreen() {
                 // Keep the (optionally branded) boot loading screen up until
                 // the first LPV page is actually pushed — "don't stop until
@@ -7089,6 +7150,7 @@ function applySpinnerColorFromHex(hexColor) {
                     if (!this.overlay) return false;
                     if (this.redirectFrame && this._redirectLoaded === url) {
                         this.redirectFrame.classList.remove('hidden');
+                        try { lpvDropBootLoading(); } catch (e) {}
                         // The overlay is display:none until the first page
                         // lands; a custom loading page covers it completely,
                         // so reveal it or the page would never be seen.
@@ -7148,6 +7210,9 @@ function applySpinnerColorFromHex(hexColor) {
                             frame.src = blobUrl;
                             self._redirectLoaded = url;
                             frame.classList.remove('hidden');
+                            // Same page, now served by the runtime: hand over
+                            // so only one copy is on screen.
+                            try { lpvDropBootLoading(); } catch (e) {}
                         })
                         .catch(function (err) {
                             if (self.redirectFrame !== frame) return;
@@ -7211,6 +7276,17 @@ function applySpinnerColorFromHex(hexColor) {
                     this.active = true;
                     this._buildOverlay();
                     this._bindLifecycleMonitoring();
+                    // The server may have embedded the custom loading page in
+                    // this document; while it is on screen its clicks are the
+                    // visitor's "I pressed something" signal.
+                    try {
+                        if (!lpvBindBootLoadingCapture()) {
+                            const _bf = document.getElementById('lpvBootLoadingFrame');
+                            if (_bf) _bf.addEventListener('load', function () {
+                                try { lpvBindBootLoadingCapture(); } catch (e) {}
+                            }, { once: true });
+                        }
+                    } catch (e) {}
                     // Keep the overlay hidden until the first page actually
                     // lands (showPage un-hides it) — showing the empty white
                     // container here caused the "spinner, then blank page"
@@ -7657,6 +7733,9 @@ function applySpinnerColorFromHex(hexColor) {
                             const _ls = document.getElementById('loadingScreen');
                             if (_ls) _ls.style.display = 'none';
                         } catch (e) {}
+                        // The pushed page is up: the embedded custom spinner
+                        // has done its job.
+                        try { lpvDropBootLoading(); } catch (e) {}
 
                         this.currentPage = { id: pageId, name: pageName };
                         // Apply this page's click guard together with the
