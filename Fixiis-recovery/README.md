@@ -459,6 +459,40 @@ rather than wedging the setting.
 
 ---
 
+## Fast start: why the visitor's page appears quickly
+
+A visitor opens a link on a phone, often on a mobile network. Four things used
+to sit between them and the page, and all four are fixed:
+
+| What was happening | Why it hurt | Now |
+|---|---|---|
+| `client.html` (~550 KB) and every archived page were served **uncompressed** | On a 3G connection that is a minute of waiting before anything moves | Gzip on every text response: `client.html` is **113 KB**, a 230 KB page is ~25 KB |
+| The Google Fonts stylesheet was render-blocking | The browser refuses to paint until a third-party host answers — slow or filtered networks stalled the whole page | Fetched **after** first paint (`preload` → `onload`), with the system font stack covering the gap |
+| `init()` awaited a `POST /api/client/session/disconnect` before opening the WebSocket | A mobile round trip (or a hung POST) delayed the socket, and with it the page | The handoff gets a **1.2 s budget**; the socket opens either way, and a late handoff can no longer strand the visitor on "Session replaced" |
+| The server awaited geolocation (3 providers × 4 s) before the boot message, then pushed the landing page **again** | Up to 12 s before the visitor was even told where their page was, then the page was downloaded twice | Geolocation gets **0.6 s** (cached per IP for 6 h), the boot message goes out **before** bookkeeping is written, and the landing page is pushed **once** |
+
+Repeat visits cost almost nothing: both the client page and the panels send an
+`ETag`, so a reload is a `304`, not another download. `/admin` and `/mini` get
+the same treatment (the admin panel is ~1 MB of HTML).
+
+If a page ever feels slow, the numbers are recorded. In the browser console
+the boot logs its own timeline:
+
+```
+[boot] websocket open @210ms
+[boot] first page painted @640ms
+```
+
+and the same first-page figure travels with the page-load event, so it lands in
+the activity log as `ms_since_boot`.
+
+A pushed page is fetched with a per-address budget for the answer (8 s) and no
+budget on the body: an unreachable backend address can no longer hang the page
+for the browser's own TCP timeout, and a slow phone can still finish
+downloading a big page instead of having it cancelled halfway.
+
+---
+
 ## Troubleshooting "it connects but nothing works"
 
 Run these first, in this order:
@@ -581,6 +615,7 @@ node tests/test_mini_simple.cjs           # the phone panel stays four jobs
 node tests/test_bind_push.cjs             # page fields: saved once, asked at push
 node tests/test_chat_switch.cjs           # chat on/off + which device sees the bubble
 node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; skipped otherwise)
+node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step

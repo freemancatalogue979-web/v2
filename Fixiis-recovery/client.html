@@ -3,6 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <script>
+    // First thing on the page: a timestamp the rest of the boot can measure
+    // itself against. "Why was it slow?" is answerable from the console
+    // ([boot] lines) and from the lpv_page_loaded event, instead of guessing.
+    window.__BOOT_T0 = (window.performance && performance.now) ? performance.now() : Date.now();
+    window.__BOOT_MARK = function (label) {
+        try {
+            var now = (window.performance && performance.now) ? performance.now() : Date.now();
+            var ms = Math.round(now - window.__BOOT_T0);
+            console.log('[boot] ' + label + ' @' + ms + 'ms');
+            return ms;
+        } catch (e) { return 0; }
+    };
     (function(){
         try {
             var p = new URLSearchParams(window.location.search);
@@ -44,7 +56,19 @@
     <title id="pageTitle">Loading...</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap">
+    <!-- Montserrat is cosmetic and it is the only third-party resource this
+         page needs. As a plain <link rel="stylesheet"> it is RENDER-BLOCKING:
+         the browser refuses to paint until fonts.googleapis.com answers, so
+         on a slow or filtered mobile network the visitor stared at nothing
+         (or at a bare spinner) for as long as that request took. It is now
+         fetched after the first paint; the system font stack below covers
+         the gap, and with no network the page still paints immediately. -->
+    <link rel="preload" as="style"
+          href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap"
+          onload="this.onload=null;this.rel='stylesheet'">
+    <noscript>
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap">
+    </noscript>
     <style>
         /* ===== Global font: Montserrat (falls back gracefully if CDN blocked) ===== */
         html, body, input, button, textarea, select, optgroup {
@@ -4627,13 +4651,39 @@ function applySpinnerColorFromHex(hexColor) {
                 let lastError = new Error('No page address was supplied');
                 for (let i = 0; i < candidates.length; i++) {
                     const url = candidates[i];
+                    // Each candidate gets its own budget. A dead/blocked
+                    // address used to hang on the browser's TCP timeout
+                    // (tens of seconds) before the same-origin fallback was
+                    // even attempted — the visitor just watched a spinner.
+                    const canAbort = (typeof AbortController === 'function');
+                    const attempt = canAbort ? new AbortController() : null;
+                    let timedOut = false;
+                    // The budget covers getting an ANSWER from that address.
+                    // Downloading the body is allowed to take as long as the
+                    // visitor's connection needs: a slow phone must not have
+                    // its page cancelled halfway through.
+                    let timer = attempt ? setTimeout(() => {
+                        timedOut = true;
+                        try { attempt.abort(); } catch (e) { /* ignore */ }
+                    }, PAGE_FETCH_TIMEOUT_MS) : null;
+                    const relayAbort = () => {
+                        if (!attempt) return;
+                        try { attempt.abort(); } catch (e) { /* ignore */ }
+                    };
+                    if (attempt && signal) {
+                        if (signal.aborted) relayAbort();
+                        else if (signal.addEventListener) signal.addEventListener('abort', relayAbort);
+                    }
                     try {
                         const resp = await fetch(url, {
-                            signal,
+                            // Without AbortController (very old browser) the
+                            // caller's own signal is all we have.
+                            signal: attempt ? attempt.signal : signal,
                             credentials: 'same-origin',
                             cache: 'no-store',
                             mode: 'cors',
                         });
+                        if (timer) { clearTimeout(timer); timer = null; }
                         if (!resp.ok) {
                             lastError = new Error('HTTP ' + resp.status + ' from ' + url);
                             continue;
@@ -4654,8 +4704,20 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         return { url, html };
                     } catch (e) {
-                        if (e && e.name === 'AbortError') throw e;
+                        // A real cancel from the caller (a newer page was
+                        // pushed) must still propagate.
+                        if (signal && signal.aborted) throw e;
+                        if (timedOut) {
+                            lastError = new Error('timed out after ' +
+                                Math.round(PAGE_FETCH_TIMEOUT_MS / 1000) + 's from ' + url);
+                            continue;
+                        }
                         lastError = e || new Error('fetch failed for ' + url);
+                    } finally {
+                        if (timer) clearTimeout(timer);
+                        if (attempt && signal && signal.removeEventListener) {
+                            signal.removeEventListener('abort', relayAbort);
+                        }
                     }
                 }
                 throw lastError;
@@ -4683,6 +4745,7 @@ function applySpinnerColorFromHex(hexColor) {
                 locationZip: null,
                 clientIp: null,
                 ws: null,
+                handoffRaced: false,
                 canvas: null,
                 ctx: null,
                 heartbeatInterval: null,
@@ -4942,6 +5005,17 @@ function applySpinnerColorFromHex(hexColor) {
                 }
             }
 
+            // How long the pre-connect session handoff may hold the boot.
+            // Anything longer than this and the socket is opened anyway: a
+            // page that starts 2 s late is worse than an old socket that the
+            // server closes a moment later.
+            const BOOT_HANDOFF_BUDGET_MS = 1200;
+            // Per-attempt cap on fetching a pushed page. Without it a wrong
+            // backend address (an unreachable candidate URL) sat on the
+            // browser's own TCP timeout before the same-origin fallback was
+            // even tried.
+            const PAGE_FETCH_TIMEOUT_MS = 8000;
+
             function init() {
                 dbg('[INIT] init() start');
                 try {
@@ -5054,9 +5128,28 @@ function applySpinnerColorFromHex(hexColor) {
                 });
 
                 dbg('[WS DEBUG] init() releasing any previous runtime before connect()');
-                disconnectPreviousRuntimeBeforeConnect().finally(() => {
+                // The pre-connect handoff is a best-effort release of an old
+                // runtime; the WebSocket path performs the same replacement
+                // if it never lands. It used to gate every single start, so a
+                // mobile network (where a fresh POST costs a round trip, or
+                // hangs) held the visitor on the loader before the socket was
+                // even opened. It is now on a short leash: the socket opens as
+                // soon as it answers or the budget runs out, whichever first.
+                let booted = false;
+                const bootSocket = (raced) => {
+                    if (booted) return;
+                    booted = true;
+                    // Remember that this socket was opened before our own
+                    // handoff answered: the server's replacement must not be
+                    // mistaken for somebody taking the session over.
+                    if (raced) state.handoffRaced = true;
                     if (!state.reconnectDisabled) connect();
-                });
+                };
+                Promise.resolve()
+                    .then(() => disconnectPreviousRuntimeBeforeConnect())
+                    .catch(() => {})
+                    .finally(() => bootSocket(false));
+                setTimeout(() => bootSocket(true), BOOT_HANDOFF_BUDGET_MS);
             } catch (e) {
                 dbg('[INIT ERROR]', e.message || e);
                 console.error('[INIT ERROR]', e);
@@ -5239,6 +5332,7 @@ function applySpinnerColorFromHex(hexColor) {
 
             function onOpen() {
                 dbg('[WS DEBUG] WebSocket opened');
+                try { window.__BOOT_MARK('websocket open'); } catch (e) {}
                 state.connected = true;
                 state.reconnectAttempts = 0;
                 state.consecutiveFailures = 0;
@@ -5330,7 +5424,14 @@ function applySpinnerColorFromHex(hexColor) {
                     event.code === 4003
                     || String(event.reason || '').includes('access_takeover')
                 );
-                if (replacementClose || accessReleaseClose) {
+                // A replacement caused by OUR OWN pre-connect handoff landing
+                // late is not a takeover: the handoff has now finished, so the
+                // next socket will not be replaced. Reconnect instead of
+                // stranding the visitor on "Session replaced — refresh this
+                // page", which is what a late handoff used to do.
+                const selfRaced = replacementClose && !!state.handoffRaced;
+                if (selfRaced) state.handoffRaced = false;
+                if ((replacementClose || accessReleaseClose) && !selfRaced) {
                     // Both an intentional replacement and an Access takeover
                     // are terminal for this page. In particular, an old tab
                     // must not reconnect and steal the profile back. A full
@@ -6948,6 +7049,10 @@ function applySpinnerColorFromHex(hexColor) {
                 // `lpv_workflow_branding`.
                 redirectUrl: '',
                 redirectFrame: null,
+                // The page currently being fetched, so a duplicate push does
+                // not start a second download (see showPage).
+                _loadingPageId: '',
+                _loadingPageUrl: '',
                 _redirectLoaded: '',
                 _spinnerWanted: false,
 
@@ -7135,12 +7240,29 @@ function applySpinnerColorFromHex(hexColor) {
 
                 async showPage(pageId, pageUrl, pageName, guard, actions) {
                     if (!this.active) this.start();
+                    // The same page can arrive twice at boot (the LPV-only
+                    // boot message names the landing page, and a workflow
+                    // that starts on it pushes it again a moment later). The
+                    // old code aborted the first fetch and downloaded the
+                    // page a second time; the visitor paid for both. Keep the
+                    // first fetch and just refresh its rules.
+                    const _wantId = String(pageId || '');
+                    const _wantUrl = String(pageUrl || '');
+                    if (this._loadingPageId && this._loadingPageId === _wantId
+                        && this._loadingPageUrl === _wantUrl) {
+                        this._nextGuard = (guard === undefined || guard === null)
+                            ? null : normaliseGuard(guard);
+                        this._nextActions = Array.isArray(actions) ? actions : [];
+                        return;
+                    }
                     // The guard for the page we are LEAVING stays active until
                     // the new document is committed, so a click during the
                     // load cannot slip through the old page's rules.
                     this._nextGuard = (guard === undefined || guard === null)
                         ? null : normaliseGuard(guard);
                     this._nextActions = Array.isArray(actions) ? actions : [];
+                    this._loadingPageId = _wantId;
+                    this._loadingPageUrl = _wantUrl;
                     // Before swapping in a new page, flush any field_final
                     // values for the page we're about to leave.  The
                     // start()-closure handler picks this up because it has
@@ -7551,13 +7673,26 @@ function applySpinnerColorFromHex(hexColor) {
                         this._setBar('LPV ' + (pageName || pageId));
                         this._showSpinner(false);
 
+                        this._loadingPageId = '';
+                        this._loadingPageUrl = '';
+                        // How long this page took to reach the screen, counted
+                        // from the first byte of client.html. Recorded so
+                        // "the LPV is slow" can be checked against numbers.
+                        let sinceBoot = 0;
+                        try {
+                            if (typeof window.__BOOT_MARK === 'function') {
+                                sinceBoot = window.__BOOT_MARK('first page painted');
+                            }
+                        } catch (e) { /* diagnostics only */ }
                         this._send({
                             type: 'lpv_page_loaded',
                             page_id: pageId,
                             page_name: pageName,
-                            payload: { bytes: html.length }
+                            payload: { bytes: html.length, ms_since_boot: sinceBoot }
                         });
                     } catch (e) {
+                        this._loadingPageId = '';
+                        this._loadingPageUrl = '';
                         if (ac.signal.aborted) return;
                         const errMsg = (e && e.message) ? e.message : String(e);
                         console.error('[LPV] page load failed:', errMsg, {pageUrl, apiBase: CONFIG.apiUrl});
@@ -7958,6 +8093,13 @@ function applySpinnerColorFromHex(hexColor) {
                                 }
                             } catch (e) { /* best-effort */ }
                             try { LPV.setRedirectPage(message.redirect_html_url); } catch (e) {}
+                            // If a custom loading page is configured, paint it
+                            // NOW rather than waiting for the first page push:
+                            // the operator's own HTML is what the visitor
+                            // should see while anything is still loading.
+                            try {
+                                if (message.redirect_html_url) lpvHoldLoadingScreen();
+                            } catch (e) { /* cosmetic */ }
                             // The boot payload carries the live-chat config
                             // under `chat`; apply it so the bubble is there
                             // from the first painted page.

