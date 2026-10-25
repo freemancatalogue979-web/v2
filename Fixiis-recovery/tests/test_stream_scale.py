@@ -111,10 +111,30 @@ ok("from config import stream_dpr, clamp_dpr, frame_to_css" in pcm,
    "PCM uses the shared scale, its clamp and converter")
 ok("pixelRatio\": _dpr" in pcm or "pixelRatio': _dpr" in pcm,
    "the PCM browser is launched at the render scale")
-ok("'deviceScaleFactor': self.operator_dpr()" in pcm,
-   "and any metrics re-apply keeps the operator's scale (no flip back to 1x)")
-ok("int(round(css_w * _dpr))" in pcm and "int(round(css_h * _dpr))" in pcm,
-   "the frame budget is the CSS viewport x DPR")
+ok("def render_scale(self) -> float:" in pcm,
+   "the PCM session works out the scale its own pane can show")
+ok("pane_w * dpr / css_w" in pcm,
+   "pane CSS px x screen DPR, spread over the page's CSS width")
+ok("return clamp_dpr(round(pane_w * dpr / css_w, 3), dpr)" in pcm,
+   "clamped to the range we render at, screen DPR as the fallback")
+ok('"deviceScaleFactor": _scale' in pcm,
+   "the surface is RENDERED at that scale (Chrome never upscales a frame)")
+ok("w = int(round(int(mcw) * _scale))" in pcm and "h = int(round(int(mch) * _scale))" in pcm,
+   "the frame budget is the CSS viewport x that scale")
+ok("if max(w, h) > 3200:" in pcm,
+   "with a ceiling, so the PNG payload cannot outgrow the socket")
+ok("self._cast_scale = _scale" in pcm,
+   "the running cast remembers the scale it encoded at")
+ok("_dpr = self.capture_scale()" in pcm,
+   "input converts with the CAST's scale, not the screen's")
+ok("self._cast_latest = raw" in pcm and "self._cast_pump = asyncio.create_task(_pump())" in pcm,
+   "frames are broadcast latest-wins through one pump")
+ok("await asyncio.sleep(0.008)" in pcm and "1.0 / 30.0" in pcm,
+   "paced at ~30fps so a 2x-3x picture cannot turn into lag")
+ok("def _stop_frame_pump(self):" in pcm,
+   "and the pump is torn down with the cast (no frames from a dead page)")
+ok("self._stop_frame_pump()" in pcm.split("async def _stop_screencast_locked")[1][:200],
+   "starting with the stop path")
 ok("_cast_content = (int(mcw), int(mch), mquality)" in pcm,
    "the content rect stays in CSS pixels")
 ok("return int(round(frame_to_css(number, _dpr)))" in pcm,
@@ -204,9 +224,9 @@ ok("return clamp_dpr(self._op_dpr, stream_dpr())" in pcm,
 ok(pcm.count("self.operator_dpr()") >= 4,
    "every PCM scale use goes through it (launch, metrics, budget, input) "
    "(found %d)" % pcm.count("self.operator_dpr()"))
-ok("async def set_view_scale(self, raw: Any) -> float:" in pcm,
+ok("async def set_view_scale(self, raw: Any, width: Any = None," in pcm,
    "the session takes the operator's scale at runtime")
-ok('"deviceScaleFactor": dpr' in pcm,
+ok('"deviceScaleFactor": scale' in pcm,
    "and re-asserts the emulated scale on the running page")
 rescale = pcm.split("async def set_view_scale")[1].split("async def handle_input")[0]
 ok("await self._stop_screencast_locked()" in rescale
@@ -217,8 +237,11 @@ ok('"type": "view_scale", "dpr": dpr' in pcm,
 
 ok('mtype in ("view_scale", "set_dpr")' in api_src,
    "the /ws/pcm socket accepts it")
-ok('dpr = await _pcm.set_view_scale(data.get("dpr"))' in api_src,
-   "and hands it to the session")
+ok('dpr = await _pcm.set_view_scale(' in api_src
+   and 'data.get("dpr"), data.get("width"), data.get("height"))' in api_src,
+   "and hands it to the session with the pane size")
+ok('"scale": _pcm.capture_scale()' in api_src,
+   "the socket echoes the scale the frames are encoded at")
 
 ok("function pcmSendViewScale()" in admin, "the panel sends its screen's scale")
 ok("window.devicePixelRatio" in admin.split("function pcmScreenDpr")[1][:220],
@@ -226,8 +249,18 @@ ok("window.devicePixelRatio" in admin.split("function pcmScreenDpr")[1][:220],
 ok("Math.min(3, Math.max(1, d))" in admin, "clamped to the range we render at")
 ok("pcmSendViewScale();" in admin.split("pcmWs.onopen")[1][:900],
    "on connect, before the first frame is judged")
-ok("addEventListener('resize', pcmSendViewScale)" in admin,
+ok("window.addEventListener('resize', ()=>{ pcmSendViewScale();" in admin,
    "and again when the screen's scale changes (zoom, another monitor)")
+ok('"frame_scale": _pcm.render_scale()' in api_src,
+   "and /api/pcm/status shows the scale the live view is rendering at")
+ok("function pcmPaneSize()" in admin and "width: pane.width, height: pane.height" in admin,
+   "the panel also reports the box the frames are shown in")
+ok("function pcmPaneResized()" in admin and "pcmPaneSentWidth" in admin,
+   "a pane resize renegotiates the scale (debounced, width-gated)")
+ok("const k = Math.min(1, availW / w, availH / h);" in admin,
+   "and the stage is only ever shrunk to fit, never stretched")
+ok("let w = fw / dpr, h = fh / dpr;" in admin,
+   "the frame is shown at one frame pixel per SCREEN pixel (÷ devicePixelRatio)")
 
 # ---------------------------------------------------------------------------
 # 8. A running session really rescales (not just a source-level claim)
@@ -281,6 +314,25 @@ try:
     ok(last["width"] == 500 and last["height"] == 687,
        "and a mobile session is rescaled at the mobile viewport")
     ok(last["mobile"] is True, "still emulating a phone")
+    session._mode = "desktop"
+    session._cast_content = (1280, 800, 85)
+    ok(_run.run_until_complete(session.set_view_scale(2, 900, 500)) == 2.0,
+       "the DPR is still reported as the DPR")
+    ok(session.render_scale() == 1.406,
+       "a 900px pane on a 2x screen renders 1.406x (900 x 2 / 1280), got %s"
+       % session.render_scale())
+    ok(_metrics(session._cdp)[-1]["deviceScaleFactor"] == 1.406,
+       "and the surface is re-emulated at that scale")
+    ok(_run.run_until_complete(session.set_view_scale(2, 3200, 2000)) == 2.0,
+       "the DPR is unchanged by a wide pane")
+    ok(session.render_scale() == 3.0,
+       "a huge pane is capped at 3x instead of an unbounded frame")
+    ok(_run.run_until_complete(session.set_view_scale(2, 0, 0)) == 2.0,
+       "a zero-width pane is still just a DPR report")
+    ok(session.render_scale() == 3.0,
+       "a zero-width (hidden tab) report keeps the last real pane")
+    ok(session.capture_scale() == 2.0,
+       "with no cast running, input falls back to the screen's DPR")
 finally:
     # set_view_scale arms the stall watchdog; stop it before the loop closes
     # so the test leaves nothing pending behind.

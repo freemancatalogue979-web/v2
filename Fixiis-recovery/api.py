@@ -9890,6 +9890,11 @@ async def pcm_status(request: Request):
             "has_page": _pcm._page is not None and not getattr(_pcm._page, 'is_closed', lambda: False)() if _pcm._page else False,
             "screencast_running": getattr(_pcm, '_screencast_running', False),
             "subs": len(getattr(_pcm, '_subs', set())),
+            # Frame pixels per CSS pixel this session is rendering at: the
+            # operator's pane x its screen DPR over the page's CSS width. It is
+            # the one number that explains a soft or a heavy live view.
+            "frame_scale": _pcm.render_scale(),
+            "operator_dpr": _pcm.operator_dpr(),
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -9991,8 +9996,14 @@ async def pcm_websocket_endpoint(websocket: WebSocket):
                         # 2x monitor needs a 2x surface to be crisp and a 1x
                         # monitor gains nothing from one.
                         try:
-                            dpr = await _pcm.set_view_scale(data.get("dpr"))
-                            await websocket.send_json({"type": "view_scale", "dpr": dpr})
+                            # The pane size matters as much as the DPR: the
+                            # frame only needs to be as big as the box it is
+                            # shown in (pane CSS px x screen DPR).
+                            dpr = await _pcm.set_view_scale(
+                                data.get("dpr"), data.get("width"), data.get("height"))
+                            await websocket.send_json({
+                                "type": "view_scale", "dpr": dpr,
+                                "scale": _pcm.capture_scale()})
                         except Exception as e:
                             logger.debug(f"[PCM WS] view_scale: {e}")
                     elif mtype == "get_info":

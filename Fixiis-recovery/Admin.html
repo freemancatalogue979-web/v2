@@ -20550,20 +20550,35 @@ function lpvFormatBytes(n) {
 
         function pcmServerWsUrl(path){ try { return serverWebSocketUrl(path); } catch(e){ const proto = location.protocol==='https:'?'wss:':'ws:'; return proto+'//'+location.host+path; } }
 
-        // Size the PCM stage to the EXACT native pixel size of the incoming
-        // frame (1:1). Never scale: at 1:1 the browser performs zero
-        // resampling, so the live view keeps the full PNG quality. When the
-        // frame outgrows the pane, the wrap scrolls instead of shrinking —
-        // and since scale = naturalWidth/rect.width = 1 everywhere, click
-        // coordinates map perfectly at every scroll position.
+        // Size the PCM stage in CSS pixels that put ONE FRAME PIXEL ON ONE
+        // SCREEN PIXEL, then shrink (never grow) it to the pane.
+        //
+        // A CSS px is `devicePixelRatio` device px, so a frame of N pixels is
+        // N / dpr CSS px wide. The old maths set the stage to N CSS px — on a
+        // 2x screen that is 2N device px showing N pixels, so the browser had
+        // to invent every other pixel and the whole live view went soft no
+        // matter how big the capture was. Dividing by the screen's own DPR is
+        // what makes the picture exact; fitting it into the pane keeps the
+        // whole page visible instead of turning the wrap into a scroller.
+        // Click mapping is unaffected: it measures the rect we just set.
         function fitPcmStage(){
             const stage = $('pcm-frame-stage');
             const img   = $('pcm-image');
+            const wrap  = $('pcm-canvas-wrap');
             if (!stage || !img) return;
             const fw = img.naturalWidth, fh = img.naturalHeight;
             if (!fw || !fh) return;
-            stage.style.width  = fw + 'px';
-            stage.style.height = fh + 'px';
+            const dpr = Math.max(1, Number(window.devicePixelRatio) || 1);
+            let w = fw / dpr, h = fh / dpr;
+            if (wrap) {
+                const availW = wrap.clientWidth - 2, availH = wrap.clientHeight - 2;
+                if (availW > 20 && availH > 20) {
+                    const k = Math.min(1, availW / w, availH / h);
+                    w *= k; h *= k;
+                }
+            }
+            stage.style.width  = Math.max(1, Math.round(w)) + 'px';
+            stage.style.height = Math.max(1, Math.round(h)) + 'px';
         }
 
         // Rendering: reuse PCM image blob url like display
@@ -20621,14 +20636,43 @@ function lpvFormatBytes(n) {
             if (!(d > 0)) d = 1;
             return Math.round(Math.min(3, Math.max(1, d)) * 100) / 100;
         }
+        // The frame only has to be as big as the box it is shown in: pane CSS
+        // px x screen DPR device px. Sending the pane is what lets the server
+        // render at exactly the operator's pixel grid instead of guessing from
+        // the DPR alone — a guess is how a live view ends up either soft or
+        // pointlessly heavy.
+        function pcmPaneSize(){
+            const wrap = $('pcm-canvas-wrap');
+            if (!wrap) return { width: 0, height: 0 };
+            const r = wrap.getBoundingClientRect();
+            return { width: Math.round(r.width || 0), height: Math.round(r.height || 0) };
+        }
         function pcmSendViewScale(){
             try {
                 if (!pcmWs || pcmWs.readyState !== WebSocket.OPEN) return;
-                pcmWs.send(JSON.stringify({ type: 'view_scale', dpr: pcmScreenDpr() }));
+                const pane = pcmPaneSize();
+                if (pane.width) pcmPaneSentWidth = pane.width;
+                pcmWs.send(JSON.stringify({
+                    type: 'view_scale', dpr: pcmScreenDpr(),
+                    width: pane.width, height: pane.height
+                }));
             } catch (e) {}
         }
+        // A pane resize (splitter, sidebar, fullscreen) changes how many device
+        // pixels the view can show, so the server has to re-render. Debounced
+        // and gated on a real width change — an observer fires every frame of
+        // a drag and a recast per frame would be worse than a soft picture.
+        let pcmPaneSendTimer = null;
+        let pcmPaneSentWidth = 0;
+        function pcmPaneResized(){
+            const pane = pcmPaneSize();
+            if (!pane.width || Math.abs(pane.width - pcmPaneSentWidth) < 8) return;
+            pcmPaneSentWidth = pane.width;
+            if (pcmPaneSendTimer) clearTimeout(pcmPaneSendTimer);
+            pcmPaneSendTimer = setTimeout(() => { pcmPaneSendTimer = null; pcmSendViewScale(); }, 380);
+        }
         (function pcmWatchScreenScale(){
-            try { window.addEventListener('resize', pcmSendViewScale); } catch (e) {}
+            try { window.addEventListener('resize', ()=>{ pcmSendViewScale(); try { fitPcmStage(); } catch(e){} }); } catch (e) {}
             try { document.addEventListener('visibilitychange', pcmSendViewScale); } catch (e) {}
         })();
 
@@ -20957,7 +21001,10 @@ function lpvFormatBytes(n) {
                 if (typeof ResizeObserver !== 'undefined'){
                     try {
                         const wrap = $('pcm-canvas-wrap');
-                        if (wrap) new ResizeObserver(()=>{ try { fitPcmStage(); } catch(e){} }).observe(wrap);
+                        if (wrap) new ResizeObserver(()=>{
+                            try { fitPcmStage(); } catch(e){}
+                            try { pcmPaneResized(); } catch(e){}
+                        }).observe(wrap);
                     } catch(e){}
                 }
                 pcmStartStallWatchdog();

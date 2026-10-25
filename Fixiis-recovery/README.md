@@ -754,14 +754,37 @@ restarts its screencast so the very next frame is already at the new scale. The
 rest of the panel-driven streams (Display, Access) and the streamed visitor use
 `CONFIG.stream_dpr`.
 
+**The PCM view is measured, not guessed.** A frame is a grid of *device* pixels,
+so it belongs on screen at `frame_px / devicePixelRatio` CSS px — the only size
+that puts one frame pixel on one screen pixel. The PCM stage used to be sized to
+`naturalWidth` **CSS** px; on a 2× screen that spread every frame over twice the
+device pixels it actually had, so the browser invented the missing half and the
+live view stayed soft no matter how large the capture was. Now:
+
+- the panel sends its **pane** with its scale —
+  `{"type":"view_scale","dpr":…,"width":…,"height":…}` — on connect, on resize
+  and when the screen scale changes;
+- the session renders the surface at
+  `pane_css_width × dpr / page_css_width` (`PCMManager.render_scale()`, clamped
+  1–3, the screen's DPR as the fallback) so the frame holds exactly the device
+  pixels the pane can show;
+- the frame budget is the page's CSS size × that scale, capped at 3200 px on the
+  long edge, and Chrome is never asked to upscale a frame (it does not);
+- the panel shows the frame at `naturalWidth / devicePixelRatio` CSS px, shrunk
+  to fit the pane and never stretched past device parity;
+- input is divided by the scale the frames were **actually encoded at**
+  (`capture_scale()`), so a rescale mid-session cannot skew a click;
+- frames are broadcast latest-wins at ≤30 fps — at 2–3× the CSS size a
+  per-frame broadcast turns the extra resolution into lag.
+
 | Where | What happens |
 |---|---|
 | `CONFIG.stream_dpr` (default **2.0**, clamped 1.0–3.0, env `STREAM_DPR`) | the server default: read by every path that has no operator screen to ask (Display, Access, streamed sessions) |
-| the PCM operator's screen | `window.devicePixelRatio` (clamped 1–3 by `config.clamp_dpr`) via `{"type":"view_scale","dpr":…}`; `0.5 → 1`, `4 → 3`, junk → the server default. A rescale restarts the cast instead of waiting for a relaunch |
+| the PCM operator's screen **and pane** | `window.devicePixelRatio` plus the pane's CSS size via `{"type":"view_scale","dpr":…,"width":…,"height":…}`; `0.5 → 1`, `4 → 3`, junk → the server default, a zero-width pane (hidden tab) → the last real one. `render_scale()` then returns `pane_w × dpr / css_w`, so the frame matches the box it is shown in. A rescaled cast restarts instead of waiting for a relaunch |
 | the browser launch | `--force-device-scale-factor=<DPR>` on the direct-Chrome path, `device_scale_factor` on the Playwright persistent-context path, and the same in the SeleniumBase backend (`launch_for_pcm`, `launch_for_access`) |
-| the screencast | frames are requested at `css_width × DPR` by `css_height × DPR`, and the start message carries `css_width`, `css_height`, `dpr` so the panel knows the frame space |
-| the panel | the canvas is displayed at CSS size (`payload.frame = true` for the operator canvases); the admin screen-cast requests the same scaled surface |
-| input | a click or point is divided by the DPR the frames were encoded at (`pcm_manager._pt`, `access_manager.point`, `session._px`), so a click at (400, 300) still lands at (400, 300) |
+| the screencast | frames are requested at `css_width × render_scale()` by `css_height × render_scale()`, and the start message carries `css_width`, `css_height`, `dpr` so the panel knows the frame space |
+| the panel | the frame is shown at `naturalWidth ÷ devicePixelRatio` CSS px, fitted to the pane (`payload.frame = true` for the operator canvases); the admin screen-cast requests the same scaled surface |
+| input | a click or point is divided by the scale the frames were encoded at (`pcm_manager.capture_scale()`, `access_manager._cast_dpr`, `session._px`), so a click at (400, 300) still lands at (400, 300) |
 
 Wheel, keys and scroll sync are never converted — they are not coordinates.
 `config.frame_to_css(v, dpr)` is the one conversion (`v / dpr`, junk → `0.0`,
@@ -1385,6 +1408,7 @@ node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
 node tests/test_cssom_styles.cjs          # insertRule() CSS reaches the mirror (needs jsdom)
 node tests/test_pc_only_gate.cjs          # the CDP cast screens refuse a phone
+node tests/test_pcm_view_size.cjs         # the PCM pane maths, executed (16 checks)
 node tests/test_domain_tab_ui.cjs         # the Domains tab (uploaded spinner + provider logo)
 node tests/test_loading_handover.cjs      # the loading screen gets out of the way (real page, jsdom)
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
@@ -1403,7 +1427,8 @@ python3 tests/test_boot_loading_embed.py  # the custom spinner is in the served 
 python3 tests/test_domain_spinner.py   # per-domain loading screens + logo (needs fastapi)
 python3 tests/test_site_icon.py        # the icon the server has for a site reaches the tab
 python3 tests/test_site_icon_api.py    # /api/site/icon: the domain answers for its icon
-python3 tests/test_stream_scale.py     # viewport × DPR; the PCM operator's own DPR (77 checks)
+python3 tests/test_stream_scale.py     # viewport × DPR; the PCM pane's own scale (100 checks)
+python3 tests/test_pcm_cast.py         # the cast really asks Chrome for those pixels (21 checks)
 python3 tests/test_logging_quiet.py    # quiet client, throttled per-event warnings
 ```
 

@@ -171,6 +171,25 @@ class _PCMPrivateXvfb:
                 stderr_task.cancel()
 
 
+def _sane_view_box(width: Any, height: Any) -> Optional[tuple]:
+    """The operator's pane as (css_w, css_h), or None when unusable.
+
+    A pane narrower than 120 px or wider than 8k is a measurement glitch (a
+    hidden tab reports 0, a devtools-emulated phone can report anything), and
+    a junk width would otherwise drive the whole frame budget.
+    """
+    try:
+        w = float(width or 0)
+        h = float(height or 0)
+    except Exception:
+        return None
+    if not (w == w) or w < 120 or w > 8000:
+        return None
+    if not (h == h) or h < 80 or h > 8000:
+        h = 0.0
+    return (int(round(w)), int(round(h)))
+
+
 class PCMManager:
     """Singleton PCM browser manager."""
 
@@ -216,6 +235,20 @@ class PCMManager:
         # crisp and a 1x monitor gains nothing from one. The panel sends it on
         # connect (`view_scale`) and again if the monitor/resolution changes.
         self._op_dpr: Optional[float] = None
+        # The operator's PANE, in CSS px, when the panel has reported it. The
+        # frame only has to be as big as the box it is shown in: pane CSS px x
+        # screen DPR device px spread over the page's CSS width.
+        self._view_css: Optional[tuple] = None
+        self._cast_content: Optional[tuple] = None
+        # Frame pixels per CSS pixel of the RUNNING cast. Input from the
+        # operator canvas arrives in frame pixels and this is what converts it
+        # back, so a rescale can never leave clicks at the old scale.
+        self._cast_scale: float = 0.0
+        # Latest-wins frame slot + the one task that drains it. A frame the
+        # operator never sees is bandwidth the next frame pays for.
+        self._cast_latest: Optional[bytes] = None
+        self._cast_pump: Optional[asyncio.Task] = None
+        self._last_pump_at: float = 0.0
 
     def operator_dpr(self) -> float:
         """Render scale for this operator's screen (1.0 - 3.0).
@@ -227,6 +260,68 @@ class PCMManager:
         if self._op_dpr is None:
             return stream_dpr()
         return clamp_dpr(self._op_dpr, stream_dpr())
+
+    def render_scale(self) -> float:
+        """Frame pixels per CSS pixel of the page (1.0 - 3.0).
+
+        The screen's DPR is the floor: a 2x screen can show two device pixels
+        per CSS pixel, so a 1x frame is half the resolution it could show. The
+        operator's PANE raises it: if the panel shows the page in a 900 CSS px
+        wide box on that 2x screen, the box holds 1800 device px across the
+        page's 1280 CSS columns, so a 1.4x frame fills it exactly — one frame
+        pixel per screen pixel, nothing resampled.
+
+        Chrome never upscales a screencast frame, so this is also the scale the
+        surface has to be RENDERED at; the cast asserts it as the emulated
+        device scale factor before starting.
+        """
+        dpr = self.operator_dpr()
+        css_w = 0
+        try:
+            if self._cast_content:
+                css_w = int(self._cast_content[0] or 0)
+        except Exception:
+            css_w = 0
+        if css_w <= 0:
+            try:
+                css_w = int(self._mode_size()[0])
+            except Exception:
+                css_w = 1280
+        pane = self._view_css or (0, 0)
+        try:
+            pane_w = float(pane[0] or 0)
+        except Exception:
+            pane_w = 0.0
+        if pane_w > 0 and css_w > 0:
+            return clamp_dpr(round(pane_w * dpr / css_w, 3), dpr)
+        return dpr
+
+    def capture_scale(self) -> float:
+        """Scale the frames the operator is looking at were captured at."""
+        try:
+            scale = float(self._cast_scale or 0)
+        except Exception:
+            scale = 0.0
+        if scale <= 0:
+            return self.operator_dpr()
+        return clamp_dpr(scale, self.operator_dpr())
+
+    def _stop_frame_pump(self):
+        """Cancel the frame pump and forget whatever frame was queued.
+
+        Called from every teardown (cast stop, browser close, start failure),
+        because a pump that outlives its cast would keep sending frames from a
+        dead page into the operator's pane.
+        """
+        self._cast_latest = None
+        self._cast_scale = 0.0
+        pump = self._cast_pump
+        self._cast_pump = None
+        if pump is not None and not pump.done():
+            try:
+                pump.cancel()
+            except Exception:
+                pass
 
     async def _get_browser_manager(self):
         if self._browser_manager is not None:
@@ -675,6 +770,7 @@ class PCMManager:
                     pass
                 self._cdp = None
                 self._screencast_running = False
+                self._stop_frame_pump()
         except Exception:
             pass
         try:
@@ -826,7 +922,8 @@ class PCMManager:
             return 500, 687
         return 1280, 800
 
-    async def set_view_scale(self, raw: Any) -> float:
+    async def set_view_scale(self, raw: Any, width: Any = None,
+                             height: Any = None) -> float:
         """Render the surface at the DPR of the operator's own screen.
 
         The live view is displayed at the CSS size, so the frame has to be
@@ -840,10 +937,16 @@ class PCMManager:
         """
         dpr = clamp_dpr(raw, stream_dpr())
         previous = self._op_dpr
+        previous_scale = self.render_scale()
         self._op_dpr = dpr
-        if previous is not None and abs(previous - dpr) < 0.01:
+        box = _sane_view_box(width, height)
+        if box:
+            self._view_css = box
+        scale = self.render_scale()
+        if (previous is not None and abs(previous - dpr) < 0.01
+                and abs(scale - previous_scale) < 0.02):
             return dpr
-        logger.debug(f"[PCM] operator DPR {previous} -> {dpr}")
+        logger.debug(f"[PCM] operator DPR {previous} -> {dpr} (frame scale {previous_scale} -> {scale})")
         async with self._lock:
             if not _is_page_alive(self._page):
                 # Nothing rendered yet: the launch (and the first cast) will
@@ -856,21 +959,28 @@ class PCMManager:
                         self._cdp = await ctx.new_cdp_session(self._page)
                 if self._cdp:
                     css_w, css_h = self._mode_size()
+                    try:
+                        if self._cast_content:
+                            css_w = int(self._cast_content[0] or css_w)
+                            css_h = int(self._cast_content[1] or css_h)
+                    except Exception:
+                        pass
                     await self._cdp.send("Emulation.setDeviceMetricsOverride", {
                         "width": int(css_w), "height": int(css_h),
-                        "deviceScaleFactor": dpr,
+                        "deviceScaleFactor": scale,
                         "mobile": (self._mode == "mobile"),
                     })
             except Exception as e:
                 logger.debug(f"[PCM] view scale metrics: {e}")
-            if self._screencast_running:
+            if self._screencast_running and abs(scale - previous_scale) >= 0.02:
                 try:
                     await self._stop_screencast_locked()
                     await self._start_screencast_locked()
                 except Exception as e:
                     logger.debug(f"[PCM] view scale recast: {e}")
             try:
-                await self._notify_subs_locked({"type": "view_scale", "dpr": dpr})
+                await self._notify_subs_locked({
+                    "type": "view_scale", "dpr": dpr, "scale": self.capture_scale()})
             except Exception:
                 pass
             self._ensure_watchdog_locked()
@@ -917,7 +1027,10 @@ class PCMManager:
         # mark those payloads with frame=true; keyboard and wheel deltas
         # are already CSS-space and are left alone.
         _frame_space = bool(data.get("frame"))
-        _dpr = self.operator_dpr()
+        # The frame on screen was captured at the CAST's scale, which is what
+        # turns frame pixels back into CSS px — the operator's DPR is only its
+        # fallback (a rescale mid-session would otherwise skew every click).
+        _dpr = self.capture_scale()
 
         def _pt(value):
             number = _num(value, 0.0)
@@ -1176,6 +1289,28 @@ class PCMManager:
 
             cdp = self._cdp
 
+            async def _pump():
+                try:
+                    while self._cast_pump is asyncio.current_task():
+                        raw = self._cast_latest
+                        self._cast_latest = None
+                        if raw is None:
+                            await asyncio.sleep(0.008)
+                            continue
+                        wait = (1.0 / 30.0) - (time.monotonic() - self._last_pump_at)
+                        if wait > 0:
+                            await asyncio.sleep(wait)
+                        self._last_pump_at = time.monotonic()
+                        for ws in list(self._subs):
+                            try:
+                                await ws.send_bytes(raw)
+                            except Exception:
+                                pass
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.debug(f"[PCM] frame pump exited: {e}")
+
             def _on_frame(frame_data: dict):
                 try:
                     # A frame can already be queued when capture starts and
@@ -1194,15 +1329,14 @@ class PCMManager:
                     except Exception:
                         pass
                     raw = base64.b64decode(b64) if isinstance(b64, str) else b64
-                    # broadcast
-                    async def _bcast():
-                        subs = list(self._subs)
-                        for ws in subs:
-                            try:
-                                await ws.send_bytes(raw)
-                            except Exception:
-                                pass
-                    asyncio.create_task(_bcast())
+                    # Latest-wins: keep the NEWEST frame in a single slot and
+                    # let one pump task drain it at ~30fps. At 2x-3x the CSS
+                    # size a per-frame broadcast turns the cast into lag on the
+                    # socket, and a frame that arrives while another is still
+                    # in flight is already stale — the operator never sees it.
+                    self._cast_latest = raw
+                    if self._cast_pump is None or self._cast_pump.done():
+                        self._cast_pump = asyncio.create_task(_pump())
                 except Exception:
                     pass
 
@@ -1276,30 +1410,46 @@ class PCMManager:
             except Exception as e:
                 logger.debug(f"[PCM] layout probe unavailable: {e}")
 
-            # Frame budget = CSS viewport x the OPERATOR's DPR. Chrome renders
-            # the surface at deviceScaleFactor and never upscales a screencast
-            # frame, so asking for the CSS size alone is what made every live
-            # view soft once the panel scaled it up — and asking for more than
-            # the operator's screen can show is just bandwidth.
-            _dpr = self.operator_dpr()
-            css_w = max(640, min(int(mcw), 1920))
-            css_h = max(360, min(int(mch), 2600))
-            w = int(round(css_w * _dpr))
-            h = int(round(css_h * _dpr))
             # Content rect stays in CSS pixels: input from the operator
             # canvas arrives in FRAME pixels and is converted with
             # frame_to_css() in handle_input, so the page still gets CSS
             # coordinates (page.mouse works in CSS px).
             self._cast_content = (int(mcw), int(mch), mquality)
+            # Frame budget = the CSS viewport x the scale the operator's PANE
+            # can actually show (render_scale). Chrome renders the surface at
+            # deviceScaleFactor and NEVER upscales a screencast frame, so the
+            # surface has to be rendered at that scale or the panel gets a
+            # smaller frame, stretches it over the box, and every pixel of the
+            # page turns soft — which is exactly what the CSS-size frame did.
+            _scale = self.render_scale()
+            try:
+                await self._cdp.send("Emulation.setDeviceMetricsOverride", {
+                    "width": int(mcw), "height": int(mch),
+                    "deviceScaleFactor": _scale,
+                    "mobile": (self._mode == "mobile"),
+                })
+            except Exception as e:
+                logger.debug(f"[PCM] cast metrics: {e}")
+            w = int(round(int(mcw) * _scale))
+            h = int(round(int(mch) * _scale))
+            # Ceiling: beyond this the PNG payload costs more latency than the
+            # extra pixels are worth (Display streams 2560 wide).
+            if max(w, h) > 3200:
+                _k = 3200.0 / max(w, h)
+                w, h = int(round(w * _k)), int(round(h * _k))
+                _scale = round(_scale * _k, 3)
+            self._cast_scale = _scale
             await self._cdp.send("Page.startScreencast", {"format": "png", "maxWidth": w, "maxHeight": h, "everyNthFrame": 1})
             self._screencast_running = True
-            logger.debug(f"[PCM] screencast started {w}x{h} (css {int(mcw)}x{int(mch)}, dpr={_dpr}, mode={self._mode}, q={mquality})")
+            logger.debug(f"[PCM] screencast started {w}x{h} (css {int(mcw)}x{int(mch)}, scale={_scale}, mode={self._mode}, q={mquality})")
         except Exception as e:
             logger.warning(f"[PCM] start screencast failed: {e}")
             self._cdp = None
             self._screencast_running = False
+            self._stop_frame_pump()
 
     async def _stop_screencast_locked(self):
+        self._stop_frame_pump()
         if not self._cdp:
             self._screencast_running = False
             return
@@ -1315,6 +1465,7 @@ class PCMManager:
         finally:
             self._cdp = None
             self._screencast_running = False
+            self._stop_frame_pump()
             logger.debug("[PCM] screencast stopped")
 
     async def shutdown(self):
