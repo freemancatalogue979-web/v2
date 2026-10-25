@@ -7884,12 +7884,15 @@
             .lpv-linkbase select,.lpv-linkbase input{flex:1 1 100%;width:100%;max-width:100%;}
         }
         </style>
-    <!-- PC-only gate ---------------------------------------------------------
-         These panels are operator tools: they need a desktop-sized screen,
-         a mouse and a keyboard. On a phone (or a small tablet) the page goes
-         blank and says so, instead of showing a half-broken dashboard that
-         cannot be used. The visitor pages are NOT gated - those must work on
-         a phone.
+    <!-- PC-only CAST SCREENS -----------------------------------------------
+         The panel itself works on a phone: drawers, bottom tabs, compact
+         lists. What does not work there is the SCREEN - the CDP cast of a
+         server-side browser (Live view, PCM, Access). It is driven with a
+         mouse and a keyboard, it decodes at desktop size, and a mis-tap
+         drives somebody's real browser. So each cast area goes blank and
+         says "View on PC only", and this device never subscribes to a cast:
+         no subscribe message, no /ws/pcm, no /ws/access. Everything else in
+         the dashboard keeps working, and the visitor pages are never gated.
     ---------------------------------------------------------------------- -->
     <script>
     (function () {
@@ -7902,53 +7905,72 @@
         var coarse = false;
         try { coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (e) {}
         // A tablet is refused too, but only when it has no fine pointer: a
-        // touchscreen laptop with a mouse is still a PC.
+        // touchscreen laptop with a mouse can still drive the screen.
         var finePointer = false;
         try { finePointer = !!(window.matchMedia && window.matchMedia('(any-pointer: fine)').matches); } catch (e) {}
-        if (!(phoneUA || (tabletUA && !finePointer) || (tiny && coarse))) return;
+        var blocked = !!(phoneUA || (tabletUA && !finePointer) || (tiny && coarse));
 
-        window.__FIXIIS_PC_ONLY__ = true;
-        // Stop the dashboard from doing anything at all: no control socket,
-        // no data requests. The notice is the whole page on a phone.
-        try {
-            window.WebSocket = function () { throw new Error('pc-only'); };
-            window.fetch = function () { return Promise.reject(new Error('pc-only')); };
-        } catch (e) {}
-        var css = 'html,body{margin:0!important;padding:0!important;height:100%!important;'
-            + 'background:#04060c!important;overflow:hidden!important}'
-            + 'body > *:not(#fixiis-pc-only){display:none!important}';
-        var box = '<div id="fixiis-pc-only" role="alert" style="position:fixed;inset:0;z-index:2147483647;'
-            + 'display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;'
-            + 'background:#04060c;color:#eef2ff;text-align:center;padding:28px;box-sizing:border-box;'
-            + 'font-family:system-ui,-apple-system,\'Segoe UI\',Roboto,sans-serif">'
-            + '<div style="font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#7b8cff">Fixiis</div>'
-            + '<div style="font-size:26px;font-weight:700;line-height:1.25">View on PC only</div>'
-            + '<div style="font-size:14px;line-height:1.55;max-width:320px;color:#9aa7c7">'
-            + 'This dashboard needs a desktop screen, a mouse and a keyboard. Open this address on a computer.</div>'
-            + '</div>';
+        // Kept under the name the docs and the probes use: "not a PC screen".
+        window.__FIXIIS_PC_ONLY__ = blocked;
+        window.__FIXIIS_CAST_BLOCKED__ = blocked;
+        window.__FIXIIS_CAST__ = { blocked: blocked, selector: '[data-pc-cast]' };
+        if (!blocked) return;
 
-        function paint() {
-            try {
-                if (document.getElementById('fixiis-pc-only')) return true;
-                var style = document.createElement('style');
-                style.appendChild(document.createTextNode(css));
-                (document.head || document.documentElement).appendChild(style);
-                var holder = document.createElement('div');
-                holder.innerHTML = box;
-                var node = holder.firstChild;
-                (document.body || document.documentElement).appendChild(node);
-                document.documentElement.setAttribute('data-pc-only', '1');
-                return true;
-            } catch (e) { return false; }
+        var NOTE = 'fixiis-cast-note';
+        var css = '[data-pc-cast]{position:relative!important;background:#04060c!important;min-height:200px;}'
+            + '[data-pc-cast].fixiis-cast-blocked > *:not(.' + NOTE + '){display:none!important}'
+            + '.' + NOTE + '{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;'
+            + 'flex-direction:column;gap:10px;background:#04060c;color:#eef2ff;text-align:center;'
+            + "padding:20px;box-sizing:border-box;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}"
+            + '.' + NOTE + ' .k{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#7b8cff}'
+            + '.' + NOTE + ' .t{font-size:22px;font-weight:700;line-height:1.25}'
+            + '.' + NOTE + ' .s{font-size:13px;line-height:1.5;max-width:300px;color:#9aa7c7}';
+
+        function paint(root) {
+            var scope = root || document;
+            var areas;
+            try { areas = scope.querySelectorAll('[data-pc-cast]'); } catch (e) { return false; }
+            for (var i = 0; i < areas.length; i++) {
+                var el = areas[i];
+                try {
+                    if (el.querySelector('.' + NOTE)) continue;
+                    el.classList.add('fixiis-cast-blocked');
+                    var note = document.createElement('div');
+                    note.className = NOTE;
+                    note.setAttribute('role', 'alert');
+                    note.innerHTML = '<div class="k">Fixiis</div>'
+                        + '<div class="t">View on PC only</div>'
+                        + '<div class="s">The live browser screen needs a desktop pointer '
+                        + 'and keyboard. Open this panel on a computer to watch and drive it.</div>';
+                    el.appendChild(note);
+                } catch (e) { /* keep the other areas */ }
+            }
+            try { document.documentElement.setAttribute('data-pc-only-screens', '1'); } catch (e) {}
+            return true;
         }
 
-        if (document.body) paint();
-        else document.addEventListener('DOMContentLoaded', paint, { once: true });
-        // Whatever the app manages to build later must stay hidden behind
-        // the notice (the stylesheet hides every body child but this one).
         try {
-            new MutationObserver(function () { paint(); }).observe(document.documentElement, { childList: true, subtree: true });
+            var style = document.createElement('style');
+            style.id = 'fixiis-cast-gate';
+            style.appendChild(document.createTextNode(css));
+            (document.head || document.documentElement).appendChild(style);
         } catch (e) {}
+
+        if (document.body) paint();
+        else document.addEventListener('DOMContentLoaded', function () { paint(); }, { once: true });
+
+        // The panes are built and re-shown long after load (PCM's stage and
+        // each Access tab appear on demand), so a note has to follow them.
+        var pending = false;
+        try {
+            new MutationObserver(function () {
+                if (pending) return;
+                pending = true;
+                setTimeout(function () { pending = false; paint(); }, 120);
+            }).observe(document.documentElement, { childList: true, subtree: true });
+        } catch (e) {}
+
+        window.__FIXIIS_CAST_PAINT__ = paint;
     })();
     </script>
 </head>
@@ -8213,7 +8235,7 @@
                      aspect/native size (e.g. 1920x1080 frames -> perfect
                      fit, no blur, no letterbox). -->
                 <div class="display-subpane active" id="display-sub-live">
-                    <div class="screenshot-panel">
+                    <div class="screenshot-panel" data-pc-cast="1">
                         <div class="panel-title">
                             <span>
                                 <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 4H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H5V6h14v12zM8 8h8v2H8V8zm0 4h5v2H8v-2z"/></svg>
@@ -9057,7 +9079,7 @@
                     </div>
                     <!-- Bottom half: CDP screencast interactive canvas -->
                     <div class="pcm-stage">
-                        <div class="pcm-canvas-wrap" id="pcm-canvas-wrap">
+                        <div class="pcm-canvas-wrap" id="pcm-canvas-wrap" data-pc-cast="1">
                             <div class="pcm-frame-stage" id="pcm-frame-stage" style="display:none">
                                 <img id="pcm-image" class="pcm-image" alt="PCM Live View" draggable="false" />
                                 <canvas id="pcm-canvas" class="pcm-canvas" style="display:none"></canvas>
@@ -9102,7 +9124,7 @@
                             <button id="access-close-btn" class="access-btn danger" type="button">Release</button>
                             <span id="access-status" class="access-status">Choose a profile to start Access</span>
                         </div>
-                        <div class="access-stage" id="access-stage">
+                        <div class="access-stage" id="access-stage" data-pc-cast="1">
                             <button class="stream-fs-btn access-fs-btn" id="access-stage-fs-btn" type="button" title="Maximize live view" onclick="toggleAccessFullscreen(event)">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
                             </button>
@@ -12765,6 +12787,16 @@
             updateTimelineStatus(`Client ${clientId.slice(-8)} selected`);
             renderTimeline();
 
+            if (window.__FIXIIS_CAST_BLOCKED__) {
+                // The cast area is blank on this device, so do not ask the
+                // server to start a screencast nobody can watch: info only.
+                ws.send(JSON.stringify({ type: 'get_info', client_id: clientId }));
+                try {
+                    document.getElementById('screenshot-status').textContent = 'Live view needs a PC';
+                } catch (e) {}
+                updateTimelineStatus(`Client ${clientId.slice(-8)} selected — live view needs a PC`);
+                return;
+            }
             ws.send(JSON.stringify({ type: 'subscribe', client_id: clientId }));
             ws.send(JSON.stringify({ type: 'get_info', client_id: clientId }));
             // CDP screencast is continuous — no get_frame poll needed.
@@ -20455,6 +20487,13 @@ function lpvFormatBytes(n) {
         }
 
         function pcmConnect(){
+            // The PCM screen IS the cast: without a screen to watch there is
+            // nothing to subscribe to, so a phone never opens /ws/pcm (and the
+            // server is never asked to start a screencast for it).
+            if (window.__FIXIIS_CAST_BLOCKED__) {
+                pcmNotify('View on PC only — the PCM screen needs a desktop', 'PCM', 'info', 2600);
+                return;
+            }
             if (pcmWs && (pcmWs.readyState===WebSocket.OPEN || pcmWs.readyState===WebSocket.CONNECTING)) return;
             const wsUrl = pcmServerWsUrl('/ws/pcm');
             try {
@@ -21387,6 +21426,10 @@ function lpvFormatBytes(n) {
             return {x: Math.round(cssX * sx), y: Math.round(cssY * sy)};
         }
         function accessOpenSocket() {
+            if (window.__FIXIIS_CAST_BLOCKED__) {
+                accessStatus('View on PC only — the Access screen needs a desktop', true);
+                return;
+            }
             const sessionId = String(accessId || '').trim();
             const entry = accessSessions.get(sessionId);
             if (!sessionId || !entry) return;

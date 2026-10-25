@@ -1,14 +1,19 @@
 // No dependencies: node tests/test_pc_only_gate.cjs
 //
 // "These dashboards shouldn't work on mobile — blank page, say 'view on PC
-// only'."
+// only'." — clarified: not the PAGES, the DISPLAY. The CDP cast screens (the
+// live view of a server-side browser: Live view, PCM, Access) are the part that
+// cannot work on a phone — a desktop-sized pointer and a keyboard drive somebody
+// else's real browser. So:
 //
-// The operator panels (Admin.html, mini-admin.html) are desktop tools. On a
-// phone they must render nothing but a short notice — no dashboard, no
-// sockets, no data requests — while the VISITOR page (client.html) keeps
-// working on a phone, because mobile visitors are the point.
+//   * Admin.html keeps working on a phone. Each cast AREA (`[data-pc-cast]`)
+//     goes blank and says "View on PC only", and the device never subscribes to
+//     a cast: no `subscribe` message, no `/ws/pcm`, no `/ws/access`.
+//   * mini-admin.html is the PHONE panel. It has no cast screen, so it is not
+//     gated at all.
+//   * client.html (the visitor's page) is never gated.
 //
-// This runs the real gate bytes from the real files in a `vm` against a tiny
+// This runs the real gate bytes from the real file in a `vm` against a tiny
 // fake DOM, once as a phone and once as a desktop browser.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -22,7 +27,6 @@ function ok(cond, label) {
 }
 
 const root = path.join(__dirname, '..');
-const PANELS = ['Admin.html', 'mini-admin.html'];
 const PHONE_UA = 'Mozilla/5.0 (Linux; Android 15; Pixel 7) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36';
 const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) '
@@ -32,34 +36,63 @@ const IPAD_UA = 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
 
-// ---------------------------------------------------------------------------
-// The gate the page actually ships
-// ---------------------------------------------------------------------------
-function gateScript(file) {
-  const html = fs.readFileSync(path.join(root, file), 'utf8');
-  const start = html.indexOf('<!-- PC-only gate');
-  ok(start >= 0, `${file}: ships the PC-only gate`);
-  const end = html.indexOf('</script>', start);
-  ok(end > start, `${file}: the gate script is closed`);
-  const block = html.slice(start, end);
-  ok((html.match(/__FIXIIS_PC_ONLY__/g) || []).length === 1,
-    `${file}: the flag is set in exactly one place`);
-  ok(/View on PC only/.test(block), `${file}: the gate says "View on PC only"`);
-  ok(start < html.indexOf('</head>'), `${file}: the gate runs from <head>, before the app`);
-  ok(!/location\.(href|replace|assign)/.test(block), `${file}: the gate does not redirect`);
-  return block.slice(block.indexOf('<script>') + '<script>'.length);
-}
+const admin = fs.readFileSync(path.join(root, 'Admin.html'), 'utf8');
+const mini = fs.readFileSync(path.join(root, 'mini-admin.html'), 'utf8');
+const client = fs.readFileSync(path.join(root, 'client.html'), 'utf8');
 
 // ---------------------------------------------------------------------------
-// Fake DOM, only what the gate touches
+// 1. The gate the page actually ships
 // ---------------------------------------------------------------------------
-function makeNode(tag) {
-  return {
+const gateStart = admin.indexOf('<!-- PC-only CAST SCREENS');
+ok(gateStart >= 0, 'Admin.html ships the cast-screen gate');
+ok(gateStart < admin.indexOf('</head>'), 'it runs from <head>, before the app');
+const gateEnd = admin.indexOf('</script>', gateStart);
+ok(gateEnd > gateStart, 'the gate script is closed');
+const gateBlock = admin.slice(gateStart, gateEnd);
+const gateJs = gateBlock.slice(gateBlock.indexOf('<script>') + '<script>'.length);
+
+ok(/View on PC only/.test(gateBlock), 'the gate says "View on PC only"');
+ok((admin.match(/__FIXIIS_PC_ONLY__/g) || []).length === 1,
+  'the "not a PC" flag is set in exactly one place');
+ok(!/location\.(href|replace|assign)/.test(gateBlock), 'the gate never redirects');
+ok(!/body\s*>\s*\*:not\(/.test(gateBlock),
+  'the PAGE is not blanked — only the cast areas are');
+ok(!/window\.WebSocket\s*=/.test(gateBlock) && !/window\.fetch\s*=/.test(gateBlock),
+  'the dashboard keeps its sockets and requests on a phone');
+
+// The cast areas, marked in the markup.
+const marked = admin.match(/<[^>]*data-pc-cast="1"[^>]*>/g) || [];
+ok(marked.length === 3, `exactly three cast screens are marked (got ${marked.length})`);
+const markedIds = marked.join('\n');
+ok(/id="access-stage"/.test(markedIds), 'the Access live view is one of them');
+ok(/id="pcm-canvas-wrap"/.test(markedIds), 'the PCM live view is one of them');
+ok(/class="screenshot-panel"/.test(markedIds), 'the Display live view is one of them');
+
+// Nothing subscribes to a cast on a device that cannot show it.
+ok((admin.match(/if \(window\.__FIXIIS_CAST_BLOCKED__\)/g) || []).length === 3,
+  'the three cast entry points check the flag (Display, PCM, Access)');
+const selectBody = admin.slice(admin.indexOf('function selectClient'),
+  admin.indexOf('function deselectClient'));
+ok(/if \(window\.__FIXIIS_CAST_BLOCKED__\) \{[\s\S]{0,400}?get_info/.test(selectBody),
+  'a phone selects a client for its info, not for a screen');
+ok(selectBody.indexOf('__FIXIIS_CAST_BLOCKED__') < selectBody.lastIndexOf("type: 'subscribe'"),
+  'and the browser-subscribe that follows is never reached');
+ok(/function pcmConnect\(\)\{\s*[\s\S]{0,300}?__FIXIIS_CAST_BLOCKED__/.test(admin),
+  'PCM never opens /ws/pcm on a phone');
+ok(/function accessOpenSocket\(\) \{\s*[\s\S]{0,300}?__FIXIIS_CAST_BLOCKED__/.test(admin),
+  'Access never opens /ws/access on a phone');
+
+// ---------------------------------------------------------------------------
+// 2. Fake DOM, only what the gate touches
+// ---------------------------------------------------------------------------
+function makeNode(tag, attrs) {
+  const node = {
     tagName: String(tag || '').toUpperCase(),
     children: [],
-    attributes: {},
+    attributes: Object.assign({}, attrs || {}),
     innerHTML: '',
     textContent: '',
+    className: '',
     firstChild: null,
     appendChild(child) {
       this.children.push(child);
@@ -68,67 +101,84 @@ function makeNode(tag) {
     },
     setAttribute(name, value) { this.attributes[name] = String(value); },
     getAttribute(name) { return this.attributes[name]; },
-  };
-}
-
-function makeWorld(file, ua, screenSize, opts) {
-  const options = opts || {};
-  const document = {
-    head: makeNode('head'),
-    body: makeNode('body'),
-    documentElement: makeNode('html'),
-    cookies: {},
-    createElement: (tag) => makeNode(tag),
-    createTextNode: (text) => ({ tagName: '#text', textContent: String(text), children: [] }),
-    getElementById(id) {
-      const want = String(id);
-      const walk = (node) => {
-        if (!node) return null;
-        if (node.attributes && node.attributes.id === want) return node;
-        for (const child of node.children || []) {
+    classList: {
+      _items: [],
+      add(cls) { if (this._items.indexOf(cls) < 0) this._items.push(cls); },
+      contains(cls) { return this._items.indexOf(cls) >= 0; },
+      remove(cls) { this._items = this._items.filter((c) => c !== cls); },
+    },
+    querySelector(sel) {
+      const want = String(sel).replace(/^\./, '');
+      const walk = (n) => {
+        for (const child of n.children || []) {
+          if (String(child.className || '').split(/\s+/).indexOf(want) >= 0) return child;
           const hit = walk(child);
           if (hit) return hit;
         }
         return null;
       };
-      return walk(document.body) || walk(document.head);
+      return walk(this);
+    },
+  };
+  return node;
+}
+
+// The three areas, as the markup really declares them.
+const areas = marked.map((tag) => {
+  const id = /id="([^"]+)"/.exec(tag);
+  const cls = /class="([^"]+)"/.exec(tag);
+  const node = makeNode('div', id ? { id: id[1] } : {});
+  node.className = cls ? cls[1] : '';
+  const img = makeNode('img');
+  img.className = 'stream-image';
+  node.appendChild(img);
+  return node;
+});
+
+function makeWorld(ua, screenSize, opts) {
+  const options = opts || {};
+  const document = {
+    head: makeNode('head'),
+    body: makeNode('body'),
+    documentElement: makeNode('html'),
+    createElement: (tag) => makeNode(tag),
+    createTextNode: (text) => ({ tagName: '#text', textContent: String(text), children: [] }),
+    querySelectorAll(sel) {
+      if (/data-pc-cast/.test(String(sel))) return areas.slice();
+      return [];
     },
     addEventListener() {},
   };
-  // The gate bootstraps the notice through innerHTML on a detached holder;
-  // model that the way a browser does: setting innerHTML creates the child.
-  const createElement = document.createElement;
-  document.createElement = (tag) => {
-    const node = createElement(tag);
-    let html = '';
-    Object.defineProperty(node, 'innerHTML', {
-      get: () => html,
-      set: (value) => {
-        html = String(value);
-        const idMatch = /id="([^"]+)"/.exec(html);
-        node.firstChild = makeNode('div');
-        if (idMatch) node.firstChild.attributes.id = idMatch[1];
-        node.firstChild.innerHTML = html;
-        node.children = [node.firstChild];
-      },
-    });
-    return node;
-  };
   const sandbox = {
     window: {
-      matchMedia: (query) => ({ matches: Boolean(options.coarse) && /coarse/.test(query) }),
+      matchMedia: (q) => ({ matches: Boolean(options.coarse) && /coarse/.test(q) }),
     },
     document,
     navigator: { userAgent: ua, maxTouchPoints: options.maxTouchPoints || 0 },
     screen: { width: screenSize[0], height: screenSize[1] },
+    setTimeout: (fn) => 0,
     MutationObserver: function () { this.observe = () => {}; },
     console,
   };
   sandbox.globalThis = sandbox;
-  return { sandbox, document, html: gateScript(file) };
+  return sandbox;
 }
 
-// Everything the page would show, flattened.
+function boot(ua, screenSize, opts) {
+  // Every run starts from clean areas.
+  for (const area of areas) {
+    area.children = area.children.filter((c) => String(c.className).indexOf('fixiis-cast-note') < 0);
+    area.classList.remove('fixiis-cast-blocked');
+  }
+  const sandbox = makeWorld(ua, screenSize, opts);
+  vm.runInNewContext(gateJs, sandbox, { filename: 'Admin.html:cast-gate' });
+  return sandbox;
+}
+
+function notesIn(area) {
+  return area.children.filter((c) => String(c.className).indexOf('fixiis-cast-note') >= 0);
+}
+
 function visibleText(node, out) {
   if (!node) return out;
   if (node.innerHTML) out.push(node.innerHTML);
@@ -137,59 +187,68 @@ function visibleText(node, out) {
   return out;
 }
 
-for (const file of PANELS) {
-  const gate = gateScript(file);
-  ok(/display\s*:\s*none/i.test(gate), `${file}: hides the app, not the file`);
+// ---------------------------------------------------------------------------
+// 3. A phone: the screens go blank, the dashboard does not
+// ---------------------------------------------------------------------------
+const phone = boot(PHONE_UA, [412, 915], { coarse: true });
+ok(phone.window.__FIXIIS_CAST_BLOCKED__ === true, 'a phone is flagged');
+ok(phone.window.__FIXIIS_PC_ONLY__ === true, 'and the old probe name agrees');
+ok(areas.length === 3, 'three screens exist to blank');
+for (const area of areas) {
+  const name = area.attributes.id || area.className;
+  ok(notesIn(area).length === 1, `${name}: gets the notice, once`);
+  ok(area.classList.contains('fixiis-cast-blocked'), `${name}: is marked blocked`);
+  ok(/View on PC only/.test(visibleText(notesIn(area)[0], []).join('\n')),
+    `${name}: the notice reads "View on PC only"`);
+  ok(notesIn(area)[0].getAttribute('role') === 'alert', `${name}: it is an alert`);
+}
+ok(phone.document.documentElement.getAttribute('data-pc-only-screens') === '1',
+  'the document says its screens are PC-only');
 
-  function boot(ua, screenSize, opts) {
-    const world = makeWorld(file, ua, screenSize, opts);
-    vm.runInNewContext(world.html, world.sandbox, { filename: `${file}:pc-gate` });
-    return world;
+const styles = phone.document.head.children.filter((n) => n.tagName === 'STYLE');
+ok(styles.length === 1, 'one stylesheet enforces the blank screen');
+const cssText = visibleText(styles[0], []).join('\n');
+ok(/\[data-pc-cast\]\.fixiis-cast-blocked\s*>\s*\*:not\(\.fixiis-cast-note\)\s*\{\s*display\s*:\s*none/i.test(cssText),
+  'the area hides everything but the notice');
+
+// The panel still works: sockets and fetch are the browser's own.
+ok(typeof phone.window.WebSocket === 'undefined', 'the control socket is NOT disabled');
+ok(typeof phone.window.fetch === 'undefined', 'nor is fetch');
+
+// iPhones and iPads are refused too.
+ok(boot(IPHONE_UA, [390, 844], { coarse: true, maxTouchPoints: 5 })
+  .window.__FIXIIS_CAST_BLOCKED__ === true, 'an iPhone is flagged');
+ok(boot(IPAD_UA, [820, 1180], { coarse: true, maxTouchPoints: 5 })
+  .window.__FIXIIS_CAST_BLOCKED__ === true, 'an iPad is flagged');
+
+// ---------------------------------------------------------------------------
+// 4. A desktop is never touched — not even in a narrow window
+// ---------------------------------------------------------------------------
+for (const size of [[1920, 1080], [1280, 800], [900, 700]]) {
+  const desktop = boot(DESKTOP_UA, size, {});
+  ok(desktop.window.__FIXIIS_CAST_BLOCKED__ === false,
+    `${size[0]}x${size[1]} desktop: the cast screens are allowed`);
+  for (const area of areas) {
+    ok(notesIn(area).length === 0, `${size[0]}x${size[1]}: no notice is painted`);
+    ok(!area.classList.contains('fixiis-cast-blocked'), `${size[0]}x${size[1]}: no area is blocked`);
   }
-
-  // 1. A phone gets the notice, and no working network.
-  const phone = boot(PHONE_UA, [412, 915], { coarse: true });
-  ok(phone.sandbox.window.__FIXIIS_PC_ONLY__ === true, `${file}: flags a phone`);
-  ok(phone.document.getElementById('fixiis-pc-only') != null,
-    `${file}: paints the notice with the page`);
-  ok(/View on PC only/.test(visibleText(phone.document.body, []).join('\n')),
-    `${file}: notice reads "View on PC only"`);
-  ok(phone.document.documentElement.getAttribute('data-pc-only') === '1',
-    `${file}: marks the document PC-only`);
-  let socketThrew = false;
-  try { new phone.sandbox.window.WebSocket('ws://example.test'); } catch (e) { socketThrew = true; }
-  ok(socketThrew, `${file}: the control socket cannot connect on a phone`);
-
-  // 2. Whatever the app appends later stays hidden behind the notice.
-  const styles = phone.document.head.children.filter((n) => n.tagName === 'STYLE');
-  ok(styles.length === 1, `${file}: one stylesheet enforces the blank page`);
-  const cssText = visibleText(styles[0], []).join('\n');
-  ok(/body\s*>\s*\*:not\(#fixiis-pc-only\)\s*\{\s*display\s*:\s*none/i.test(cssText),
-    `${file}: every other body child is hidden`);
-
-  // 3. iPhone and iPad are refused too.
-  const iphone = boot(IPHONE_UA, [390, 844], { coarse: true, maxTouchPoints: 5 });
-  ok(iphone.sandbox.window.__FIXIIS_PC_ONLY__ === true, `${file}: flags an iPhone`);
-  const ipad = boot(IPAD_UA, [820, 1180], { coarse: true, maxTouchPoints: 5 });
-  ok(ipad.sandbox.window.__FIXIIS_PC_ONLY__ === true, `${file}: flags an iPad`);
-
-  // 4. A desktop is never gated — not even in a narrow window.
-  for (const size of [[1920, 1080], [1280, 800], [900, 700]]) {
-    const desktop = boot(DESKTOP_UA, size, {});
-    ok(desktop.sandbox.window.__FIXIIS_PC_ONLY__ === undefined,
-      `${file}: ${size[0]}x${size[1]} desktop is left alone`);
-    ok(desktop.document.getElementById('fixiis-pc-only') == null,
-      `${file}: ${size[0]}x${size[1]} desktop gets no notice`);
-    ok(desktop.document.head.children.length === 0,
-      `${file}: ${size[0]}x${size[1]} desktop CSS is untouched`);
-    ok(typeof desktop.sandbox.window.WebSocket === 'undefined',
-      `${file}: ${size[0]}x${size[1]} desktop sockets are untouched`);
-  }
+  ok(desktop.document.head.children.length === 0,
+    `${size[0]}x${size[1]}: no CSS is injected`);
 }
 
-// The visitor page must stay usable on a phone.
-const client = fs.readFileSync(path.join(root, 'client.html'), 'utf8');
+// A touch laptop (fine pointer available) keeps its screens.
+const touchLaptop = boot(DESKTOP_UA, [1440, 900], { coarse: false });
+ok(touchLaptop.window.__FIXIIS_CAST_BLOCKED__ === false,
+  'a keyboard-and-mouse machine keeps the cast screens');
+
+// ---------------------------------------------------------------------------
+// 5. The phone panel is not gated, and the visitor page never is
+// ---------------------------------------------------------------------------
+ok(!/__FIXIIS_PC_ONLY__/.test(mini), 'mini-admin.html (the phone panel) is not gated');
+ok(!/View on PC only/.test(mini), 'mini-admin.html never shows the PC-only notice');
+ok(!/data-pc-cast/.test(mini), 'mini-admin.html has no cast screen to blank');
 ok(!/__FIXIIS_PC_ONLY__/.test(client), 'client.html (visitor page) is not gated');
 ok(!/View on PC only/.test(client), 'client.html never shows the PC-only notice');
+ok(!/data-pc-cast/.test(client), 'client.html has no cast screen');
 
 console.log(`\n${checks} checks passed.`);

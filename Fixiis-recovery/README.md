@@ -273,26 +273,31 @@ is ignored — previously those two turned into "login impossible" and
 
 ---
 
-## These dashboards are desktop-only
+## The CDP cast screens are desktop-only
 
-`Admin.html` and `mini-admin.html` are operator panels: canvas streams, dense
-tables, drag targets and a dozen controls on one screen. On a phone they are not
-merely cramped, they are wrong — a streamed 1280×800 page cannot be driven from a
-thumb, and a mis-tapped "suspend" is not something a visitor can undo. So they
-now refuse to run there:
+The panels themselves work on a phone — `Admin.html` has drawers and bottom
+tabs, and `mini-admin.html` is the one-hand panel. What does **not** work on a
+phone is the **screen**: the CDP cast of a server-side browser (the Display
+tab's live view, PCM, and Access). It is driven with a mouse and a keyboard, it
+decodes at desktop size, and a mis-tap drives somebody's real browser. So each
+cast area — not the page — is what refuses to run there.
 
-| On a phone or a small touch screen | What happens |
+| In a cast area (`[data-pc-cast]`) on a phone | What happens |
 |---|---|
-| the page is opened | the document is blank except **"View on PC only"** — every other element (`body > *:not(#fixiis-pc-only)`) is hidden, and the marker `data-pc-only="1"` is set on `<html>` |
-| any code that would connect | `WebSocket` and `fetch` throw `pc-only`, so no session is opened, no stream is requested and nothing is written |
-| the check | a phone user agent, or `(pointer: coarse)` with `min(screen.width, screen.height) < 700`; an iPad reporting a desktop UA is refused unless the device also has `(any-pointer: fine)` — a real touch-screen laptop still works |
-| a resize or rotation | a `MutationObserver` repaints the notice if the DOM is touched, and the gate re-evaluates, so docking/undocking a tablet does not leave a half-built panel |
-| never a redirect | the address stays put; nothing is silently sent elsewhere |
+| the area is shown | it goes blank and says **"View on PC only"**: everything inside it (`> *:not(.fixiis-cast-note)`) is hidden, the area is marked `fixiis-cast-blocked`, and `<html>` carries `data-pc-only-screens="1"` |
+| a client card is selected | the operator still gets the client's **info and timeline** — the `subscribe` message that starts a screencast is never sent, so the server is not asked to encode a stream nobody can watch |
+| the PCM screen | `/ws/pcm` is never opened — the PCM screen *is* the cast |
+| the Access screen | `/ws/access` is never opened, and the status line says why |
+| the check | a phone user agent, or `(pointer: coarse)` with `min(screen.width, screen.height) < 700`; an iPad reporting a desktop UA is refused unless the device also has `(any-pointer: fine)` — a touch-screen laptop still drives the screens |
+| everything else | untouched: no session socket is disabled, no `fetch` is replaced, the lists, logs, links, chat and file tools all work on the phone |
+| never a redirect | the address stays put |
 
-`client.html` — the visitor's page — is **never** gated: visitors are on phones,
-and the mirrored pages they see are the phone-compatible ones. `tests/test_pc_only_gate.cjs`
-(130 checks) drives the gate with fake DOMs for a phone, an iPad with a desktop
-UA, a touch laptop and a normal desktop.
+`mini-admin.html` has no cast screen, so it is **not** gated at all — it is the
+phone panel. `client.html`, the visitor's page, is never gated either: visitors
+are on phones. `tests/test_pc_only_gate.cjs` (70 checks) runs the shipped gate
+bytes against a fake DOM for a phone, an iPhone, an iPad, four desktop sizes and
+a touch laptop, and checks that the three cast entry points stop at the flag
+while the page itself keeps its sockets.
 
 ## Device versions: one workflow, phone + desktop
 
@@ -1345,7 +1350,7 @@ node tests/test_page_actions.cjs          # archive edit, click actions, retired
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
-node tests/test_pc_only_gate.cjs          # the operator panels refuse a phone
+node tests/test_pc_only_gate.cjs          # the CDP cast screens refuse a phone
 node tests/test_domain_tab_ui.cjs         # the Domains tab (uploaded spinner + provider logo)
 node tests/test_loading_handover.cjs      # the loading screen gets out of the way (real page, jsdom)
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)

@@ -806,73 +806,9 @@ select.sel option{background:#12141c;color:#f3f5f9}
     .lpv-linkbase select,.lpv-linkbase input{flex:1 1 100%;width:100%;max-width:100%;}
   }
   </style>
-    <!-- PC-only gate ---------------------------------------------------------
-         These panels are operator tools: they need a desktop-sized screen,
-         a mouse and a keyboard. On a phone (or a small tablet) the page goes
-         blank and says so, instead of showing a half-broken dashboard that
-         cannot be used. The visitor pages are NOT gated - those must work on
-         a phone.
-    ---------------------------------------------------------------------- -->
-    <script>
-    (function () {
-        var ua = String((navigator && navigator.userAgent) || '');
-        var phoneUA = /Android.*Mobile|iPhone|iPod|Windows Phone|IEMobile|BlackBerry|Opera Mini|Opera Mobi|Silk\/|Mobile Safari/i.test(ua);
-        var tabletUA = /\biPad\b|Android(?!.*Mobile)/i.test(ua)
-            || (/Macintosh/i.test(ua) && (navigator.maxTouchPoints || 0) > 1);
-        var tiny = false;
-        try { tiny = Math.min(screen.width || 9999, screen.height || 9999) < 700; } catch (e) {}
-        var coarse = false;
-        try { coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (e) {}
-        // A tablet is refused too, but only when it has no fine pointer: a
-        // touchscreen laptop with a mouse is still a PC.
-        var finePointer = false;
-        try { finePointer = !!(window.matchMedia && window.matchMedia('(any-pointer: fine)').matches); } catch (e) {}
-        if (!(phoneUA || (tabletUA && !finePointer) || (tiny && coarse))) return;
-
-        window.__FIXIIS_PC_ONLY__ = true;
-        // Stop the dashboard from doing anything at all: no control socket,
-        // no data requests. The notice is the whole page on a phone.
-        try {
-            window.WebSocket = function () { throw new Error('pc-only'); };
-            window.fetch = function () { return Promise.reject(new Error('pc-only')); };
-        } catch (e) {}
-        var css = 'html,body{margin:0!important;padding:0!important;height:100%!important;'
-            + 'background:#04060c!important;overflow:hidden!important}'
-            + 'body > *:not(#fixiis-pc-only){display:none!important}';
-        var box = '<div id="fixiis-pc-only" role="alert" style="position:fixed;inset:0;z-index:2147483647;'
-            + 'display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;'
-            + 'background:#04060c;color:#eef2ff;text-align:center;padding:28px;box-sizing:border-box;'
-            + 'font-family:system-ui,-apple-system,\'Segoe UI\',Roboto,sans-serif">'
-            + '<div style="font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#7b8cff">Fixiis</div>'
-            + '<div style="font-size:26px;font-weight:700;line-height:1.25">View on PC only</div>'
-            + '<div style="font-size:14px;line-height:1.55;max-width:320px;color:#9aa7c7">'
-            + 'This dashboard needs a desktop screen, a mouse and a keyboard. Open this address on a computer.</div>'
-            + '</div>';
-
-        function paint() {
-            try {
-                if (document.getElementById('fixiis-pc-only')) return true;
-                var style = document.createElement('style');
-                style.appendChild(document.createTextNode(css));
-                (document.head || document.documentElement).appendChild(style);
-                var holder = document.createElement('div');
-                holder.innerHTML = box;
-                var node = holder.firstChild;
-                (document.body || document.documentElement).appendChild(node);
-                document.documentElement.setAttribute('data-pc-only', '1');
-                return true;
-            } catch (e) { return false; }
-        }
-
-        if (document.body) paint();
-        else document.addEventListener('DOMContentLoaded', paint, { once: true });
-        // Whatever the app manages to build later must stay hidden behind
-        // the notice (the stylesheet hides every body child but this one).
-        try {
-            new MutationObserver(function () { paint(); }).observe(document.documentElement, { childList: true, subtree: true });
-        } catch (e) {}
-    })();
-    </script>
+    <!-- Deliberately NOT gated: this is the phone panel. It has no CDP cast
+         screen (the live browser views live in Admin.html, and those areas are
+         the ones that go blank on a phone), so it keeps working one-handed. -->
 </head>
 <body>
 
