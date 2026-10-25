@@ -1015,18 +1015,33 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 
 ---
 
-## The font: Space Grotesk everywhere
+## The font: Space Grotesk in the shell and the live mirror — never an LPV page
 
-`client.html` and both panels are set in **Space Grotesk**, so a mirrored page
-is too — including the page pushed by an LPV link. The captured document gets
-two things injected into its `<head>`:
+`client.html` and both panels are set in **Space Grotesk**, and so is the
+**live mirror** (the streamed browser): what the operator watches all day should
+look like one product. That captured document gets two things injected into its
+`<head>`:
 
 | Injected | What it does |
 |---|---|
 | `<link rel="stylesheet">` for Space Grotesk | the page can actually render the font; the shell already fetched the same file, so it comes from cache |
 | `<style id="__shifix_mirror_font__">` | `html`, `body` and every element in the page get the family with `!important`, so the site's own `font-family` cannot win |
 
-Details:
+**An LPV page keeps its own typography, always.** A pushed Live-pages document
+is the operator's own saved page, shown to a visitor exactly as it was captured:
+its fonts are part of what it is, and restyling it in our font would be changing
+their page. It is enforced in three places, so no call site can re-introduce it:
+
+| Guard | What it does |
+|---|---|
+| `isLpvPageDocument(doc)` | an LPV pushed document is recognised by its own `data-lpv-page="1"` marker, its window flag, or the `data-lpv-frame` / `lpv-page-frame` frame it is rendered in |
+| `ensureMirrorFont(doc)` | returns `false` for such a document and never injects anything |
+| `stripMirrorFont(doc)` | **removes** the two injected nodes again, for a frame that was themed before it became an LPV page (a re-push into the same frame) |
+
+The LPV frame marks the document the moment it has `contentDocument`, before any
+other code touches it, so the guard is in place for the first paint.
+
+Details that still apply to the live mirror:
 
 * **Icons keep their own font.** Font Awesome, Material Icons, Glyphicons, MDI
   and anything with `icon` in its class are excluded, plus `svg` — their glyphs
@@ -1035,14 +1050,15 @@ Details:
   like `:not(svg *)` is silently ignored by some engines.)
 * **The override is the last rule in `<head>`**, so a page stylesheet injected
   later cannot win back its own font on a tie.
-* **`?keep_fonts=1`** on the client URL (`/client.html?workflow=…&keep_fonts=1`)
-  leaves the page with the site's real typography, for checking a capture
-  against the original.
+* **`?keep_fonts=1`** on the client URL (`/client.html?url=…&keep_fonts=1`)
+  leaves even the live mirror with the site's real typography, for checking a
+  capture against the original. It cannot turn the font *on* for an LPV page.
 * The font is still fetched **after the first paint** in the shell (preload →
   `onload`), so a slow or filtered network never delays the page; the system
   stack (`-apple-system`, Segoe UI, Roboto) covers the gap.
 
-Tests: `node tests/test_mirror_font.cjs`.
+Tests: `node tests/test_mirror_font.cjs` (74 checks, including the LPV refusal
+executed against a fake document).
 
 ---
 
@@ -1451,7 +1467,7 @@ node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; 
 node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
-node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
+node tests/test_mirror_font.cjs           # Space Grotesk in the live mirror, never an LPV page
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
 node tests/test_cssom_styles.cjs          # insertRule() CSS reaches the mirror (needs jsdom)
 node tests/test_pc_only_gate.cjs          # the CDP cast screens refuse a phone

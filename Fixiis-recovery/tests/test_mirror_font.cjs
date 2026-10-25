@@ -1,14 +1,17 @@
 // No dependencies: node tests/test_mirror_font.cjs
 //
-// "Let the mirrored pages use Space Grotesk all through."
+// Two surfaces, two answers:
 //
-// The shell (client.html) and both panels are set in Space Grotesk. A mirrored
-// page used to arrive in whatever font the captured site shipped, so the page
-// the operator actually sits in front of looked like a different product.
+//   * the LIVE mirror (the streamed browser) is set in Space Grotesk, the same
+//     font as the shell and the panels, so what the operator watches all day
+//     looks like one product;
+//   * an LPV page is NOT. A pushed Live-pages document is the operator's own
+//     saved page shown to a visitor as it was captured, so restyling it in our
+//     font would be changing their page. It keeps its own typography, always.
 //
-// ensureMirrorFont() forces the font on the captured document. This test
-// extracts it and runs it against a fake document, and pins the pieces of
-// client.html that have to stay in step with it.
+// ensureMirrorFont() forces the font on a captured document; this test extracts
+// it — and the LPV guard beside it — and runs them against a fake document, and
+// pins the pieces of client.html that have to stay in step.
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -62,8 +65,17 @@ function element(tag, attrs) {
     },
     appendChild(child) {
       child.parentElement = el;
+      child.parentNode = el;          // the DOM has both; the code uses either
       el._children.push(child);
       if (child.id) el._owner._byId[child.id] = child;
+      return child;
+    },
+    removeChild(child) {
+      const i = el._children.indexOf(child);
+      if (i >= 0) el._children.splice(i, 1);
+      child.parentElement = null;
+      child.parentNode = null;
+      if (child.id) delete el._owner._byId[child.id];
       return child;
     },
     get nextElementSibling() {
@@ -213,7 +225,7 @@ function makeDoc() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Every surface that renders a page applies it
+// 6. The live mirror applies it; an LPV page never does
 // ---------------------------------------------------------------------------
 {
   const listeners = source.indexOf('function setupIframeEventListeners(d) {');
@@ -222,15 +234,78 @@ function makeDoc() {
   ok(/ensureMirrorFont\(d\)/.test(listenersBody),
     'the live mirror applies the font on every document commit');
 
-  const lpv = source.indexOf('ensureMirrorFont(innerDoc)');
-  ok(lpv > 0, 'an LPV pushed page applies the font as well');
+  ok(source.indexOf('ensureMirrorFont(innerDoc)') === -1,
+    'the LPV pushed page no longer applies our font at all');
+  ok(source.indexOf('stripMirrorFont(innerDoc)') > 0,
+    'it removes the theme instead, in case something applied it first');
+
+  const lpv = source.indexOf("frame.setAttribute('data-lpv-frame', 'true')");
+  ok(lpv > 0, 'the LPV frame is still marked');
+  const mark = source.indexOf("setAttribute('data-lpv-page', '1')");
+  ok(mark > 0, 'and the pushed document itself is marked before anything else runs');
+  ok(source.indexOf('frame.classList.add(\'lpv-page-frame\')') > 0,
+    'with the frame class as a third tell-tale');
 
   const commit = source.indexOf('__shifix_stream_reset__');
   ok(commit > 0, 'the mirror reset block is still there');
 }
 
 // ---------------------------------------------------------------------------
-// 7. The panels agree — one product, one font
+// 7. An LPV document is refused — executed, not merely grepped
+// ---------------------------------------------------------------------------
+{
+  function lpvDoc(mark) {
+    const doc = makeDoc();
+    if (mark === 'attribute') {
+      doc.documentElement.setAttribute('data-lpv-page', '1');
+    } else if (mark === 'window') {
+      doc.defaultView = { __SHF_LPV_PAGE__: true };
+    } else if (mark === 'frame') {
+      doc.defaultView = {
+        frameElement: {
+          getAttribute: (n) => (n === 'data-lpv-frame' ? 'true' : null),
+          className: '',
+        },
+      };
+    } else if (mark === 'class') {
+      doc.defaultView = {
+        frameElement: { getAttribute: () => null, className: 'lpv-redirect-frame lpv-page-frame' },
+      };
+    }
+    return doc;
+  }
+
+  for (const mark of ['attribute', 'window', 'frame', 'class']) {
+    const ctx = makeContext('');
+    const doc = lpvDoc(mark);
+    ok(ctx.isLpvPageDocument(doc) === true, 'the ' + mark + ' marker identifies an LPV page');
+    ok(ctx.ensureMirrorFont(doc) === false, 'ensureMirrorFont refuses it (' + mark + ')');
+    ok(!doc.getElementById('__shifix_mirror_font__'), 'no override stylesheet is added (' + mark + ')');
+    ok(!doc.getElementById('__shifix_mirror_font_css__'), 'no font request is made (' + mark + ')');
+  }
+
+  // The live mirror is still themed with the same markers absent.
+  const plain = makeContext('');
+  const doc = makeDoc();
+  doc.defaultView = { frameElement: { getAttribute: () => null, className: 'mirror-frame' } };
+  ok(plain.isLpvPageDocument(doc) === false, 'a streamed mirror document is not an LPV page');
+  ok(plain.ensureMirrorFont(doc) === true, 'so it is themed, as before');
+
+  // A document that was themed and then became an LPV page is cleaned up.
+  const cleanup = makeContext('');
+  const reused = makeDoc();
+  cleanup.ensureMirrorFont(reused);
+  ok(!!reused.getElementById('__shifix_mirror_font__'), 'it was themed first');
+  reused.documentElement.setAttribute('data-lpv-page', '1');
+  ok(cleanup.ensureMirrorFont(reused) === false, 'once it is an LPV page the theme is refused');
+  ok(!reused.getElementById('__shifix_mirror_font__'), 'the override stylesheet is removed again');
+  ok(!reused.getElementById('__shifix_mirror_font_css__'), 'and so is the font request');
+  const leftover = reused.head._children.filter((c) => /__shifix_mirror_font/.test(c.id || ''));
+  ok(leftover.length === 0, 'nothing of ours is left in that document');
+}
+
+// ---------------------------------------------------------------------------
+// 8. The panels agree — one product, one font
 // ---------------------------------------------------------------------------
 {
   const admin = fs.readFileSync(path.join(__dirname, '..', 'Admin.html'), 'utf8');

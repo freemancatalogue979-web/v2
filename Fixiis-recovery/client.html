@@ -463,7 +463,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-lpv-tab';
+        window.__MIRROR_BUILD = '2026-10-25-lpv-fonts';
         if (window.__SHF_DEBUG) console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -6021,21 +6021,28 @@ function applySpinnerColorFromHex(hexColor) {
             // -----------------------------------------------------------------
             // One font across a captured page
             // -----------------------------------------------------------------
-            // The shell and the panels are set in Space Grotesk; a mirror that
-            // renders in the bank's own Arial looks like a different product,
-            // and it is the page the operator sits in front of all day. So the
-            // captured document is set in Space Grotesk too — every element of
-            // it, including inputs, buttons and tables.
+            // The shell and the panels are set in Space Grotesk; the LIVE
+            // mirror (the streamed browser) is set in it too, so what the
+            // operator watches all day looks like one product.
             //
-            // Two things are deliberately left alone:
+            // **An LPV page is not that page.** A pushed Live-pages document is
+            // the operator's own saved page, shown to a visitor as it was
+            // captured: its typography is part of what it is, and restyling it
+            // in our font is a change to their page. LPV pages therefore keep
+            // their own fonts, always — this helper refuses them, and the LPV
+            // frame marks itself (see `data-lpv-page` in showPage) so no future
+            // call site can theme one by accident.
+            //
+            // Two things are deliberately left alone even in the live mirror:
             //
             //   * icon fonts (Font Awesome, Material Icons, Glyphicons, MDI).
             //     Their glyphs are characters in *their* font, so replacing the
             //     family would turn every icon into a letter;
             //   * svg, which draws its own text.
             //
-            // `?keep_fonts=1` on the client URL leaves a page with its own
-            // typography (for checking a capture against the real site).
+            // `?keep_fonts=1` on the client URL leaves even the live mirror
+            // with the site's own typography (for checking a capture against
+            // the original).
             const MIRROR_FONT_STACK = "'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
             const MIRROR_FONT_HREF = 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap';
             // NB: only simple `:not()` arguments. A complex one (`:not(svg *)`)
@@ -6057,8 +6064,56 @@ function applySpinnerColorFromHex(hexColor) {
                 return mirrorFontForced;
             }
 
+            // Is this document an LPV pushed page rather than the live mirror?
+            // Three independent tell-tales, because the answer decides whether
+            // somebody's page gets restyled:
+            //   * the marker the LPV frame sets on the document itself;
+            //   * the frame element it is rendered in (`data-lpv-frame`);
+            //   * the window flag set before the page is painted.
+            function isLpvPageDocument(doc) {
+                try {
+                    if (!doc) return false;
+                    const root = doc.documentElement;
+                    if (root && root.getAttribute && root.getAttribute('data-lpv-page') === '1') return true;
+                    const win = doc.defaultView;
+                    if (!win) return false;
+                    if (win.__SHF_LPV_PAGE__ === true) return true;
+                    const fe = win.frameElement;
+                    if (fe && fe.getAttribute && fe.getAttribute('data-lpv-frame') === 'true') return true;
+                    const cls = fe && fe.className;
+                    if (typeof cls === 'string' && cls.indexOf('lpv-page-frame') !== -1) return true;
+                } catch (e) { /* cross-origin or a fake document: not an LPV page */ }
+                return false;
+            }
+
+            // Undo the theme on a document that must not carry it. Removal is
+            // not paranoia: a frame can be re-used for a re-push, and a themed
+            // document that later becomes an LPV page would keep our font.
+            function stripMirrorFont(doc) {
+                let removed = false;
+                try {
+                    if (!doc || !doc.head) return false;
+                    const ids = ['__shifix_mirror_font__', '__shifix_mirror_font_css__'];
+                    for (let i = 0; i < ids.length; i++) {
+                        const el = doc.getElementById(ids[i]);
+                        if (el && el.parentNode) {
+                            el.parentNode.removeChild(el);
+                            removed = true;
+                        }
+                    }
+                } catch (e) { /* nothing to undo */ }
+                return removed;
+            }
+
             function ensureMirrorFont(doc) {
-                if (!doc || !doc.head || !mirrorFontEnabled()) return false;
+                if (!doc || !doc.head) return false;
+                // An LPV page is shown exactly as it was captured: never themed,
+                // and cleaned up if something themed it before it became one.
+                if (isLpvPageDocument(doc)) {
+                    try { stripMirrorFont(doc); } catch (e) { /* cosmetic */ }
+                    return false;
+                }
+                if (!mirrorFontEnabled()) return false;
                 try {
                     if (!doc.getElementById('__shifix_mirror_font_css__')) {
                         const link = doc.createElement('link');
@@ -8538,6 +8593,20 @@ function applySpinnerColorFromHex(hexColor) {
                             try {
                                 const innerDoc = frame.contentDocument || frame.contentWindow && frame.contentWindow.document;
                                 if (!innerDoc) return;
+                                // The pushed page is shown VERBATIM. Mark it
+                                // before anything else touches it (and before
+                                // the re-entry guard below, which would skip
+                                // the marking on a second load), so the shell's
+                                // font can never be applied to it — see
+                                // isLpvPageDocument().
+                                try {
+                                    if (innerDoc.documentElement) {
+                                        innerDoc.documentElement.setAttribute('data-lpv-page', '1');
+                                    }
+                                    if (innerDoc.defaultView) innerDoc.defaultView.__SHF_LPV_PAGE__ = true;
+                                    frame.classList.add('lpv-page-frame');
+                                    stripMirrorFont(innerDoc);
+                                } catch (e) { /* the guard below covers the rest */ }
                                 // Mark the controls the guard allows so they can
                                 // be emphasised while everything else is inert.
                                 try { LPV._markAllowed(innerDoc); } catch (e) { /* cosmetic */ }
@@ -8624,7 +8693,9 @@ function applySpinnerColorFromHex(hexColor) {
                                 // own scripts (now stripped) would sit there
                                 // unable to move: hand the scroll back.
                                 try {
-                                    ensureMirrorFont(innerDoc);
+                                    // NOT ensureMirrorFont(): an LPV page keeps
+                                    // its own typography (see the font block).
+                                    stripMirrorFont(innerDoc);
                                     ensureMirrorScrolling(innerDoc, frame.contentWindow);
                                     // Tab identity for a pushed page too (skipped
                                     // by the same guard when branding is on).
