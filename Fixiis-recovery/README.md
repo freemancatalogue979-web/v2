@@ -795,16 +795,26 @@ declared icons and the server's stored icon). The client sends its domain and
 gets a picture; the resolution happens on the server, where the request is not
 cross-site and cannot be hotlink-blocked.
 
-**The panels use it too.** `Admin.html` and `mini-admin.html` show, in their own
-browser tab, the icon of the site the **selected client is on** — the same
-picture `client.html` shows for that site, from the same endpoint. `client.html`
-keeps the site's icon only until the page's own icon arrives (it has the
-captured page); the panels have no captured page, so the site's icon is their
-answer, and it goes back to the panel's own mark when nothing is selected. Every
-domain logo in the panel — archive and profile cards, the recorded-domain grid,
-the domain modal — resolves through `siteIconApiUrl()` as well, so a list never
-shows someone else's idea of a site's mark. The Admin tab icon used to be a
-`google.com/s2/favicons?domain=tlsa.gg` URL hard-coded in the file: gone.
+**The brand mark is the default favicon of every page.** `client.html`,
+`Admin.html` and `mini-admin.html` all declare
+`https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg` as their icon, and
+that is what the tab shows before anything else is known:
+
+| Page | The tab icon |
+|---|---|
+| `client.html` | the brand mark until the mirrored page's own icon (or the icon the server has for its site) arrives — it is also the floor of the icon chain, and the inline SVG remains the last resort so the tab can never be blank |
+| `Admin.html` | the brand mark, replaced by the **selected client's** site icon (same `/api/site/icon` endpoint) and back to the brand mark on deselect |
+| `mini-admin.html` | the brand mark, **only** — the phone panel never follows a visitor's page; a tab that changes as you scan a list is noise |
+
+If the CDN cannot serve the logo (offline, blocked), each page swaps in the
+local build's `/favicon.svg` on its own, so a failed request is never a blank
+tab.
+
+`Admin.html` also resolves every domain logo — archive and profile cards, the
+recorded-domain grid, the domain modal — through `siteIconApiUrl()`, the same
+endpoint `client.html` uses, so a list never shows someone else's idea of a
+site's mark. The Admin tab icon used to be a hard-coded
+`google.com/s2/favicons?domain=tlsa.gg` URL: gone.
 
 ## The tab is the page (streamed visits)
 
@@ -930,7 +940,7 @@ Tests: `node tests/test_tab_identity.cjs` (137 checks — the tab block, the ico
 chain, the visit-flag classifier and the capture-page observer all run for
 real), and `PYTHONPATH=. python tests/test_site_icon.py` +
 `tests/test_site_icon_api.py` for the server-side resolution and the
-`/api/site/icon` endpoint (92 checks: only a public host is ever fetched, only
+`/api/site/icon` endpoint (100 checks: only a public host is ever fetched, only
 an image is ever served, the answer is cached, a machine that cannot verify
 certificates still gets icons, and the panels' tab and logos resolve through it).
 

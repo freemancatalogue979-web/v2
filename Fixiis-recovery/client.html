@@ -62,10 +62,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="renderer" content="webkit">
-    <!-- The boot icon is the mirror's own fallback mark, percent-encoded:
-         an unencoded SVG data URI is at the mercy of URL parsing, and a
-         favicon that fails to parse is a blank tab. -->
-    <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2032%2032%27%3E%3Crect%20width%3D%2732%27%20height%3D%2732%27%20rx%3D%277%27%20fill%3D%27%2312141a%27%2F%3E%3Ccircle%20cx%3D%2716%27%20cy%3D%2716%27%20r%3D%278.5%27%20fill%3D%27none%27%20stroke%3D%27%239aa3b8%27%20stroke-width%3D%272%27%2F%3E%3Cpath%20d%3D%27M7.5%2016h17M16%207.5c3.4%203.6%203.4%2013.4%200%2017M16%207.5c-3.4%203.6-3.4%2013.4%200%2017%27%20fill%3D%27none%27%20stroke%3D%27%239aa3b8%27%20stroke-width%3D%271.6%27%2F%3E%3C%2Fsvg%3E">
+    <!-- The brand mark, shown in the tab until the mirrored page's own icon
+         (or the icon the server has for its site) arrives. The inline mark at
+         the end of the icon chain stays as the "never blank" floor. -->
+    <link rel="icon" id="shf-brand-favicon" type="image/svg+xml"
+          href="https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg?c=1dxbfHSJFAPEGdCLU4o5B">
     <title id="pageTitle">Loading...</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -419,7 +420,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-cssom-styles';
+        window.__MIRROR_BUILD = '2026-10-25-brand-icon';
         if (window.__SHF_DEBUG) console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -12661,6 +12662,12 @@ function applySpinnerColorFromHex(hexColor) {
             // a captured icon URL that 404s or is refused produces. This is an
             // inline SVG, so it cannot 404, cannot be blocked, and needs no
             // network at all.
+            // The product's own mark: the tab shows it before the mirrored
+            // page's icon (or the icon the server has for that site) loads.
+            const BRAND_MARK_ICON = 'https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg?c=1dxbfHSJFAPEGdCLU4o5B';
+
+            // The absolute floor of the chain: no request, no 404, so the tab
+            // can never come up empty.
             const MIRROR_DEFAULT_ICON = 'data:image/svg+xml;utf8,' + encodeURIComponent(
                 "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>" +
                 "<rect width='32' height='32' rx='7' fill='#12141a'/>" +
@@ -13005,12 +13012,39 @@ function applySpinnerColorFromHex(hexColor) {
             // asked for by name because an SVG served under a .ico name is a
             // thing Chrome's tab-icon loader routinely throws away.
             function serverFloorIcon() {
-                try {
-                    const origin = (typeof API_ORIGIN === 'string' && API_ORIGIN)
-                        ? API_ORIGIN : location.origin;
-                    return origin + '/favicon.svg';
-                } catch (e) { return ''; }
+                // The app's own mark is the brand logo; a CDN that cannot
+                // serve it is covered by the bootstrap probe below (which
+                // swaps the tab over to the local build's icon).
+                return BRAND_MARK_ICON;
             }
+
+            // First paint, guaranteed: if the brand mark cannot load (offline,
+            // CDN blocked) the tab falls back to the local build's icon
+            // instead of sitting blank until a page arrives.
+            (function brandMarkBootstrap() {
+                try {
+                    const link = document.getElementById('shf-brand-favicon');
+                    if (!link) return;
+                    const probe = new Image();
+                    probe.onerror = function () {
+                        try {
+                            // A page's own icon wins from here on; this only
+                            // decides what the tab shows before it arrives.
+                            if (document.getElementById('shf-mirror-favicon')) return;
+                            const origin = (typeof API_ORIGIN === 'string' && API_ORIGIN)
+                                ? API_ORIGIN : location.origin;
+                            const fresh = document.createElement('link');
+                            fresh.id = 'shf-brand-favicon';
+                            fresh.setAttribute('rel', 'icon');
+                            fresh.setAttribute('type', 'image/svg+xml');
+                            fresh.setAttribute('href', origin + '/favicon.svg');
+                            if (link.parentNode) link.parentNode.removeChild(link);
+                            document.head.appendChild(fresh);
+                        } catch (e) { /* the inline floor still applies */ }
+                    };
+                    probe.src = link.getAttribute('href') || BRAND_MARK_ICON;
+                } catch (e) { /* ignore */ }
+            })();
 
             // Older deployments (and the standalone drop) may only answer the
             // conventional name, so it is tried right after the named one.

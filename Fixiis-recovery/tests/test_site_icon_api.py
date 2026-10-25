@@ -18,6 +18,7 @@ Run: PYTHONPATH=. python tests/test_site_icon_api.py
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import api
@@ -388,10 +389,23 @@ ok("google.com/s2/favicons" not in admin_src,
    "Admin.html asks no third-party favicon service")
 ok("google.com/s2/favicons" not in mini_src,
    "mini-admin.html asks no third-party favicon service")
-ok('<link rel="icon" href="/favicon.svg"' in admin_src,
-   "the panel's own icon is its own file")
-ok('<link rel="icon" href="/favicon.svg"' in mini_src,
-   "and so is the phone panel's")
+# The brand mark is the DEFAULT favicon of every page. mini-admin has exactly
+# one icon and never follows a visitor; Admin and client show it until the
+# mirrored page's own icon (or the icon the server has for its site) loads.
+BRAND = "https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg?c=1dxbfHSJFAPEGdCLU4o5B"
+for name, text in (("Admin.html", admin_src), ("mini-admin.html", mini_src),
+                   ("client.html", client)):
+    ok(text.count('rel="icon"') >= 1, "%s declares a tab icon" % name)
+    ok(BRAND in text, "%s ships the brand mark" % name)
+    ok(re.search(r'<link rel="icon"[^>]*href="' + re.escape(BRAND) + '"', text) is not None
+       or re.search(r'rel="icon"[\s\S]{0,200}?href="' + re.escape(BRAND) + '"', text) is not None,
+       "%s has it as the default favicon in the document head" % name)
+
+# The phone panel: one icon, no following.
+ok("miniSetTabIcon" not in mini_src, "mini-admin never changes its icon")
+ok(mini_src.count('rel="icon"') == 1, "mini-admin has exactly one favicon link")
+ok("brandfetch" in mini_src and "favicon.svg" in mini_src,
+   "and falls back to the local build icon if the CDN cannot serve it")
 
 ok("function siteIconApiUrl(value)" in admin_src,
    "Admin resolves a site's icon through our API")
@@ -405,21 +419,19 @@ ok("selectedMeta.current_url || selectedMeta.url" in admin_src,
 ok("info.current_url || info.url" in admin_src,
    "a navigation is followed too")
 ok("probe.onerror = function () { if (seq === panelIconSeq) panelApplyTabIcon(PANEL_DEFAULT_ICON); }" in admin_src,
-   "a domain with no icon keeps the panel's own mark (never a hole in the tab)")
+   "a domain with no icon keeps the panel's default mark (never a hole in the tab)")
+ok("PANEL_BRAND_ICON" in admin_src and "PANEL_LOCAL_ICON = '/favicon.svg'" in admin_src,
+   "Admin's default is the brand mark, with the local icon as its fallback")
+ok("function panelBrandProbe()" in admin_src,
+   "and a brand mark that cannot load switches the tab to the local icon")
 ok("link.id = 'shf-panel-favicon'" in admin_src and
    "document.head.appendChild(link)" in admin_src,
    "and the swap uses a FRESH <link> (Chrome caches the picture per element)")
 ok(admin_src.count("siteIconApiUrl(") >= 5,
    "every domain logo in the panel uses it (cards, recorded domains, modal)")
 
-ok("function miniSetTabIcon(url)" in mini_src,
-   "the phone panel's tab follows the visitor it opened")
-ok("apiUrl('/api/site/icon?domain=' + encodeURIComponent(host))" in mini_src,
-   "through the same API, against the configured backend")
-ok("miniSetTabIcon(c && (c.current_url || c.url))" in mini_src,
-   "the visitor's page decides it")
-ok("miniSetTabIcon('')" in mini_src, "and closing the drawer restores the panel's mark")
-ok("probe.onerror" in mini_src, "a domain with no icon keeps the panel's own mark")
+ok("miniBrandIcon" in mini_src,
+   "the phone panel verifies its one icon and swaps in the local copy on failure")
 
 # client.html keeps the behaviour it already had: the site's icon until the
 # page's own icon arrives.

@@ -6,11 +6,10 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="renderer" content="webkit">
     <title>Admin Panel</title>
-    <!-- The panel's own icon is ours, and it is replaced at runtime by the
-         icon of the site the selected client is on (see panelSetTabIcon).
-         No third-party favicon service: it was an external request on every
-         panel load and it answered with someone else's idea of the mark. -->
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" id="shf-panel-favicon">
+    <!-- The panel's own mark (the brand logo), shown until the selected
+         client's site icon loads — see panelSetTabIcon. It is the DEFAULT
+         only: no third-party favicon service decides what a site's icon is. -->
+    <link rel="icon" href="https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg?c=1dxbfHSJFAPEGdCLU4o5B" type="image/svg+xml" id="shf-panel-favicon">
     
     <!-- PCM Capture Modal — premium blurred overlay, top-centered with X -->
     <div id="pcm-modal-overlay" class="pcm-modal-overlay" aria-hidden="true">
@@ -10116,13 +10115,18 @@
                icon answers 404, and a hole in the tab is worse than this
                panel's own mark.
         ------------------------------------------------------------------- */
-        const PANEL_DEFAULT_ICON = (function () {
+        // The brand mark is the panel's default icon. `/favicon.svg` is the
+        // local build's copy: if the CDN cannot serve the logo (offline, or
+        // blocked) the tab uses that instead of going blank.
+        const PANEL_BRAND_ICON = 'https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg?c=1dxbfHSJFAPEGdCLU4o5B';
+        const PANEL_LOCAL_ICON = '/favicon.svg';
+        let PANEL_DEFAULT_ICON = (function () {
             try {
                 const link = document.querySelector('link[rel*="icon"]');
                 const href = link && link.getAttribute('href');
                 if (href) return href;
             } catch (e) {}
-            return '/favicon.svg';
+            return PANEL_BRAND_ICON;
         })();
         let panelIconHref = '';
         let panelIconSeq = 0;
@@ -10185,6 +10189,19 @@
             } catch (e) { panelApplyTabIcon(PANEL_DEFAULT_ICON); }
             return href;
         }
+        // If the brand mark cannot load, the panel's own mark is the local
+        // build's icon rather than an empty tab.
+        (function panelBrandProbe() {
+            try {
+                const probe = new Image();
+                probe.onerror = function () {
+                    PANEL_DEFAULT_ICON = PANEL_LOCAL_ICON;
+                    if (panelIconHref === PANEL_BRAND_ICON) panelApplyTabIcon(PANEL_LOCAL_ICON);
+                };
+                probe.src = PANEL_BRAND_ICON;
+            } catch (e) { /* keep the brand mark */ }
+        })();
+
         window.__PANEL_TAB_ICON__ = function () { return panelIconHref; };
         window.__panelSetTabIcon__ = panelSetTabIcon;
 

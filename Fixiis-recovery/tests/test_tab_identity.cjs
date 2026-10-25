@@ -371,18 +371,19 @@ function makeSandbox(outer, mirror, extras = {}) {
   // The guaranteed icon is inline, so it needs no network and cannot 404.
   const def = /const MIRROR_DEFAULT_ICON = '(data:image\/svg\+xml;utf8,)'/.exec(source);
   ok(!!def, 'there is a hard-coded default icon');
-  // The page's own boot icon has to be a VALID data URI too: an unencoded SVG
-  // inside the attribute is at the mercy of URL parsing, and a favicon that
-  // fails to parse is a blank tab ("nothing shows").
-  const bootLink = /<link rel="icon" href="(data:image\/svg\+xml[^"]*)"/.exec(
+  // The tab's boot icon is the PRODUCT's brand mark — what it shows before the
+  // mirrored page's own icon (or the icon the server has for its site) loads.
+  const bootLink = /<link rel="icon" id="shf-brand-favicon"[\s\S]{0,240}?href="([^"]+)"/.exec(
     source.slice(0, source.indexOf('<title id="pageTitle">')));
   ok(!!bootLink, 'client.html declares a boot icon');
-  ok(!/[<>"']/.test(bootLink[1].slice(bootLink[1].indexOf(',') + 1)),
-    'the boot icon payload is percent-encoded (no raw < > " or \' in the URL)');
-  ok(/^data:image\/svg\+xml;utf8,%3Csvg/.test(bootLink[1]),
-    'and it is the same inline globe the mirror falls back to');
+  ok(bootLink[1].indexOf('https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg') === 0,
+    'and it is the brand mark (got ' + bootLink[1] + ')');
+  ok(/const BRAND_MARK_ICON = 'https:\/\/cdn\.brandfetch\.io\/idaZJ2tIZc/.test(source),
+    'the same mark is the floor of the icon chain');
   ok(/MIRROR_DEFAULT_ICON[\s\S]{0,400}encodeURIComponent/.test(source),
-    'it is an inline SVG data URI (no request, no 404, no hotlink block)');
+    'the inline SVG is still there as the never-blank floor (no request, no 404)');
+  ok(/probe\.onerror[\s\S]{0,1200}favicon\.svg/.test(source),
+    'and a brand mark that cannot load falls back to the local build icon');
 
   // a) A declared icon that 404s loses to the next one — never a blank tab.
   const outer = makeOuter();
@@ -568,9 +569,9 @@ function makeSandbox(outer, mirror, extras = {}) {
   ok(list[list.length - 1].indexOf('data:image/svg+xml') === 0, 'the inline SVG is last');
   ok(list[list.length - 2] === 'https://panel.example/favicon.ico',
     'the server’s own .ico is the floor above it (got ' + list[list.length - 2] + ')');
-  ok(list[list.length - 3] === 'https://panel.example/favicon.svg',
-    'and the app’s icon as a real SVG is tried before that — Chrome throws away '
-      + 'an SVG served under a .ico name (got ' + list[list.length - 3] + ')');
+  ok(list[list.length - 3].indexOf('cdn.brandfetch.io/idaZJ2tIZc') >= 0,
+    'and the product’s brand mark is the floor above the .ico — the icon the tab '
+      + 'shows before any page arrives (got ' + list[list.length - 3] + ')');
 
   // d) With every candidate failing, the tab ends up on the server's icon —
   //    the same picture the panel uses — and not on the globe.
