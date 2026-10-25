@@ -4145,6 +4145,18 @@ function hideTransitionOverlay() {
                 if (typeof faviconUrl === 'string') {
                     lpvTabBranding.faviconUrl =
                         resolveServerUrl(faviconUrl) || faviconUrl.trim();
+                    // Clearing the operator's favicon hands the tab back to the
+                    // streamed page: drop the marker that was blocking it, so
+                    // the next sync sets the site's own icon again.
+                    if (!lpvTabBranding.faviconUrl) {
+                        try {
+                            const l0 = document.querySelector('link[rel*="icon"]');
+                            if (l0 && l0.dataset && l0.dataset.lpvTabFavicon === 'true') {
+                                delete l0.dataset.lpvTabFavicon;
+                                mirrorTabState.icon = null;
+                            }
+                        } catch (e) { /* ignore */ }
+                    }
                 }
                 const title = lpvTabBranding.tabTitle;
                 const icon = lpvTabBranding.faviconUrl;

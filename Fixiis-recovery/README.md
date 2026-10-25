@@ -756,7 +756,7 @@ __MIRROR_TAB_STATE__()
 //   icon: "…/assets/<hash>.png", appliedIcon: "…", branded: false }
 ```
 
-Tests: `node tests/test_tab_identity.cjs` (78 checks — the tab block, the visit
+Tests: `node tests/test_tab_identity.cjs` (79 checks — the tab block, the visit
 flag classifier and the capture-page observer all run for real).
 
 ---

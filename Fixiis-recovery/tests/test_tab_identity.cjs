@@ -357,6 +357,8 @@ function makeSandbox(outer, mirror, extras = {}) {
   // the path that used to leak them (a Settings save pushes to every client).
   ok(/function applyLpvTabBranding\(tabTitle, faviconUrl\) \{[\s\S]{0,600}if \(!clientIsLpvVisit\(\)\) return;/.test(source),
     'LPV tab branding refuses to run on a streamed visit');
+  ok(/delete l0\.dataset\.lpvTabFavicon[\s\S]{0,120}mirrorTabState\.icon = null/.test(source),
+    'clearing the operator favicon hands the tab back to the streamed page');
 }
 
 // ---------------------------------------------------------------------------
