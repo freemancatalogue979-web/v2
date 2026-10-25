@@ -372,6 +372,40 @@ What you should know:
 
 ---
 
+## What the Telegram alerts say (and what you can switch off)
+
+The Admin panel's **Telegram → Message Detail** section decides what each alert
+prints. Everything defaults to *on*, so nothing changes until you switch
+something off, and every switch applies live (half a second after the click,
+no restart).
+
+| Alert | Switches | Switched off |
+|---|---|---|
+| **CLIENT CONNECTED** | Identity (time, workflow, pass code), Location & network, Device | that group is left out — turn all three off and the alert is the headline alone |
+| **WORKFLOW STARTED** | Started message details | just `WORKFLOW STARTED`, no workflow/steps lines |
+| **WORKFLOW FINISHED** | Finished message details | just `WORKFLOW FINISHED` |
+| **DETAILS CAPTURED** | Page values on sent pages | a page sent with your own values reports the plain field list instead |
+
+What else changed:
+
+* Every one of these alerts now carries the **clock time**
+  (`2026-10-25 19:42:07`). It used to carry the last ten characters of a client
+  id (`_yehwgj9l9`), which told an operator nothing on a phone.
+* A page **pushed with the values you typed for that visitor** gets its own
+  DETAILS CAPTURED shape: page name, time, and one `Name = value` line per
+  pushed value — then what they entered on it. A page served with only its
+  saved defaults keeps the plain message, so the special shape really means
+  "this copy was customised".
+* The switches live in `data/telegram_config.json` as `connect_show_identity`,
+  `connect_show_location`, `connect_show_device`,
+  `workflow_start_show_details`, `workflow_finish_show_details` and
+  `binding_details_enabled`. A save that omits a key keeps the saved value, so
+  the mini panel (which shows only the coarse on/off switches) can never reset
+  these.
+* Tests: `python tests/test_telegram_messages.py`.
+
+---
+
 ## Editing an archive (re-uploading its HTML)
 
 A page is not frozen once it is in the archive. On its card press **✎** (or

