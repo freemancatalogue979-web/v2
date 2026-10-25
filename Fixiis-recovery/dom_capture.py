@@ -3081,6 +3081,57 @@ _DELTA_OBSERVER_JS = r"""
       return String(location.href || '') + '|' + String(performance.timeOrigin || Date.now());
     } catch (e) { return String(Date.now()); }
   })();
+  // ---- tab identity -----------------------------------------------------
+  // The visitor's tab shows the SITE's title and icon. A full capture carries
+  // both inside the document, but between captures a page can rename itself
+  // ("Inbox" -> "Inbox (3)") or swap its icon (an unread badge) with no DOM
+  // change the mirror can absorb. Those two facts travel as a control op,
+  // ['meta', title, icon], so the client can follow them immediately.
+  const tabMetaNow = () => {
+    let title = '';
+    try { title = String(document.title || '').trim(); } catch (e) { title = ''; }
+    let icon = '';
+    try {
+      const base = document.baseURI || location.href;
+      // Same ranking a browser applies: explicit icon over apple-touch-icon,
+      // declared size wins, svg wins a tie, later declarations win ties.
+      let best = -1;
+      const links = document.querySelectorAll('link[href]');
+      for (let i = 0; i < links.length; i++) {
+        const l = links[i];
+        const rel = String(l.getAttribute('rel') || '').toLowerCase();
+        if (rel.indexOf('icon') < 0) continue;
+        let href = l.getAttribute('href') || '';
+        if (!href || /^javascript:/i.test(href)) continue;
+        if (!/^(data:|https?:|\/\/)/i.test(href)) {
+          try { href = new URL(href, base).href; } catch (e) { /* keep as authored */ }
+        }
+        // Rank bands, not one big sum: a real icon outranks an
+        // apple-touch-icon whatever their pixel sizes say. Same order as the
+        // client's mirrorIconCandidate().
+        let score = (rel.indexOf('apple-touch-icon') >= 0) ? 10 : 100;
+        if (rel.indexOf('shortcut') >= 0) score += 5;
+        const sizes = String(l.getAttribute('sizes') || '').toLowerCase();
+        const m = /(\d+)\s*x\s*(\d+)/.exec(sizes);
+        if (m) score += Math.min(8, parseFloat(m[1]) / 64);
+        if (String(l.getAttribute('type') || '').toLowerCase().indexOf('svg') >= 0) score += 6;
+        if (score >= best) { best = score; icon = href; }
+      }
+      if (!icon) icon = new URL('/favicon.ico', base).href;
+    } catch (e) { /* no readable head */ }
+    return [title, icon];
+  };
+  let sentMeta = null;
+  try { const m0 = tabMetaNow(); sentMeta = m0[0] + '\u0001' + m0[1]; } catch (e) { sentMeta = null; }
+  const pendingMeta = () => {
+    let cur;
+    try { cur = tabMetaNow(); } catch (e) { return null; }
+    const sig = cur[0] + '\u0001' + cur[1];
+    if (sig === sentMeta) return null;
+    sentMeta = sig;
+    return cur;
+  };
+
   const midOf = (el) => {
     if (!el || el.nodeType !== 1) return 0;
     let m = window.__domMidMap.get(el);
@@ -3182,6 +3233,15 @@ _DELTA_OBSERVER_JS = r"""
   };
   const flush = () => {
     scheduled = false;
+    // A renamed tab or a new icon is a change with no patchable DOM target in
+    // the mirror, so it rides at the head of the batch. Never while overflowed:
+    // that control frame must stay byte-exact.
+    if (!overflowed) {
+      try {
+        const meta = pendingMeta();
+        if (meta) ops.unshift(['meta', meta[0], meta[1]]);
+      } catch (e) { /* ignore */ }
+    }
     if (!ops.length) return;
     const batch = ops.splice(0, ops.length);
     coalesced.clear();
@@ -3228,6 +3288,15 @@ _DELTA_OBSERVER_JS = r"""
   };
   const mo = new MutationObserver((recs) => {
     for (const r of recs) {
+      // A tab rename or an icon swap can produce no patchable op at all (the
+      // <title> text and the <link rel=icon> href have no target the mirror
+      // can absorb), and the meta op still has to go out — so any head churn
+      // schedules a flush of its own.
+      try {
+        const t = r.target;
+        const el = (t && t.nodeType === 1) ? t : (t && t.parentNode);
+        if (el && el.closest && el.closest('head')) schedule();
+      } catch (e) { /* ignore */ }
       if (r.type === 'attributes') {
         const el = r.target;
         if (r.attributeName === MID) continue;   // our own stamping

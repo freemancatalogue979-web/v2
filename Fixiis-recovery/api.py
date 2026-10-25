@@ -2230,20 +2230,27 @@ async def _push_lpv_branding_to_clients() -> None:
         "tab_title": (getattr(settings, "lpv_tab_title", "") or "").strip(),
         "favicon_url": (getattr(settings, "lpv_favicon_url", "") or "").strip(),
     }
+    # LPV clients only. This used to fan out to every connected session, which
+    # included visitors watching a streamed browser: an operator saving a tab
+    # title silently renamed those visitors' tabs, and the site they were
+    # watching lost its identity. A streamed tab belongs to the streamed site.
     sockets: List[Any] = []
+    try:
+        sockets.extend(list(_lpv_only_ws.values()))
+    except Exception:
+        pass
     try:
         if session_manager:
             for item in await session_manager.get_all_sessions():
                 cid = item.get("client_id") if isinstance(item, dict) else None
-                if not cid:
+                if not cid or cid not in _lpv_only_ws:
                     continue
                 sess = await session_manager.get_session(cid)
                 ws = getattr(sess, "websocket", None) if sess else None
-                if ws:
+                if ws and ws not in sockets:
                     sockets.append(ws)
     except Exception:
         pass
-    sockets.extend(list(_lpv_only_ws.values()))
     for ws in sockets:
         try:
             await ws.send_json(dict(payload))
@@ -3523,6 +3530,20 @@ def _embed_loading_page(html_content: str, loading_html: str, loading_url: str) 
     return out
 
 
+def _client_visit_flag(lpv_visit: bool) -> str:
+    """Tell the served document which kind of visit it is.
+
+    A streamed visit (a real browser being watched) and an LPV visit (mirrored
+    pages pushed by the panel) share one file but must not share a tab: the
+    stream's tab belongs to the site being streamed, the LPV one to the
+    workflow. The client cannot always tell from the query string — an `auth`
+    link can be either kind — so the server states it, and the client uses it
+    as the last word (see applyLpvTabBranding()).
+    """
+    return ('<script id="lpv-visit-flag">window.__LPV_VISIT__ = '
+            + ('true' if lpv_visit else 'false') + ';</script>')
+
+
 def _render_client_html(request: Request) -> Response:
     client_path = get_base_path() / "client.html"
     if not client_path.exists():
@@ -3578,8 +3599,12 @@ def _render_client_html(request: Request) -> Response:
 
     if not brand_wf and not loading_html:
         # Served through the same ETag path as the branded copy: a repeat
-        # visit costs one 304 instead of ~550 KB of HTML.
-        return _client_html_response(request, _client_file_html(client_path))
+        # visit costs one 304 instead of ~550 KB of HTML. The visit flag is
+        # still injected, because the same bytes serve both kinds of visit.
+        plain = _client_file_html(client_path)
+        if "</head>" in plain:
+            plain = plain.replace("</head>", _client_visit_flag(lpv_visit) + "</head>", 1)
+        return _client_html_response(request, plain)
 
     wf = brand_wf or {}
     try:
@@ -3593,6 +3618,7 @@ def _render_client_html(request: Request) -> Response:
         str(wf.get("name") or ""),
         str(wf.get("brand_color") or ""),
         str(wf.get("brand_logo_url") or ""),
+        "lpv" if lpv_visit else "stream",
         loading_url,
         # A changed loading page must rebuild the copy, not serve yesterday's.
         hashlib.sha1((loading_html or "").encode("utf-8", "replace")).hexdigest()[:16],
@@ -3611,7 +3637,7 @@ def _render_client_html(request: Request) -> Response:
     import json as json_lib
     import re as re_lib
 
-    injected_head = []
+    injected_head = [_client_visit_flag(lpv_visit)]
 
     if wf_color:
         r, g, b = 239, 68, 68

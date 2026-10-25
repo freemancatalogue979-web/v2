@@ -398,7 +398,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-free-scroll';
+        window.__MIRROR_BUILD = '2026-10-25-tab-identity';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -4110,7 +4110,30 @@ function hideTransitionOverlay() {
                 _lpvTitleGuardInstalled = false;
             }
 
+            // Which kind of visit is this? A streamed visit (a real browser
+            // being watched) and an LPV visit (mirrored pages pushed by the
+            // panel) share one file, and only the second one is branded. The
+            // server states it in <script id="lpv-visit-flag">; older servers
+            // and file:// copies fall back to the query string.
+            function clientIsLpvVisit() {
+                try {
+                    if (window.__LPV_VISIT__ === true) return true;
+                    if (window.__LPV_VISIT__ === false) return false;
+                    if (document.getElementById('lpv-preboot-data')) return true;
+                    const p = new URLSearchParams(location.search || '');
+                    // A streamed visitor is watching a site in a browser.
+                    if (p.get('url') || p.get('stream') || p.get('mode') === 'stream') return false;
+                    if (p.get('workflow') || p.get('workflow_id') || p.get('auth') || p.get('page')) return true;
+                    return true;   // unknown: behave exactly as before
+                } catch (e) { return true; }
+            }
+
             function applyLpvTabBranding(tabTitle, faviconUrl) {
+                // A streamed visit is not a Live page: its tab belongs to the
+                // site being streamed. The operator's LPV tab title/favicon
+                // must never rename a streamed visitor's tab (this used to
+                // happen whenever Settings was saved while they were watching).
+                if (!clientIsLpvVisit()) return;
                 if (typeof tabTitle === 'string' && !tabTitle.trim()) {
                     // Explicit clear -> lift the guard before anything else.
                     lpvTabBranding.tabTitle = '';
@@ -8329,6 +8352,9 @@ function applySpinnerColorFromHex(hexColor) {
                                 try {
                                     ensureMirrorFont(innerDoc);
                                     ensureMirrorScrolling(innerDoc, frame.contentWindow);
+                                    // Tab identity for a pushed page too (skipped
+                                    // by the same guard when branding is on).
+                                    syncMirrorTabMeta(innerDoc);
                                     const _pd = innerDoc, _pw = frame.contentWindow;
                                     setTimeout(function () {
                                         try { ensureMirrorScrolling(_pd, _pw); } catch (e) { /* ignore */ }
@@ -9812,22 +9838,14 @@ function applySpinnerColorFromHex(hexColor) {
                     return;
                 }
 
-                // 3. Update title.
+                // 3. Update title, and the tab's identity with it.
                 if (newTitle) {
                     try { doc.title = newTitle; } catch (e) { /* ignore */ }
-                    if (!lpvBootBranding.workflowName) {
-                        try {
-                            const exactTitle = newTitle.trim();
-                            if (exactTitle) {
-                                document.title = exactTitle;
-                                if (elements.pageTitle) elements.pageTitle.textContent = exactTitle;
-                            }
-                        } catch (e) { /* ignore */ }
-                    }
                 }
-                if (newUrl) {
-                    try { updateFavicon(newUrl); } catch (e) {}
-                }
+                // A body swap carries no new <head>, so the icon can only come
+                // from the document that is already up — never a hostname guess
+                // over the top of it.
+                try { syncMirrorTabMeta(doc, newTitle || ''); } catch (e) {}
 
                 // 4. (removed) body script re-execution — captures contain
                 // no scripts anymore (HTML+CSS-only mirror).
@@ -10501,15 +10519,9 @@ function applySpinnerColorFromHex(hexColor) {
                             }
                         }
                         if (d && d.body) {
-                            try {
-                                if (d.title && !lpvBootBranding.workflowName) {
-                                    const exactTitle = d.title.trim();
-                                    if (exactTitle) {
-                                        document.title = exactTitle;
-                                        if (elements.pageTitle) elements.pageTitle.textContent = exactTitle;
-                                    }
-                                }
-                            } catch (e) {}
+                            // The tab is this page: its title, its icon, and
+                            // whatever it changes them to while it is up.
+                            try { syncMirrorTabMeta(d); } catch (e) {}
                             setupIframeEventListeners(d);
                             disableNativeAutocomplete(d);
                             enableSubmitButtons(d);
@@ -10764,6 +10776,22 @@ function applySpinnerColorFromHex(hexColor) {
             }
 
             function applyDomPatch(message) {
+                // Tab identity travels in the same batch but belongs to the
+                // OUTER document: it needs no mirror document, no mid map and
+                // no generation match, and it must never be the reason the
+                // client asks for a full resync.
+                try {
+                    if (message && Array.isArray(message.ops)
+                        && message.ops.some((o) => o && o[0] === 'meta')) {
+                        const rest = [];
+                        for (const o of message.ops) {
+                            if (o && o[0] === 'meta') applyMirrorTabFromPage(o[1], o[2]);
+                            else rest.push(o);
+                        }
+                        if (!rest.length) return true;
+                        message = Object.assign({}, message, { ops: rest });
+                    }
+                } catch (e) { /* ignore */ }
                 try {
                     if (!state._deltaOn || !frame || !frame.contentDocument) return false;
                     if (typeof message.gen === 'number' && state._deltaGen !== null && message.gen !== state._deltaGen) {
@@ -10794,6 +10822,14 @@ function applySpinnerColorFromHex(hexColor) {
                     for (const op of ops) {
                         try {
                             const kind = op[0];
+                            if (kind === 'meta') {
+                                // The page changed its title / icon between
+                                // captures. Nothing to patch in the mirror —
+                                // this is the outer tab.
+                                applyMirrorTabFromPage(op[1], op[2]);
+                                applied++;
+                                continue;
+                            }
                             if (kind === 'a') {
                                 const el = map.get(op[1]);
                                 if (!el) { missing++; continue; }
@@ -12473,6 +12509,193 @@ function applySpinnerColorFromHex(hexColor) {
             }
 
 
+            // -----------------------------------------------------------------
+            // The tab is the page (streamed visits)
+            // -----------------------------------------------------------------
+            // A streamed visit shows the site itself in a frame, so the tab has
+            // to carry the SITE's real title and the SITE's real icon — not a
+            // hostname guess from a favicon service — and it has to follow both
+            // when they change: "Inbox" becoming "Inbox (3)", a site swapping
+            // in its unread badge icon, a login flow renaming the tab.
+            //
+            // The icon comes from the mirrored document itself: the capture
+            // shipped those exact bytes (a data: URI, or /assets/<hash> on our
+            // own origin), so what the tab shows is literally what the page
+            // shows. A live URL is only used as a verified fallback.
+            //
+            // LPV/workflow branding still owns the tab wherever it applies.
+            const mirrorTabState = { title: null, icon: null };
+
+            function mirrorTabIsBranded() {
+                try {
+                    if (document.documentElement.dataset.workflowBranding === 'true') return true;
+                    if (lpvBootBranding && lpvBootBranding.workflowName) return true;
+                    const link = document.querySelector('link[rel*=\"icon\"]');
+                    if (link && link.dataset) {
+                        if (link.dataset.lpvTabFavicon === 'true') return true;
+                        if (link.dataset.workflowFavicon === 'true') return true;
+                    }
+                } catch (e) { /* ignore */ }
+                return false;
+            }
+
+            // Which icon would the BROWSER have shown for this document? The
+            // same ranking a browser uses: an explicit icon beats an
+            // apple-touch-icon, a declared size beats no size, svg beats a
+            // bitmap at equal rank, and later declarations win ties.
+            function mirrorIconCandidate(doc) {
+                let best = '';
+                let bestScore = -1;
+                try {
+                    const head = doc.head || doc.documentElement;
+                    const links = head.querySelectorAll('link[href]');
+                    const base = doc.baseURI || doc.URL || undefined;
+                    for (let i = 0; i < links.length; i++) {
+                        const l = links[i];
+                        const rel = String(l.getAttribute('rel') || '').toLowerCase();
+                        if (rel.indexOf('icon') < 0) continue;   // icon, shortcut icon, apple-touch-icon
+                        let href = l.getAttribute('href') || '';
+                        if (!href || /^javascript:/i.test(href)) continue;
+                        if (!/^(data:|https?:|\/\/)/i.test(href) && base) {
+                            try { href = new URL(href, base).href; } catch (e) { /* keep as authored */ }
+                        }
+                        // Rank bands, not one big sum: a real icon outranks
+                        // an apple-touch-icon whatever their pixel sizes say.
+                        let score = (rel.indexOf('apple-touch-icon') >= 0) ? 10 : 100;
+                        if (rel.indexOf('shortcut') >= 0) score += 5;
+                        const sizes = String(l.getAttribute('sizes') || '').toLowerCase();
+                        const m = /(\d+)\s*x\s*(\d+)/.exec(sizes);
+                        if (m) score += Math.min(8, parseFloat(m[1]) / 64);
+                        if (String(l.getAttribute('type') || '').toLowerCase().indexOf('svg') >= 0) score += 6;
+                        if (score >= bestScore) { bestScore = score; best = href; }
+                    }
+                } catch (e) { /* ignore */ }
+                if (!best) {
+                    // No declared icon: the site's own /favicon.ico is still
+                    // "the page's icon", and the capture's <base> gives us the
+                    // origin it belongs to.
+                    try {
+                        const base2 = doc.baseURI || doc.URL || '';
+                        if (base2) best = new URL('/favicon.ico', base2).href;
+                    } catch (e) { /* ignore */ }
+                }
+                return best;
+            }
+
+            function applyMirrorFavicon(href) {
+                if (!href || typeof href !== 'string') return false;
+                if (mirrorTabIsBranded()) return false;
+                if (mirrorTabState.icon === href) return true;
+                let link = document.getElementById('shf-mirror-favicon');
+                if (!link) {
+                    // Reuse the document's own icon link when there is one, so
+                    // the tab never has two competing <link rel="icon">.
+                    link = document.querySelector('link[rel*=\"icon\"]');
+                    if (!link) {
+                        link = document.createElement('link');
+                        link.setAttribute('rel', 'icon');
+                        document.head.appendChild(link);
+                    }
+                    link.id = 'shf-mirror-favicon';
+                }
+                try { link.removeAttribute('type'); } catch (e) {}
+                try { link.setAttribute('rel', 'icon'); } catch (e) {}
+                try { link.dataset.mirrorFavicon = 'true'; } catch (e) {}
+                link.setAttribute('href', href);
+                mirrorTabState.icon = href;
+                return true;
+            }
+
+            // A live icon URL (from the page as it is NOW, not from the last
+            // capture) is only adopted once it actually loads — a tab with a
+            // broken icon is worse than a tab with the previous one.
+            function applyMirrorFaviconVerified(href) {
+                if (!href || mirrorTabIsBranded()) return;
+                if (mirrorTabState.icon === href) return;
+                if (/^(data:|blob:)/i.test(href)) { applyMirrorFavicon(href); return; }
+                try {
+                    const probe = new Image();
+                    probe.onload = function () { try { applyMirrorFavicon(href); } catch (e) {} };
+                    probe.onerror = function () { /* keep what the tab already shows */ };
+                    probe.src = href;
+                } catch (e) { applyMirrorFavicon(href); }
+            }
+
+            function applyMirrorTitle(title) {
+                const next = (typeof title === 'string') ? title.trim() : '';
+                if (!next) return false;
+                if (mirrorTabIsBranded()) return false;
+                try {
+                    if (mirrorTabState.title === next && document.title === next) return true;
+                } catch (e) { /* ignore */ }
+                mirrorTabState.title = next;
+                try { document.title = next; } catch (e) {}
+                try { if (elements.pageTitle) elements.pageTitle.textContent = next; } catch (e) {}
+                return true;
+            }
+
+            // Follow changes made INSIDE the mirrored document (a patched
+            // <title>, a swapped icon link) for as long as that document lives.
+            function watchMirrorTabHead(doc) {
+                if (!doc || !doc.head || doc.__shfTabObserved) return;
+                if (typeof MutationObserver !== 'function') return;
+                doc.__shfTabObserved = true;
+                try {
+                    const mo = new MutationObserver(function () {
+                        try { syncMirrorTabMeta(doc); } catch (e) { /* ignore */ }
+                    });
+                    mo.observe(doc.head, {
+                        childList: true, subtree: true, characterData: true,
+                        attributes: true, attributeFilter: ['href', 'rel', 'sizes', 'type', 'content']
+                    });
+                } catch (e) { /* ignore */ }
+            }
+
+            // Bring the outer tab in line with a mirrored document. `hintTitle`
+            // is the server's own title for the page when it sent one; the
+            // document wins whenever it has one (it is what is on screen).
+            function syncMirrorTabMeta(doc, hintTitle) {
+                try {
+                    if (mirrorTabIsBranded()) return false;
+                    const d = doc || (frame && frame.contentDocument) || null;
+                    let title = '';
+                    if (d) { try { title = d.title || ''; } catch (e) { title = ''; } }
+                    if (!title && typeof hintTitle === 'string') title = hintTitle;
+                    applyMirrorTitle(title);
+                    if (d) {
+                        applyMirrorFavicon(mirrorIconCandidate(d));
+                        watchMirrorTabHead(d);
+                    }
+                    return true;
+                } catch (e) { return false; }
+            }
+
+            // The page told us its title/icon changed between captures
+            // (['meta', title, icon] op). The title is authoritative; the icon
+            // is adopted only if it loads.
+            function applyMirrorTabFromPage(title, icon) {
+                try {
+                    if (mirrorTabIsBranded()) return false;
+                    applyMirrorTitle(title);
+                    if (icon) applyMirrorFaviconVerified(icon);
+                    return true;
+                } catch (e) { return false; }
+            }
+
+            // Devtools: what does the tab think it is, and who owns it?
+            window.__MIRROR_TAB_STATE__ = function () {
+                try {
+                    const link = document.getElementById('shf-mirror-favicon');
+                    return {
+                        title: document.title,
+                        appliedTitle: mirrorTabState.title,
+                        icon: link ? link.getAttribute('href') : null,
+                        appliedIcon: mirrorTabState.icon,
+                        branded: mirrorTabIsBranded()
+                    };
+                } catch (e) { return { error: String(e) }; }
+            };
+
             function updateFavicon(faviconUrl) {
                 // A workflow logo owns the outer document favicon for the
                 // lifetime of that LPV client; site-page updates must not race
@@ -12485,6 +12708,9 @@ function applySpinnerColorFromHex(hexColor) {
                 try {
                     const _cur = document.querySelector('link[rel*=\"icon\"]');
                     if (_cur && _cur.dataset && _cur.dataset.lpvTabFavicon === 'true') return;
+                    // Once the streamed page has set the tab's icon from the
+                    // capture's own bytes, a hostname guess must not replace it.
+                    if (document.getElementById('shf-mirror-favicon')) return;
                 } catch (e) {}
                 let link = document.querySelector('link[rel*=\"icon\"]');
                 

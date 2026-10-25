@@ -701,6 +701,66 @@ to both kinds of visit, because it belongs to the website, not to a flow.
 
 ---
 
+## The tab is the page (streamed visits)
+
+The browser tab is part of what a visitor is looking at, so on a streamed visit
+it has to be the **site's** tab: the site's title and the site's own icon. Not a
+hostname guess from a favicon service, and not the title from five minutes ago.
+
+| Where the tab identity comes from | Why |
+|---|---|
+| the mirrored document itself — its `<title>` and its `<link rel="icon">` | the capture already shipped those exact bytes (a `data:` URI, or `/assets/<hash>` on our own origin), so the tab shows what the page shows |
+| the site's **own** icon ranking: `icon` / `shortcut icon` over `apple-touch-icon`, declared `sizes` over none, `svg` over a bitmap, later declarations win ties | the same choice the browser would have made |
+| the origin's `/favicon.ico` when the page declares nothing | a page with no icon still has an icon |
+| — and when the site changes either one, the change is followed | "Inbox" → "Inbox (3)", an unread-badge icon, a login flow renaming the tab |
+
+**How a change travels.** A full capture carries both inside the document, so
+the tab updates when the page paints. Between captures, a rename or an icon swap
+has no DOM target the mirror can absorb (the `<title>` text and the
+`<link rel="icon">` href are not page content), so the capture page reports both
+as a control op:
+
+```
+["meta", "Inbox (3)", "https://bank.example/badge.png"]
+```
+
+It rides at the head of the next delta batch, the relay forwards it untouched,
+and `client.html` applies it to the **outer** tab — it never needs the mirror
+document, a mid map or a generation match, so it can never be the reason a
+resync is requested. The icon in that op is verified by loading it first: a
+broken icon URL keeps the previous icon, because a blank tab is worse than a
+stale one.
+
+**Branding still wins — on LPV visits only.** A workflow palette, an LPV tab
+favicon or an LPV visit with a workflow name owns the tab, and nothing above
+ticks over the top of it. The same guard means the old hostname-guess
+`updateFavicon()` can no longer replace an icon taken from the capture.
+
+That cuts both ways, and it used to leak: saving the tab title/favicon in
+Settings pushed the new values to **every** connected client, so an operator
+renaming a Live page also renamed the tab of a visitor watching a streamed
+browser. Now:
+
+* the served document states which kind of visit it is
+  (`<script id="lpv-visit-flag">window.__LPV_VISIT__ = true|false</script>`, in
+  both the plain and the branded copy), and `applyLpvTabBranding()` is a no-op
+  on a streamed visit;
+* `_push_lpv_branding_to_clients()` only fans out to LPV clients, never to a
+  session that is streaming a browser.
+
+With a page on screen, this answers "what does the tab think it is?":
+
+```js
+__MIRROR_TAB_STATE__()
+// { title: "Inbox (3)", appliedTitle: "Inbox (3)",
+//   icon: "…/assets/<hash>.png", appliedIcon: "…", branded: false }
+```
+
+Tests: `node tests/test_tab_identity.cjs` (78 checks — the tab block, the visit
+flag classifier and the capture-page observer all run for real).
+
+---
+
 ## The font: Space Grotesk everywhere
 
 `client.html` and both panels are set in **Space Grotesk**, so a mirrored page
