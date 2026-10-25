@@ -574,6 +574,37 @@ Tests: `python3 tests/test_boot_loading_embed.py`.
 
 ---
 
+## The font: Space Grotesk everywhere
+
+`client.html` and both panels are set in **Space Grotesk**, so a mirrored page
+is too — including the page pushed by an LPV link. The captured document gets
+two things injected into its `<head>`:
+
+| Injected | What it does |
+|---|---|
+| `<link rel="stylesheet">` for Space Grotesk | the page can actually render the font; the shell already fetched the same file, so it comes from cache |
+| `<style id="__shifix_mirror_font__">` | `html`, `body` and every element in the page get the family with `!important`, so the site's own `font-family` cannot win |
+
+Details:
+
+* **Icons keep their own font.** Font Awesome, Material Icons, Glyphicons, MDI
+  and anything with `icon` in its class are excluded, plus `svg` — their glyphs
+  are characters in *their* family, so replacing it would turn every icon into a
+  letter. (The exclusions are simple `:not()` conditions only; a complex one
+  like `:not(svg *)` is silently ignored by some engines.)
+* **The override is the last rule in `<head>`**, so a page stylesheet injected
+  later cannot win back its own font on a tie.
+* **`?keep_fonts=1`** on the client URL (`/client.html?workflow=…&keep_fonts=1`)
+  leaves the page with the site's real typography, for checking a capture
+  against the original.
+* The font is still fetched **after the first paint** in the shell (preload →
+  `onload`), so a slow or filtered network never delays the page; the system
+  stack (`-apple-system`, Segoe UI, Roboto) covers the gap.
+
+Tests: `node tests/test_mirror_font.cjs`.
+
+---
+
 ## Scrolling a mirrored page
 
 A captured page arrives as HTML + CSS with its scripts removed, so anything the
@@ -779,6 +810,7 @@ node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; 
 node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
+node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step
 python3 tests/test_click_action_resolution.py  # which rule a click runs (drift, device pairs;
