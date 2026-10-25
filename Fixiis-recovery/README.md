@@ -620,6 +620,13 @@ How it reaches the visitor:
   every path that puts a custom loading page on screen retires the hard-coded
   branded loader and the built-in ring. There is no moment where our own spinner
   appears instead of, or on top of, the domain's.
+* **A streamed visitor gets their mirror too.** The loading page is embedded in
+  every visit, and a *streamed* visitor never goes through `LPV.showPage`, so
+  none of the Live-pages hand-over ran for them: the site's spinner stayed on
+  top of the mirror (and swallowed their clicks) for good. Every way a streamed
+  page reaches the screen — a snapshot, a DOM patch, a body replace, a repeated
+  frame — now retires it, and `lpvHoldLoadingScreen()` refuses to raise a loader
+  over a stream that is already visible.
 * **A page on screen is never covered again.** Two invariants, both enforced in
   the runtime: a loading screen may only be visible while a transition is in
   flight (or before the first page), and a spinner that outlives its purpose is

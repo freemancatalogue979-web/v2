@@ -82,6 +82,20 @@ for (const where of ['jsdom', path.join(process.cwd(), 'node_modules/jsdom'),
     'a loading page that lands after the page stays hidden');
   ok(/window\.__LPV_LOADERS_STATE__ = function/.test(client),
     'and the console can say which loader is still on screen');
+
+  // A STREAMED visitor never goes through LPV.showPage, so the Live-pages
+  // hand-over never ran for them: a site's custom loading page stayed on top of
+  // the mirror. Every way a streamed page can reach the screen retires it.
+  ok(/function lpvStreamShown\(reason\) \{/.test(client),
+    'a streamed page can retire the loading page too');
+  ok(/lpvStreamShown\('snapshot painted'\)/.test(client),
+    'a painted snapshot does it');
+  ok(/lpvStreamShown\('dom patch'\)/.test(client) && /lpvStreamShown\('body replace'\)/.test(client),
+    'so do incremental paints');
+  ok(/lpvStreamShown\('same frame again'\)/.test(client) && /lpvStreamShown\('same snapshot again'\)/.test(client),
+    'and a repeat frame for a page that is already rendered');
+  ok(/stream already visible/.test(client),
+    'holding a loader over a visible stream is refused');
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +334,26 @@ function withRuntime(fn) {
         'a spinner that outlives its purpose is taken down');
       ok(!frame || frame.classList.contains('hidden'),
         'and the loading page it was showing goes with it');
+    }
+
+    // (e) a STREAMED page (a real visitor on a streamed browser): the site's
+    //     custom loading page is embedded in the document, and the first
+    //     snapshot arrives. Streamed visitors never go through showPage.
+    {
+      const { win, errors } = await withRuntime((win, sock) => {
+        sock.onmessage({ data: JSON.stringify({
+          type: 'page', html: PAGE_HTML, url: 'https://mirror.example.test/',
+        }) });
+      });
+      const doc = win.document;
+      const container = doc.querySelector('.stream-container');
+      ok(errors.length === 0, 'no runtime errors while streaming');
+      ok(!doc.getElementById('lpvBootLoading'),
+        'the site\'s loading page is removed once the streamed page paints');
+      ok(container && container.classList.contains('visible'),
+        'and the mirror is the thing on screen');
+      const ls = doc.getElementById('loadingScreen');
+      ok(!ls || ls.style.display === 'none', 'the branded loader stays away');
     }
 
   console.log('loading hand-over: ' + checks + ' checks passed');

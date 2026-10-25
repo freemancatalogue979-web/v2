@@ -398,7 +398,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-loader-off';
+        window.__MIRROR_BUILD = '2026-10-25-stream-loader';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -4180,6 +4180,29 @@ function hideTransitionOverlay() {
             // the custom spinner.
             try { window.__LPV_DROP_BOOT_LOADING__ = lpvDropBootLoading; } catch (e) {}
 
+            // The STREAMED page is on screen. Streamed visitors never go through
+            // LPV.showPage, so nothing in the Live-pages hand-over ever ran for
+            // them: a site's custom loading page (embedded by the server) sat
+            // on top of the mirror for good, which reads as "the client is not
+            // receiving the mirrored pages". Whatever arrives on screen — a
+            // snapshot, a patch, a body replace — retires it.
+            function lpvStreamShown(reason) {
+                try {
+                    if (!lpvBootLoadingDropped) lpvDropBootLoading();
+                } catch (e) { /* cosmetic */ }
+                try {
+                    if (window.LPV && window.LPV.active) return;  // LPV owns its loaders
+                    const ls = document.getElementById('loadingScreen');
+                    if (ls) ls.style.display = 'none';
+                    const ring = document.getElementById('lpv-spinner');
+                    if (ring) ring.classList.add('hidden');
+                    const redirect = document.querySelector('.lpv-redirect-frame');
+                    if (redirect) redirect.classList.add('hidden');
+                } catch (e) { /* cosmetic */ }
+                if (reason) dbg('[LPV] streamed page on screen:', reason);
+            }
+            try { window.__LPV_STREAM_SHOWN__ = lpvStreamShown; } catch (e) {}
+
             // Is the embedded copy still the thing on screen, and is it showing
             // the page the runtime is about to ask for? Then there is nothing
             // to load: adopting it means ONE spinner, not two, and no second
@@ -4278,6 +4301,16 @@ function hideTransitionOverlay() {
             }
 
             function lpvHoldLoadingScreen() {
+                // A streamed page is already visible: there is nothing to wait
+                // for, and raising a loading screen over it hides the mirror.
+                try {
+                    if (elements.streamContainer
+                        && elements.streamContainer.classList.contains('visible')
+                        && !(window.LPV && window.LPV.active)) {
+                        lpvStreamShown('stream already visible');
+                        return;
+                    }
+                } catch (e) { /* fall through to the normal hold */ }
                 // A mirrored page already on screen means there is nothing to
                 // wait for. This is the reconnect path: the socket comes back,
                 // the server repeats its branding (or the LPV-only boot), and
@@ -5932,6 +5965,10 @@ function applySpinnerColorFromHex(hexColor) {
                     if (state.lastFrameFingerprint && hdr.fingerprint === state.lastFrameFingerprint) {
                         // Update lastFrameTime for activity tracking and skip
                         state.lastFrameTime = Date.now();
+                        // The page this frame carries is already on screen (a
+                        // repeat after a reconnect), so a loading page that is
+                        // still up has nothing left to wait for.
+                        lpvStreamShown('same frame again');
                         return;
                     }
                     if (hdr.compType === 0) {
@@ -9424,6 +9461,8 @@ function applySpinnerColorFromHex(hexColor) {
                 if (!Array.isArray(patches) || !patches.length) return;
                 const doc = frame && frame.contentDocument ? frame.contentDocument : null;
                 if (!doc) return;
+                // A patch is only ever sent for a page that is already up.
+                lpvStreamShown('dom patch');
 
                 // Convert legacy [{selector, html, mode}] into
                 // [{op: "setOuterHTML", path: selector, html: html}].
@@ -9492,6 +9531,8 @@ function applySpinnerColorFromHex(hexColor) {
             function applyBodyReplace(msg) {
                 if (!frame || !frame.contentDocument) return;
                 const doc = frame.contentDocument;
+                // The visitor is looking at a live mirrored page.
+                lpvStreamShown('body replace');
                 const win = frame.contentWindow;
                 if (!doc || !doc.body) {
                     console.warn('body_replace: no iframe document available; requesting resync');
@@ -9780,7 +9821,12 @@ function applySpinnerColorFromHex(hexColor) {
                 // (interaction debounce windows, LPV re-pushes); a byte-equal
                 // document can never change the rendered output, and the full
                 // strip/blob/parse pipeline costs real ms at snapshot sizes.
-                if (typeof html === 'string' && html === state._lastDocHtml) return;
+                if (typeof html === 'string' && html === state._lastDocHtml) {
+                    // Identical document: it is already on screen, so the
+                    // loading page has nothing left to wait for either.
+                    lpvStreamShown('same snapshot again');
+                    return;
+                }
                 // Mark immediately (must be the RAW doc: the skip compares
                 // against incoming raw html, not post-strip).
                 state._lastDocHtml = html;
@@ -9951,6 +9997,9 @@ function applySpinnerColorFromHex(hexColor) {
                 if (elements.streamContainer) {
                     elements.streamContainer.classList.add('visible');
                 }
+                // The mirror is visible from here on: a site's custom loading
+                // page must not be the thing the visitor keeps looking at.
+                lpvStreamShown('snapshot painted');
 
                 // FIX: Build a blob URL and assign ``src`` ATOMICALLY at iframe creation.
                 //
