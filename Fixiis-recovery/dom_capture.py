@@ -897,6 +897,17 @@ _FAST_SERIALIZE_JS = r"""
     } else if (tag === 'option') {
       if (el.selected) s += ' selected';
     }
+    // `disabled` / `readOnly` are PROPERTIES that do not reflect back to the
+    // attribute. A control the page switched off in script came out enabled
+    // in the mirror — visible, clickable, and wrong. State, not markup.
+    const ctl = tag === 'input' || tag === 'button' || tag === 'select'
+      || tag === 'textarea' || tag === 'option' || tag === 'fieldset' || tag === 'optgroup';
+    if (ctl) {
+      try {
+        if (el.disabled === true && !el.hasAttribute('disabled')) s += ' disabled';
+        if (el.readOnly === true && !el.hasAttribute('readonly')) s += ' readonly';
+      } catch (e) { /* ignore */ }
+    }
     if (deltaIds) {
       let m = window.__domMidMap.get(el);
       if (!m) {
@@ -916,6 +927,105 @@ _FAST_SERIALIZE_JS = r"""
     }
     return s;
   };
+  // ---------------------------------------------------------------------
+  // Generated content (::before / ::after)
+  // ---------------------------------------------------------------------
+  // Icons, bullets, quotes, badges, arrows and menu carets on modern pages
+  // are frequently NOT elements: they are `content:` on a pseudo-element.
+  // An HTML serialization has no way to carry them, so those glyphs simply
+  // vanish from the mirror ("content still skipped").
+  //
+  // Rather than asking getComputedStyle for a pseudo-element on every node
+  // (thousands of forced style resolutions on a big page), we ask the
+  // stylesheets which elements could have one: only rules whose selector
+  // mentions ::before/::after are resolved at all.  That keeps the pass
+  // proportional to the number of generated-content rules, not to the DOM.
+  const PSEUDO_LIMIT = 400;
+  const pseudoMap = new Map();
+  const pseudoText = (cs) => {
+    if (!cs) return '';
+    try {
+      if (cs.display === 'none' || cs.visibility === 'hidden') return '';
+      // Absolute/fixed generated content is decoration positioned over the
+      // element (icon fonts, badges). Re-emitting it as a flow node would
+      // move it, so it is deliberately left out.
+      if (cs.position !== 'static') return '';
+      let c = cs.content;
+      if (!c || c === 'none' || c === 'normal') return '';
+      if (c.indexOf('url(') !== -1) return '';
+      const m = /^"([\s\S]*)"$/.exec(c) || /^'([\s\S]*)'$/.exec(c);
+      let text = m ? m[1] : c;
+      // CSS escape sequences (icon-font fallbacks, quotes, nbsp).
+      text = text.replace(/\\([0-9a-fA-F]{1,6})\s?/g, (all, hex) => {
+        try { return String.fromCodePoint(parseInt(hex, 16)); } catch (e) { return ''; }
+      }).replace(/\\([\s\S])/g, '$1');
+      if (!text) return '';
+      if (text.length > 120) return '';
+      return text;
+    } catch (e) { return ''; }
+  };
+  const PSEUDO_RE = /(::?)(before|after)\s*$/i;
+  const collectPseudoRules = (rules, out, depth) => {
+    if (!rules || depth > 3) return;
+    for (let i = 0; i < rules.length; i++) {
+      const r = rules[i];
+      if (!r) continue;
+      if (r.selectorText) {
+        // Grouped selectors: only the parts that end in a pseudo-element.
+        const parts = String(r.selectorText).split(',');
+        for (let j = 0; j < parts.length; j++) {
+          const sel = parts[j].trim();
+          const m = PSEUDO_RE.exec(sel);
+          if (!m) continue;
+          const base = sel.slice(0, m.index).trim();
+          if (!base) continue;     // bare `::before` — no element to attach to
+          // Skip selectors that themselves target a pseudo-class element
+          // state (`a:hover::after` matches nothing after capture anyway).
+          if (/::?[a-z-]+\s*\(?/i.test(base.replace(/:not\([^)]*\)/g, ''))) continue;
+          out.push([base, m[2].toLowerCase()]);
+        }
+      }
+      if (r.cssRules && r.cssRules.length && (r.type === 4 || r.type === 12 || r.type === 3)) {
+        collectPseudoRules(r.cssRules, out, depth + 1);
+      }
+    }
+  };
+  const buildPseudoMap = () => {
+    if (!window.getComputedStyle) return;
+    const pairs = [];
+    try {
+      const sheets = document.styleSheets || [];
+      for (let i = 0; i < sheets.length; i++) {
+        let rules = null;
+        try { rules = sheets[i].cssRules; } catch (e) { continue; }   // cross-origin
+        collectPseudoRules(rules, pairs, 0);
+      }
+    } catch (e) { return; }
+    let seen = 0;
+    for (let i = 0; i < pairs.length && seen < PSEUDO_LIMIT; i++) {
+      const base = pairs[i][0], which = pairs[i][1];
+      let els;
+      try { els = document.querySelectorAll(base); } catch (e) { continue; }
+      for (let k = 0; k < els.length && seen < PSEUDO_LIMIT; k++) {
+        const el = els[k];
+        let cs = null;
+        try { cs = window.getComputedStyle(el, '::' + which); } catch (e) { continue; }
+        const text = pseudoText(cs);
+        if (!text) continue;
+        seen++;
+        let entry = pseudoMap.get(el);
+        if (!entry) { entry = {}; pseudoMap.set(el, entry); }
+        if (!entry[which]) entry[which] = text;
+      }
+    }
+  };
+  buildPseudoMap();
+  const pseudoSpan = (el, which) => {
+    const entry = pseudoMap.get(el);
+    if (!entry || !entry[which]) return '';
+    return '<span data-shf-pseudo="' + which + '">' + escText(entry[which]) + '</span>';
+  };
+
   const serialize = (node, out) => {
     const t = node.nodeType;
     if (t === 3) { out.push(escText(node.nodeValue)); return; }
@@ -924,6 +1034,15 @@ _FAST_SERIALIZE_JS = r"""
     const el = node;
     const tag = (el.localName || el.tagName.toLowerCase());
     if (tag === 'base') return;   // server injects its own <base href>
+    // A <source> in <picture> outranks the <img src> we chose. The image we
+    // resolved (currentSrc: the candidate the page's own viewport picked) is
+    // the accurate one, so the source list goes away and src speaks.
+    if (tag === 'source') {
+      try {
+        const par = el.parentElement;
+        if (par && (par.localName || '').toLowerCase() === 'picture') return;
+      } catch (e) { /* ignore */ }
+    }
     if (tag === 'iframe') {
       // Frames that wouldn't load must never reach the mirror (user policy):
       //   * chrome-error documents (refused/blocked server-side) -> delete.
@@ -1007,6 +1126,10 @@ _FAST_SERIALIZE_JS = r"""
       for (let i = 0; i < list2.length; i++) {
         const a = list2[i];
         if (a.name === 'src' || a.name === 'srcset' || a.name === MID) continue;
+        // Native lazy-loading would defer an image that is already in the
+        // viewport of the mirror; the capture is a photograph of a loaded
+        // page, so every image loads eagerly.
+        if (a.name === 'loading') continue;
         if (a.name.indexOf('data-src') === 0 || a.name.indexOf('data-original') === 0
             || a.name.indexOf('data-lazy') === 0 || a.name === 'data-image') continue;
         if (a.name === 'style') { authorStyle = a.value || ''; continue; }
@@ -1099,6 +1222,9 @@ _FAST_SERIALIZE_JS = r"""
     out.push(attrsFor(el, tag));
     out.push('>');
     if (VOID.has(tag)) return;
+    // Generated content rides inside the element, in flow, exactly where
+    // the browser drew it.
+    if (pseudoMap.size) out.push(pseudoSpan(el, 'before'));
     if (tag === 'script' || tag === 'style') {
       let raw;
       if (tag === 'style') {
@@ -1124,6 +1250,7 @@ _FAST_SERIALIZE_JS = r"""
       }
     }
     for (const c of el.childNodes) serialize(c, out);
+    if (pseudoMap.size) out.push(pseudoSpan(el, 'after'));
     out.push('</', tag, '>');
   };
   const de = document.documentElement;
@@ -1250,6 +1377,17 @@ _LINK_CACHEABLE_REL_RE = re.compile(r'(stylesheet|icon|apple-touch-icon|mask-ico
 _CSS_URL_RE = re.compile(r'url\(\s*(["\']?)([^"\')\s][^"\')]*?)\1\s*\)', re.IGNORECASE)
 _CSS_IMPORT_RE = re.compile(r'@import\s+(?:url\(\s*)?(["\'])([^"\']+)\1', re.IGNORECASE)
 _REWRITE_GLOBAL_BUDGET_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_TOTAL_TIMEOUT_S", "10"))
+
+# How many asset downloads may be in flight at once.  Six was chosen for the
+# old sequential-CSS path; a page with 12 stylesheets spent most of its
+# rewrite budget waiting rather than downloading, because the stylesheet pass
+# was a for-loop with a fresh HTTP client per sheet.  Both are now one
+# bounded pool, so the limit applies to real concurrent sockets.
+ASSET_FETCH_CONCURRENCY: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_CONCURRENCY", "10")))
+
+# Per-page timing of the asset phase, for the capture log ("why was this page
+# slow?").  Pure instrumentation: nothing reads it for control flow.
+_LAST_REWRITE_STATS: Dict[str, Any] = {}
 
 # Chrome UA fallback for cache fetches (real UA pulled from the page).
 _FETCH_UA_FALLBACK = (
@@ -1417,6 +1555,16 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     ``ImportError`` (no httpx) propagates so the caller can kill-switch.
     """
     manager = get_global_asset_manager()
+    _t_start = time.monotonic()
+
+    def _stats(**extra: Any) -> None:
+        """Record what this pass cost. Read by the capture log only."""
+        try:
+            _LAST_REWRITE_STATS.clear()
+            _LAST_REWRITE_STATS.update(extra)
+            _LAST_REWRITE_STATS["ms"] = round((time.monotonic() - _t_start) * 1000, 1)
+        except Exception:
+            pass
 
     # -- 1. Collect refs with kinds --------------------------------------
     candidates: List[str] = []
@@ -1452,6 +1600,7 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
 
     candidates = candidates[:ASSET_MAX_PER_PAGE]
     if not candidates:
+        _stats(refs=0)
         return html, []
 
     # -- 2. URL-memo: reuse bytes fetched in earlier captures --------------
@@ -1492,7 +1641,7 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                                      headers={"User-Agent": ua, "Referer": base_url,
                                               "Accept": "*/*",
                                               "Accept-Language": "en-US,en;q=0.9"}) as client:
-            sem = asyncio.Semaphore(6)
+            sem = asyncio.Semaphore(ASSET_FETCH_CONCURRENCY)
             return await asyncio.gather(*(_fetch_one_asset(client, sem, u) for u in fetch_list))
 
     fetched: List[Any] = []
@@ -1513,6 +1662,59 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         if kind_by_url.get(abs_u) != "css":
             manager.register(data, ctype, url=abs_u, owner_id=owner_id)
 
+    # -- 3b. Stylesheets: inner-ref rewrite, all sheets at once -------------
+    # The old shape opened a brand-new HTTP client per stylesheet and awaited
+    # each rewrite inside the per-ref loop: N sheets on a page meant N client
+    # handshakes and N sequential network waits, all inside the 10 s budget.
+    # Fonts and background images inside CSS are announced last by the browser
+    # too, so this was the single worst stall in the rewrite phase.
+    fresh_css = [
+        u for u in candidates
+        if hits.get(u) is not None
+        and kind_by_url.get(u) == "css"
+        and manager.get_by_url(u, owner_id=owner_id) is None
+    ]
+    prepared: Dict[str, bytes] = {}
+    if fresh_css:
+        async def _prepare_css(client: Any) -> None:
+            outer = asyncio.Semaphore(ASSET_FETCH_CONCURRENCY)
+
+            async def one(abs_u: str) -> None:
+                async with outer:
+                    raw, _ct = hits[abs_u]
+                    try:
+                        text = raw.decode("utf-8", errors="ignore")
+                    except Exception:
+                        return
+                    # A stylesheet's own refs get their own limiter so a sheet
+                    # full of sprites cannot starve the others.
+                    inner = asyncio.Semaphore(ASSET_FETCH_CONCURRENCY)
+                    try:
+                        out = await _cache_css_text(
+                            text, abs_u, client, inner, manager, depth=0, owner_id=owner_id
+                        )
+                    except Exception as exc:  # leave the sheet as authored
+                        logger.debug("css inner rewrite failed for %s: %s", abs_u[:120], exc)
+                        return
+                    manager.register(out, "text/css", url=abs_u, owner_id=owner_id)
+                    prepared[abs_u] = out
+
+            await asyncio.gather(*(one(u) for u in fresh_css), return_exceptions=True)
+
+        try:
+            async with httpx.AsyncClient(follow_redirects=True,
+                                         headers={"User-Agent": ua, "Referer": base_url,
+                                                  "Accept": "text/css,*/*",
+                                                  "Accept-Language": "en-US,en;q=0.9"}) as css_client:
+                await asyncio.wait_for(_prepare_css(css_client), timeout=_REWRITE_GLOBAL_BUDGET_S)
+        except Exception as exc:
+            # Whatever finished is already registered; the rest falls back to
+            # the authored CSS (same behaviour as any other failed asset).
+            logger.debug("css rewrite budget hit after %d/%d sheets (%s)",
+                         len(prepared), len(fresh_css), exc)
+        for abs_u, body in prepared.items():
+            hits[abs_u] = (body, "text/css")
+
     # -- 4. Decision per ref: embed / cache / leave -------------------------
     repl: Dict[str, str] = {}
     inline_css: Dict[str, str] = {}
@@ -1527,24 +1729,8 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         kind = kind_by_url.get(abs_u, "other")
         try:
             if kind == "css":
-                if manager.get_by_url(abs_u, owner_id=owner_id) is None:
-                    # Fresh CSS: rewrite its inner url()/@import refs (small
-                    # images embed below threshold, fonts/nested css via
-                    # cache/data-uri), then memoize the rewritten bytes.
-                    try:
-                        async with httpx.AsyncClient(follow_redirects=True,
-                                                     headers={"User-Agent": ua, "Referer": abs_u,
-                                                              "Accept": "*/*",
-                                                              "Accept-Language": "en-US,en;q=0.9"}) as client:
-                            sem = asyncio.Semaphore(6)
-                            sub_text = data.decode("utf-8", errors="ignore")
-                            data = await _cache_css_text(
-                                sub_text, abs_u, client, sem, manager, depth=0, owner_id=owner_id
-                            )
-                        ctype = "text/css"
-                        manager.register(data, ctype, url=abs_u, owner_id=owner_id)
-                    except Exception as exc:
-                        logger.debug("css inner rewrite failed for %s: %s", abs_u[:120], exc)
+                # Inner refs were rewritten in the concurrent pre-pass above
+                # (3b); `data`/`ctype` here are already the final bytes.
                 # Small stylesheets INLINE as <style> (client needs no
                 # /assets route to render styled pages — the yahoo case);
                 # larger ones keep the cache path below.
@@ -1570,6 +1756,9 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         logger.debug("asset rewrite: %d embedded, %d cached, %d untouched (memo_hits=%d)",
                      n_embed, n_cache, len(candidates) - n_embed - n_cache,
                      len(candidates) - len(fetch_list))
+    _stats(refs=len(candidates), memo_hits=len(candidates) - len(fetch_list),
+           fetched=len(fetch_list), css_sheets=len(fresh_css),
+           embedded=n_embed, cached=n_cache)
     if not repl and not inline_css:
         return html, []
 
@@ -2931,6 +3120,16 @@ _DELTA_OBSERVER_JS = r"""
       if (a.name === MID) continue;
       if (isFormCtl && (a.name === 'value' || a.name === 'checked' || a.name === 'selected')) continue;
       out.push(' ', a.name, '="', escAttr(a.value), '"');
+    }
+    // Live state, not markup: `disabled`/`readOnly` never reflect back to
+    // the attribute, so a patched subtree would otherwise resurrect controls
+    // the page had switched off.
+    if (tag === 'input' || tag === 'button' || tag === 'select' || tag === 'textarea'
+        || tag === 'option' || tag === 'fieldset' || tag === 'optgroup') {
+      try {
+        if (el.disabled === true && !el.hasAttribute('disabled')) out.push(' disabled');
+        if (el.readOnly === true && !el.hasAttribute('readonly')) out.push(' readonly');
+      } catch (e) { /* ignore */ }
     }
     out.push(' ', MID, '="', String(midOf(el)), '"');
     if (tag === 'canvas') {

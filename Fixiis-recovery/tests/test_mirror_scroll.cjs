@@ -58,6 +58,27 @@ function node(tag, opts = {}) {
     _children: [],
     clientHeight: opts.clientHeight || 0,
     scrollHeight: opts.scrollHeight || 0,
+    clientWidth: opts.clientWidth != null ? opts.clientWidth : (opts.clientHeight || 0),
+    scrollWidth: opts.scrollWidth != null ? opts.scrollWidth : (opts.scrollHeight || 0),
+    scrollTop: 0,
+    scrollLeft: 0,
+    textContent: opts.text || '',
+    tagName2: null,
+    getBoundingClientRect() {
+      return Object.assign({ top: 0, left: 0, width: 800, height: el.clientHeight || 0 },
+        opts.rect || {});
+    },
+    closest(sel) {
+      const names = String(sel).split(',').map((x) => x.trim().toUpperCase());
+      let cur = el;
+      while (cur) {
+        const tag = String(cur.tagName || '').toLowerCase();
+        if (names.indexOf(cur.tagName) >= 0 || names.indexOf(tag) >= 0) return cur;
+        if (cur.getAttribute && cur.getAttribute('contenteditable') === 'true') return cur;
+        cur = cur.parentElement;
+      }
+      return null;
+    },
     _style: {},
     setAttribute(name, value) { el._attrs[name] = String(value); },
     getAttribute(name) {
@@ -129,6 +150,7 @@ function makeDoc(opts = {}) {
 function makeView(viewport, overrides) {
   return {
     innerHeight: viewport,
+    innerWidth: 800,
     getComputedStyle(el) {
       return Object.assign(
         { overflowY: 'visible', overflow: 'visible', position: 'static' },
@@ -210,7 +232,8 @@ function makeView(viewport, overrides) {
 {
   const ctx = makeContext();
   const doc = makeDoc({ viewport: 800, htmlScrollHeight: 800 });
-  const modal = node('div', { clientHeight: 500, scrollHeight: 3000, attrs: { id: 'cookie' } });
+  doc.body.textContent = 'x'.repeat(4000);
+  const modal = node('div', { clientHeight: 500, scrollHeight: 3000, attrs: { id: 'cookie' }, text: 'cookies?' });
   modal._computed = { overflowY: 'hidden', position: 'fixed' };
   doc.body.appendChild(modal);
   const sticky = node('header', { clientHeight: 700, scrollHeight: 2000 });
@@ -423,6 +446,219 @@ function makeView(viewport, overrides) {
     'the first mirror frame is scrollable on iOS');
   ok(/mirrorFrameB\.style\.webkitOverflowScrolling = 'touch';/.test(source),
     'the double-buffered frame is scrollable on iOS');
+}
+
+// ---------------------------------------------------------------------------
+// 12. The shell that actually blocks scrolling on app-style sites: a
+//     `position:fixed` frame that is taller than a card but shorter than the
+//     viewport, with the scrolling body inside it. The rescue used to skip it
+//     purely because of `position:fixed`, so the page could not move at all.
+// ---------------------------------------------------------------------------
+{
+  const ctx = makeContext();
+  const doc = makeDoc({ viewport: 800, htmlScrollHeight: 800, bodyScrollHeight: 800 });
+  doc.body._computed = { overflowY: 'hidden', position: 'static' };
+  // Top bar 80px + scrolling panel filling the rest of the screen.
+  doc.body.textContent = 'y'.repeat(5000);
+  const shell = node('div', { clientHeight: 720, scrollHeight: 3800, attrs: { id: 'app' }, text: 'y'.repeat(4800) });
+  shell._computed = { overflowY: 'hidden', position: 'fixed' };
+  doc.body.appendChild(shell);
+
+  const result = ctx.ensureMirrorScrolling(doc, makeView(800));
+
+  ok(result === true, 'a fixed app shell layout reports scrolling restored');
+  ok(shell._style['overflow-y'] === 'auto !important',
+    'a fixed shell shorter than the viewport becomes a scroll container');
+  ok(shell.getAttribute('data-scroll-rescued') === '1', 'and it is marked');
+}
+
+// ---------------------------------------------------------------------------
+// 12b. A real dialog in the same shape is still left alone
+// ---------------------------------------------------------------------------
+{
+  const ctx = makeContext();
+  const doc = makeDoc({ viewport: 800, htmlScrollHeight: 800 });
+  doc.body.textContent = 'z'.repeat(6000);
+  const dialog = node('div', {
+    clientHeight: 700,
+    scrollHeight: 3600,
+    attrs: { role: 'dialog', 'aria-modal': 'true' },
+    rect: { top: 40, width: 780 },
+    text: 'z'.repeat(5000),
+  });
+  dialog._computed = { overflowY: 'hidden', position: 'fixed' };
+  doc.body.appendChild(dialog);
+  // A centred, narrower modal panel in the same page.
+  const panel = node('div', { clientHeight: 700, scrollHeight: 3600, rect: { top: 60, width: 420 } });
+  panel._computed = { overflowY: 'hidden', position: 'fixed' };
+  doc.body.appendChild(panel);
+
+  ctx.ensureMirrorScrolling(doc, makeView(800));
+
+  ok(!dialog._style['overflow-y'], 'a full-screen dialog keeps its own clipping');
+  ok(!panel._style['overflow-y'], 'a centred modal panel keeps its own clipping');
+}
+
+// ---------------------------------------------------------------------------
+// 13. The guarantee: if the document does not move natively, a wheel still
+//     moves it — `overflow:hidden` boxes accept scrollTop.
+// ---------------------------------------------------------------------------
+function scrollDoc(opts = {}) {
+  const listeners = {};
+  const raf = [];
+  const doc = makeDoc({ viewport: opts.viewport || 800, htmlScrollHeight: 800 });
+  doc.addEventListener = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
+  doc._fire = (type, ev) => (listeners[type] || []).forEach((fn) => fn(ev));
+  doc._listeners = listeners;
+  const win = makeView(opts.viewport || 800);
+  win.requestAnimationFrame = (fn) => { raf.push(fn); return raf.length; };
+  doc._flush = () => { let n = 0; while (raf.length && n++ < 20) raf.shift()(); };
+  return { doc, win };
+}
+
+{
+  const ctx = makeContext();
+  const { doc, win } = scrollDoc();
+  doc.documentElement.clientHeight = 800;
+  doc.documentElement.scrollHeight = 4200;
+  doc.documentElement.setAttribute = doc.documentElement.setAttribute;
+  ctx.installFreeScroll(doc, win);
+
+  // Native scrolling does nothing (a captured page with `overflow:hidden`).
+  doc.documentElement.scrollTop = 0;
+  doc._fire('wheel', { deltaY: 240, deltaX: 0, target: doc.body, ctrlKey: false, metaKey: false });
+  doc._flush();
+
+  ok(doc.documentElement.scrollTop === 240,
+    'a wheel gesture moves a page the browser refused to scroll (got ' + doc.documentElement.scrollTop + ')');
+  ok(doc.documentElement.getAttribute('data-free-scroll') === '1',
+    'the element that moved is marked as free-scrolled');
+}
+
+// ---------------------------------------------------------------------------
+// 13b. Native scrolling is never doubled
+// ---------------------------------------------------------------------------
+{
+  const ctx = makeContext();
+  const { doc, win } = scrollDoc();
+  doc.documentElement.clientHeight = 800;
+  doc.documentElement.scrollHeight = 4200;
+  ctx.installFreeScroll(doc, win);
+
+  doc._fire('wheel', { deltaY: 240, target: doc.body });
+  // The browser did scroll it for real before the frame callbacks ran.
+  doc.documentElement.scrollTop = 240;
+  doc._flush();
+
+  ok(doc.documentElement.scrollTop === 240,
+    'a page that scrolls natively is not scrolled twice (got ' + doc.documentElement.scrollTop + ')');
+}
+
+// ---------------------------------------------------------------------------
+// 13c. A finger drag does the same on a dead page
+// ---------------------------------------------------------------------------
+{
+  const ctx = makeContext();
+  const { doc, win } = scrollDoc();
+  doc.documentElement.clientHeight = 800;
+  doc.documentElement.scrollHeight = 4200;
+  ctx.installFreeScroll(doc, win);
+
+  doc._fire('touchstart', { touches: [{ clientY: 500, clientX: 100 }], target: doc.body });
+  doc._fire('touchmove', { touches: [{ clientY: 380, clientX: 100 }], target: doc.body });
+  doc._flush();
+
+  ok(doc.documentElement.scrollTop > 0,
+    'a drag moves a captured page on touch devices (got ' + doc.documentElement.scrollTop + ')');
+  const lifted = doc.documentElement.scrollTop;
+  doc._fire('touchend', {});
+  doc._fire('touchmove', { touches: [{ clientY: 100, clientX: 100 }], target: doc.body });
+  doc._flush();
+  ok(doc.documentElement.scrollTop === lifted, 'the gesture ends with the finger');
+}
+
+// ---------------------------------------------------------------------------
+// 13d. Keyboard: arrows / End move the page, typing does not
+// ---------------------------------------------------------------------------
+{
+  const ctx = makeContext();
+  const { doc, win } = scrollDoc();
+  doc.documentElement.clientHeight = 800;
+  doc.documentElement.scrollHeight = 4200;
+  ctx.installFreeScroll(doc, win);
+
+  let prevented = 0;
+  doc._fire('keydown', {
+    key: 'PageDown', target: doc.body, ctrlKey: false, metaKey: false, altKey: false,
+    preventDefault() { prevented++; },
+  });
+  ok(doc.documentElement.scrollTop > 300 && doc.documentElement.scrollTop <= 800,
+    'Page Down moves most of a screen (got ' + doc.documentElement.scrollTop + ')');
+  ok(prevented === 1, 'the key is consumed once the page has moved');
+
+  const input = node('input');
+  doc.body.appendChild(input);
+  const before = doc.documentElement.scrollTop;
+  doc._fire('keydown', {
+    key: 'PageDown', target: input, ctrlKey: false, metaKey: false, altKey: false,
+    preventDefault() { prevented++; },
+  });
+  ok(doc.documentElement.scrollTop === before, 'keys typed into a field never scroll the page');
+  ok(prevented === 1, 'and they are not consumed');
+}
+
+// ---------------------------------------------------------------------------
+// 13e. The gesture chains the way a browser chains: a panel that cannot move
+//      (or is already at its end) hands the movement to its parent.
+// ---------------------------------------------------------------------------
+{
+  const ctx = makeContext();
+  const { doc, win } = scrollDoc();
+  doc.documentElement.clientHeight = 800;
+  doc.documentElement.scrollHeight = 4200;
+  ctx.installFreeScroll(doc, win);
+
+  // An inner panel with nothing to scroll inside it.
+  const panel = node('div', { clientHeight: 400, scrollHeight: 400 });
+  panel._computed = { overflowY: 'hidden', position: 'static' };
+  doc.body.appendChild(panel);
+
+  doc._fire('wheel', { deltaY: 200, target: panel });
+  doc._flush();
+  ok(doc.documentElement.scrollTop === 200,
+    'a gesture on a panel that cannot scroll moves the page around it (got '
+      + doc.documentElement.scrollTop + ')');
+
+  // A panel already at its end.
+  const scroller = node('div', { clientHeight: 300, scrollHeight: 900, attrs: { id: 'list' } });
+  scroller.scrollTop = 600;   // scrollHeight - clientHeight: at the end
+  doc.body.appendChild(scroller);
+  const before = doc.documentElement.scrollTop;
+  doc._fire('wheel', { deltaY: 100, target: scroller });
+  doc._flush();
+  ok(scroller.scrollTop === 600, 'the finished panel does not move past its end');
+  ok(doc.documentElement.scrollTop === before + 100,
+    'the leftover movement goes to the page, not into the void (got '
+      + (doc.documentElement.scrollTop - before) + ')');
+}
+
+// ---------------------------------------------------------------------------
+// 14. Free scrolling is installed by every rescue pass, so a page that is
+//     already "scrollable" by CSS still gets the gesture fallback.
+// ---------------------------------------------------------------------------
+{
+  const ctx = makeContext();
+  const listeners = {};
+  const doc = makeDoc({ viewport: 800, htmlScrollHeight: 5000 });
+  doc.addEventListener = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
+  const win = makeView(800);
+
+  ctx.ensureMirrorScrolling(doc, win);
+
+  ok((listeners.wheel || []).length === 1, 'a healthy page still gets one wheel listener');
+  ok((listeners.touchstart || []).length === 1, 'and one touch listener');
+  ctx.ensureMirrorScrolling(doc, win);
+  ok((listeners.wheel || []).length === 1, 'repeat passes do not stack listeners');
 }
 
 console.log('mirror scroll: ' + checks + ' checks passed');

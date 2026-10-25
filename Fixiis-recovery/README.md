@@ -745,11 +745,12 @@ looks:
 
 | What it finds | What it does |
 |---|---|
-| A page that already scrolls | **Nothing.** Ordinary captures keep their exact rendering |
+| A page that already scrolls | **Nothing** to its layout. Ordinary captures keep their exact rendering |
 | A full-height wrapper that clips more than it shows | makes **that wrapper** scroll (wheel, trackpad, scrollbar, finger) |
-| A modal / cookie bar / sticky header (`fixed`, `sticky`) | left alone — making one of those scroll would be a new bug |
-| The whole layout inside one fixed full-screen shell | only when the page is otherwise dead: lets that shell scroll |
+| A fixed shell that hugs the top and spans the width, holding most of the page's text | lets it scroll — but only after everything else failed, so a page that can move is never restyled |
+| A fixed modal / cookie bar / sticky header (`role=dialog`, `aria-modal`, centred, narrow, or carrying little of the page) | left alone — making one of those scroll would be a new bug |
 | Still nothing, yet the body is taller than the frame | lets `html`/`body` take their natural height and scroll the document |
+| **Nothing moved despite all of the above** | the gesture itself is honoured: see *Free scrolling* below |
 
 Details that matter:
 
@@ -767,7 +768,75 @@ Details that matter:
 * A rescued element is tagged `data-scroll-rescued="1"`, so it is visible in
   devtools when a page misbehaves.
 
-Tests: `node tests/test_mirror_scroll.cjs`.
+### Free scrolling — the floor under the rescue
+
+The rules above guess which box *should* scroll. They can guess wrong (a shell
+the capture flattened, an author `!important`, a layout the page only built in
+script). So there is a second layer that does not guess at all:
+
+* **Native scrolling always goes first and is never intercepted.** Every
+  listener is `passive`; nothing calls `preventDefault` on a scroll gesture.
+* One frame after a wheel / finger / arrow key, the client looks at what the
+  browser actually did. If the element under the pointer did not move **at
+  all**, the gesture is applied by hand (`scrollTop = …`). Assigning
+  `scrollTop` works on an `overflow:hidden` box, which is exactly the case that
+  feels like "the iframe is blocking me".
+* A page that scrolled natively is left untouched, so nothing ever moves twice.
+* Keys: arrows, Page Up/Down, Home/End, Space. Fields keep their own keys.
+* Bound to the same document as the rescue — the live mirror's frame, the
+  double-buffered frame and an LPV pushed page.
+
+An element moved this way is tagged `data-free-scroll="1"`; the binding itself
+is marked on `<html>` as `data-free-scroll="bound"`, so "is scrolling wired up
+in this frame?" is a one-line devtools check on a live page.
+
+Tests: `node tests/test_mirror_scroll.cjs` (65 checks).
+
+---
+
+## What the capture does — and what it used to lose
+
+A capture is a photograph of a live page: the Playwright page runs the site's
+scripts, then one in-page pass serializes the **DOM as it is now** (not the HTML
+that was downloaded) into a document with no scripts. Everything visual has to
+be carried across in that pass, and the things that quietly did not get carried
+are exactly what "some content is missing" looks like.
+
+### Accuracy: what is now carried across
+
+| The page does this | Why it used to vanish | Now |
+|---|---|---|
+| draws an icon / bullet / quote / badge with `content:` on `::before` / `::after` | generated content is not part of the DOM, so serializing elements drops it | the stylesheets are asked which selectors *could* have generated content, and those elements carry it as an in-flow `<span data-shf-pseudo="before|after">` — no `getComputedStyle` per node, so the cost stays proportional to the generated-content rules, not to the page |
+| …but only on `:hover` / `:focus` | materializing a hover style would show a permanent ghost of it | skipped on purpose (pseudo-class selectors are not resolved) |
+| …positioned over the element (`position:absolute`) | re-emitting it in flow would move the glyph | skipped on purpose |
+| switches a control off in script (`el.disabled = true`) | `disabled`/`readOnly` are properties and never reflect back to the attribute, so the mirror came out clickable | shipped as attributes, in full captures and in delta patches |
+| shows a responsive image via `<picture>` / `srcset` | the `src` we resolved was outranked by the `<source>` list at render time | the source list is dropped and `src` is the candidate the page's own viewport actually displayed (`currentSrc`) |
+| lazy-loads images (`loading="lazy"`) | native lazy loading defers them again in the mirror's frame | forced eager — the capture is a photograph of a loaded page |
+
+### Speed: where the wall clock went
+
+The rewrite phase (turn every external ref into an inline copy or an
+`/assets/...` path) is the slow half of a capture after the DOM pass. It used to
+process **stylesheets one at a time**, and each one opened its own HTTP client
+and awaited its inner `url()`s: a page with a dozen stylesheets paid a dozen
+sequential handshakes, all inside the same time budget, and fonts/background
+images are the last thing a browser announces.
+
+Now there is one client and one bounded pool for the whole phase, so every
+stylesheet's inner refs (sprites, fonts, nested `@import`) are fetched together:
+
+* `DOM_CAPTURE_ASSET_CONCURRENCY` (default **10**) caps concurrent downloads.
+* The global budget (`DOM_CAPTURE_ASSET_TOTAL_TIMEOUT_S`, default 10 s) still
+  holds: whatever finished is kept, the rest keeps its authored URL — the same
+  degradation as any other failed asset, never an error.
+* `dom_capture._LAST_REWRITE_STATS` records `refs`, `memo_hits`, `fetched`,
+  `css_sheets`, `embedded`, `cached` and `ms` for the pass, so "why was this
+  page slow" has an answer in the capture log instead of a guess.
+
+Tests: `node tests/capture_serializer_harness.cjs` (21 checks — the serializer
+runs in a `vm` against a hand-built DOM) and
+`python tests/test_capture_pipeline.py` (20 checks — real rewrite against a
+stubbed HTTP layer that records peak concurrency).
 
 ---
 
