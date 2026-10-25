@@ -57,6 +57,7 @@ function makeOuter() {
     const el = {
       tagName: 'LINK',
       dataset: {},
+      parentNode: null,
       _attrs: Object.assign({}, attrs),
       getAttribute(n) { return Object.prototype.hasOwnProperty.call(el._attrs, n) ? el._attrs[n] : null; },
       setAttribute(n, v) { writes.push(n); el._attrs[n] = String(v); },
@@ -69,13 +70,19 @@ function makeOuter() {
     return el;
   };
 
+  const parent = {
+    removeChild(child) {
+      const at = links.indexOf(child);
+      if (at >= 0) links.splice(at, 1);
+      return child;
+    },
+  };
   const head = {
-    appendChild(child) { links.push(child); return child; },
+    appendChild(child) { child.parentNode = parent; links.push(child); return child; },
   };
 
   // The document starts with the boot favicon, exactly like the real page.
-  const boot = linkEl({ rel: 'icon', href: 'data:image/svg+xml,boot' });
-  links.push(boot);
+  const boot = head.appendChild(linkEl({ rel: 'icon', href: 'data:image/svg+xml,boot' }));
 
   const document = {
     documentElement: { dataset: {} },
@@ -84,15 +91,23 @@ function makeOuter() {
     set title(v) { writes.push('title'); state.title = String(v); },
     createElement(tag) { return linkEl({}); },
     querySelector(sel) {
-      if (/link\[rel\*=["']?icon/.test(sel)) return links[0] || null;
-      return null;
+      return document.querySelectorAll(sel)[0] || null;
+    },
+    // `link[rel*="icon"]` — what applyMirrorFavicon sweeps after appending its
+    // own element. Chrome keeps the picture of the element it already has, so
+    // the old ones must genuinely go.
+    querySelectorAll(sel) {
+      if (/link\[rel\*=["']?icon/.test(sel)) {
+        return links.filter((l) => String(l.getAttribute('rel') || '').indexOf('icon') >= 0);
+      }
+      return [];
     },
     getElementById(id) {
       return links.find((l) => l._attrs.id === id) || null;
     },
   };
 
-  return { document, writes, links, state, pageTitleEl };
+  return { document, writes, links, state, pageTitleEl, boot };
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +142,27 @@ function makeSandbox(outer, mirror, extras = {}) {
     String,
     Math,
     parseFloat,
-    Image: extras.Image || function () { this.src = ''; },
+    state: extras.state || {},
+    setTimeout: extras.setTimeout || function (fn, ms) {
+      (sandbox.__timers = sandbox.__timers || []).push({ fn, ms });
+      return (sandbox.__timers.length);
+    },
+    clearTimeout: function () {},
+    // A browser-ish image: `src` is assigned last, so load/error fires after
+    // the handlers are in place. `extras.iconLoad(href)` decides the outcome;
+    // by default every icon loads.
+    Image: extras.Image || function () {
+      const img = {};
+      Object.defineProperty(img, 'src', {
+        set(v) {
+          const verdict = extras.iconLoad ? extras.iconLoad(String(v)) : 'load';
+          if (verdict === 'error') { if (img.onerror) img.onerror(); }
+          else if (verdict === 'load') { if (img.onload) img.onload(); }
+          // 'hang': nothing fires — the 2500 ms timeout handles it.
+        },
+      });
+      return img;
+    },
     MutationObserver: extras.MutationObserver || function (cb) {
       this._cb = cb;
       this.observe = (target) => { (target.__observed = target.__observed || []).push(cb); };
@@ -171,7 +206,9 @@ function makeSandbox(outer, mirror, extras = {}) {
       + iconLink.getAttribute('href') + ')');
   ok(iconLink.dataset.mirrorFavicon === 'true', 'and it is marked as the mirror’s');
   ok(iconLink.getAttribute('rel') === 'icon', 'with rel=icon');
-  ok(outer.links.length === 1, 'the boot link is reused — there is never a second favicon link');
+  ok(outer.links.length === 1, 'there is never a second favicon link');
+  ok(iconLink !== outer.boot, 'the icon link is a FRESH element — Chrome caches the picture per element, '
+    + 'so editing the old one leaves the stale icon up ("it never updates")');
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +342,139 @@ function makeSandbox(outer, mirror, extras = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// 6b. The icon chain: a tab always shows something, and it is the right thing
+// ---------------------------------------------------------------------------
+// "The favicon in client html is not updating ... not even showing, nothing
+// shows." Two separate faults, both pinned here:
+//   * one candidate URL was computed from a blob: document's baseURI, so it
+//     resolved to `blob:https://.../favicon.ico` and loaded nothing;
+//   * a URL that 404s / is refused / hangs left the tab with no icon at all.
+// The chain now probes candidates in browser order and always ends in an
+// inline SVG that cannot fail.
+{
+  // The guaranteed icon is inline, so it needs no network and cannot 404.
+  const def = /const MIRROR_DEFAULT_ICON = '(data:image\/svg\+xml;utf8,)'/.exec(source);
+  ok(!!def, 'there is a hard-coded default icon');
+  ok(/MIRROR_DEFAULT_ICON[\s\S]{0,400}encodeURIComponent/.test(source),
+    'it is an inline SVG data URI (no request, no 404, no hotlink block)');
+
+  // a) A declared icon that 404s loses to the next one — never a blank tab.
+  const outer = makeOuter();
+  const mirror = makeMirror({
+    title: 'Bank',
+    links: [
+      { rel: 'icon', href: '/gone.png', sizes: '64x64', type: 'image/png' },
+      { rel: 'icon', href: '/real.png', sizes: '16x16', type: 'image/png' },
+    ],
+  });
+  const sb = makeSandbox(outer, mirror, {
+    iconLoad: (h) => (String(h).indexOf('gone.png') >= 0 ? 'error' : 'load'),
+  });
+  sb.syncMirrorTabMeta(mirror.doc);
+  const hrefA = outer.document.getElementById('shf-mirror-favicon').getAttribute('href');
+  ok(hrefA === 'https://bank.example/real.png',
+    'a 404 icon falls through to the next candidate (got ' + hrefA + ')');
+
+  // b) Everything fails: the tab still gets an icon.
+  const outerB = makeOuter();
+  const mirrorB = makeMirror({ title: 'Walled', links: [{ rel: 'icon', href: '/x.png' }] });
+  const sbB = makeSandbox(outerB, mirrorB, { iconLoad: () => 'error' });
+  sbB.syncMirrorTabMeta(mirrorB.doc);
+  const hrefB = outerB.document.getElementById('shf-mirror-favicon').getAttribute('href');
+  ok(/^data:image\/svg\+xml/.test(hrefB),
+    'every candidate failing still leaves an icon in the tab (got ' + String(hrefB).slice(0, 40) + ')');
+  ok(decodeURIComponent(hrefB).indexOf('<svg') >= 0, 'and it is the inline globe, not a blank href');
+
+  // c) An icon host that accepts and never answers must not freeze the chain.
+  const outerC = makeOuter();
+  const mirrorC = makeMirror({ title: 'Slow', links: [{ rel: 'icon', href: '/hang.png' }] });
+  const sbC = makeSandbox(outerC, mirrorC, {
+    iconLoad: (h) => (String(h).indexOf('hang.png') >= 0 ? 'hang' : 'error'),
+  });
+  sbC.syncMirrorTabMeta(mirrorC.doc);
+  ok(!outerC.document.getElementById('shf-mirror-favicon'),
+    'a hanging icon does not paint anything yet');
+  let armed = 0;
+  for (let round = 0; round < 8; round++) {
+    const pending = (sbC.__timers || []).filter((t) => t.ms === 2500 && !t.done);
+    armed += pending.length;
+    pending.forEach((t) => { t.done = true; t.fn(); });
+  }
+  ok(armed >= 1, 'a 2.5 s guard is armed for the hung icon');
+  const hrefC = outerC.document.getElementById('shf-mirror-favicon').getAttribute('href');
+  ok(/^data:image\/svg\+xml/.test(hrefC), 'after the timeout the chain moves on instead of stopping');
+
+  // d) A blob: document's baseURI is NOT a base for the page's icon.
+  const outerD = makeOuter();
+  const mirrorD = makeMirror({ title: 'Blob', baseURI: 'blob:https://bank.example/2f9c-11', links: [] });
+  delete mirrorD.doc.querySelector;                 // no injected <base> on this one
+  const sbD = makeSandbox(outerD, mirrorD, {
+    state: { _mirrorUrl: 'https://bank.example/account/login' },
+  });
+  const listD = sbD.mirrorIconCandidates(mirrorD.doc);
+  ok(listD[0] === 'https://bank.example/favicon.ico',
+    'a blob: baseURI falls back to the real page URL (got ' + listD[0] + ')');
+  ok(!listD.some((u) => /^blob:/.test(u)), 'no candidate is ever a blob: URL');
+  ok(listD.some((u) => /s2\/favicons\?domain=bank\.example&sz=64/.test(u)),
+    'a favicon service is available as a later candidate (hostname only, exact domain)');
+  ok(listD[listD.length - 1] === listD.filter((u) => /^data:image\/svg/.test(u)).pop(),
+    'the inline default is always last');
+
+  // e) The capture's own <base href> is the base when it is there.
+  const mirrorE = makeMirror({ title: 'Based', baseURI: 'blob:https://bank.example/aa', links: [] });
+  mirrorE.doc.querySelector = (sel) => (/base\[href\]/.test(sel)
+    ? { getAttribute: () => 'https://cdn.example/app/' } : null);
+  const sbE = makeSandbox(makeOuter(), mirrorE);
+  const listE = sbE.mirrorIconCandidates(mirrorE.doc);
+  ok(listE[0] === 'https://cdn.example/favicon.ico',
+    'a <base href> decides the origin of the site icon, not the blob document '
+      + '(got ' + listE[0] + ')');
+
+  // f) Ranking bands: a real icon outranks an apple-touch-icon however big.
+  const mirrorF = makeMirror({
+    title: 'Bands',
+    links: [
+      { rel: 'apple-touch-icon', href: '/apple.png', sizes: '180x180' },
+      { rel: 'icon', href: '/tiny.png', sizes: '16x16' },
+    ],
+  });
+  const sbF = makeSandbox(makeOuter(), mirrorF);
+  ok(sbF.mirrorIconCandidates(mirrorF.doc)[0] === 'https://bank.example/tiny.png',
+    'rel=icon beats apple-touch-icon regardless of declared size');
+
+  // g) A page that changes its icon: the element is replaced, so Chrome re-reads it.
+  const outerG = makeOuter();
+  const mirrorG = makeMirror({ title: 'Live', links: [{ rel: 'icon', href: '/one.png' }] });
+  const sbG = makeSandbox(outerG, mirrorG);
+  sbG.syncMirrorTabMeta(mirrorG.doc);
+  const firstEl = outerG.document.getElementById('shf-mirror-favicon');
+  mirrorG.links[0]._attrs.href = '/two.png';
+  outerG.document.documentElement.dataset = {};
+  sbG.syncMirrorTabMeta(mirrorG.doc);
+  const secondEl = outerG.document.getElementById('shf-mirror-favicon');
+  ok(secondEl.getAttribute('href') === 'https://bank.example/two.png',
+    'a new icon is adopted');
+  ok(secondEl !== firstEl, 'by replacing the <link>, never by editing it in place');
+
+  // h) A slow candidate from the previous page cannot win over the new page.
+  const outerH = makeOuter();
+  const sbH = makeSandbox(outerH, makeMirror({ title: 'P1', links: [] }), {
+    iconLoad: (h) => (String(h).indexOf('favicon.ico') >= 0 ? 'hang' : 'load'),
+    state: { _mirrorUrl: 'https://one.example/' },
+  });
+  const p1 = makeMirror({ title: 'P1', links: [] });
+  delete p1.doc.querySelector;
+  sbH.syncMirrorTabMeta(p1.doc);
+  const p2 = makeMirror({ title: 'P2', links: [{ rel: 'icon', href: 'https://two.example/i.png' }] });
+  sbH.syncMirrorTabMeta(p2.doc);
+  const pendingH = (sbH.__timers || []).filter((t) => t.ms === 2500);
+  pendingH.forEach((t) => t.fn());
+  const hrefH = outerH.document.getElementById('shf-mirror-favicon').getAttribute('href');
+  ok(hrefH === 'https://two.example/i.png',
+    'a stale probe from the previous page cannot overwrite the new page’s icon (got ' + hrefH + ')');
+}
+
+// ---------------------------------------------------------------------------
 // 7. The mirrored document is watched, so a patched <title> is followed
 // ---------------------------------------------------------------------------
 {
@@ -352,6 +522,12 @@ function makeSandbox(outer, mirror, extras = {}) {
 
   ok(/window\.__MIRROR_TAB_STATE__ = function/.test(source),
     'there is a devtools probe: __MIRROR_TAB_STATE__()');
+  ok(/window\.__mirrorIconCandidates__ = function/.test(source),
+    'and the candidate list the chain walked can be printed: __mirrorIconCandidates__()');
+  ok(/function mirrorPageBase\(doc\)[\s\S]{0,900}\^?\(blob:\|about:\|data:\|javascript:\)/.test(source)
+    || /\/\^\(blob:\|about:\|data:\|javascript:\)\//.test(source.slice(
+      source.indexOf('function mirrorPageBase('), source.indexOf('function mirrorPageBase(') + 1200)),
+    'a blob:/about:/data: base is rejected as a base for the icon URL');
 
   // The operator's LPV tab settings must never reach a streamed tab: this is
   // the path that used to leak them (a Settings save pushes to every client).

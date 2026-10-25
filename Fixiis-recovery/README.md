@@ -712,7 +712,28 @@ hostname guess from a favicon service, and not the title from five minutes ago.
 | the mirrored document itself — its `<title>` and its `<link rel="icon">` | the capture already shipped those exact bytes (a `data:` URI, or `/assets/<hash>` on our own origin), so the tab shows what the page shows |
 | the site's **own** icon ranking: `icon` / `shortcut icon` over `apple-touch-icon`, declared `sizes` over none, `svg` over a bitmap, later declarations win ties | the same choice the browser would have made |
 | the origin's `/favicon.ico` when the page declares nothing | a page with no icon still has an icon |
+| `https://www.google.com/s2/favicons?domain=<host>&sz=64` as a later candidate | only for a page that declares nothing *and* has no `/favicon.ico` — a late candidate, never the first choice |
+| an **inline SVG data URI** as the last candidate | a tab with no icon reads as a broken tab, so the chain cannot come up empty: no request, no 404, no hotlink block |
 | — and when the site changes either one, the change is followed | "Inbox" → "Inbox (3)", an unread-badge icon, a login flow renaming the tab |
+
+**A bad icon URL can no longer blank the tab.** The chain probes each candidate
+with an `Image()` and takes the first one that actually loads (2.5 s per
+candidate, so a host that accepts and never answers cannot freeze it on a blank
+tab). Two details are the reason this used to fail outright:
+
+* **The base URL.** The mirrored document lives at `blob:https://…`, so its
+  `baseURI` **is** that blob URL. Resolving a relative icon against it produced
+  `blob:https://…/favicon.ico`, which loads nothing. The chain resolves against
+  the capture's own `<base href>`, then a clean `baseURI`, then the page URL the
+  mirror was rendered from (`state._mirrorUrl`) — never a `blob:`/`about:`/`data:`
+  base.
+* **The `<link>` element.** Chrome caches a favicon per element, so assigning
+  `href` on the link that is already the tab icon can leave the old picture up
+  forever ("the favicon never updates"). The mirror appends a **fresh**
+  `<link id="shf-mirror-favicon" rel="icon">` and removes every other
+  `link[rel*=icon]`, which is what makes a swap visible immediately. A newer
+  page supersedes an older probe chain, so a slow icon from the previous page
+  can never win over the new page's first candidate.
 
 **How a change travels.** A full capture carries both inside the document, so
 the tab updates when the page paints. Between captures, a rename or an icon swap
@@ -756,8 +777,18 @@ __MIRROR_TAB_STATE__()
 //   icon: "…/assets/<hash>.png", appliedIcon: "…", branded: false }
 ```
 
-Tests: `node tests/test_tab_identity.cjs` (79 checks — the tab block, the visit
-flag classifier and the capture-page observer all run for real).
+To see the candidates the tab chose from, in the same console:
+
+```js
+__mirrorIconCandidates__(frame.contentDocument)
+// [ "…/assets/<hash>.svg", "https://bank.example/favicon.ico",
+//   "https://www.google.com/s2/favicons?domain=bank.example&sz=64",
+//   "data:image/svg+xml;utf8,…" ]
+```
+
+Tests: `node tests/test_tab_identity.cjs` (99 checks — the tab block, the icon
+chain, the visit-flag classifier and the capture-page observer all run for
+real).
 
 ---
 
@@ -868,7 +899,68 @@ __MIRROR_SCROLL_STATE__()
 `scrollable: false` with `contentHeight` barely above `height` means the page
 itself is short — nothing to scroll, and nothing wrong.
 
-Tests: `node tests/test_mirror_scroll.cjs` (79 checks).
+### Chrome on a phone: the three things that made it "not scroll"
+
+The same mirror scrolled on some phones and not in Chrome on Android. None of
+these were about our gesture handling — they are all things a page tells the
+browser, and the browser is entitled to believe.
+
+* **`touch-action`.** A captured page (or a third-party consent/chat widget on
+  it) setting `touch-action: none` on `html`/`body` is honoured by Chrome, and
+  then the page cannot be dragged at all; other engines ignore it. Every injected
+  reset (`__shifix_stream_reset__`, the LPV `viewport-guard`, and the inline
+  rescue) now sets `touch-action: auto !important` on `html`/`body`, and
+  `touch-action: pan-y` on anything it rescues or unlocks. `overscroll-behavior`
+  is likewise un-clamped on `html`/`body` (a clamp there stops the gesture from
+  chaining out of an inner scroller), while a **rescued box keeps** chaining like
+  a normal element.
+* **The viewport height.** `height: 100%` on a fixed, `overflow: hidden` shell
+  resolves against the **largest** viewport in Chrome on Android (URL bar
+  hidden), so the bottom of the mirror sits behind the browser UI and nothing the
+  page does can reach it. The client shell, `#lpv-root` and `#lpv-page` now use
+  `100dvh` under `@supports (height: 100dvh)`, with `100%` as the fallback, so
+  the frame is never taller than what the visitor can see.
+* **The app shell.** A page can be laid out as one clipping, full-viewport frame
+  around the whole site, with nothing that matches the earlier rescue rules. A
+  final rung walks to the tallest content in the document and up its ancestor
+  chain, and lets every clipping box between them scroll
+  (`overflow-y:auto !important`, `touch-action:pan-y`, tagged
+  `data-scroll-unlocked="1"`). Dialogs are skipped, boxes that hide less than a
+  line are left alone, at most a dozen ancestors are walked, and it is still CSS
+  only — the browser keeps doing the scrolling.
+
+`__MIRROR_SCROLL_STATE__()` reports the diagnosis as well as the state, so a
+phone can be checked without guesswork:
+
+```js
+__MIRROR_SCROLL_STATE__()
+// { frame: true, intercepted: false, rescued: 1, scrollable: true,
+//   height: 812, contentHeight: 4310,
+//   touchAction: "auto", overscroll: "auto", hitElement: "div#app" }
+```
+
+`hitElement` is what is actually under the middle of the screen: if it is an
+invisible overlay, that is the answer — the CSS is fine and the page put
+something in the way.
+
+### The chat panel scrolls, and stays where the reader put it
+
+The mirrored page's chat had its own version of the same bug: the message list
+was a `flex: 1` child of a column-flex panel **without** `min-height: 0`, so it
+grew to its content height instead of shrinking and scrolling, and the panel's
+`overflow: hidden` clipped it. Scrolling the list therefore did nothing. The
+list is now `flex:1; min-height:0; overflow-y:auto` with `overscroll-behavior:
+contain` (its own scroll does not drag the page behind it), `touch-action: pan-y`
+and iOS momentum; `scroll-behavior` is `auto`, because a smooth-scroll animation
+animating against a finger is exactly what "unscrollable" feels like.
+
+The second half of the same complaint: every incoming message called
+`scrollTop = scrollHeight`, so reading back through history yanked the reader to
+the bottom. `atBottom()` measures where the reader is **before** the list grows,
+and a message only auto-scrolls when they were already at the bottom (their own
+message always lands in view; opening the panel always jumps to the newest).
+
+Tests: `node tests/test_mirror_scroll.cjs` (121 checks).
 
 ---
 

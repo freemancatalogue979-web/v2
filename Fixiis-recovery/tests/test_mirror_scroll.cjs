@@ -623,4 +623,166 @@ function makeView(viewport, overrides) {
   ok(/scrollable:/.test(probe), 'and whether the document can move at all');
 }
 
+// ---------------------------------------------------------------------------
+// 16. A page that is an app shell is unlocked, and only by CSS
+// ---------------------------------------------------------------------------
+// "On Chrome mobile it can't scroll but on some it does." The shape that
+// survives every earlier rung: one clipping box holds the whole site and no
+// rule of ours matches it (it is not the biggest text, has no role, is not a
+// size we recognise) — a fixed, full-viewport `overflow:hidden` frame. Walk to
+// the tallest content and let every clipping box above it scroll.
+{
+  const ctx = makeContext({ now: 0 });
+  const doc = makeDoc({ viewport: 800 });
+  doc.body.scrollHeight = 800;                    // the document itself cannot move
+  const shell = node('div', { id: 'app', clientHeight: 800, scrollHeight: 4200 });
+  shell._computed = { overflowY: 'hidden', position: 'fixed', overflow: 'hidden' };
+  doc.body.appendChild(shell);
+  const content = node('div', { id: 'content', clientHeight: 4200, scrollHeight: 4200 });
+  shell.appendChild(content);
+  doc.body.getElementsByTagName = () => [shell, content];
+  const view = makeView(800);
+
+  const unlocked = ctx.unlockScrollChain(doc, view);
+  ok(unlocked === 1, 'the clipping shell is unlocked (got ' + unlocked + ')');
+  ok(shell._style['overflow-y'] === 'auto !important',
+    'it is given overflow-y:auto !important — the rescue must outrank an author rule');
+  ok(shell._style['touch-action'] === 'pan-y', 'and permission to pan with a finger');
+  ok(shell.getAttribute('data-scroll-unlocked') === '1', 'the change is marked for the probe');
+  ok(shell.scrollTop === 0 && content.scrollTop === 0,
+    'nothing was scrolled by hand: the browser still owns the gesture');
+
+  // A dialog is left exactly as it is.
+  const doc2 = makeDoc({ viewport: 800 });
+  const modal = node('div', { id: 'modal', clientHeight: 700, scrollHeight: 3000, attrs: { role: 'dialog' } });
+  modal._computed = { overflowY: 'hidden', overflow: 'hidden' };
+  doc2.body.appendChild(modal);
+  doc2.body.getElementsByTagName = () => [modal];
+  ok(ctx.unlockScrollChain(doc2, makeView(800)) === 0, 'a dialog is never unlocked into a scroller');
+  ok(!modal.getAttribute('data-scroll-unlocked'), 'and is left unmarked');
+
+  // Not a scroll container: a short override is not a hidden page.
+  const doc3 = makeDoc({ viewport: 800 });
+  const short = node('div', { clientHeight: 800, scrollHeight: 810 });
+  short._computed = { overflowY: 'hidden', overflow: 'hidden' };
+  doc3.body.appendChild(short);
+  doc3.body.getElementsByTagName = () => [short];
+  ok(ctx.unlockScrollChain(doc3, makeView(800)) === 0, 'a box that hides nothing stays untouched');
+
+  // ...and the pass is wired in as a rung of ensureMirrorScrolling.
+  const fnAt = source.indexOf('function ensureMirrorScrolling(');
+  const fnEnd = source.indexOf('\n            }\n', source.indexOf('return rescued > 0 || ok;', fnAt));
+  const body = source.slice(fnAt, fnEnd);
+  ok(/unlockScrollChain\(doc, view\)/.test(body), 'the app-shell rung is part of the rescue');
+  ok(/rescued \+= unlocked/.test(body), 'and its work is counted');
+  const unlockSrc = source.slice(source.indexOf('function unlockScrollChain('),
+    source.indexOf('function mirrorGestureDiagnosis('));
+  ok(!/scrollTop\s*=/.test(unlockSrc), 'the unlock never writes a scroll position');
+  ok(!/addEventListener/.test(unlockSrc), 'and never listens for a gesture');
+}
+
+// ---------------------------------------------------------------------------
+// 17. The captured page may never forbid the gesture
+// ---------------------------------------------------------------------------
+// `touch-action:none` on html/body is honoured by Chrome on Android and makes a
+// page undraggable; other engines ignore it. That is precisely "it scrolls in
+// one browser but not in Chrome on my phone".
+{
+  const resets = [];
+  const grab = (marker) => {
+    const at = source.indexOf(marker);
+    ok(at > 0, marker + ' exists');
+    let depth = 0, i = source.indexOf('{', at), endAt = -1;
+    for (; i < source.length; i++) {
+      if (source[i] === '{') depth++;
+      else if (source[i] === '}') { depth--; if (depth === 0) { endAt = i; break; } }
+    }
+    ok(endAt > at, marker + ' is extractable');
+    return source.slice(at, endAt);
+  };
+  // a) the streamed-document reset
+  const streamReset = grab("resetCss.id = '__shifix_stream_reset__'");
+  ok(/touch-action: auto !important/.test(streamReset), 'the streamed reset allows the gesture');
+  ok(/overscroll-behavior: auto !important/.test(streamReset), 'and does not clamp it');
+  ok(/-webkit-overflow-scrolling: touch !important/.test(streamReset), 'with momentum on iOS');
+  // b) the LPV pushed-page guard
+  const lpvGuard = grab("const viewportGuard = innerDoc.createElement('style')");
+  ok(/touch-action: auto !important/.test(lpvGuard), 'the LPV guard allows the gesture too');
+  ok(/overscroll-behavior: auto !important/.test(lpvGuard), 'and does not clamp it');
+  // c) the inline rescue on the two root elements
+  const inline = source.slice(source.indexOf('html.style.overflow ='),
+    source.indexOf('function unlockScrollChain('));
+  ok(/setProperty\('touch-action', 'auto', 'important'\)/.test(inline),
+    'the rescue clears a touch-action the page set on html/body');
+  ok(/setProperty\('overscroll-behavior', 'auto', 'important'\)/.test(inline),
+    'and un-clamps overscroll');
+
+  // The probe can now say why a gesture dies, without ever acting on it.
+  const probe = source.slice(source.indexOf('function mirrorGestureDiagnosis('),
+    source.indexOf('window.__MIRROR_SCROLL_STATE__'));
+  ok(/touchAction/.test(probe) && /elementFromPoint/.test(probe),
+    'the probe reports touch-action and what sits under the finger');
+  ok(!/preventDefault|addEventListener/.test(probe), 'reporting never changes behaviour');
+}
+
+// ---------------------------------------------------------------------------
+// 18. The mobile viewport: the frame must fit what the visitor can see
+// ---------------------------------------------------------------------------
+// `height:100%` on a fixed shell resolves against the LARGEST viewport in
+// Chrome on Android (URL bar hidden), so the bottom of the mirror sits behind
+// the browser UI and cannot be reached — no CSS the page owns can fix that.
+{
+  const shellCss = source.slice(source.indexOf('html, body {', source.indexOf('<style>')),
+    source.indexOf('* {', source.indexOf('<style>')));
+  ok(/height: 100dvh/.test(shellCss), 'the client shell uses the dynamic viewport where supported');
+  const runtime = source.slice(source.indexOf('style.textContent = `'), source.indexOf('#lpv-spinner {'));
+  ok(/#lpv-root, #lpv-page \{ height: 100dvh; \}/.test(runtime),
+    'the mirror overlay does too (so the iframe is never taller than the screen)');
+  ok(/touch-action: auto;\s*\n\s*\}/.test(runtime), 'the frame is not told to swallow the gesture');
+}
+
+// ---------------------------------------------------------------------------
+// 19. The chat scrolls — and stays where the reader put it
+// ---------------------------------------------------------------------------
+// "The chat scroll blocks." The list was a flex child without `min-height:0`,
+// so it grew to its content height instead of shrinking and scrolling; on top
+// of that every incoming message yanked the reader back to the bottom, which
+// reads as a scroll that will not stay.
+{
+  const chatAt = source.indexOf("'#lpv-chat-root .lpvch-list{'");
+  ok(chatAt > 0, 'the chat list rule is generated in _css()');
+  const rule = source.slice(chatAt, chatAt + 700);
+  ok(/flex:1;min-height:0;overflow-y:auto/.test(rule),
+    'the list is a shrinking flex child that scrolls (min-height:0 is the fix)');
+  ok(/scroll-behavior:auto/.test(rule), 'no smooth-scroll animation fights the finger');
+  ok(!/scroll-behavior:smooth/.test(rule), 'smooth scrolling is gone from the list');
+  ok(/touch-action:pan-y/.test(rule), 'a vertical pan belongs to the list');
+  ok(/overscroll-behavior:contain/.test(rule), 'the list does not drag the page behind it');
+  ok(/-webkit-overflow-scrolling:touch/.test(rule), 'with momentum scrolling on iOS');
+
+  const chatBlock = source.slice(chatAt, source.indexOf('send() {', chatAt));
+  ok(!/addEventListener\('(wheel|touchmove|touchstart)'/.test(chatBlock),
+    'the chat never grabs a gesture');
+
+  const atBottom = source.slice(source.indexOf('atBottom() {'), source.indexOf('_scroll(force) {'));
+  ok(/scrollHeight - l\.scrollTop - l\.clientHeight\) < 72/.test(atBottom),
+    'atBottom() measures how far the reader is from the newest message');
+  const scrollFn = source.slice(source.indexOf('_scroll(force) {'),
+    source.indexOf('addMessage(m) {'));
+  ok(/if \(!force && !this\.atBottom\(\)\) return;/.test(scrollFn),
+    '_scroll() refuses to move a reader who is reading back');
+  ok(/this\.list\.scrollTop = this\.list\.scrollHeight/.test(scrollFn),
+    'and lands on the newest message when it does move');
+
+  const addMessage = source.slice(source.indexOf('addMessage(m) {'),
+    source.indexOf('requestHistory() {'));
+  const stickAt = addMessage.indexOf('const stick = this.atBottom();');
+  ok(stickAt > 0 && stickAt < addMessage.indexOf('.appendChild(wrap)'),
+    'where the reader was is measured BEFORE the list grows');
+  ok(/this\._scroll\(mine \|\| stick\)/.test(addMessage),
+    'their own message always lands in view; someone else’s only if they were at the bottom');
+  const toggle = source.slice(source.indexOf('toggle(force) {'), source.indexOf('_paintBadge() {'));
+  ok(/this\._scroll\(true\)/.test(toggle), 'opening the panel always lands on the newest message');
+}
+
 console.log('mirror scroll: ' + checks + ' checks passed');

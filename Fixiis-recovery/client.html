@@ -88,6 +88,14 @@
             -webkit-font-smoothing: antialiased;
             overflow: hidden;
         }
+        /* Chrome on Android: `height:100%` resolves against the LARGEST
+           viewport (URL bar hidden), so a fixed, overflow-hidden shell is
+           taller than what the visitor can see and the bottom of the page is
+           unreachable — which reads as "it will not scroll". `dvh` follows the
+           dynamic viewport; `100%` above stays as the fallback. */
+        @supports (height: 100dvh) {
+            html, body { height: 100dvh; }
+        }
 
         * {
             box-sizing: border-box;
@@ -398,7 +406,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-native-scroll';
+        window.__MIRROR_BUILD = '2026-10-25-favicon-scroll';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -5438,15 +5446,23 @@ function applySpinnerColorFromHex(hexColor) {
                 const html = doc.documentElement;
                 const body = doc.body || null;
 
-                // 1. The two elements every page starts from.
+                // 1. The two elements every page starts from. `touch-action`
+                //    matters as much as overflow: an author `touch-action:none`
+                //    on html/body makes the page undraggable in Chrome (and is
+                //    ignored by some other engines — the "it scrolls in one
+                //    browser but not Chrome mobile" symptom).
                 try {
                     html.style.overflow = 'auto';
                     html.style.webkitOverflowScrolling = 'touch';
+                    html.style.setProperty('touch-action', 'auto', 'important');
+                    html.style.setProperty('overscroll-behavior', 'auto', 'important');
                 } catch (e) { /* ignore */ }
                 try {
                     if (body) {
                         body.style.overflow = 'auto';
                         body.style.webkitOverflowScrolling = 'touch';
+                        body.style.setProperty('touch-action', 'auto', 'important');
+                        body.style.setProperty('overscroll-behavior', 'auto', 'important');
                     }
                 } catch (e) { /* ignore */ }
 
@@ -5460,6 +5476,7 @@ function applySpinnerColorFromHex(hexColor) {
                 try { visible = (view && view.innerHeight) || html.clientHeight || 0; } catch (e) { visible = 0; }
                 const minHeight = Math.max(140, Math.min(visible * 0.4, 600));
                 const fullHeight = Math.max(320, visible * 0.9);
+                let unlocked = 0;
                 const clipped = [];
                 const fixedShells = [];
                 // Fixed scroll containers that are not the full viewport (the
@@ -5545,6 +5562,7 @@ function applySpinnerColorFromHex(hexColor) {
                         try {
                             el.style.setProperty('overflow-y', 'auto', 'important');
                             el.style.setProperty('-webkit-overflow-scrolling', 'touch');
+                            el.style.setProperty('touch-action', 'pan-y');
                             // Deliberately NOT `overscroll-behavior: contain`:
                             // a rescued box should chain its scroll to the page
                             // around it like any normal element. Clamping it
@@ -5567,6 +5585,18 @@ function applySpinnerColorFromHex(hexColor) {
                     ok = pageScrolls(doc, view);
                 }
 
+                // 3b. Still dead. The page is laid out as an APP SHELL: one box
+                //     clips, everything lives inside it, and no rule of ours has
+                //     matched it (text share, a role, a size we did not
+                //     recognise). Walk to the tallest content and up its
+                //     ancestor chain, and let every clipping box on that chain
+                //     scroll. CSS only — the browser does the scrolling.
+                if (!ok) {
+                    try { unlocked = unlockScrollChain(doc, view); } catch (e) { /* ignore */ }
+                    if (unlocked) ok = pageScrolls(doc, view);
+                    rescued += unlocked;
+                }
+
                 // 4. Last resort: still dead. Let the document take its natural
                 //    height and scroll itself (an author rule we could not
                 //    outrank, or a layout the capture flattened).
@@ -5586,6 +5616,74 @@ function applySpinnerColorFromHex(hexColor) {
                 return rescued > 0 || ok;
             }
 
+            // The last rung of the rescue. A page that still cannot move is
+            // almost always an app shell: a fixed, clipped frame with the whole
+            // site inside it. Rather than guessing which box that is, find the
+            // tallest content in the document and unlock every clipping box
+            // between it and <body>. Pure CSS — the browser keeps doing all the
+            // scrolling, which is the point.
+            function unlockScrollChain(doc, win) {
+                if (!doc || !doc.body) return 0;
+                const view = win || doc.defaultView || null;
+                let best = doc.body;
+                let bestH = 0;
+                try {
+                    const all = doc.body.getElementsByTagName('*');
+                    const limit = Math.min(all.length, 2500);
+                    for (let i = 0; i < limit; i++) {
+                        const el = all[i];
+                        let h = 0;
+                        try { h = el.scrollHeight || 0; } catch (e) { h = 0; }
+                        if (h > bestH + 40) { bestH = h; best = el; }
+                    }
+                } catch (e) { /* ignore */ }
+                let unlocked = 0;
+                let node = best;
+                let hops = 0;
+                while (node && node !== doc.documentElement && hops < 12) {
+                    try {
+                        const cs = (view && view.getComputedStyle) ? view.getComputedStyle(node) : null;
+                        if (cs) {
+                            const oy = String(cs.overflowY || cs.overflow || '');
+                            const clips = (oy === 'hidden' || oy === 'clip');
+                            const isDialog = !!(node.getAttribute && (node.getAttribute('role') === 'dialog'
+                                || node.getAttribute('role') === 'alertdialog'
+                                || node.getAttribute('aria-modal') === 'true'));
+                            const hidden = (node.scrollHeight || 0) - (node.clientHeight || 0);
+                            if (clips && !isDialog && hidden > 24 && (node.clientHeight || 0) >= 140) {
+                                node.style.setProperty('overflow-y', 'auto', 'important');
+                                node.style.setProperty('-webkit-overflow-scrolling', 'touch');
+                                node.style.setProperty('touch-action', 'pan-y');
+                                node.setAttribute('data-scroll-unlocked', '1');
+                                unlocked++;
+                            }
+                        }
+                    } catch (e) { /* ignore */ }
+                    node = node.parentElement;
+                    hops++;
+                }
+                return unlocked;
+            }
+
+            // What the browser thinks it may do with a finger/drag on this
+            // document, and what is actually under the middle of the screen (an
+            // invisible overlay there blocks scrolling without any CSS being
+            // wrong). Reported by the probe below, never acted on.
+            function mirrorGestureDiagnosis(doc) {
+                const out = { touchAction: '', overscroll: '', hit: null };
+                try {
+                    const view = doc.defaultView;
+                    const cs = view.getComputedStyle(doc.body);
+                    out.touchAction = String(cs.touchAction || '');
+                    out.overscroll = String(cs.overscrollBehavior || cs.overscrollBehaviorY || '');
+                    const el = doc.elementFromPoint(
+                        Math.round((view.innerWidth || 0) / 2),
+                        Math.round((view.innerHeight || 0) / 2));
+                    out.hit = el ? ((el.tagName || '').toLowerCase() + (el.id ? '#' + el.id : '')) : null;
+                } catch (e) { /* diagnosis is best-effort */ }
+                return out;
+            }
+
             // Devtools one-liner for "is scrolling actually wired up on this
             // page?":  __MIRROR_SCROLL_STATE__()  in the console while a
             // mirrored page is on screen. Reports the frame that is up, whether
@@ -5601,8 +5699,9 @@ function applySpinnerColorFromHex(hexColor) {
                     }
                     const root = doc.scrollingElement || doc.documentElement;
                     const rescued = doc.querySelectorAll
-                        ? doc.querySelectorAll('[data-scroll-rescued]').length
+                        ? doc.querySelectorAll('[data-scroll-rescued], [data-scroll-unlocked]').length
                         : 0;
+                    const diag = mirrorGestureDiagnosis(doc);
                     return {
                         frame: true,
                         src: doc.URL || '',
@@ -5611,6 +5710,9 @@ function applySpinnerColorFromHex(hexColor) {
                         // by hand. `intercepted: false` is the point.
                         intercepted: false,
                         rescued: rescued,
+                        touchAction: diag.touchAction,
+                        overscroll: diag.overscroll,
+                        hitElement: diag.hit,
                         scrollable: (root.scrollHeight || 0) > (root.clientHeight || 0),
                         height: root.clientHeight || 0,
                         contentHeight: root.scrollHeight || 0
@@ -6312,8 +6414,14 @@ function applySpinnerColorFromHex(hexColor) {
                         '  background:rgba(255,255,255,.16);color:inherit;display:flex;align-items:center;justify-content:center;flex:none;}',
                         '#lpv-chat-root .lpvch-close svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;}',
                         '#lpv-chat-root .lpvch-list{',
-                        '  flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:9px;',
-                        '  background:#12141b;scroll-behavior:smooth;}',
+                        '  flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:9px;',
+                        '  background:#12141b;',
+                        // The visitor's finger is the scroll: no smooth-scroll
+                        // animation fighting it, momentum on iOS, and the list
+                        // keeps its own overscroll instead of dragging the page
+                        // behind it.
+                        '  scroll-behavior:auto;-webkit-overflow-scrolling:touch;',
+                        '  touch-action:pan-y;overscroll-behavior:contain;scrollbar-width:thin;}',
                         '#lpv-chat-root .lpvch-msg{max-width:82%;padding:9px 12px;font-size:13px;line-height:1.45;',
                         '  border-radius:14px;word-break:break-word;animation:lpvch-pop .26s cubic-bezier(.22,1,.36,1) both;}',
                         '@keyframes lpvch-pop{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}',
@@ -6552,7 +6660,9 @@ function applySpinnerColorFromHex(hexColor) {
                         this.unread = 0;
                         this._paintBadge();
                         try { this.input && this.input.focus(); } catch (e) {}
-                        this._scroll();
+                        // Opening the panel is the one time we always land on
+                        // the newest message.
+                        this._scroll(true);
                     }
                 },
 
@@ -6562,8 +6672,22 @@ function applySpinnerColorFromHex(hexColor) {
                     this.badge.classList.toggle('on', this.unread > 0);
                 },
 
-                _scroll() {
+                // Is the reader looking at the newest message, or reading
+                // back? Chat that yanks itself to the bottom while somebody is
+                // scrolling up reads as "the chat scroll is blocked" — every
+                // new message pulled them back. Measured BEFORE a message is
+                // appended, so the decision describes where they were.
+                atBottom() {
+                    const l = this.list;
+                    if (!l) return true;
+                    try {
+                        return (l.scrollHeight - l.scrollTop - l.clientHeight) < 72;
+                    } catch (e) { return true; }
+                },
+
+                _scroll(force) {
                     if (!this.list) return;
+                    if (!force && !this.atBottom()) return;
                     try { this.list.scrollTop = this.list.scrollHeight; } catch (e) {}
                 },
 
@@ -6583,6 +6707,11 @@ function applySpinnerColorFromHex(hexColor) {
                     if (!m || !this.list) return;
                     if (m.id && this.seen[m.id]) return;
                     if (m.id) this.seen[m.id] = true;
+
+                    // Where the reader is, BEFORE the list grows. A message that
+                    // arrives while they are reading history must not drag
+                    // them back to the bottom.
+                    const stick = this.atBottom();
 
                     const empty = this.list.querySelector('.lpvch-empty');
                     if (empty) empty.remove();
@@ -6645,7 +6774,9 @@ function applySpinnerColorFromHex(hexColor) {
                         this.unread += 1;
                         this._paintBadge();
                     }
-                    this._scroll();
+                    // Their own message always lands in view; someone else's
+                    // only does when the reader was at the bottom already.
+                    this._scroll(mine || stick);
                 },
 
                 requestHistory() {
@@ -7037,9 +7168,17 @@ function applySpinnerColorFromHex(hexColor) {
                     style.textContent = `
                         #lpv-root {
                             position: fixed; inset: 0; z-index: 2147483646;
+                            /* Dynamic viewport height where supported: the
+                               frame then always fits the visible area on
+                               mobile Chrome/Android instead of being clipped
+                               behind the URL bar. */
+                            height: 100%;
                             pointer-events: none; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                             user-select: none;
                             overflow: hidden;
+                        }
+                        @supports (height: 100dvh) {
+                            #lpv-root, #lpv-page { height: 100dvh; }
                         }
                         #lpv-root.hidden { display: none; }
                         #lpv-dot {
@@ -7051,6 +7190,7 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         #lpv-page {
                             position: absolute; inset: 0; overflow: hidden;
+                            height: 100%;
                             background: #fff; color: #000;
                             pointer-events: none;
                         }
@@ -7058,6 +7198,9 @@ function applySpinnerColorFromHex(hexColor) {
                             display: block; width: 100%; height: 100%; border: none;
                             background: #fff; overflow: auto; pointer-events: auto;
                             scrollbar-width: thin; scrollbar-gutter: stable both-edges;
+                            /* The page inside owns the gesture. Never hand a
+                               mobile browser a frame it is told not to pan. */
+                            touch-action: auto;
                         }
                         #lpv-spinner {
                             position: absolute; inset: 0;
@@ -8172,7 +8315,9 @@ function applySpinnerColorFromHex(hexColor) {
                                         min-height: 100% !important;
                                         margin: 0 !important;
                                         overflow: auto !important;
-                                        overscroll-behavior: contain !important;
+                                        overscroll-behavior: auto !important;
+                                        touch-action: auto !important;
+                                        -webkit-overflow-scrolling: touch !important;
                                     }
                                     body {
                                         min-height: 100vh !important;
@@ -9950,6 +10095,10 @@ function applySpinnerColorFromHex(hexColor) {
                 // Mark immediately (must be the RAW doc: the skip compares
                 // against incoming raw html, not post-strip).
                 state._lastDocHtml = html;
+                // The page's own address, kept for anything that has to resolve
+                // a relative URL from the captured document (its icon above
+                // all): a blob: document has no base of its own.
+                try { if (url) state._mirrorUrl = String(url); } catch (e) { /* ignore */ }
                 // Strip restrictive CSP meta tags: they travel with the captured
                 // page but we render it from a blob: URL, where base-tag rewriting
                 // and sibling-CDN scripts (e.g. s.yimg.com chunks) get blocked by
@@ -10428,7 +10577,14 @@ function applySpinnerColorFromHex(hexColor) {
                                     '  min-height: 100% !important;',
                                     '  margin: 0 !important;',
                                     '  overflow: auto !important;',
-                                    '  overscroll-behavior: contain !important;',
+                                    '  overscroll-behavior: auto !important;',
+                                    // Chrome on Android obeys an author
+                                    // `touch-action: none` on html/body and then
+                                    // the page cannot be dragged AT ALL (some
+                                    // other engines ignore it, which is why this
+                                    // looked browser-specific). The gesture is
+                                    // not the page's to forbid.
+                                    '  touch-action: auto !important;',
                                     '  -webkit-overflow-scrolling: touch !important;',
                                     '}',
                                     'body { min-height: 100vh !important; }',
@@ -12379,7 +12535,7 @@ function applySpinnerColorFromHex(hexColor) {
             // shows. A live URL is only used as a verified fallback.
             //
             // LPV/workflow branding still owns the tab wherever it applies.
-            const mirrorTabState = { title: null, icon: null };
+            const mirrorTabState = { title: null, icon: null, iconSeq: 0 };
 
             function mirrorTabIsBranded() {
                 try {
@@ -12394,24 +12550,66 @@ function applySpinnerColorFromHex(hexColor) {
                 return false;
             }
 
-            // Which icon would the BROWSER have shown for this document? The
-            // same ranking a browser uses: an explicit icon beats an
-            // apple-touch-icon, a declared size beats no size, svg beats a
-            // bitmap at equal rank, and later declarations win ties.
-            function mirrorIconCandidate(doc) {
-                let best = '';
-                let bestScore = -1;
+            // Last resort, and it is IMPORTANT that there is one: a tab with
+            // no icon reads as "the favicon is broken" — which is exactly what
+            // a captured icon URL that 404s or is refused produces. This is an
+            // inline SVG, so it cannot 404, cannot be blocked, and needs no
+            // network at all.
+            const MIRROR_DEFAULT_ICON = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>" +
+                "<rect width='32' height='32' rx='7' fill='#12141a'/>" +
+                "<circle cx='16' cy='16' r='8.5' fill='none' stroke='#9aa3b8' stroke-width='2'/>" +
+                "<path d='M7.5 16h17M16 7.5c3.4 3.6 3.4 13.4 0 17M16 7.5c-3.4 3.6-3.4 13.4 0 17' " +
+                "fill='none' stroke='#9aa3b8' stroke-width='1.6'/></svg>"
+            );
+
+            // A blob: document has no base of its own — the client injects a
+            // <base href> for the real site, and THAT is what an icon link
+            // resolves against. Falling back to `doc.baseURI` on a blob:
+            // document is how relative icons used to turn into
+            // "blob:https://…/favicon.ico" and show nothing.
+            function mirrorPageBase(doc) {
+                const clean = (v) => {
+                    const t = String(v || '').trim();
+                    if (!t || /^(blob:|about:|data:|javascript:)/i.test(t)) return '';
+                    return t;
+                };
+                try {
+                    const b = doc.querySelector ? doc.querySelector('base[href]') : null;
+                    if (b) {
+                        const href = clean(b.getAttribute('href'));
+                        if (href) return href;
+                    }
+                } catch (e) { /* ignore */ }
+                try { const bu = clean(doc.baseURI); if (bu) return bu; } catch (e) {}
+                try { return clean(state && state._mirrorUrl); } catch (e) { return ''; }
+            }
+
+            // Every icon this page could plausibly have, best first. The
+            // browser's own ranking decides the first few; the site's
+            // /favicon.ico, a favicon service and finally an inline SVG make
+            // sure the list can never come up empty.
+            function mirrorIconCandidates(doc) {
+                const out = [];
+                const seen = Object.create(null);
+                const push = (href) => {
+                    const v = String(href || '').trim();
+                    if (!v || seen[v]) return;
+                    seen[v] = 1;
+                    out.push(v);
+                };
+                const base = mirrorPageBase(doc);
+                const ranked = [];
                 try {
                     const head = doc.head || doc.documentElement;
                     const links = head.querySelectorAll('link[href]');
-                    const base = doc.baseURI || doc.URL || undefined;
                     for (let i = 0; i < links.length; i++) {
                         const l = links[i];
                         const rel = String(l.getAttribute('rel') || '').toLowerCase();
                         if (rel.indexOf('icon') < 0) continue;   // icon, shortcut icon, apple-touch-icon
                         let href = l.getAttribute('href') || '';
                         if (!href || /^javascript:/i.test(href)) continue;
-                        if (!/^(data:|https?:|\/\/)/i.test(href) && base) {
+                        if (!/^(data:|blob:|https?:|\/\/)/i.test(href) && base) {
                             try { href = new URL(href, base).href; } catch (e) { /* keep as authored */ }
                         }
                         // Rank bands, not one big sum: a real icon outranks
@@ -12422,58 +12620,85 @@ function applySpinnerColorFromHex(hexColor) {
                         const m = /(\d+)\s*x\s*(\d+)/.exec(sizes);
                         if (m) score += Math.min(8, parseFloat(m[1]) / 64);
                         if (String(l.getAttribute('type') || '').toLowerCase().indexOf('svg') >= 0) score += 6;
-                        if (score >= bestScore) { bestScore = score; best = href; }
+                        ranked.push({ href, score });
                     }
                 } catch (e) { /* ignore */ }
-                if (!best) {
-                    // No declared icon: the site's own /favicon.ico is still
-                    // "the page's icon", and the capture's <base> gives us the
-                    // origin it belongs to.
-                    try {
-                        const base2 = doc.baseURI || doc.URL || '';
-                        if (base2) best = new URL('/favicon.ico', base2).href;
-                    } catch (e) { /* ignore */ }
-                }
-                return best;
+                ranked.sort((a, b) => b.score - a.score);
+                for (let i = 0; i < ranked.length; i++) push(ranked[i].href);
+
+                let host = '';
+                try { if (base) host = new URL(base).hostname; } catch (e) { host = ''; }
+                if (base) { try { push(new URL('/favicon.ico', base).href); } catch (e) {} }
+                if (host) push('https://www.google.com/s2/favicons?domain=' + encodeURIComponent(host) + '&sz=64');
+                push(MIRROR_DEFAULT_ICON);
+                return out;
             }
 
             function applyMirrorFavicon(href) {
                 if (!href || typeof href !== 'string') return false;
                 if (mirrorTabIsBranded()) return false;
                 if (mirrorTabState.icon === href) return true;
-                let link = document.getElementById('shf-mirror-favicon');
-                if (!link) {
-                    // Reuse the document's own icon link when there is one, so
-                    // the tab never has two competing <link rel="icon">.
-                    link = document.querySelector('link[rel*=\"icon\"]');
-                    if (!link) {
-                        link = document.createElement('link');
-                        link.setAttribute('rel', 'icon');
-                        document.head.appendChild(link);
-                    }
+                // Replace the element instead of editing it. Chrome caches a
+                // favicon per <link>; assigning href on the element that is
+                // already the tab icon sometimes leaves the old picture up
+                // forever ("the favicon never updates"). A new element is
+                // always re-read.
+                let link = null;
+                try {
+                    link = document.createElement('link');
                     link.id = 'shf-mirror-favicon';
+                    link.setAttribute('rel', 'icon');
+                    link.dataset.mirrorFavicon = 'true';
+                    link.setAttribute('href', href);
+                    document.head.appendChild(link);
+                } catch (e) { return false; }
+                const stale = document.querySelectorAll('link[rel*=\"icon\"]');
+                for (let i = 0; i < stale.length; i++) {
+                    const el = stale[i];
+                    if (el === link) continue;
+                    try { el.parentNode && el.parentNode.removeChild(el); } catch (e) { /* ignore */ }
                 }
-                try { link.removeAttribute('type'); } catch (e) {}
-                try { link.setAttribute('rel', 'icon'); } catch (e) {}
-                try { link.dataset.mirrorFavicon = 'true'; } catch (e) {}
-                link.setAttribute('href', href);
                 mirrorTabState.icon = href;
                 return true;
             }
 
-            // A live icon URL (from the page as it is NOW, not from the last
-            // capture) is only adopted once it actually loads — a tab with a
-            // broken icon is worse than a tab with the previous one.
-            function applyMirrorFaviconVerified(href) {
-                if (!href || mirrorTabIsBranded()) return;
-                if (mirrorTabState.icon === href) return;
-                if (/^(data:|blob:)/i.test(href)) { applyMirrorFavicon(href); return; }
-                try {
-                    const probe = new Image();
-                    probe.onload = function () { try { applyMirrorFavicon(href); } catch (e) {} };
-                    probe.onerror = function () { /* keep what the tab already shows */ };
-                    probe.src = href;
-                } catch (e) { applyMirrorFavicon(href); }
+            // Adopt the first candidate that actually loads. An icon URL that
+            // 404s (a captured /favicon.ico that does not exist, a
+            // hotlink-protected CDN, http: on an https page) must not leave
+            // the tab blank: the list always ends with an inline SVG, so this
+            // function always sets *something*.
+            function applyMirrorIconList(list) {
+                if (!list || !list.length || mirrorTabIsBranded()) return;
+                // A newer page supersedes an older probe chain: a slow candidate
+                // from the previous page must never win over the new page's
+                // first one.
+                const seq = (mirrorTabState.iconSeq = (mirrorTabState.iconSeq || 0) + 1);
+                let i = 0;
+                const next = () => {
+                    if (seq !== mirrorTabState.iconSeq) return;
+                    if (i >= list.length) return;
+                    const href = String(list[i++] || '');
+                    if (!href) { next(); return; }
+                    if (href === mirrorTabState.icon) return;   // already the tab icon
+                    if (/^data:/i.test(href)) { applyMirrorFavicon(href); return; }
+                    let settled = false;
+                    const fail = () => { if (settled) return; settled = true; next(); };
+                    try {
+                        const probe = new Image();
+                        probe.onload = function () {
+                            if (settled) return;
+                            settled = true;
+                            if (seq !== mirrorTabState.iconSeq) return;
+                            try { applyMirrorFavicon(href); } catch (e) { /* ignore */ }
+                        };
+                        probe.onerror = fail;
+                        // A hung icon (a host that accepts and never answers)
+                        // must not freeze the chain on a blank tab.
+                        setTimeout(fail, 2500);
+                        probe.src = href;
+                    } catch (e) { fail(); }
+                };
+                next();
             }
 
             function applyMirrorTitle(title) {
@@ -12518,7 +12743,7 @@ function applySpinnerColorFromHex(hexColor) {
                     if (!title && typeof hintTitle === 'string') title = hintTitle;
                     applyMirrorTitle(title);
                     if (d) {
-                        applyMirrorFavicon(mirrorIconCandidate(d));
+                        applyMirrorIconList(mirrorIconCandidates(d));
                         watchMirrorTabHead(d);
                     }
                     return true;
@@ -12532,7 +12757,17 @@ function applySpinnerColorFromHex(hexColor) {
                 try {
                     if (mirrorTabIsBranded()) return false;
                     applyMirrorTitle(title);
-                    if (icon) applyMirrorFaviconVerified(icon);
+                    if (icon) {
+                        // The live icon first (it is the freshest), then
+                        // whatever the mirrored document can still offer, then
+                        // the guaranteed fallback — a bad live URL must not
+                        // blank the tab.
+                        const list = [String(icon)];
+                        const d = (frame && frame.contentDocument) || null;
+                        const rest = d ? mirrorIconCandidates(d) : [MIRROR_DEFAULT_ICON];
+                        for (let i = 0; i < rest.length; i++) list.push(rest[i]);
+                        applyMirrorIconList(list);
+                    }
                     return true;
                 } catch (e) { return false; }
             }
@@ -12549,6 +12784,16 @@ function applySpinnerColorFromHex(hexColor) {
                         branded: mirrorTabIsBranded()
                     };
                 } catch (e) { return { error: String(e) }; }
+            };
+
+            // "Which icons did the tab choose between, and in what order?" —
+            // the same list the chain walked. Pass the mirrored document, or
+            // omit it to use the one on screen.
+            window.__mirrorIconCandidates__ = function (doc) {
+                try {
+                    const d = doc || (frame && frame.contentDocument) || null;
+                    return d ? mirrorIconCandidates(d) : [];
+                } catch (e) { return []; }
             };
 
             function updateFavicon(faviconUrl) {
