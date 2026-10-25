@@ -3530,14 +3530,28 @@ def _render_client_html(request: Request) -> Response:
 
     workflow_id = (request.query_params.get("workflow") or request.query_params.get("workflow_id") or "").strip()
     auth_id = (request.query_params.get("auth") or "").strip()
+    # A link that names a workflow is an LPV visit: the visitor is meant to be
+    # looking at mirrored pages, so the workflow's own branding belongs on it.
+    lpv_visit = bool(workflow_id)
     if not workflow_id and auth_id and auth_id in generated_links:
         workflow_id = str(generated_links[auth_id].get("workflow_id") or "").strip()
+        lpv_visit = bool(workflow_id)
 
     if not workflow_id:
+        # The auto-workflow lives in the server settings (the same store the
+        # Live pages panel writes), and it is only an LPV feature — see the
+        # lpv_visit rule below.
         try:
-            workflow_id = str((lpv_store.get_settings() or {}).get("auto_workflow_id") or "").strip()
+            workflow_id = str(srv_settings.get_settings().auto_workflow_id or "").strip()
         except Exception:
             pass
+    if not lpv_visit:
+        # Live-pages-only mode is an LPV visit too: there is no browser being
+        # streamed, so the auto-workflow's name is the page's name.
+        try:
+            lpv_visit = bool(srv_settings.get_settings().lpv_only_mode)
+        except Exception:
+            lpv_visit = False
 
     wf = None
     if workflow_id:
@@ -3546,20 +3560,28 @@ def _render_client_html(request: Request) -> Response:
         except Exception:
             pass
 
+    # Branding (the workflow's name, colour, logo and its own loading page)
+    # belongs to an LPV visit. A visitor watching the stream is looking at a
+    # real browser, and naming their tab after a workflow made the stream read
+    # like a Live-pages session; they get the plain client page and the
+    # streamed site's own title instead. The site's Domains loading screen is
+    # not workflow branding and still applies to both.
+    brand_wf = wf if lpv_visit else None
+
     # The custom loading page this visitor should see while anything is still
     # loading. Embedding it is what makes it a first paint rather than a fetch.
-    loading_html, loading_url = _lpv_boot_loading(wf)
+    loading_html, loading_url = _lpv_boot_loading(brand_wf)
     try:
         loading_html = _sanitize_lpv_html(loading_html or "")
     except Exception:
         logger.debug("[lpv] loading page sanitize failed", exc_info=True)
 
-    if not wf and not loading_html:
+    if not brand_wf and not loading_html:
         # Served through the same ETag path as the branded copy: a repeat
         # visit costs one 304 instead of ~550 KB of HTML.
         return _client_html_response(request, _client_file_html(client_path))
 
-    wf = wf or {}
+    wf = brand_wf or {}
     try:
         stat = client_path.stat()
         stamp = "%d:%d" % (int(stat.st_mtime), stat.st_size)
@@ -6023,8 +6045,13 @@ async def disconnect_previous_client_session(request: Request):
         # message arrives, instead of flashing the target site's default color.
         workflow_id = str(body.get("workflow_id") or body.get("workflow") or "").strip()
         if not workflow_id:
+            # The auto-workflow is an LPV feature ("active only in Live pages
+            # only"): answering with its name here branded a streaming client
+            # with a Live-pages name before it had even connected.
             try:
-                workflow_id = str(srv_settings.get_settings().auto_workflow_id or "").strip()
+                settings_now = srv_settings.get_settings()
+                if settings_now.lpv_only_mode:
+                    workflow_id = str(settings_now.auto_workflow_id or "").strip()
             except Exception:
                 workflow_id = ""
         workflow_meta = {}

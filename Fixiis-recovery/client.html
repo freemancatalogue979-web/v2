@@ -398,7 +398,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-handover';
+        window.__MIRROR_BUILD = '2026-10-25-stream-clean';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -8481,7 +8481,12 @@ function applySpinnerColorFromHex(hexColor) {
                         // Direct resize without delays - positioning stays consistent
                         syncViewportState();
                         
-                        if (!lpvBootBranding.workflowName) {
+                        // The streamed page owns the tab title unless an LPV
+                        // page is actually on screen. A workflow's Live-pages
+                        // name must never hide the site being streamed — that
+                        // is what made the stream look like an LPV session.
+                        const lpvPageUp = !!(window.LPV && window.LPV.currentPage);
+                        if (!lpvBootBranding.workflowName || !lpvPageUp) {
                             const exactTitle = (message.title && typeof message.title === 'string') ? message.title.trim() : '';
                             const tabTitle = exactTitle || getSiteName(message.url || state.targetUrl || 'https://www.google.com');
                             document.title = tabTitle;

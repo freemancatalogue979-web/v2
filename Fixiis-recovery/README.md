@@ -663,6 +663,29 @@ Tests: `python3 tests/test_domain_spinner.py`, `node tests/test_domain_tab_ui.cj
 
 ---
 
+## Stream and Live pages are two different visitors
+
+`client.html` serves both, and they must not be dressed as each other.
+
+| Visit | What they get |
+|---|---|
+| **Stream** — `/client.html?auth=…&url=…`, a real browser streamed to them | the plain client page. No workflow name, no workflow colour/logo, no workflow loading page. The tab keeps the **streamed site's own title** (`metadata.title`, else the site's name), because that is what they are looking at |
+| **Live pages** — `/client.html?workflow=…` (or a link made by the panel), and every visitor while **Live pages only** is on | the workflow's branding: its name as the tab title, its colour and logo, its custom loading page |
+
+Why it matters: the auto-workflow ("Auto-play for new clients") is a Live-pages
+feature — it fires only in Live pages only mode, and there is no browser to
+watch there. It used to brand every visitor, including the streaming ones, and
+a branded client stops following the stream's title — so an operator watching a
+streamed site saw a Live-pages workflow name instead. Now the server only hands
+the workflow to an LPV visit (`?workflow=`, an LPV link, or Live pages only
+mode) and the client lets the stream keep its own title unless an LPV page is
+actually on screen.
+
+The site's **Domains** loading screen is not workflow branding: it still applies
+to both kinds of visit, because it belongs to the website, not to a flow.
+
+---
+
 ## The font: Space Grotesk everywhere
 
 `client.html` and both panels are set in **Space Grotesk**, so a mirrored page

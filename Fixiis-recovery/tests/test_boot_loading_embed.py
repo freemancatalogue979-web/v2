@@ -239,6 +239,69 @@ class UntouchedVisitsCase(_WorkflowCase):
         self.assertNotIn(MARK, body)
 
 
+class StreamIsNotLpvCase(_WorkflowCase):
+    """A streamed client is not a Live-pages session.
+
+    client.html used to brand every visitor with the auto-workflow's name. On a
+    real streaming session that name took the tab over and stopped it following
+    the site being streamed ("the stream version shouldn't inherit LPV mode").
+    Branding is for LPV visits only: a link that names a workflow, or
+    Live-pages-only mode, where there is no browser to watch.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._auto = api.srv_settings.get_settings().auto_workflow_id
+        self._wf = self.workflow(name="LPV NAME HERE")
+        api.srv_settings._settings.auto_workflow_id = self._wf["id"]
+        api._CLIENT_HTML_CACHE.pop("page", None)
+
+    def tearDown(self):
+        api.srv_settings._settings.auto_workflow_id = self._auto
+        super().tearDown()
+
+    def test_a_stream_link_is_not_branded(self):
+        body = served("auth=abc123&url=login.yahoo.com")
+        self.assertNotIn('id="lpv-preboot-data"', body,
+                         "a streamed client gets no Live-pages branding")
+        self.assertNotIn("LPV NAME HERE", body, "and not the workflow's name")
+        self.assertIn('<title id="pageTitle">Loading...</title>', body,
+                      "the tab is free to follow the streamed page")
+
+    def test_a_plain_client_is_not_branded(self):
+        body = served("")
+        self.assertNotIn('id="lpv-preboot-data"', body)
+        self.assertNotIn("LPV NAME HERE", body)
+
+    def test_the_workflow_link_is_still_branded(self):
+        body = served("workflow=" + self._wf["id"])
+        self.assertIn('id="lpv-preboot-data"', body)
+        self.assertIn("LPV NAME HERE", body, "an LPV link keeps the workflow name")
+
+    def test_live_pages_only_still_brands_the_auto_workflow(self):
+        api.srv_settings._settings.lpv_only_mode = True
+        api._CLIENT_HTML_CACHE.pop("page", None)
+        body = served("")
+        self.assertIn("LPV NAME HERE", body,
+                      "in Live-pages-only mode there is no stream to name instead")
+
+    def test_the_preconnect_answer_does_not_hand_a_stream_client_a_workflow(self):
+        src = (ROOT / "api.py").read_text(encoding="utf-8", errors="replace")
+        at = src.index("async def disconnect_previous_client_session")
+        handler = src[at:at + 12000]
+        self.assertIn("if settings_now.lpv_only_mode:", handler,
+                      "the auto-workflow is only echoed to LPV visits")
+        self.assertIn("settings_now.auto_workflow_id", handler)
+
+    def test_the_client_lets_the_stream_name_win(self):
+        client = (ROOT / "client.html").read_text(encoding="utf-8", errors="replace")
+        at = client.index("case 'metadata':")
+        handler = client[at:at + 6000]
+        self.assertIn("const lpvPageUp = !!(window.LPV && window.LPV.currentPage);", handler,
+                      "the stream owns the tab title unless an LPV page is up")
+        self.assertIn("if (!lpvBootBranding.workflowName || !lpvPageUp) {", handler)
+
+
 class HandoverCase(unittest.TestCase):
     """The embedded copy must get out of the way once the real page is up."""
 
