@@ -398,7 +398,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-domain-boot';
+        window.__MIRROR_BUILD = '2026-10-25-handover';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -7401,6 +7401,12 @@ function applySpinnerColorFromHex(hexColor) {
                 // not start a second download (see showPage).
                 _loadingPageId: '',
                 _loadingPageUrl: '',
+                // How many times the screen has moved on (a page committed,
+                // or the loading page dismissed). A loading page that is
+                // still downloading when this changes must NOT reveal itself
+                // afterwards — that is how a spinner ends up stuck on top of
+                // the page the visitor is supposed to be reading.
+                _navEpoch: 0,
                 _redirectLoaded: '',
                 _spinnerWanted: false,
 
@@ -7442,6 +7448,7 @@ function applySpinnerColorFromHex(hexColor) {
                 // is configured, so the built-in ring is used instead.
                 _showRedirect(show) {
                     if (!show) {
+                        this._navEpoch = (this._navEpoch || 0) + 1;
                         const f = this.redirectFrame;
                         if (f) f.classList.add('hidden');
                         return false;
@@ -7481,6 +7488,7 @@ function applySpinnerColorFromHex(hexColor) {
 
                     this._dropRedirectFrame();
                     const self = this;
+                    const epoch = this._navEpoch = (this._navEpoch || 0) + 1;
                     const frame = document.createElement('iframe');
                     frame.className = 'lpv-redirect-frame hidden';
                     frame.setAttribute('title', 'loading');
@@ -7528,7 +7536,18 @@ function applySpinnerColorFromHex(hexColor) {
                             }, { once: true });
                             frame.src = blobUrl;
                             self._redirectLoaded = url;
-                            frame.classList.remove('hidden');
+                            // The page may have landed (or the loader been
+                            // dismissed) while this was downloading. The
+                            // loading screen is a loading screen: once the
+                            // real thing is up, it must not come back.
+                            if (self._navEpoch === epoch) {
+                                frame.classList.remove('hidden');
+                            } else {
+                                dbg('[LPV] loading page finished after the page did; staying hidden', url);
+                                try { lpvDropBootLoading(); } catch (e) {}
+                                self._retireBootLoader();
+                                return;
+                            }
                             // Same page, now served by the runtime: hand over
                             // so only one copy is on screen.
                             try { lpvDropBootLoading(); } catch (e) {}
@@ -8093,8 +8112,11 @@ function applySpinnerColorFromHex(hexColor) {
                             if (_ls) _ls.style.display = 'none';
                         } catch (e) {}
                         // The pushed page is up: the embedded custom spinner
-                        // has done its job.
+                        // has done its job. Bumping the epoch also stops any
+                        // loading page that is still downloading from painting
+                        // itself over this one a moment later.
                         try { lpvDropBootLoading(); } catch (e) {}
+                        this._navEpoch = (this._navEpoch || 0) + 1;
 
                         this.currentPage = { id: pageId, name: pageName };
                         // Apply this page's click guard together with the

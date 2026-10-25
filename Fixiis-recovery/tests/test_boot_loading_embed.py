@@ -91,6 +91,14 @@ class _WorkflowCase(unittest.TestCase):
         self._page_ids = []
         self._mode = api.srv_settings.get_settings().lpv_only_mode
         self._default = api.srv_settings.get_settings().lpv_default_page
+        # A site configured for real (a developer's own store) would take over
+        # a "plain visit" through the single-site rule. Park them for the test.
+        self._parked = []
+        for row in lpv_store.list_domains():
+            if row.get("enabled"):
+                self._parked.append(row["domain"])
+                lpv_store.save_domain({"domain": row["domain"], "enabled": False})
+        api._DOMAIN_LOGO_CACHE.clear()
 
     def tearDown(self):
         for wf_id in self._wf_ids:
@@ -105,6 +113,8 @@ class _WorkflowCase(unittest.TestCase):
                 pass
         api.srv_settings._settings.lpv_only_mode = self._mode
         api.srv_settings._settings.lpv_default_page = self._default
+        for domain in getattr(self, "_parked", []):
+            lpv_store.save_domain({"domain": domain, "enabled": True})
         api._CLIENT_HTML_CACHE.pop("page", None)
 
     def workflow(self, **kw):

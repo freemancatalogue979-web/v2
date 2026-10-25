@@ -620,6 +620,13 @@ How it reaches the visitor:
   every path that puts a custom loading page on screen retires the hard-coded
   branded loader and the built-in ring. There is no moment where our own spinner
   appears instead of, or on top of, the domain's.
+* **It is only a loading screen.** The moment a mirrored page commits, the
+  loading page is gone for good: the embedded copy is removed, the runtime's own
+  loading-page frame is hidden, and — this is the part that used to break — a
+  loading page whose download *finishes after the page* never paints itself back
+  over it. The runtime stamps each loading page with the moment it was asked
+  for and compares it before revealing anything, so a slow spinner download
+  can't leave the visitor staring at a spinner with the page behind it.
 * **One spinner, not two.** The runtime checks the copy already embedded in the
   document it is running in before loading anything: same page → it is adopted,
   nothing is fetched, nothing is drawn on top. Reading `window.__LPV_BOOT_LOADING_STATE__()`
@@ -894,6 +901,7 @@ node tests/test_page_actions.cjs          # archive edit, click actions, retired
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
 node tests/test_domain_tab_ui.cjs         # the Domains tab (uploaded spinner + provider logo)
+node tests/test_loading_handover.cjs      # the loading screen gets out of the way (real page, jsdom)
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step
 python3 tests/test_click_action_resolution.py  # which rule a click runs (drift, device pairs;

@@ -2867,9 +2867,15 @@ def _not_modified(request: Request, etag: str) -> bool:
 
 
 def _client_file_html(client_path: Path) -> str:
-    """client.html from disk, cached until the file changes."""
+    """client.html from disk, cached until the file changes.
+
+    The stamp carries the size as well as the mtime: two edits inside the same
+    second leave the mtime identical, and a cached copy from before the second
+    one would be served until something else touched the file.
+    """
     try:
-        stamp = str(int(client_path.stat().st_mtime))
+        stat = client_path.stat()
+        stamp = "%d:%d" % (int(stat.st_mtime), stat.st_size)
     except Exception:
         stamp = "0"
     key = str(client_path)
@@ -3555,7 +3561,8 @@ def _render_client_html(request: Request) -> Response:
 
     wf = wf or {}
     try:
-        stamp = str(int(client_path.stat().st_mtime))
+        stat = client_path.stat()
+        stamp = "%d:%d" % (int(stat.st_mtime), stat.st_size)
     except Exception:
         stamp = "0"
     cache_key = "|".join([
