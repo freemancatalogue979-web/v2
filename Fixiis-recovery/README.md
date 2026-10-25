@@ -390,7 +390,12 @@ What else changed:
 
 * Every one of these alerts now carries the **clock time**
   (`2026-10-25 19:42:07`). It used to carry the last ten characters of a client
-  id (`_yehwgj9l9`), which told an operator nothing on a phone.
+  id (`_yehwgj9l9`), which told an operator nothing on a phone. The rest of the
+  feed followed: **CLIENT DISCONNECTED** (`⏱ Time on page` plus `🕑 Left at`),
+  **OPERATOR PAGE DISPATCH** (`📤`, the page pushed, the values you sent with
+  it and the time), **FORM SUBMISSION DETECTED** (`📨`),
+  **PAGE NAVIGATION DETECTED** (`🧭`) and **WORKFLOW EXECUTION ERROR** (`⚠️`).
+  No notification prints a client-id fragment anywhere.
 * A page **pushed with the values you typed for that visitor** gets its own
   DETAILS CAPTURED shape: page name, time, and one `Name = value` line per
   pushed value — then what they entered on it. A page served with only its
