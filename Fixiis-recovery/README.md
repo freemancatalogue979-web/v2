@@ -810,13 +810,15 @@ looks:
 | A fixed shell that hugs the top and spans the width, holding most of the page's text | lets it scroll — but only after everything else failed, so a page that can move is never restyled |
 | A fixed modal / cookie bar / sticky header (`role=dialog`, `aria-modal`, centred, narrow, or carrying little of the page) | left alone — making one of those scroll would be a new bug |
 | Still nothing, yet the body is taller than the frame | lets `html`/`body` take their natural height and scroll the document |
-| **Nothing moved despite all of the above** | the gesture itself is honoured: see *Free scrolling* below |
+| **Nothing moved despite all of the above** | nothing is applied by hand — the page is left to the browser, and only its CSS is corrected: see *Scrolling is the browser's* below |
 
 Details that matter:
 
-* **It retries when you try.** A wheel or a finger drag on a page that still
-  refuses to move re-runs the check (throttled to one pass per 1.5 s), which
-  also covers a page whose layout only becomes tall after its images load.
+* **It retries once you stop trying.** A wheel or a finger drag on a page that
+  still refuses to move schedules another check 350 ms after the gesture ends
+  (and only if the page still cannot move) — never during the scroll, where a
+  scan would compete with the browser for frames. That also covers a page whose
+  layout only becomes tall after its images load.
 * **The page reset stylesheet is the last rule in `<head>`.** It used to be
   injected first, so an author `html,body { overflow:hidden !important }` with
   the same specificity silently outranked it.
@@ -828,39 +830,45 @@ Details that matter:
 * A rescued element is tagged `data-scroll-rescued="1"`, so it is visible in
   devtools when a page misbehaves.
 
-### Free scrolling — the floor under the rescue
+### Scrolling is the browser's — nothing is intercepted
 
-The rules above guess which box *should* scroll. They can guess wrong (a shell
-the capture flattened, an author `!important`, a layout the page only built in
-script). So there is a second layer that does not guess at all:
+The rescue above is **CSS only**: it lets the browser scroll a box that the
+capture had left clipped. It never moves anything itself.
 
-* **Native scrolling always goes first and is never intercepted.** Every
-  listener is `passive`; nothing calls `preventDefault` on a scroll gesture.
-* One frame after a wheel / finger / arrow key, the client looks at what the
-  browser actually did. If the element under the pointer did not move **at
-  all**, the gesture is applied by hand (`scrollTop = …`). Assigning
-  `scrollTop` works on an `overflow:hidden` box, which is exactly the case that
-  feels like "the iframe is blocking me".
-* A page that scrolled natively is left untouched, so nothing ever moves twice.
-* Keys: arrows, Page Up/Down, Home/End, Space. Fields keep their own keys.
-* Bound to the same document as the rescue — the live mirror's frame, the
-  double-buffered frame and an LPV pushed page.
+That is a rule, not an implementation detail. An earlier version applied the
+gesture by hand when native scrolling "did not move" (read `scrollTop`, add the
+wheel delta, write it back). It made a page scroll — and it felt wrong: no
+acceleration, no momentum, no rubber-banding, stutter on every tick, and a fight
+whenever the browser and the client disagreed about which box should move. A
+mirrored page has to scroll exactly like the real one, so that layer is gone:
 
-An element moved this way is tagged `data-free-scroll="1"`; the binding itself
-is marked on `<html>` as `data-free-scroll="bound"`.
+* no `wheel`, `touch` or key handler cancels the browser's default — every one
+  of them is `passive`;
+* nothing is scrolled by hand; the only `scrollTop`/`scrollTo` writes left are
+  **scroll-position restores** after a patch or a body swap, and they are
+  skipped while the visitor is scrolling;
+* a rescued box chains its scroll to the page around it (no
+  `overscroll-behavior` clamp), so reaching the end of an inner panel is what
+  it is on the real site;
+* the retry for a page that still refuses to move runs **350 ms after the
+  gesture ends**, and only if the page still cannot move. A rescue pass is up to
+  600 `getComputedStyle` reads — running that inside a scroll is how a page ends
+  up dropping frames;
+* `-webkit-overflow-scrolling: touch` stays on the frames and on whatever is
+  rescued, because without it a finger drag has no momentum on an iPhone.
 
 With a mirrored page on screen, this answers "is scrolling wired up here?":
 
 ```js
 __MIRROR_SCROLL_STATE__()
-// { frame: true, freeScroll: true, rescued: 2, scrollable: true,
+// { frame: true, intercepted: false, rescued: 2, scrollable: true,
 //   height: 812, contentHeight: 4310 }
 ```
 
 `scrollable: false` with `contentHeight` barely above `height` means the page
 itself is short — nothing to scroll, and nothing wrong.
 
-Tests: `node tests/test_mirror_scroll.cjs` (69 checks).
+Tests: `node tests/test_mirror_scroll.cjs` (79 checks).
 
 ---
 

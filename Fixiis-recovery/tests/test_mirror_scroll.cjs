@@ -36,6 +36,10 @@ const end = source.indexOf('\n            }\n', endStart) + '\n            }\n'.
 const slice = source.slice(start, end);
 
 function makeContext(clock) {
+  // The gesture retry is deferred (that is the whole point: it must not run
+  // while the visitor is scrolling), so the sandbox owns the timers.
+  const timers = new Map();
+  let nextTimer = 1;
   const context = vm.createContext({
     console,
     String,
@@ -44,8 +48,16 @@ function makeContext(clock) {
     // The slice also defines the devtools probe on `window`; the sandbox needs
     // an object to hang it on.
     window: {},
+    setTimeout: (fn) => { const id = nextTimer++; timers.set(id, fn); return id; },
+    clearTimeout: (id) => { timers.delete(id); },
   });
   vm.runInContext(slice, context);
+  // Run whatever a deferred retry queued (the "gesture ended" moment).
+  context.__flushTimers = () => {
+    const pending = Array.from(timers.values());
+    timers.clear();
+    for (const fn of pending) { try { fn(); } catch (e) { /* ignore */ } }
+  };
   return context;
 }
 
@@ -200,8 +212,8 @@ function makeView(viewport, overrides) {
     'the clipping wrapper becomes a scroll container (important)');
   ok(shell._style['-webkit-overflow-scrolling'] === 'touch',
     'iOS momentum scrolling is enabled on the rescued wrapper');
-  ok(shell._style['overscroll-behavior'] === 'contain',
-    'the page does not chain its scroll to the shell around it');
+  ok(!shell._style['overscroll-behavior'],
+    'the rescued box chains its scroll naturally (no clamped overscroll)');
   ok(shell.getAttribute('data-scroll-rescued') === '1',
     'the rescued wrapper is marked so it can be recognised later');
   ok(doc.documentElement._style.overflow === 'auto',
@@ -385,17 +397,43 @@ function makeView(viewport, overrides) {
   doc.body.appendChild(shell);
 
   ctx.nudgeScrollRescue(doc, makeView(800));
-  ok(shell.getAttribute('data-scroll-rescued') === '1', 'the first nudge rescues the page');
+  ok(!shell.getAttribute('data-scroll-rescued'),
+    'nothing is touched while the visitor is still scrolling');
+
+  ctx.__flushTimers();
+  ok(shell.getAttribute('data-scroll-rescued') === '1',
+    'once the gesture is over, a page that still cannot move is rescued');
 
   const late = node('div', { clientHeight: 780, scrollHeight: 4000, attrs: { id: 'b' } });
   late._computed = { overflowY: 'hidden' };
   doc.body.appendChild(late);
   ctx.nudgeScrollRescue(doc, makeView(800));
-  ok(!late.getAttribute('data-scroll-rescued'), 'a nudge 0 ms later is throttled away');
+  ctx.__flushTimers();
+  ok(!late.getAttribute('data-scroll-rescued'), 'a retry 0 ms later is throttled away');
 
   clock.now += 1600;
   ctx.nudgeScrollRescue(doc, makeView(800));
-  ok(late.getAttribute('data-scroll-rescued') === '1', 'a nudge after the window runs again');
+  ctx.__flushTimers();
+  ok(late.getAttribute('data-scroll-rescued') === '1', 'a retry after the window runs again');
+}
+
+// ---------------------------------------------------------------------------
+// 8b. ...and a page that scrolls natively is never even looked at
+// ---------------------------------------------------------------------------
+{
+  const clock = { now: 9000 };
+  const ctx = makeContext(clock);
+  const doc = makeDoc({ viewport: 800, htmlScrollHeight: 4200 });
+  const shell = node('div', { clientHeight: 780, scrollHeight: 4000, attrs: { id: 'hero' } });
+  shell._computed = { overflowY: 'hidden', position: 'static' };
+  doc.body.appendChild(shell);
+
+  ctx.nudgeScrollRescue(doc, makeView(800));
+  ctx.__flushTimers();
+
+  ok(!shell.getAttribute('data-scroll-rescued'),
+    'a healthy page gets no rescue pass after a gesture either');
+  ok(!doc.getElementById('__shifix_scroll_rescue__'), 'and no last-resort stylesheet');
 }
 
 // ---------------------------------------------------------------------------
@@ -503,165 +541,73 @@ function makeView(viewport, overrides) {
 }
 
 // ---------------------------------------------------------------------------
-// 13. The guarantee: if the document does not move natively, a wheel still
-//     moves it — `overflow:hidden` boxes accept scrollTop.
+// 13. Scrolling is the browser's, not ours
 // ---------------------------------------------------------------------------
-function scrollDoc(opts = {}) {
-  const listeners = {};
-  const raf = [];
-  const doc = makeDoc({ viewport: opts.viewport || 800, htmlScrollHeight: 800 });
-  doc.addEventListener = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
-  doc._fire = (type, ev) => (listeners[type] || []).forEach((fn) => fn(ev));
-  doc._listeners = listeners;
-  const win = makeView(opts.viewport || 800);
-  win.requestAnimationFrame = (fn) => { raf.push(fn); return raf.length; };
-  doc._flush = () => { let n = 0; while (raf.length && n++ < 20) raf.shift()(); };
-  return { doc, win };
-}
-
+// "It scrolls, but it is not smooth." A client that applies the gesture itself
+// — scrollTop = scrollTop + deltaY after every wheel tick — fights the
+// browser: no acceleration, no momentum, no rubber-banding, and a page that
+// stutters while it is meant to be the real site. So the floor under the
+// rescue is not a second scroller, it is a promise: nothing is intercepted and
+// nothing is moved by hand.
 {
-  const ctx = makeContext();
-  const { doc, win } = scrollDoc();
-  doc.documentElement.clientHeight = 800;
-  doc.documentElement.scrollHeight = 4200;
-  doc.documentElement.setAttribute = doc.documentElement.setAttribute;
-  ctx.installFreeScroll(doc, win);
-
-  // Native scrolling does nothing (a captured page with `overflow:hidden`).
-  doc.documentElement.scrollTop = 0;
-  doc._fire('wheel', { deltaY: 240, deltaX: 0, target: doc.body, ctrlKey: false, metaKey: false });
-  doc._flush();
-
-  ok(doc.documentElement.scrollTop === 240,
-    'a wheel gesture moves a page the browser refused to scroll (got ' + doc.documentElement.scrollTop + ')');
-  ok(doc.documentElement.getAttribute('data-free-scroll') === '1',
-    'the element that moved is marked as free-scrolled');
+  ok(source.indexOf('installFreeScroll') === -1, 'no manual scroll layer is installed');
+  ok(source.indexOf('nudgeChain') === -1, 'a gesture is never applied by hand');
+  ok(source.indexOf('FREE_SCROLL_KEYS') === -1, 'keys are not translated into scrollTop writes');
+  ok(!/scrollTop\s*=/.test(source.slice(source.indexOf('function ensureMirrorScrolling'),
+      source.indexOf('function nudgeScrollRescue'))),
+    'the rescue never sets scrollTop (it only changes CSS)');
+  ok(!/\.scrollTop\s*=\s*[^=]/.test(source.slice(source.indexOf("d.addEventListener('wheel'"),
+      source.indexOf("d.addEventListener('wheel'") + 1500)),
+    'the wheel handler does not move the page itself');
+  ok(/\.scrollTop\s*=\s*part\.top/.test(source) || /\.scrollTop = /.test(source),
+    'scroll POSITIONS are still restored after a patch (that is not a gesture)');
+  ok((source.match(/data-free-scroll/g) || []).length === 0, 'no free-scroll markers are left behind');
 }
 
 // ---------------------------------------------------------------------------
-// 13b. Native scrolling is never doubled
+// 13b. The retry waits for the gesture to finish
 // ---------------------------------------------------------------------------
+// A rescue pass is up to 600 getComputedStyle reads. Doing that per wheel tick
+// drops frames; doing it 350 ms after the last tick costs nothing.
 {
-  const ctx = makeContext();
-  const { doc, win } = scrollDoc();
-  doc.documentElement.clientHeight = 800;
-  doc.documentElement.scrollHeight = 4200;
-  ctx.installFreeScroll(doc, win);
-
-  doc._fire('wheel', { deltaY: 240, target: doc.body });
-  // The browser did scroll it for real before the frame callbacks ran.
-  doc.documentElement.scrollTop = 240;
-  doc._flush();
-
-  ok(doc.documentElement.scrollTop === 240,
-    'a page that scrolls natively is not scrolled twice (got ' + doc.documentElement.scrollTop + ')');
+  const at = source.indexOf('function nudgeScrollRescue(doc, win) {');
+  ok(at > 0, 'the gesture retry exists');
+  const body = source.slice(at, source.indexOf('\n            }', at));
+  ok(/scrollRescueTimer = setTimeout/.test(body), 'the retry is deferred, never run inside the gesture');
+  ok(/\}, 350\);/.test(body), 'by a short idle delay');
+  ok(/if \(pageScrolls\(doc, win\)\) return;/.test(body),
+    'and it does nothing at all when the page already scrolls natively');
+  ok(/clearTimeout\(scrollRescueTimer\)/.test(body),
+    'a new gesture restarts the idle timer instead of stacking passes');
 }
 
 // ---------------------------------------------------------------------------
-// 13c. A finger drag does the same on a dead page
+// 13c. Nothing in the scroll path can preventDefault
 // ---------------------------------------------------------------------------
 {
-  const ctx = makeContext();
-  const { doc, win } = scrollDoc();
-  doc.documentElement.clientHeight = 800;
-  doc.documentElement.scrollHeight = 4200;
-  ctx.installFreeScroll(doc, win);
+  // The two listeners that ride along with a scroll gesture: the wheel that is
+  // forwarded to the server page, and the finger tracking that keeps a scroll
+  // position from being restored under the visitor's thumb. Both must be
+  // passive observers — a scroll handler that can cancel the browser is how a
+  // mirror stops scrolling like the real thing.
+  const listenerFrom = (startAt, label) => {
+    ok(startAt > 0, label + ' exists');
+    const from = source.lastIndexOf("d.addEventListener('", startAt);
+    const opts = source.indexOf('}, {', startAt);
+    const to = opts > startAt ? source.indexOf('});', opts) : source.indexOf('});', startAt);
+    ok(to > startAt, label + ' has listener options');
+    const chunk = source.slice(from, to + 3);
+    ok(/passive: true/.test(chunk), label + ' is passive');
+    ok(!/preventDefault/.test(chunk), label + ' never cancels the browser default');
+  };
+  listenerFrom(source.indexOf("subtype: 'wheel'"), 'the wheel listener');
+  listenerFrom(source.indexOf("addEventListener('touchmove'"), 'the touch listener');
 
-  doc._fire('touchstart', { touches: [{ clientY: 500, clientX: 100 }], target: doc.body });
-  doc._fire('touchmove', { touches: [{ clientY: 380, clientX: 100 }], target: doc.body });
-  doc._flush();
-
-  ok(doc.documentElement.scrollTop > 0,
-    'a drag moves a captured page on touch devices (got ' + doc.documentElement.scrollTop + ')');
-  const lifted = doc.documentElement.scrollTop;
-  doc._fire('touchend', {});
-  doc._fire('touchmove', { touches: [{ clientY: 100, clientX: 100 }], target: doc.body });
-  doc._flush();
-  ok(doc.documentElement.scrollTop === lifted, 'the gesture ends with the finger');
-}
-
-// ---------------------------------------------------------------------------
-// 13d. Keyboard: arrows / End move the page, typing does not
-// ---------------------------------------------------------------------------
-{
-  const ctx = makeContext();
-  const { doc, win } = scrollDoc();
-  doc.documentElement.clientHeight = 800;
-  doc.documentElement.scrollHeight = 4200;
-  ctx.installFreeScroll(doc, win);
-
-  let prevented = 0;
-  doc._fire('keydown', {
-    key: 'PageDown', target: doc.body, ctrlKey: false, metaKey: false, altKey: false,
-    preventDefault() { prevented++; },
-  });
-  ok(doc.documentElement.scrollTop > 300 && doc.documentElement.scrollTop <= 800,
-    'Page Down moves most of a screen (got ' + doc.documentElement.scrollTop + ')');
-  ok(prevented === 1, 'the key is consumed once the page has moved');
-
-  const input = node('input');
-  doc.body.appendChild(input);
-  const before = doc.documentElement.scrollTop;
-  doc._fire('keydown', {
-    key: 'PageDown', target: input, ctrlKey: false, metaKey: false, altKey: false,
-    preventDefault() { prevented++; },
-  });
-  ok(doc.documentElement.scrollTop === before, 'keys typed into a field never scroll the page');
-  ok(prevented === 1, 'and they are not consumed');
-}
-
-// ---------------------------------------------------------------------------
-// 13e. The gesture chains the way a browser chains: a panel that cannot move
-//      (or is already at its end) hands the movement to its parent.
-// ---------------------------------------------------------------------------
-{
-  const ctx = makeContext();
-  const { doc, win } = scrollDoc();
-  doc.documentElement.clientHeight = 800;
-  doc.documentElement.scrollHeight = 4200;
-  ctx.installFreeScroll(doc, win);
-
-  // An inner panel with nothing to scroll inside it.
-  const panel = node('div', { clientHeight: 400, scrollHeight: 400 });
-  panel._computed = { overflowY: 'hidden', position: 'static' };
-  doc.body.appendChild(panel);
-
-  doc._fire('wheel', { deltaY: 200, target: panel });
-  doc._flush();
-  ok(doc.documentElement.scrollTop === 200,
-    'a gesture on a panel that cannot scroll moves the page around it (got '
-      + doc.documentElement.scrollTop + ')');
-
-  // A panel already at its end.
-  const scroller = node('div', { clientHeight: 300, scrollHeight: 900, attrs: { id: 'list' } });
-  scroller.scrollTop = 600;   // scrollHeight - clientHeight: at the end
-  doc.body.appendChild(scroller);
-  const before = doc.documentElement.scrollTop;
-  doc._fire('wheel', { deltaY: 100, target: scroller });
-  doc._flush();
-  ok(scroller.scrollTop === 600, 'the finished panel does not move past its end');
-  ok(doc.documentElement.scrollTop === before + 100,
-    'the leftover movement goes to the page, not into the void (got '
-      + (doc.documentElement.scrollTop - before) + ')');
-}
-
-// ---------------------------------------------------------------------------
-// 14. Free scrolling is installed by every rescue pass, so a page that is
-//     already "scrollable" by CSS still gets the gesture fallback.
-// ---------------------------------------------------------------------------
-{
-  const ctx = makeContext();
-  const listeners = {};
-  const doc = makeDoc({ viewport: 800, htmlScrollHeight: 5000 });
-  doc.addEventListener = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
-  const win = makeView(800);
-
-  ctx.ensureMirrorScrolling(doc, win);
-
-  ok((listeners.wheel || []).length === 1, 'a healthy page still gets one wheel listener');
-  ok((listeners.touchstart || []).length === 1, 'and one touch listener');
-  ctx.ensureMirrorScrolling(doc, win);
-  ok((listeners.wheel || []).length === 1, 'repeat passes do not stack listeners');
+  // Keys are forwarded to the server page; they are never turned into scrolls.
+  const keyAt = source.indexOf("d.addEventListener('keydown'");
+  ok(keyAt > 0, 'the keyboard path exists');
+  ok(!/scrollTop/.test(source.slice(keyAt, keyAt + 2000)),
+    'a key is never translated into a scrollTop write');
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +618,7 @@ function scrollDoc(opts = {}) {
     'a devtools probe exists for "is scrolling wired up in this frame?"');
   const probe = source.slice(source.indexOf('window.__MIRROR_SCROLL_STATE__'),
     source.indexOf('window.__MIRROR_SCROLL_STATE__') + 1600);
-  ok(/freeScroll: !!doc\.__freeScrollBound/.test(probe), 'it reports whether the gesture layer is bound');
+  ok(/intercepted: false/.test(probe), 'it reports that nothing intercepts the gesture');
   ok(/data-scroll-rescued/.test(probe), 'it counts the rescued boxes');
   ok(/scrollable:/.test(probe), 'and whether the document can move at all');
 }

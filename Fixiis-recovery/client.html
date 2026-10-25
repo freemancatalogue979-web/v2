@@ -398,7 +398,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-tab-identity';
+        window.__MIRROR_BUILD = '2026-10-25-native-scroll';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -5393,8 +5393,11 @@ function applySpinnerColorFromHex(hexColor) {
             //   * a page that already scrolls is left completely alone, so
             //     ordinary captures keep their exact rendering.
             //
-            // It runs on every document commit, on the LPV push path, and again
-            // the moment the visitor tries to scroll and the page still refuses.
+            // It runs on every document commit and on the LPV push path, and
+            // again shortly after a gesture ends if the page still refuses.
+            // Scrolling itself is always the browser's: no wheel, finger or key
+            // is ever intercepted and no content is ever moved by hand, so a
+            // mirrored page scrolls exactly like the real one.
             const SCROLL_RESCUE_NODES = 600;
             let scrollRescueAt = 0;
 
@@ -5446,13 +5449,6 @@ function applySpinnerColorFromHex(hexColor) {
                         body.style.webkitOverflowScrolling = 'touch';
                     }
                 } catch (e) { /* ignore */ }
-
-                // Whatever the CSS says, the visitor must be able to move this
-                // document: nudge after a native scroll that went nowhere. It is
-                // passive, idempotent and only acts when nothing else moved, so
-                // it is bound before the early exit — a page that *looks*
-                // scrollable can still refuse to move.
-                try { installFreeScroll(doc, view); } catch (e) { /* ignore */ }
 
                 if (!force && pageScrolls(doc, view)) return true;
 
@@ -5549,7 +5545,10 @@ function applySpinnerColorFromHex(hexColor) {
                         try {
                             el.style.setProperty('overflow-y', 'auto', 'important');
                             el.style.setProperty('-webkit-overflow-scrolling', 'touch');
-                            el.style.setProperty('overscroll-behavior', 'contain');
+                            // Deliberately NOT `overscroll-behavior: contain`:
+                            // a rescued box should chain its scroll to the page
+                            // around it like any normal element. Clamping it
+                            // makes the page feel like it hits a wall.
                             el.setAttribute('data-scroll-rescued', '1');
                             n++;
                         } catch (e) { /* ignore */ }
@@ -5587,179 +5586,6 @@ function applySpinnerColorFromHex(hexColor) {
                 return rescued > 0 || ok;
             }
 
-            // -----------------------------------------------------------------
-            // Free scrolling — the guarantee under the rescue
-            // -----------------------------------------------------------------
-            // The rescue above guesses which boxes *should* scroll. This is the
-            // floor beneath it: whatever the page's CSS says, a wheel, a finger
-            // or an arrow key moves the mirrored page.
-            //
-            // Native scrolling always goes first and is never intercepted. The
-            // fallback only runs when the document did NOT move on its own —
-            // and `scrollTop` can be assigned on an `overflow:hidden` box, which
-            // is exactly the case that looks like "the iframe is blocking me".
-            const FREE_SCROLL_KEYS = {
-                ArrowDown: 0.12, ArrowUp: -0.12, PageDown: 0.9, PageUp: -0.9,
-                ' ': 0.9, Spacebar: 0.9, Home: -1e9, End: 1e9
-            };
-
-            function scrollTargetFor(doc, node) {
-                let el = (node && node.nodeType === 1) ? node : (doc.body || doc.documentElement);
-                while (el && el !== doc.documentElement) {
-                    try {
-                        if ((el.scrollHeight - el.clientHeight) > 4
-                            || (el.scrollWidth - el.clientWidth) > 4) return el;
-                    } catch (e) { /* ignore */ }
-                    el = el.parentElement;
-                }
-                return doc.scrollingElement || doc.documentElement;
-            }
-
-            function nudgeScroll(el, dx, dy) {
-                if (!el) return false;
-                let moved = false;
-                try {
-                    if (dy) {
-                        const max = (el.scrollHeight || 0) - (el.clientHeight || 0);
-                        if (max > 0) {
-                            const next = Math.max(0, Math.min(max, (el.scrollTop || 0) + dy));
-                            if (next !== el.scrollTop) { el.scrollTop = next; moved = true; }
-                        }
-                    }
-                    if (dx) {
-                        const maxX = (el.scrollWidth || 0) - (el.clientWidth || 0);
-                        if (maxX > 0) {
-                            const nextX = Math.max(0, Math.min(maxX, (el.scrollLeft || 0) + dx));
-                            if (nextX !== el.scrollLeft) { el.scrollLeft = nextX; moved = true; }
-                        }
-                    }
-                    if (moved) {
-                        try { el.setAttribute('data-free-scroll', '1'); } catch (e2) { /* ignore */ }
-                    }
-                } catch (e) { return false; }
-                return moved;
-            }
-
-            // Apply a gesture by hand, chaining up the tree the way a browser
-            // does: an inner panel that is already at its end must hand the
-            // rest of the movement to the box around it.
-            function nudgeChain(el, dx, dy, doc) {
-                let node = el;
-                let hops = 0;
-                while (node && hops < 8) {
-                    if (nudgeScroll(node, dx, dy)) return true;
-                    if (!node.parentElement || node === doc.documentElement) break;
-                    node = node.parentElement;
-                    hops++;
-                }
-                const root = doc.scrollingElement || doc.documentElement;
-                return root && root !== el ? nudgeScroll(root, dx, dy) : false;
-            }
-
-            // Run `fn` after the browser has had a chance to apply the native
-            // scroll for this gesture (two frames: one for the compositor, one
-            // for the layout we then measure).
-            function afterNativeScroll(win, fn) {
-                const raf = (win && win.requestAnimationFrame)
-                    ? function (f) { return win.requestAnimationFrame(f); }
-                    : function (f) { return setTimeout(f, 16); };
-                try { raf(function () { raf(fn); }); }
-                catch (e) { setTimeout(fn, 32); }
-            }
-
-            function installFreeScroll(doc, win) {
-                if (!doc || !doc.addEventListener || doc.__freeScrollBound) return false;
-                doc.__freeScrollBound = true;
-
-                // ---- wheel -------------------------------------------------
-                try {
-                    doc.addEventListener('wheel', function (ev) {
-                        // Ctrl+wheel is zoom, and a horizontal-only trackpad
-                        // flick still needs the horizontal branch.
-                        if (!ev || ev.ctrlKey || ev.metaKey) return;
-                        const dy = ev.deltaY || 0;
-                        const dx = ev.deltaX || 0;
-                        if (!dy && !dx) return;
-                        const el = scrollTargetFor(doc, ev.target);
-                        let top0 = 0, left0 = 0;
-                        try { top0 = el.scrollTop || 0; left0 = el.scrollLeft || 0; } catch (e) { return; }
-                        afterNativeScroll(win, function () {
-                            try {
-                                // Native first; only what native did NOT do is applied
-                                // by hand (chaining up, like a browser would).
-                                if (Math.abs((el.scrollTop || 0) - top0) < 1 && dy) nudgeChain(el, 0, dy, doc);
-                                if (Math.abs((el.scrollLeft || 0) - left0) < 1 && dx) nudgeChain(el, dx, 0, doc);
-                            } catch (e) { /* ignore */ }
-                        });
-                    }, { passive: true, capture: true });
-                } catch (e) { /* ignore */ }
-
-                // ---- finger -------------------------------------------------
-                let touchY = null, touchX = null, touchEl = null, touchTop = 0, touchLeft = 0;
-                try {
-                    doc.addEventListener('touchstart', function (ev) {
-                        const t = ev.touches && ev.touches[0];
-                        if (!t) return;
-                        touchY = t.clientY; touchX = t.clientX;
-                        touchEl = scrollTargetFor(doc, ev.target);
-                        try { touchTop = touchEl.scrollTop || 0; touchLeft = touchEl.scrollLeft || 0; } catch (e) {}
-                    }, { passive: true, capture: true });
-
-                    doc.addEventListener('touchmove', function (ev) {
-                        const t = ev.touches && ev.touches[0];
-                        if (!t || !touchEl) return;
-                        const dy = (touchY || 0) - t.clientY;
-                        const dx = (touchX || 0) - t.clientX;
-                        if (!dy && !dx) return;
-                        const el = touchEl;
-                        const baseTop = (el.scrollTop || 0) - touchTop;
-                        afterNativeScroll(win, function () {
-                            try {
-                                if (Math.abs((el.scrollTop || 0) - touchTop) < 1 && dy) nudgeChain(el, 0, dy, doc);
-                                if (Math.abs((el.scrollLeft || 0) - touchLeft) < 1 && dx) nudgeChain(el, dx, 0, doc);
-                            } catch (e) { /* ignore */ }
-                            void baseTop;
-                        });
-                    }, { passive: true, capture: true });
-
-                    doc.addEventListener('touchend', function () {
-                        touchEl = null; touchY = null; touchX = null;
-                    }, { passive: true, capture: true });
-                } catch (e) { /* ignore */ }
-
-                // ---- keyboard ----------------------------------------------
-                // Arrow keys, Page Up/Down, Home/End and Space move a mirrored
-                // page that has no browser behind it (Live pages). Fields keep
-                // their own keys: this only handles navigation.
-                try {
-                    doc.addEventListener('keydown', function (ev) {
-                        if (!ev || ev.ctrlKey || ev.metaKey || ev.altKey) return;
-                        const target = ev.target;
-                        if (target && target.closest
-                            && target.closest('input, textarea, select, [contenteditable="true"]')) return;
-                        const frac = FREE_SCROLL_KEYS[ev.key];
-                        if (frac === undefined) return;
-                        // Space activates a focused control; it only scrolls
-                        // when nothing interactive has the focus.
-                        if ((ev.key === ' ' || ev.key === 'Spacebar') && target && target.closest
-                            && target.closest('a, button, summary, label, [role="button"], [role="link"], [tabindex]')) return;
-                        const el = scrollTargetFor(doc, target);
-                        let step = frac;
-                        if (Math.abs(frac) < 1) {
-                            const view = (win && win.innerHeight) || el.clientHeight || 0;
-                            step = frac * view;
-                        }
-                        const moved = nudgeChain(el, 0, step, doc);
-                        if (moved) {
-                            try { ev.preventDefault(); } catch (e) { /* ignore */ }
-                        }
-                    }, false);
-                } catch (e) { /* ignore */ }
-
-                try { doc.documentElement.setAttribute('data-free-scroll', 'bound'); } catch (e) {}
-                return true;
-            }
-
             // Devtools one-liner for "is scrolling actually wired up on this
             // page?":  __MIRROR_SCROLL_STATE__()  in the console while a
             // mirrored page is on screen. Reports the frame that is up, whether
@@ -5775,12 +5601,15 @@ function applySpinnerColorFromHex(hexColor) {
                     }
                     const root = doc.scrollingElement || doc.documentElement;
                     const rescued = doc.querySelectorAll
-                        ? doc.querySelectorAll('[data-scroll-rescued], [data-free-scroll="1"]').length
+                        ? doc.querySelectorAll('[data-scroll-rescued]').length
                         : 0;
                     return {
                         frame: true,
                         src: doc.URL || '',
-                        freeScroll: !!doc.__freeScrollBound,
+                        // Scrolling is the browser's: nothing here intercepts a
+                        // wheel, a finger or a key, and nothing moves content
+                        // by hand. `intercepted: false` is the point.
+                        intercepted: false,
                         rescued: rescued,
                         scrollable: (root.scrollHeight || 0) > (root.clientHeight || 0),
                         height: root.clientHeight || 0,
@@ -5792,11 +5621,25 @@ function applySpinnerColorFromHex(hexColor) {
             // Called from the wheel / touch handlers: the visitor is trying to
             // scroll, so check again — throttled, because one gesture is a
             // stream of events rather than a single one.
+            // A page that still refuses to move gets another look — but only
+            // once the gesture is over. Running a rescue *during* a scroll
+            // means hundreds of getComputedStyle reads competing with the
+            // browser for the main thread, which is exactly what makes a page
+            // feel like it is scrolling through treacle. Nothing here ever
+            // moves content: it only gives a clipped box the CSS that lets the
+            // browser scroll it.
+            let scrollRescueTimer = null;
             function nudgeScrollRescue(doc, win) {
-                const now = Date.now();
-                if (now - scrollRescueAt < 1500) return;
-                scrollRescueAt = now;
-                try { ensureMirrorScrolling(doc, win); } catch (e) { /* ignore */ }
+                if (scrollRescueTimer) { clearTimeout(scrollRescueTimer); scrollRescueTimer = null; }
+                if (Date.now() - scrollRescueAt < 1500) return;
+                scrollRescueTimer = setTimeout(function () {
+                    scrollRescueTimer = null;
+                    scrollRescueAt = Date.now();
+                    // Native scrolling already works: there is nothing to fix,
+                    // and touching the page would only risk changing it.
+                    try { if (pageScrolls(doc, win)) return; } catch (e) { return; }
+                    try { ensureMirrorScrolling(doc, win); } catch (e) { /* ignore */ }
+                }, 350);
             }
 
             // -----------------------------------------------------------------
