@@ -620,6 +620,14 @@ How it reaches the visitor:
   every path that puts a custom loading page on screen retires the hard-coded
   branded loader and the built-in ring. There is no moment where our own spinner
   appears instead of, or on top of, the domain's.
+* **A page on screen is never covered again.** Two invariants, both enforced in
+  the runtime: a loading screen may only be visible while a transition is in
+  flight (or before the first page), and a spinner that outlives its purpose is
+  taken down by a watchdog (15 s). This closes the cases where a loader used to
+  stay in front of the page for good — a branding/boot message repeated after a
+  reconnect, a click whose target never arrived, a loading page that finished
+  downloading late. `window.__LPV_LOADERS_STATE__()` in the console says which
+  loader is still on screen, if one ever is.
 * **It is only a loading screen.** The moment a mirrored page commits, the
   loading page is gone for good: the embedded copy is removed, the runtime's own
   loading-page frame is hidden, and — this is the part that used to break — a

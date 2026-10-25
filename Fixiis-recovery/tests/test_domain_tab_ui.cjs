@@ -316,7 +316,7 @@ if (jsdom) {
 // ---------------------------------------------------------------------------
 {
   ok(/function lpvAdoptBootLoading\(url\)/.test(client), 'the client can adopt the embedded page');
-  ok(/_showRedirect\(show\) \{[\s\S]{0,1200}?lpvAdoptBootLoading\(url\)/.test(client),
+  ok(/_showRedirect\(show\) \{[\s\S]{0,4000}?lpvAdoptBootLoading\(url\)/.test(client),
     'the loading path checks it before fetching anything');
   ok(/_redirectAdopted = true/.test(client), 'and records that it did');
   ok(/spinner_url/.test(client) && /"spinner_url"/.test(api),

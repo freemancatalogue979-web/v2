@@ -398,7 +398,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-stream-clean';
+        window.__MIRROR_BUILD = '2026-10-25-loader-off';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -4207,6 +4207,37 @@ function hideTransitionOverlay() {
                     return { url: lpvBootLoadingUrl(), onScreen: lpvBootLoadingOnScreen() };
                 };
             } catch (e) {}
+            // "It is still stuck on the spinner" — which one? Every element that
+            // can cover the page, with what the browser says about it.
+            try {
+                window.__LPV_LOADERS_STATE__ = function () {
+                    const look = function (el) {
+                        if (!el) return null;
+                        let display = '', opacity = '';
+                        try {
+                            display = getComputedStyle(el).display;
+                            opacity = getComputedStyle(el).opacity;
+                        } catch (e) { /* ignore */ }
+                        return {
+                            display: display,
+                            opacity: opacity,
+                            hiddenClass: !!(el.classList && el.classList.contains('hidden')),
+                            out: !!(el.classList && el.classList.contains('lpv-boot-loading-out')),
+                        };
+                    };
+                    const page = (window.LPV && LPV.currentPage) ? LPV.currentPage : null;
+                    return {
+                        page: page,
+                        pageOnScreen: !!(window.LPV && LPV._pageIsOnScreen && LPV._pageIsOnScreen()),
+                        pageCommitted: !!(window.LPV && LPV._pageCommitted),
+                        spinnerWanted: !!(window.LPV && LPV._spinnerWanted),
+                        bootCopy: look(document.getElementById('lpvBootLoading')),
+                        brandedLoader: look(document.getElementById('loadingScreen')),
+                        ring: look(document.getElementById('lpv-spinner')),
+                        redirectFrame: look(document.querySelector('.lpv-redirect-frame')),
+                    };
+                };
+            } catch (e) {}
 
             // Clicks and submits on the embedded page are the same signal a
             // `redirect` workflow step waits for (lpv_spinner), so the boot
@@ -4247,6 +4278,20 @@ function hideTransitionOverlay() {
             }
 
             function lpvHoldLoadingScreen() {
+                // A mirrored page already on screen means there is nothing to
+                // wait for. This is the reconnect path: the socket comes back,
+                // the server repeats its branding (or the LPV-only boot), and
+                // the old code re-showed the loading screen over a page the
+                // visitor was reading — and nothing took it down again, because
+                // no further page was ever pushed.
+                try {
+                    if (window.LPV && (LPV._pageCommitted || (LPV.currentPage
+                        && typeof LPV._pageIsOnScreen === 'function'
+                        && LPV._pageIsOnScreen()))) {
+                        LPV._retireAllLoaders('page already on screen');
+                        return;
+                    }
+                } catch (e) { /* fall through to the normal hold */ }
                 // Keep the (optionally branded) boot loading screen up until
                 // the first LPV page is actually pushed — "don't stop until
                 // the page has been pushed" — instead of flashing a blank
@@ -7270,7 +7315,13 @@ function applySpinnerColorFromHex(hexColor) {
                         if (show && !_customUp) this.spinner.classList.remove('hidden');
                         else this.spinner.classList.add('hidden');
                     }
-                    if (!show) return;
+                    if (!show) {
+                        this._clearSpinnerGuard();
+                        return;
+                    }
+                    // Arm the watchdog only when there is already a page to
+                    // hand the screen back to (see _armSpinnerGuard).
+                    try { this._armSpinnerGuard(); } catch (e) { /* cosmetic */ }
 
                     // Tell the server the spinner just came on — but ONLY
                     // when a genuine USER ACTION caused it (button/link
@@ -7407,6 +7458,11 @@ function applySpinnerColorFromHex(hexColor) {
                 // afterwards — that is how a spinner ends up stuck on top of
                 // the page the visitor is supposed to be reading.
                 _navEpoch: 0,
+                // True from the moment a mirrored page is committed until the
+                // next page starts loading. While it is true and nothing is
+                // being waited for (_spinnerWanted false), no loading screen
+                // has any business being visible.
+                _pageCommitted: false,
                 _redirectLoaded: '',
                 _spinnerWanted: false,
 
@@ -7430,6 +7486,75 @@ function applySpinnerColorFromHex(hexColor) {
                     try {
                         if (this.spinner) this.spinner.classList.add('hidden');
                     } catch (e) { /* cosmetic */ }
+                },
+
+                // Is a mirrored page actually painted in the client right now?
+                // That — not "a page was pushed" — is what decides whether a
+                // loading screen still has a job to do.
+                _pageIsOnScreen() {
+                    try {
+                        if (!this.currentPage) return false;
+                        const frame = this.container
+                            && this.container.querySelector
+                            && this.container.querySelector('iframe[data-lpv-frame]');
+                        if (!frame) return false;
+                        // A frame the browser has not painted yet is not on
+                        // screen: its document is empty until load fires.
+                        const doc = frame.contentDocument;
+                        return !!(doc && doc.body && (doc.body.childElementCount || doc.body.textContent));
+                    } catch (e) {
+                        return false;
+                    }
+                },
+
+                // Everything that can cover the mirrored page, off in one go:
+                // the embedded boot copy, the branded loading screen, the
+                // runtime's own loading-page frame and the built-in ring.
+                // Called when the page paints, and by the watchdog below — a
+                // loading screen has never had a reason to outlive its page.
+                _retireAllLoaders(reason) {
+                    this._clearSpinnerGuard();
+                    // Retiring counts as the screen moving on, so a loading
+                    // page still downloading cannot reveal itself afterwards.
+                    this._navEpoch = (this._navEpoch || 0) + 1;
+                    try { lpvDropBootLoading(); } catch (e) { /* cosmetic */ }
+                    try { this._retireBootLoader(); } catch (e) { /* cosmetic */ }
+                    try {
+                        if (this.redirectFrame) this.redirectFrame.classList.add('hidden');
+                    } catch (e) { /* cosmetic */ }
+                    try {
+                        if (this.spinner) this.spinner.classList.add('hidden');
+                    } catch (e) { /* cosmetic */ }
+                    this._spinnerWanted = false;
+                    if (reason) dbg('[LPV] loaders retired:', reason);
+                },
+
+                // A spinner is an answer to "something is happening". When the
+                // thing it was waiting for never happens (a click whose target
+                // was deleted, a redirect step with nothing after it, a socket
+                // that dropped), it must not sit on the page forever.
+                _spinnerGuardMs: 15000,
+                _armSpinnerGuard() {
+                    this._clearSpinnerGuard();
+                    // First paint: there is no page to hand the screen back to.
+                    if (!this._pageCommitted && !this._pageIsOnScreen()) return;
+                    const self = this;
+                    const epoch = this._navEpoch;
+                    this._spinnerGuard = setTimeout(function () {
+                        self._spinnerGuard = null;
+                        try {
+                            if (!self._spinnerWanted) return;
+                            if (self._navEpoch !== epoch) return;   // the screen moved on
+                            if (!self._pageCommitted && !self._pageIsOnScreen()) return;
+                            self._retireAllLoaders('spinner outlived its purpose');
+                        } catch (e) { /* cosmetic */ }
+                    }, this._spinnerGuardMs);
+                },
+                _clearSpinnerGuard() {
+                    if (this._spinnerGuard) {
+                        try { clearTimeout(this._spinnerGuard); } catch (e) {}
+                        this._spinnerGuard = null;
+                    }
                 },
 
                 _dropRedirectFrame() {
@@ -7456,6 +7581,20 @@ function applySpinnerColorFromHex(hexColor) {
                     const url = (this.redirectUrl || '').trim();
                     if (!url) return false;
                     if (!this.overlay) return false;
+                    // Nothing to wait for: a mirrored page is on screen and no
+                    // transition is in flight. Revealing a loading page here is
+                    // exactly how one ended up on top of the page for good —
+                    // the server repeating its branding after a reconnect did
+                    // it, and nothing ever took it down because no further page
+                    // was pushed.
+                    if (this._pageCommitted && !this._spinnerWanted) {
+                        const idle = this.redirectFrame;
+                        if (idle) idle.classList.add('hidden');
+                        try { lpvDropBootLoading(); } catch (e) {}
+                        this._retireBootLoader();
+                        dbg('[LPV] page is up and nothing is loading: no spinner');
+                        return true;
+                    }
                     // The page is already painted by the browser: the server
                     // embedded it in this document, so it has been on screen
                     // since the first paint. Adopt it — loading the same page
@@ -7540,7 +7679,8 @@ function applySpinnerColorFromHex(hexColor) {
                             // dismissed) while this was downloading. The
                             // loading screen is a loading screen: once the
                             // real thing is up, it must not come back.
-                            if (self._navEpoch === epoch) {
+                            const stillWanted = !(self._pageCommitted && !self._spinnerWanted);
+                            if (self._navEpoch === epoch && stillWanted) {
                                 frame.classList.remove('hidden');
                             } else {
                                 dbg('[LPV] loading page finished after the page did; staying hidden', url);
@@ -7653,6 +7793,7 @@ function applySpinnerColorFromHex(hexColor) {
                 stop() {
                     if (!this.active) return;
                     this.active = false;
+                    this._pageCommitted = false;
                     // An unlocked guard after stop: nothing is on screen to
                     // gate, and the next push ships its own guard.
                     this.guard = normaliseGuard(null);
@@ -7714,6 +7855,9 @@ function applySpinnerColorFromHex(hexColor) {
                         const flushEv = new CustomEvent('lpv:nav', { detail: { reason: 'nav' } });
                         document.dispatchEvent(flushEv);
                     } catch (e) { /* best-effort */ }
+                    // A page load is in flight: from here until commit, a
+                    // loading screen is legitimate.
+                    this._pageCommitted = false;
                     this._showSpinner(true, 'page_load');
                     this._setBar('LPV loading ' + (pageName || pageId));
 
@@ -7807,6 +7951,11 @@ function applySpinnerColorFromHex(hexColor) {
                         frame.src = blobUrl;
                         frame.setAttribute('data-lpv-frame', 'true');
                         frame.addEventListener('load', () => {
+                            // The mirrored document is on screen: nothing may
+                            // still be covering it. (A branding message that
+                            // arrived between the push and this paint could
+                            // have put a loading screen back up.)
+                            try { this._retireAllLoaders('page painted'); } catch (e) {}
                             try {
                                 const innerDoc = frame.contentDocument || frame.contentWindow && frame.contentWindow.document;
                                 if (!innerDoc) return;
@@ -8132,6 +8281,7 @@ function applySpinnerColorFromHex(hexColor) {
                         this._paintGuard();
                         this._setBar('LPV ' + (pageName || pageId));
                         this._showSpinner(false);
+                        this._pageCommitted = true;
 
                         this._loadingPageId = '';
                         this._loadingPageUrl = '';

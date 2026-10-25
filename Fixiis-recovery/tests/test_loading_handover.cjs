@@ -52,7 +52,7 @@ for (const where of ['jsdom', path.join(process.cwd(), 'node_modules/jsdom'),
   ok(/const epoch = this\._navEpoch = \(this\._navEpoch \|\| 0\) \+ 1;/.test(showRedirect),
     'a loading page remembers which moment it belongs to');
 
-  ok(/if \(self\._navEpoch === epoch\) \{\s*frame\.classList\.remove\('hidden'\);/.test(showRedirect),
+  ok(/if \(self\._navEpoch === epoch && stillWanted\) \{\s*frame\.classList\.remove\('hidden'\);/.test(showRedirect),
     'and only reveals itself if nothing has moved on since');
 
   ok(/loading page finished after the page did; staying hidden/.test(showRedirect),
@@ -64,6 +64,24 @@ for (const where of ['jsdom', path.join(process.cwd(), 'node_modules/jsdom'),
 
   ok(/try \{ lpvDropBootLoading\(\); \} catch \(e\) \{\}/.test(commit.slice(0, 400)),
     'and the embedded copy is removed at the same moment');
+
+  ok(/_retireAllLoaders\(reason\) \{/.test(client),
+    'every loader can be retired in one go');
+  ok(/_retireAllLoaders\('page painted'\)/.test(client),
+    'a painted mirrored page retires them all, whatever else happened');
+  ok(/function lpvHoldLoadingScreen\(\) \{[\s\S]{0,900}?LPV\._pageIsOnScreen\(\)\) \{\s*LPV\._retireAllLoaders\('page already on screen'\);/ .test(client)
+     || /_retireAllLoaders\('page already on screen'\)/.test(client),
+    'a reconnect never holds a loading screen in front of a page that is up');
+  ok(/_spinnerGuardMs: \d+/.test(client) && /_armSpinnerGuard\(\) \{/.test(client),
+    'a spinner that never gets its page is taken down by a watchdog');
+  ok(/this\._pageCommitted && !this\._spinnerWanted/.test(client),
+    'a committed page with nothing in flight may not be covered');
+  ok(/_pageCommitted = true;/.test(client) && /_pageCommitted = false;/.test(client),
+    'the runtime tracks when a mirrored page is on screen');
+  ok(/stillWanted/.test(client),
+    'a loading page that lands after the page stays hidden');
+  ok(/window\.__LPV_LOADERS_STATE__ = function/.test(client),
+    'and the console can say which loader is still on screen');
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +198,46 @@ function runCase(label, { spinnerUrl, slowSpinner }) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 3. A page already on screen is never covered again
+// ---------------------------------------------------------------------------
+function withRuntime(fn) {
+  return new Promise((resolve, reject) => {
+    const errors = [];
+    const vc = new jsdom.VirtualConsole();
+    vc.on('jsdomError', (e) => {
+      const text = String(e.message || e);
+      if (text.indexOf('Could not parse CSS') >= 0) return;
+      errors.push(text.slice(0, 200));
+    });
+    class FakeWS {
+      constructor(url) { this.url = url; this.readyState = 1; FakeWS.last = this; setTimeout(() => this.onopen && this.onopen({}), 1); }
+      send() {}
+      close() { this.readyState = 3; }
+    }
+    FakeWS.OPEN = 1; FakeWS.CONNECTING = 0; FakeWS.CLOSED = 3;
+    const dom = new jsdom.JSDOM(documentWithBootCopy(), {
+      url: 'http://localhost/client.html', runScripts: 'dangerously',
+      pretendToBeVisual: true, virtualConsole: vc,
+      beforeParse(win) {
+        win.WebSocket = FakeWS;
+        win.fetch = (url) => {
+          const u = String(url && url.url ? url.url : url);
+          const reply = (text) => ({ ok: true, status: 200, url: u, text: async () => text, json: async () => ({}) });
+          if (u.indexOf('/spinner.html') >= 0) return Promise.resolve(reply(SPINNER_HTML));
+          return Promise.resolve(reply(PAGE_HTML));
+        };
+        win.URL.createObjectURL = () => 'blob:fake';
+        win.URL.revokeObjectURL = () => {};
+      },
+    });
+    setTimeout(() => {
+      try { fn(dom.window, FakeWS.last, errors); } catch (e) { reject(e); return; }
+      setTimeout(() => resolve({ win: dom.window, errors }), 600);
+    }, 900);
+  });
+}
+
 (async () => {
   if (!jsdom) {
     ok(true, 'jsdom not installed: the hand-over half is skipped');
@@ -208,6 +266,61 @@ function runCase(label, { spinnerUrl, slowSpinner }) {
       'a loading page that finishes after the page does NOT paint over it');
     ok(late.spinnerHidden === true, 'and the ring does not flash either');
   }
+
+    // (c) the socket comes back, the server repeats its branding, and a page
+    //     is already on screen: the loading screen must NOT come back
+    {
+      const { win, errors } = await withRuntime((win, sock) => {
+        win.LPV.start();
+        sock.onmessage({ data: JSON.stringify({
+          type: 'lpv_show_page', page_id: 'p1',
+          page_url: '/api/lpv/archive/p1/html', page_name: 'Pushed page',
+          guard: null, actions: [],
+          spinner_url: '/api/lpv/domains/mirror.example.test/spinner.html',
+        }) });
+        setTimeout(() => {
+          sock.onmessage({ data: JSON.stringify({
+            type: 'lpv_workflow_branding',
+            workflow_id: 'w', workflow_name: 'W', brand_logo_url: '', brand_color: '',
+            respect_redirect: true,
+            redirect_html_url: '/api/lpv/domains/other.example.test/spinner.html',
+            domain: 'other.example.test',
+          }) });
+        }, 400);
+      });
+      const doc = win.document;
+      const frame = doc.querySelector('.lpv-redirect-frame');
+      const ls = doc.getElementById('loadingScreen');
+      const ring = doc.getElementById('lpv-spinner');
+      ok(errors.length === 0, 'no runtime errors on a branded reconnect');
+      ok(!frame, 'a reconnect does not put a loading page in front of the page');
+      ok(!ls || ls.style.display === 'none', 'the branded loading screen stays away');
+      ok(ring && ring.classList.contains('hidden'), 'and so does the ring');
+    }
+
+    // (d) a click whose page never arrives must not leave the spinner up
+    {
+      const { win } = await withRuntime((win, sock) => {
+        win.LPV.start();
+        sock.onmessage({ data: JSON.stringify({
+          type: 'lpv_show_page', page_id: 'p1',
+          page_url: '/api/lpv/archive/p1/html', page_name: 'Pushed page',
+          guard: null, actions: [],
+          spinner_url: '/api/lpv/domains/mirror.example.test/spinner.html',
+        }) });
+        setTimeout(() => {
+          win.LPV._spinnerGuardMs = 120;
+          win.LPV._showSpinner(true, 'click');
+        }, 200);
+      });
+      const doc = win.document;
+      const frame = doc.querySelector('.lpv-redirect-frame');
+      const ring = doc.getElementById('lpv-spinner');
+      ok(ring && ring.classList.contains('hidden'),
+        'a spinner that outlives its purpose is taken down');
+      ok(!frame || frame.classList.contains('hidden'),
+        'and the loading page it was showing goes with it');
+    }
 
   console.log('loading hand-over: ' + checks + ' checks passed');
   // The page keeps websocket/reconnect timers alive; nothing else to do here.
