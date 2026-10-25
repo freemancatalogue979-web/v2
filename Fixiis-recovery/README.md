@@ -584,7 +584,7 @@ domain once and every page captured from it uses it.
 |---|---|
 | **Domain** | the site. A full link is fine — `https://www.chase.com/login` is stored as `chase.com` — and its subdomains match too (`login.chase.com` finds `chase.com`) |
 | **Name shown under the logo** | e.g. `Chase` |
-| **Provider logo** | the mark drawn on the loading screen. Leave it empty and the domain's own **favicon** is used — the best icon a capture of that site carries (apple-touch-icon, then `og:image`, then its icons), and `https://<domain>/favicon.ico` when there is no capture yet. "Use this page" fills it in from a capture |
+| **Provider logo** | the mark drawn on the loading screen. Leave it empty and the site's own **icon** is used: the best one a capture of that site carries (apple-touch-icon first — 180px stays sharp), else `https://<domain>/favicon.ico`. A 16px favicon is the floor, not the goal: paste the provider's real logo URL for a sharp mark. "Use this page" fills it in from a capture |
 | **Loading screen** | `Logo + progress bar` (built in), `My own HTML file` (upload or paste, up to 1 MB), or `An archived page` |
 | **Use this loading screen** | the on/off switch; off behaves as if the domain were not configured |
 
@@ -595,9 +595,22 @@ How it reaches the visitor:
   finds that page's domain, and embeds the resolved loading screen in
   `client.html` (same mechanism as a workflow's custom loading page). The
   browser paints it while parsing, so there is no blank moment and no fetch.
+* **A plain client link shows it too.** "Send the visitor the client link and
+  push a page by hand" names no landing page at all, so the server used to fall
+  back to our branded loader. Now, with exactly one site configured, its screen
+  is the only possible answer and is embedded; a second site means there is no
+  honest guess, and the right screen is swapped in the moment a page is pushed.
 * **Resolution order:** the workflow's own custom loading page → the site's
-  domain configuration → the LPV landing page (LPV-only mode) → the built-in
-  ring. The most specific choice wins.
+  domain configuration (from the landing page) → the only configured site →
+  the LPV landing page (LPV-only mode) → the built-in ring. The most specific
+  choice wins.
+* **A capture's first URL is not the site.** Google's markup opens with a
+  `gstatic.com` asset; banks open with their CDN. Believing the first URL made
+  the site's configuration unreachable *and* sent the logo to the favicon
+  fallback. So the host is read from `<base href>`, then `rel=canonical` /
+  `og:url`, then every absolute URL by how often it appears — and every host the
+  page mentions is tried against the configured domains, so an asset host in
+  front of the real one is harmless.
 * **The provider's logo replaces the workflow's "custom branding".** A visitor
   on a bank page sees the bank's mark, not a colour picked once for the whole
   flow — including in the branded ring and in each later push, which carries
@@ -614,8 +627,11 @@ How it reaches the visitor:
 * **The file picker is a normal button.** `Choose HTML file` opens the hidden
   file input and the chosen name (with its size) is shown next to it — no native
   file control in the middle of the panel.
-* **A missing icon never leaves a broken box**: the loading screen falls back to
-  the site's `favicon.ico`, and to a letter tile if even that is missing.
+* **A missing icon never leaves a broken box**: the mark walks
+  `apple-touch-icon.png` → `favicon.ico` → a letter tile, one step per failed
+  load, and the panel's list shows the mark the visitor actually gets (not an
+  empty box) with a **Preview** button that opens the exact document served at
+  `/api/lpv/domains/<domain>/spinner.html`.
 * **A finished loading screen gets out of the way** as soon as the real page
   paints (see *Fast start* above).
 
@@ -627,7 +643,7 @@ Over HTTP:
 
 | Call | Purpose |
 |---|---|
-| `GET /api/lpv/domains` | every configuration, without the (large) HTML |
+| `GET /api/lpv/domains` | every configuration, without the (large) HTML, plus `resolved_logo` and `spinner_url` |
 | `POST /api/lpv/domains` | `{domain, label, logo_url, spinner_html, spinner_page_id, enabled}` — omit a field to keep it |
 | `DELETE /api/lpv/domains/<domain>` | remove one |
 | `GET /api/lpv/domains/<domain>/spinner.html` | the resolved loading screen (404 when the domain is off) |

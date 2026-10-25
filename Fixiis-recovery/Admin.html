@@ -9182,8 +9182,9 @@
                                 <img id="dm-logo-preview" class="dm-logo-preview" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23bbb' d='M4 4h16v16H4z'/%3E%3C/svg%3E">
                                 <input type="text" id="dm-logo" placeholder="https://…/apple-touch-icon.png" autocomplete="off" spellcheck="false">
                             </div>
-                            <div class="dm-hint">Leave it empty and “Use this page” fills in the best icon the capture carries —
-                                a 180px touch icon stays sharp at the size the loading screen draws (a 16px favicon does not).</div>
+                            <div class="dm-hint">Empty? The visitor sees this site’s own icon: the best one a capture of it carries
+                                (a 180px touch icon), and <code>favicon.ico</code> when there is no capture yet. A 16px favicon
+                                is the floor, not the goal — paste the provider’s real logo URL for a sharp mark.</div>
                         </div>
 
                         <div class="dm-row">
@@ -10300,8 +10301,12 @@
                 const kind = domainsSpinnerKind(item);
                 const badge = kind === 'html' ? 'own html' : (kind === 'page' ? 'archived page' : 'logo');
                 const domain = String(item.domain || '');
-                const logo = (item.logo_url || '')
-                    ? '<img src="' + String(item.logo_url).replace(/"/g, '&quot;') + '" alt="">'
+                // What the visitor actually sees: the operator's logo, else the
+                // best icon a capture carries, else the site's favicon.
+                const markUrl = String(item.logo_url || item.resolved_logo || '');
+                const logo = markUrl
+                    ? '<img src="' + markUrl.replace(/"/g, '&quot;') + '" alt="" title="' +
+                        (item.logo_url ? 'your logo' : 'taken from the site') + '">'
                     : '<div style="width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,0.08);flex:none;"></div>';
                 return '' +
                     '<div class="dm-item' + (item.enabled ? '' : ' off') + '">' +
@@ -10314,6 +10319,7 @@
                             '<div class="dm-sub">' + String(item.label || 'no name').replace(/</g, '&lt;') + '</div>' +
                         '</div>' +
                         '<div class="dm-item-actions">' +
+                            '<button class="dm-btn" data-dm-preview="' + domain.replace(/"/g, '&quot;') + '">Preview</button>' +
                             '<button class="dm-btn" data-dm-edit="' + domain.replace(/"/g, '&quot;') + '">Edit</button>' +
                             '<button class="dm-btn" data-dm-toggle="' + domain.replace(/"/g, '&quot;') + '">' +
                                 (item.enabled ? 'Turn off' : 'Turn on') + '</button>' +
@@ -10322,6 +10328,9 @@
                     '</div>';
             }).join('');
 
+            list.querySelectorAll('[data-dm-preview]').forEach((btn) => {
+                btn.addEventListener('click', () => domainsPreview(btn.getAttribute('data-dm-preview')));
+            });
             list.querySelectorAll('[data-dm-edit]').forEach((btn) => {
                 btn.addEventListener('click', () => domainsEdit(btn.getAttribute('data-dm-edit')));
             });
@@ -10331,6 +10340,20 @@
             list.querySelectorAll('[data-dm-del]').forEach((btn) => {
                 btn.addEventListener('click', () => domainsDelete(btn.getAttribute('data-dm-del')));
             });
+        }
+
+        // Open the exact document the visitor is served. This is the quickest
+        // way to answer "is my loading screen really the one they see?".
+        function domainsPreview(domain) {
+            if (!domain) return;
+            const base = (typeof SERVER_API_BASE !== 'undefined' && SERVER_API_BASE) ? SERVER_API_BASE : '';
+            const url = base + '/api/lpv/domains/' + encodeURIComponent(domain) + '/spinner.html';
+            try {
+                const win = window.open(url, '_blank', 'noopener');
+                if (!win) dmNote('Let this page open pop-ups to preview ' + domain + '.', 'err');
+            } catch (e) {
+                dmNote('Could not open the preview: ' + (e && e.message ? e.message : e), 'err');
+            }
         }
 
         async function domainsLoad() {

@@ -15,8 +15,13 @@ Pinned here:
     host, subdomains included, most specific parent first;
   * a domain with a logo and no uploaded page gets a generated loading screen
     that draws the logo at its natural size (crisp, never scaled up);
-  * the boot resolution order: workflow page -> the site's page -> LPV landing
-    page -> nothing;
+  * the boot resolution order: workflow page -> the site's page -> the one
+    configured site (when the visit's landing page is not known yet) -> LPV
+    landing page -> nothing;
+  * a capture's host is not simply its first URL: <base>, rel=canonical and
+    og:url are believed first, then URLs by how often they appear — so a
+    gstatic/akamai asset at the top of the markup cannot stop a site's own
+    loading screen from being found;
   * `/api/lpv/domains/<domain>/spinner.html` serves it, 404 when it is off;
   * page -> domain and page -> logo candidates come from the capture itself
     (apple-touch-icon before a 16px favicon);
@@ -90,12 +95,21 @@ class _StoreMixin:
     def setUp(self):
         self.pages = []
         self.domains = []
+        # A domain configured for real (the developer's own store) must not
+        # change what these tests see: "no site configured" has to mean none.
+        self._parked = []
+        for row in lpv_store.list_domains():
+            if row.get("enabled"):
+                self._parked.append(row["domain"])
+                lpv_store.save_domain({"domain": row["domain"], "enabled": False})
 
     def tearDown(self):
         for pid in self.pages:
             lpv_store.delete_page(pid)
         for domain in self.domains:
             lpv_store.delete_domain(domain)
+        for domain in getattr(self, "_parked", []):
+            lpv_store.save_domain({"domain": domain, "enabled": True})
 
     def page(self, name="Page", html=PAGE_HTML):
         page = lpv_store.save_page(name=name, html=html)
@@ -253,6 +267,16 @@ class BootLoadingCase(_StoreMixin, unittest.TestCase):
         self.assertIn('id="dm-initial"', html, "and ends on a letter tile")
         self.assertIn(">E<", html, "the letter is the name's first letter")
 
+    def test_the_icon_falls_back_from_a_touch_icon_to_a_favicon(self):
+        # A bigger icon that is not really there must degrade gracefully, and
+        # in the right order: touch icon (usually 180px) before a 16px favicon.
+        cfg = {"domain": "example-provider.com", "label": "Example"}
+        html = api._brand_spinner_html(cfg)
+        self.assertIn('var q=["https://example-provider.com/apple-touch-icon.png", '
+                      '"https://example-provider.com/favicon.ico"]', html)
+        self.assertIn("q[i-1]", html, "the queue is walked one entry per error")
+        self.assertIn("dm-initial", html, "and ends on the letter tile")
+
     def test_a_logo_only_domain_gets_a_generated_screen(self):
         page = self.page()
         self.domain(
@@ -310,6 +334,93 @@ class BootLoadingCase(_StoreMixin, unittest.TestCase):
             self.assertIn("landing", served(""))
         finally:
             srv_settings.get_settings().lpv_default_page = original
+
+
+CDN_FIRST_HTML = """<!doctype html><html><head>
+<script src="https://cdn.example-assets.net/app.js"></script>
+<link rel="canonical" href="https://www.example-provider.com/">
+<link rel="apple-touch-icon" href="https://www.example-provider.com/touch-180.png">
+</head><body><a href="https://www.example-provider.com/signin">Sign in</a></body></html>"""
+
+MANY_PROVIDER_URLS_HTML = """<!doctype html><html><head>
+<script src="https://cdn.example-assets.net/app.js"></script>
+<link rel="apple-touch-icon" href="https://www.example-provider.com/touch-180.png">
+</head><body>
+<img src="https://www.example-provider.com/logo.png">
+<a href="https://www.example-provider.com/one">1</a>
+<a href="https://www.example-provider.com/two">2</a>
+</body></html>"""
+
+
+class CdnHostCase(_StoreMixin, unittest.TestCase):
+    """A capture's first URL is often an asset host, not the site itself."""
+
+    def test_the_declared_address_beats_a_leading_cdn_url(self):
+        page = self.page(html=CDN_FIRST_HTML)
+        self.assertEqual(api._page_domain(page["id"]), "www.example-provider.com")
+
+    def test_the_most_mentioned_host_wins_without_a_canonical(self):
+        page = self.page(html=MANY_PROVIDER_URLS_HTML)
+        self.assertEqual(api._page_domain(page["id"]), "www.example-provider.com")
+
+    def test_every_host_the_page_mentions_is_a_candidate(self):
+        page = self.page(html=MANY_PROVIDER_URLS_HTML)
+        hosts = api._page_hosts(page["id"])
+        self.assertIn("cdn.example-assets.net", hosts)
+        self.assertEqual(hosts[0], "www.example-provider.com")
+
+    def test_the_config_is_found_behind_a_cdn_host(self):
+        page = self.page(html=MANY_PROVIDER_URLS_HTML)
+        self.domain(domain="example-provider.com", spinner_html=SPINNER_HTML)
+        self.assertEqual(
+            api._domain_spinner_url_for_page(page["id"]),
+            "/api/lpv/domains/example-provider.com/spinner.html",
+        )
+
+    def test_the_capture_still_supplies_the_logo(self):
+        self.page(html=CDN_FIRST_HTML)
+        self.domain(domain="example-provider.com", label="Example")
+        api._DOMAIN_LOGO_CACHE.clear()
+        self.assertEqual(
+            api._domain_logo(lpv_store.get_domain("example-provider.com")),
+            "https://www.example-provider.com/touch-180.png",
+        )
+
+
+class PlainVisitCase(_StoreMixin, unittest.TestCase):
+    """client.html opened before any page is known.
+
+    This is the "send the visitor the client link and push a page by hand"
+    path: there is no workflow and no landing page, so the server used to fall
+    back to its own branded loader even though the site had a screen.
+    """
+
+    def test_a_plain_visit_shows_the_only_configured_site(self):
+        self.domain(domain="example-provider.com", label="Example",
+                    spinner_html=SPINNER_HTML)
+        body = served("")
+        self.assertIn('<div id="lpvBootLoading"', body)
+        self.assertIn('data-lpv-url="/api/lpv/domains/example-provider.com/spinner.html"', body)
+        self.assertIn("#0b1020", embedded_html(body)[:6000])
+
+    def test_two_sites_do_not_guess(self):
+        self.domain(domain="example-provider.com", spinner_html=SPINNER_HTML)
+        self.domain(domain="example-bank.net",
+                    spinner_html="<html><body id=\"bank\">bank</body></html>")
+        body = served("")
+        self.assertNotIn('<div id="lpvBootLoading"', body)
+
+    def test_a_switched_off_site_does_not_take_a_plain_visit(self):
+        self.domain(domain="example-provider.com", spinner_html=SPINNER_HTML,
+                    enabled=False)
+        self.assertNotIn('<div id="lpvBootLoading"', served(""))
+
+    def test_a_site_with_only_a_logo_still_gets_a_screen(self):
+        self.domain(domain="example-provider.com", label="Example")  # logo only
+        # It still gets a generated screen: the mark is the site's own icon.
+        html = embedded_html(served(""))[:6000]
+        self.assertTrue(html, "a configured site always has something to show")
+        self.assertIn("example-provider.com", html)
 
 
 class SpinnerEndpointCase(_StoreMixin, unittest.TestCase):

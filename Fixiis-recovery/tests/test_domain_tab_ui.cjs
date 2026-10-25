@@ -72,6 +72,10 @@ for (const where of ['jsdom', path.join(process.cwd(), 'node_modules/jsdom'),
     'and it says what it does');
   ok(/id="dm-html-filename"/.test(tab), 'the chosen file name has its own line');
   ok(/No file chosen/.test(tab), 'which starts empty');
+  ok(/data-dm-preview=/.test(admin) && /function domainsPreview\(domain\)/.test(admin),
+    'the list can preview the exact document a visitor is served');
+  ok(/item\.logo_url \|\| item\.resolved_logo/.test(admin),
+    'the list shows the resolved mark, not an empty box');
   ok(/on\('dm-html-pick', 'click',[\s\S]{0,160}?input\.click\(\)/.test(admin),
     'the button opens the hidden input');
   ok(/el\.classList\.toggle\('has-file'/.test(admin),
@@ -178,7 +182,11 @@ if (jsdom) {
     'GET /api/lpv/domains/<domain>/spinner.html');
   ok(/@app\.get\("\/api\/lpv\/pages\/\{page_id\}\/logo"\)/.test(api),
     'GET /api/lpv/pages/<id>/logo');
-  ok(/return \{"domains": lpv_store\.list_domains\(\)\}/.test(api), 'the list returns {domains: [...]}');
+  ok(/return \{"domains": out\}/.test(api) && /rows = lpv_store\.list_domains\(\)/.test(api),
+    'the list returns {domains: [...]}');
+  ok(/item\["resolved_logo"\] = _domain_logo\(cfg\)/.test(api),
+    'each row says which mark the visitor will actually see');
+  ok(/item\["spinner_url"\]/.test(api), 'and where its loading screen is served from');
   ok(/out\["has_spinner_html"\]/.test(api) && /out\["spinner_html"\] = ""/.test(api),
     'saving never echoes a megabyte of HTML back');
 }

