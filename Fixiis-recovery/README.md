@@ -736,7 +736,7 @@ to both kinds of visit, because it belongs to the website, not to a flow.
 
 ---
 
-### Crisp at every scale (the stream is rendered at 2× by default)
+### Crisp at every scale (the stream renders at the operator's DPR)
 
 The streamed view used to be pinned to a device scale factor of `1.0`: a
 1920×1080 viewport became a 1920×1080 surface, so on a laptop or phone whose
@@ -744,13 +744,24 @@ screen runs at 2× or 3× every glyph, border and avatar was upscaled by the
 browser and looked soft. The surface is now rendered at **viewport × DPR** and
 scaled down for display, which is what makes it crisp.
 
+**Which DPR?** The DPR of the screen looking at it. A frame is displayed at CSS
+size, so a 2× panel needs a 2× surface to be crisp and a 1× panel gains nothing
+from one. The **PCM** view therefore renders at the operator's own
+`window.devicePixelRatio` — the panel sends it as `view_scale` on connect and
+whenever the screen scale changes (zoom, or dragging the window to another
+monitor), and the session re-asserts `Emulation.setDeviceMetricsOverride` and
+restarts its screencast so the very next frame is already at the new scale. The
+rest of the panel-driven streams (Display, Access) and the streamed visitor use
+`CONFIG.stream_dpr`.
+
 | Where | What happens |
 |---|---|
-| `CONFIG.stream_dpr` (default **2.0**, clamped 1.0–3.0, env `STREAM_DPR`) | one number, read everywhere — no path may pick its own |
+| `CONFIG.stream_dpr` (default **2.0**, clamped 1.0–3.0, env `STREAM_DPR`) | the server default: read by every path that has no operator screen to ask (Display, Access, streamed sessions) |
+| the PCM operator's screen | `window.devicePixelRatio` (clamped 1–3 by `config.clamp_dpr`) via `{"type":"view_scale","dpr":…}`; `0.5 → 1`, `4 → 3`, junk → the server default. A rescale restarts the cast instead of waiting for a relaunch |
 | the browser launch | `--force-device-scale-factor=<DPR>` on the direct-Chrome path, `device_scale_factor` on the Playwright persistent-context path, and the same in the SeleniumBase backend (`launch_for_pcm`, `launch_for_access`) |
 | the screencast | frames are requested at `css_width × DPR` by `css_height × DPR`, and the start message carries `css_width`, `css_height`, `dpr` so the panel knows the frame space |
 | the panel | the canvas is displayed at CSS size (`payload.frame = true` for the operator canvases); the admin screen-cast requests the same scaled surface |
-| input | a click or point is divided by the DPR on the way back in (`pcm_manager._pt`, `access_manager.point`, `session._px`), so a click at (400, 300) still lands at (400, 300) |
+| input | a click or point is divided by the DPR the frames were encoded at (`pcm_manager._pt`, `access_manager.point`, `session._px`), so a click at (400, 300) still lands at (400, 300) |
 
 Wheel, keys and scroll sync are never converted — they are not coordinates.
 `config.frame_to_css(v, dpr)` is the one conversion (`v / dpr`, junk → `0.0`,
@@ -783,6 +794,17 @@ has arrived) and after a commit (`mirrorIconCandidates`, after the page's own
 declared icons and the server's stored icon). The client sends its domain and
 gets a picture; the resolution happens on the server, where the request is not
 cross-site and cannot be hotlink-blocked.
+
+**The panels use it too.** `Admin.html` and `mini-admin.html` show, in their own
+browser tab, the icon of the site the **selected client is on** — the same
+picture `client.html` shows for that site, from the same endpoint. `client.html`
+keeps the site's icon only until the page's own icon arrives (it has the
+captured page); the panels have no captured page, so the site's icon is their
+answer, and it goes back to the panel's own mark when nothing is selected. Every
+domain logo in the panel — archive and profile cards, the recorded-domain grid,
+the domain modal — resolves through `siteIconApiUrl()` as well, so a list never
+shows someone else's idea of a site's mark. The Admin tab icon used to be a
+`google.com/s2/favicons?domain=tlsa.gg` URL hard-coded in the file: gone.
 
 ## The tab is the page (streamed visits)
 
@@ -908,9 +930,9 @@ Tests: `node tests/test_tab_identity.cjs` (137 checks — the tab block, the ico
 chain, the visit-flag classifier and the capture-page observer all run for
 real), and `PYTHONPATH=. python tests/test_site_icon.py` +
 `tests/test_site_icon_api.py` for the server-side resolution and the
-`/api/site/icon` endpoint (73 checks: only a public host is ever fetched, only
-an image is ever served, the answer is cached, and a machine that cannot verify
-certificates still gets icons).
+`/api/site/icon` endpoint (92 checks: only a public host is ever fetched, only
+an image is ever served, the answer is cached, a machine that cannot verify
+certificates still gets icons, and the panels' tab and logos resolve through it).
 
 ---
 
@@ -1369,7 +1391,7 @@ python3 tests/test_boot_loading_embed.py  # the custom spinner is in the served 
 python3 tests/test_domain_spinner.py   # per-domain loading screens + logo (needs fastapi)
 python3 tests/test_site_icon.py        # the icon the server has for a site reaches the tab
 python3 tests/test_site_icon_api.py    # /api/site/icon: the domain answers for its icon
-python3 tests/test_stream_scale.py     # viewport × DPR on every launch path (needs config)
+python3 tests/test_stream_scale.py     # viewport × DPR; the PCM operator's own DPR (77 checks)
 python3 tests/test_logging_quiet.py    # quiet client, throttled per-event warnings
 ```
 

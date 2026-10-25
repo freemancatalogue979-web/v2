@@ -473,6 +473,24 @@ def stream_dpr() -> float:
     return min(3.0, max(1.0, value))
 
 
+def clamp_dpr(value, default: float = None) -> float:
+    """Clamp a device pixel ratio to the range we render at (1.0 - 3.0).
+
+    The render scale of a live view is the scale of the SCREEN LOOKING AT IT:
+    an operator on a 2x screen needs a 2x surface, an operator on a 1x screen
+    needs 1x (any more is bandwidth for pixels nobody can see). Junk falls back
+    to the server default.
+    """
+    fallback = stream_dpr() if default is None else float(default)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = fallback
+    if number != number or number <= 0 or number == float("inf"):
+        number = fallback          # NaN / junk / an unusable value
+    return round(min(3.0, max(1.0, number)), 3)
+
+
 def frame_to_css(value, dpr: float = None) -> float:
     """Convert a screencast-frame coordinate (CSS x DPR) back to CSS px.
 

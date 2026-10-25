@@ -9984,6 +9984,17 @@ async def pcm_websocket_endpoint(websocket: WebSocket):
                             await _pcm.handle_input(data)
                         except Exception as e:
                             logger.debug(f"[PCM WS] input {mtype}: {e}")
+                    elif mtype in ("view_scale", "set_dpr"):
+                        # The render scale is the DPR of the screen the
+                        # operator is using (window.devicePixelRatio), not a
+                        # server guess: the frame is shown at CSS size, so a
+                        # 2x monitor needs a 2x surface to be crisp and a 1x
+                        # monitor gains nothing from one.
+                        try:
+                            dpr = await _pcm.set_view_scale(data.get("dpr"))
+                            await websocket.send_json({"type": "view_scale", "dpr": dpr})
+                        except Exception as e:
+                            logger.debug(f"[PCM WS] view_scale: {e}")
                     elif mtype == "get_info":
                         try:
                             await websocket.send_json({"type": "pcm_info", "url": getattr(_pcm, '_current_url', ''), "mode": getattr(_pcm, '_mode', 'desktop')})

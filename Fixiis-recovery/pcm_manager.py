@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set, List
 
 from log_utils import throttled
-from config import stream_dpr, frame_to_css
+from config import stream_dpr, clamp_dpr, frame_to_css
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +210,23 @@ class PCMManager:
         # Playwright PCM gets its own Xvfb, separate from session/Access
         # displays. SeleniumBase PCM owns its display in sb_backend instead.
         self._private_xvfb = _PCMPrivateXvfb()
+        # The render scale is the DPR of the SCREEN the operator is using
+        # (their `window.devicePixelRatio`), not a server guess: the frame is
+        # displayed at the CSS size, so a 2x monitor needs a 2x surface to be
+        # crisp and a 1x monitor gains nothing from one. The panel sends it on
+        # connect (`view_scale`) and again if the monitor/resolution changes.
+        self._op_dpr: Optional[float] = None
+
+    def operator_dpr(self) -> float:
+        """Render scale for this operator's screen (1.0 - 3.0).
+
+        Falls back to the server default until the panel has told us, so a
+        session started by the watchdog or a test still renders at a sane
+        scale.
+        """
+        if self._op_dpr is None:
+            return stream_dpr()
+        return clamp_dpr(self._op_dpr, stream_dpr())
 
     async def _get_browser_manager(self):
         if self._browser_manager is not None:
@@ -515,9 +532,9 @@ class PCMManager:
                 # 500 is still under every mobile media-query breakpoint
                 # that matters for captures (>480 layouts stay phone-like).
                 # Render scale: the operator panel shows the frame at CSS
-                # size, so the surface is rendered at CSS x DPR (stream_dpr)
-                # or text comes out soft (see config.stream_dpr).
-                _dpr = stream_dpr()
+                # size, so the surface is rendered at CSS x DPR — the DPR of
+                # the screen the operator is using.
+                _dpr = self.operator_dpr()
                 if self._mode == "mobile":
                     viewport = {"width": 500, "height": 687, "pixelRatio": _dpr}
                     is_mobile = True
@@ -527,7 +544,7 @@ class PCMManager:
                     is_mobile = False
                     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
 
-                pixel_ratio = viewport.get("pixelRatio", stream_dpr())
+                pixel_ratio = viewport.get("pixelRatio", self.operator_dpr())
                 # Use PCM isolated ids so profile is data/pcm_profile not per user
                 target = url or self._current_url
                 if not target.startswith("http"):
@@ -803,6 +820,62 @@ class PCMManager:
             self._ensure_watchdog_locked()
             return res
 
+    def _mode_size(self) -> tuple:
+        """CSS viewport size the current mode renders at."""
+        if self._mode == "mobile":
+            return 500, 687
+        return 1280, 800
+
+    async def set_view_scale(self, raw: Any) -> float:
+        """Render the surface at the DPR of the operator's own screen.
+
+        The live view is displayed at the CSS size, so the frame has to be
+        encoded on the operator's pixel grid: 2x on a retina panel (crisp),
+        1x on a 1080p panel (no wasted bandwidth). The panel sends
+        `window.devicePixelRatio` on connect and whenever it changes.
+
+        A running session is rescaled in place: the emulated device scale
+        factor is re-asserted and the screencast is restarted with the new
+        frame budget, so the very next frame is already at the new scale.
+        """
+        dpr = clamp_dpr(raw, stream_dpr())
+        previous = self._op_dpr
+        self._op_dpr = dpr
+        if previous is not None and abs(previous - dpr) < 0.01:
+            return dpr
+        logger.debug(f"[PCM] operator DPR {previous} -> {dpr}")
+        async with self._lock:
+            if not _is_page_alive(self._page):
+                # Nothing rendered yet: the launch (and the first cast) will
+                # use the new scale.
+                return dpr
+            try:
+                if self._cdp is None:
+                    ctx = getattr(self._page, "context", None)
+                    if ctx and hasattr(ctx, "new_cdp_session"):
+                        self._cdp = await ctx.new_cdp_session(self._page)
+                if self._cdp:
+                    css_w, css_h = self._mode_size()
+                    await self._cdp.send("Emulation.setDeviceMetricsOverride", {
+                        "width": int(css_w), "height": int(css_h),
+                        "deviceScaleFactor": dpr,
+                        "mobile": (self._mode == "mobile"),
+                    })
+            except Exception as e:
+                logger.debug(f"[PCM] view scale metrics: {e}")
+            if self._screencast_running:
+                try:
+                    await self._stop_screencast_locked()
+                    await self._start_screencast_locked()
+                except Exception as e:
+                    logger.debug(f"[PCM] view scale recast: {e}")
+            try:
+                await self._notify_subs_locked({"type": "view_scale", "dpr": dpr})
+            except Exception:
+                pass
+            self._ensure_watchdog_locked()
+        return dpr
+
     async def handle_input(self, data: Dict[str, Any]):
         """Handle input events forwarded from PCM WS (click, mousemove, wheel, key)."""
         kind = ""
@@ -844,7 +917,7 @@ class PCMManager:
         # mark those payloads with frame=true; keyboard and wheel deltas
         # are already CSS-space and are left alone.
         _frame_space = bool(data.get("frame"))
-        _dpr = stream_dpr()
+        _dpr = self.operator_dpr()
 
         def _pt(value):
             number = _num(value, 0.0)
@@ -1178,7 +1251,7 @@ class PCMManager:
                     try:
                         await self._cdp.send("Emulation.setDeviceMetricsOverride", {
                             'width': int(mcw), 'height': int(mch),
-                            'deviceScaleFactor': stream_dpr(),
+                            'deviceScaleFactor': self.operator_dpr(),
                             'mobile': (self._mode == 'mobile')})
                         await self._cdp.send("Emulation.setTouchEmulationEnabled",
                                              {'enabled': True, 'maxTouchPoints': 5})
@@ -1203,11 +1276,12 @@ class PCMManager:
             except Exception as e:
                 logger.debug(f"[PCM] layout probe unavailable: {e}")
 
-            # Frame budget = CSS viewport x DPR. Chrome renders the surface
-            # at deviceScaleFactor and never upscales a screencast frame, so
-            # asking for the CSS size alone is what made every live view
-            # soft once the panel scaled it up.
-            _dpr = stream_dpr()
+            # Frame budget = CSS viewport x the OPERATOR's DPR. Chrome renders
+            # the surface at deviceScaleFactor and never upscales a screencast
+            # frame, so asking for the CSS size alone is what made every live
+            # view soft once the panel scaled it up — and asking for more than
+            # the operator's screen can show is just bandwidth.
+            _dpr = self.operator_dpr()
             css_w = max(640, min(int(mcw), 1920))
             css_h = max(360, min(int(mch), 2600))
             w = int(round(css_w * _dpr))

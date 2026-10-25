@@ -373,4 +373,57 @@ finally:
     api._icon_http_get = real_http_get
     api._ICON_TLS_STATE["verify"] = True
 
+# ---------------------------------------------------------------------------
+# 9. The panels show the same icon: their tab follows the client's page
+# ---------------------------------------------------------------------------
+# "mini admin, admin, client html use that browser favicon — the one client.html
+# currently has; client.html uses that one only until it changes to the page's
+# own." client.html resolves the SITE's icon through /api/site/icon and keeps it
+# until the page's own icon arrives. The panels have no captured page, so the
+# site's icon is their answer — for the tab and for every domain logo.
+admin_src = (Path(__file__).resolve().parent.parent / "Admin.html").read_text(encoding="utf-8")
+mini_src = (Path(__file__).resolve().parent.parent / "mini-admin.html").read_text(encoding="utf-8")
+
+ok("google.com/s2/favicons" not in admin_src,
+   "Admin.html asks no third-party favicon service")
+ok("google.com/s2/favicons" not in mini_src,
+   "mini-admin.html asks no third-party favicon service")
+ok('<link rel="icon" href="/favicon.svg"' in admin_src,
+   "the panel's own icon is its own file")
+ok('<link rel="icon" href="/favicon.svg"' in mini_src,
+   "and so is the phone panel's")
+
+ok("function siteIconApiUrl(value)" in admin_src,
+   "Admin resolves a site's icon through our API")
+ok("'/api/site/icon?domain=' + encodeURIComponent(host)" in admin_src,
+   "naming the domain the panel is looking at")
+ok("function panelSetTabIcon(url)" in admin_src, "the tab follows the client's page")
+ok(admin_src.count("panelSetTabIcon(") >= 4,
+   "hooked on select, on navigation and on deselect")
+ok("selectedMeta.current_url || selectedMeta.url" in admin_src,
+   "the selected client's page decides it")
+ok("info.current_url || info.url" in admin_src,
+   "a navigation is followed too")
+ok("probe.onerror = function () { if (seq === panelIconSeq) panelApplyTabIcon(PANEL_DEFAULT_ICON); }" in admin_src,
+   "a domain with no icon keeps the panel's own mark (never a hole in the tab)")
+ok("link.id = 'shf-panel-favicon'" in admin_src and
+   "document.head.appendChild(link)" in admin_src,
+   "and the swap uses a FRESH <link> (Chrome caches the picture per element)")
+ok(admin_src.count("siteIconApiUrl(") >= 5,
+   "every domain logo in the panel uses it (cards, recorded domains, modal)")
+
+ok("function miniSetTabIcon(url)" in mini_src,
+   "the phone panel's tab follows the visitor it opened")
+ok("apiUrl('/api/site/icon?domain=' + encodeURIComponent(host))" in mini_src,
+   "through the same API, against the configured backend")
+ok("miniSetTabIcon(c && (c.current_url || c.url))" in mini_src,
+   "the visitor's page decides it")
+ok("miniSetTabIcon('')" in mini_src, "and closing the drawer restores the panel's mark")
+ok("probe.onerror" in mini_src, "a domain with no icon keeps the panel's own mark")
+
+# client.html keeps the behaviour it already had: the site's icon until the
+# page's own icon arrives.
+ok("siteIconApiFor(" in client and "state.siteIcon" in client,
+   "client.html prefers the site's icon, then the page's own")
+
 print("site icon api: %d checks passed" % CHECKS)

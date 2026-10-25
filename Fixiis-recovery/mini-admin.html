@@ -3,7 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mini Admin — Visitors, Alerts &amp; Live pages</title>
+<title>Mini Admin</title>
+<!-- The panel's own icon is ours; it is replaced at runtime by the icon of
+     the site the visitor you opened is on (see miniSetTabIcon). No
+     third-party favicon service. -->
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" id="shf-panel-favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
@@ -1070,6 +1074,66 @@ function wsBase(){
 function apiPath(path){ return (path && path.startsWith('/')) ? path : '/' + (path || ''); }
 function apiUrl(path){ return apiBase() + apiPath(path); }
 function backendReady(){ return !!SERVER_URL; }
+
+/* The phone panel's tab shows the icon of the site the visitor you opened is
+   on — the same picture client.html shows for that site, resolved by our own
+   API (`/api/site/icon?domain=…`, which fetches the domain's own icon and
+   serves it from our origin). client.html keeps that icon only until the
+   page's own icon arrives; the panel has no captured page, so the site's icon
+   is the answer. A domain with no icon 404s, so the candidate is probed first
+   and the panel's own mark stays if there is nothing to show. */
+const MINI_DEFAULT_ICON = (() => {
+  try {
+    const l = document.querySelector('link[rel*="icon"]');
+    const href = l && l.getAttribute('href');
+    if(href) return href;
+  } catch(e) {}
+  return '/favicon.svg';
+})();
+let miniIconHref = '';
+let miniIconSeq = 0;
+
+function miniHostOf(value){
+  try {
+    const raw = String(value || '').trim();
+    if(!raw || raw === '-' || raw === '--') return '';
+    if(/^(about|data|blob|javascript):/i.test(raw)) return '';
+    return new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : 'https://' + raw).hostname || '';
+  } catch(e) { return ''; }
+}
+
+function miniApplyTabIcon(href){
+  try {
+    if(href === miniIconHref) return;
+    miniIconHref = href;
+    const link = document.createElement('link');
+    link.id = 'shf-panel-favicon';
+    link.setAttribute('rel', 'icon');
+    if(/\.svg(?:[?#]|$)/i.test(href)) link.setAttribute('type', 'image/svg+xml');
+    link.setAttribute('href', href);
+    const stale = document.querySelectorAll('link[rel*="icon"]');
+    for(let i = 0; i < stale.length; i++){
+      try { stale[i].parentNode && stale[i].parentNode.removeChild(stale[i]); } catch(e) {}
+    }
+    document.head.appendChild(link);
+  } catch(e) { /* keep whatever the tab had */ }
+}
+
+function miniSetTabIcon(url){
+  const seq = ++miniIconSeq;
+  const host = miniHostOf(url);
+  if(!host){ miniApplyTabIcon(MINI_DEFAULT_ICON); return MINI_DEFAULT_ICON; }
+  const href = apiUrl('/api/site/icon?domain=' + encodeURIComponent(host));
+  if(href === miniIconHref) return href;
+  try {
+    const probe = new Image();
+    probe.onload = () => { if(seq === miniIconSeq) miniApplyTabIcon(href); };
+    probe.onerror = () => { if(seq === miniIconSeq) miniApplyTabIcon(MINI_DEFAULT_ICON); };
+    probe.src = href;
+  } catch(e) { miniApplyTabIcon(MINI_DEFAULT_ICON); }
+  return href;
+}
+window.__PANEL_TAB_ICON__ = () => miniIconHref;
 
 /* ============================================================
    LINK BASE  — which address generated links point at
@@ -2582,6 +2646,8 @@ function openDrawer(cid, opts={}){
     return;
   }
 
+  // The tab is the page: show the icon of the site this visitor is on.
+  try { miniSetTabIcon(c && (c.current_url || c.url)); } catch(e) {}
   $('#drAvatar').textContent = initials(cid);
   $('#drAvatar').className = 'avatar' + (c && c.is_lpv ? ' lpv' : (c && c.is_sleeping) ? ' sleep' : '');
   $('#drTitle').textContent = shortId(cid, 18);
@@ -2831,11 +2897,14 @@ function paintAudit(){
 }
 function showDrawer(on){
   if(!on && S.drawerTimer){ clearInterval(S.drawerTimer); S.drawerTimer = null; }
+  // Drawer closed: back to the panel's own mark.
+  if(!on){ try { miniSetTabIcon(''); } catch(e) {} }
   $('#drawer').classList.toggle('on', on);
   $('#sheet').classList.remove('on');
   $('#scrim').classList.toggle('on', on);
 }
 function closeAllOverlays(){
+  try { miniSetTabIcon(''); } catch(e) {}
   S.selected = null;
   if(S.drawerTimer){ clearInterval(S.drawerTimer); S.drawerTimer = null; }
   $('#drawer').classList.remove('on');

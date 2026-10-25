@@ -6,7 +6,11 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="renderer" content="webkit">
     <title>Admin Panel</title>
-    <link rel="icon" href="https://www.google.com/s2/favicons?domain=tlsa.gg&sz=64" type="image/png">
+    <!-- The panel's own icon is ours, and it is replaced at runtime by the
+         icon of the site the selected client is on (see panelSetTabIcon).
+         No third-party favicon service: it was an external request on every
+         panel load and it answered with someone else's idea of the mark. -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" id="shf-panel-favicon">
     
     <!-- PCM Capture Modal — premium blurred overlay, top-centered with X -->
     <div id="pcm-modal-overlay" class="pcm-modal-overlay" aria-hidden="true">
@@ -10097,6 +10101,93 @@
             return SERVER_WS_BASE + normalizeServerPath(path);
         }
 
+        /* The panel's tab is the page too -----------------------------------
+           The browser tab of this dashboard shows the icon of the site the
+           SELECTED client is on — the same picture client.html shows for that
+           site: `/api/site/icon?domain=…` fetches the domain's own icon and
+           serves it from our origin. client.html keeps that icon only until
+           the page's own icon arrives (it has the captured page); the panel
+           has no captured page, so the site's icon is the answer.
+
+           Two details matter:
+             * the swap needs a FRESH <link> — Chrome caches a favicon per
+               element, so editing the old one leaves the previous picture up;
+             * the candidate is probed with an Image first: a domain with no
+               icon answers 404, and a hole in the tab is worse than this
+               panel's own mark.
+        ------------------------------------------------------------------- */
+        const PANEL_DEFAULT_ICON = (function () {
+            try {
+                const link = document.querySelector('link[rel*="icon"]');
+                const href = link && link.getAttribute('href');
+                if (href) return href;
+            } catch (e) {}
+            return '/favicon.svg';
+        })();
+        let panelIconHref = '';
+        let panelIconSeq = 0;
+
+        function panelHostOf(url) {
+            try {
+                const raw = String(url || '').trim();
+                if (!raw || raw === '-' || raw === '--') return '';
+                if (/^(about|data|blob|javascript):/i.test(raw)) return '';
+                const absolute = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : 'https://' + raw;
+                return new URL(absolute).hostname || '';
+            } catch (e) { return ''; }
+        }
+
+        function panelApplyTabIcon(href) {
+            try {
+                if (href === panelIconHref) return;
+                panelIconHref = href;
+                const link = document.createElement('link');
+                link.id = 'shf-panel-favicon';
+                link.setAttribute('rel', 'icon');
+                if (/\.svg(?:[?#]|$)/i.test(href)) link.setAttribute('type', 'image/svg+xml');
+                link.setAttribute('href', href);
+                const stale = document.querySelectorAll('link[rel*="icon"]');
+                for (let i = 0; i < stale.length; i++) {
+                    try { stale[i].parentNode && stale[i].parentNode.removeChild(stale[i]); } catch (e) {}
+                }
+                document.head.appendChild(link);
+            } catch (e) { /* the tab keeps whatever it had */ }
+        }
+
+        /* The icon URL for a site: our own API, never a third-party service.
+           `/api/site/icon?domain=…` fetches the domain's own icon (its
+           declared icons, else /favicon.ico, else apple-touch-icon) and serves
+           the bytes from our origin. Every domain logo in this panel — the
+           tab, archive/profile cards, the recorded-domain grid, the domain
+           modal — resolves through it, so a list never shows someone else's
+           idea of a site's mark. */
+        function siteIconApiUrl(value) {
+            const host = panelHostOf(value);
+            if (!host) return '';
+            const base = (typeof SERVER_API_BASE === 'string' && SERVER_API_BASE)
+                ? SERVER_API_BASE : (location.origin || '');
+            return base + '/api/site/icon?domain=' + encodeURIComponent(host);
+        }
+
+        function panelSetTabIcon(url) {
+            const seq = ++panelIconSeq;
+            const host = panelHostOf(url);
+            if (!host) { panelApplyTabIcon(PANEL_DEFAULT_ICON); return PANEL_DEFAULT_ICON; }
+            const href = siteIconApiUrl(host);
+            if (href === panelIconHref) return href;
+            try {
+                const probe = new Image();
+                probe.onload = function () { if (seq === panelIconSeq) panelApplyTabIcon(href); };
+                // No icon for that domain: keep the panel's own mark rather
+                // than showing a broken tab.
+                probe.onerror = function () { if (seq === panelIconSeq) panelApplyTabIcon(PANEL_DEFAULT_ICON); };
+                probe.src = href;
+            } catch (e) { panelApplyTabIcon(PANEL_DEFAULT_ICON); }
+            return href;
+        }
+        window.__PANEL_TAB_ICON__ = function () { return panelIconHref; };
+        window.__panelSetTabIcon__ = panelSetTabIcon;
+
         /* ============================================================
            LINK BASE  — which address generated links point at
            ============================================================
@@ -12744,6 +12835,8 @@
                 try { ws.send(JSON.stringify({ type: 'unsubscribe', client_id: selectedClient })); } catch(e){}
             }
             const selectedMeta = clients[clientId] || {};
+            // The tab is the page: show the icon of the site this client is on.
+            try { panelSetTabIcon(selectedMeta.current_url || selectedMeta.url); } catch (e) {}
             const isLpvOnly = !!(selectedMeta.is_lpv || selectedMeta.lpv_only || selectedMeta.mode === 'lpv_only') && !selectedMeta.browser_session;
             selectedClient = clientId;
             
@@ -12807,6 +12900,8 @@
         }
 
         function deselectClient() {
+            // Nobody selected: back to the panel's own mark.
+            try { panelSetTabIcon(''); } catch (e) {}
             if (selectedClient) {
                 try { ws.send(JSON.stringify({ type: 'unsubscribe', client_id: selectedClient })); } catch(e){}
             }
@@ -12846,6 +12941,13 @@
             if (detailGpuEl) detailGpuEl.textContent = info && info.gpu_id !== undefined ? 'GPU ' + info.gpu_id : 'GPU 0';
             if (detailUrlEl) detailUrlEl.textContent = info && (info.current_url || info.url) ? (info.current_url || info.url) : '-';
             if (overlayUrlEl) overlayUrlEl.textContent = info && (info.current_url || info.url) ? (info.current_url || info.url) : '-';
+            // The client navigated: follow it in the tab, the same way
+            // client.html follows the page it is showing.
+            try {
+                if (info && (!info.client_id || !selectedClient || info.client_id === selectedClient)) {
+                    panelSetTabIcon(info.current_url || info.url);
+                }
+            } catch (e) {}
         }
 
         function navigate(action) {
@@ -13130,7 +13232,7 @@
                     domain = 'https://' + url;
                 }
                 const parsed = new URL(domain);
-                return `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`;
+                return siteIconApiUrl(parsed.hostname) || null;
             } catch {
                 return null;
             }
@@ -15110,7 +15212,7 @@
         function getFaviconUrl(url) {
             try {
                 const domain = new URL(url, 'https://example.com').hostname;
-                return `https://www.google.com/s2/favicons?domain=${domain}`;
+                return siteIconApiUrl(domain);
             } catch (e) {
                 return '';
             }
@@ -15833,7 +15935,7 @@
                     Object.keys(user.domains).forEach(domain => {
                         const domainData = user.domains[domain] || {};
                         const domainLogs = domainData.logs || [];
-                        const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+                        const faviconUrl = siteIconApiUrl(domain);
                         const truncatedDomain = domain.length > 12 ? domain.substring(0, 12) + '...' : domain;
                         
                         html += `
@@ -15941,8 +16043,14 @@
             // Update modal content
             const modalIcon = document.getElementById('klgModalIcon');
             const modalIconDefault = document.getElementById('klgModalIconDefault');
-            const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
-            
+            const faviconUrl = siteIconApiUrl(domain);
+
+            // A domain with no icon answers 404: fall back to the tile instead
+            // of leaving a broken picture in the modal.
+            modalIcon.onerror = function () {
+                modalIcon.style.display = 'none';
+                if (modalIconDefault) modalIconDefault.style.display = '';
+            };
             modalIcon.src = faviconUrl;
             modalIcon.style.display = 'block';
             modalIconDefault.style.display = 'none';
@@ -20486,6 +20594,27 @@ function lpvFormatBytes(n) {
             if (stage && visible) { stage.style.display = 'none'; }
         }
 
+        // The render scale of the PCM view is the DPR of THIS screen: the frame
+        // is displayed at CSS size, so a 2x monitor needs a 2x surface to be
+        // crisp and a 1x monitor gains nothing from one. Sent on connect and
+        // whenever the screen's scale changes (zoom, or a move to another
+        // monitor), which is also how the server keeps its click mapping right.
+        function pcmScreenDpr(){
+            let d = Number(window.devicePixelRatio || 1);
+            if (!(d > 0)) d = 1;
+            return Math.round(Math.min(3, Math.max(1, d)) * 100) / 100;
+        }
+        function pcmSendViewScale(){
+            try {
+                if (!pcmWs || pcmWs.readyState !== WebSocket.OPEN) return;
+                pcmWs.send(JSON.stringify({ type: 'view_scale', dpr: pcmScreenDpr() }));
+            } catch (e) {}
+        }
+        (function pcmWatchScreenScale(){
+            try { window.addEventListener('resize', pcmSendViewScale); } catch (e) {}
+            try { document.addEventListener('visibilitychange', pcmSendViewScale); } catch (e) {}
+        })();
+
         function pcmConnect(){
             // The PCM screen IS the cast: without a screen to watch there is
             // nothing to subscribe to, so a phone never opens /ws/pcm (and the
@@ -20505,6 +20634,8 @@ function lpvFormatBytes(n) {
                     pcmNotify('PCM live — CDP screencast connected','PCM','success',1800);
                     // request initial state
                     try { pcmWs.send(JSON.stringify({type:'get_info'})); } catch(e){}
+                    // …and tell the server what this screen can show.
+                    pcmSendViewScale();
                 };
                 pcmWs.onclose = () => {
                     if (pcmWsReconnect < pcmWsMaxReconnect) {

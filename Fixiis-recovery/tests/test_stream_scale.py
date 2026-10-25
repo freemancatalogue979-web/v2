@@ -107,12 +107,12 @@ ok("device_scale_factor=device_scale_factor" in bm,
 # 3. Every screencast asks for CSS x DPR
 # ---------------------------------------------------------------------------
 pcm = reader("pcm_manager.py")
-ok("from config import stream_dpr, frame_to_css" in pcm,
-   "PCM uses the shared scale and converter")
+ok("from config import stream_dpr, clamp_dpr, frame_to_css" in pcm,
+   "PCM uses the shared scale, its clamp and converter")
 ok("pixelRatio\": _dpr" in pcm or "pixelRatio': _dpr" in pcm,
    "the PCM browser is launched at the render scale")
-ok("'deviceScaleFactor': stream_dpr()" in pcm,
-   "and any metrics re-apply keeps it (no flip back to 1x mid-stream)")
+ok("'deviceScaleFactor': self.operator_dpr()" in pcm,
+   "and any metrics re-apply keeps the operator's scale (no flip back to 1x)")
 ok("int(round(css_w * _dpr))" in pcm and "int(round(css_h * _dpr))" in pcm,
    "the frame budget is the CSS viewport x DPR")
 ok("_cast_content = (int(mcw), int(mch), mquality)" in pcm,
@@ -176,5 +176,121 @@ for name in ("browser_manager.py", "session.py", "api.py", "access_manager.py",
     text = reader(name)
     ok(not re.search(r"logical[- ]pixel policy[^\n]*1\.0", text, re.IGNORECASE),
        "%s has no stale logical-pixel-policy comment" % name)
+
+# ---------------------------------------------------------------------------
+# 7. The scale is the DPR of the screen the OPERATOR is using
+# ---------------------------------------------------------------------------
+# "The PCM manager stream is not crisp: it should be the resolution x the DPR
+# of the person using the PCM." A server-side guess is wrong in both
+# directions: too low and the frame is soft on a retina panel, too high and it
+# is bandwidth for pixels that panel cannot show. So the panel sends its own
+# `window.devicePixelRatio` and the session renders at that.
+
+clamp = cfg_mod.clamp_dpr
+ok(clamp(2) == 2.0, "a whole-number DPR passes through")
+ok(clamp(1.25) == 1.25, "a fractional DPR (125% zoom) is kept")
+ok(clamp(0.5) == 1.0, "below 1 is raised to 1 (never downscale)")
+ok(clamp(4) == 3.0, "above 3 is capped")
+ok(clamp(None) == cfg_mod.stream_dpr(), "junk falls back to the server default")
+ok(clamp("nonsense") == cfg_mod.stream_dpr(), "a non-number falls back too")
+ok(clamp(float("nan")) == cfg_mod.stream_dpr(), "NaN falls back, never poisons the scale")
+ok(clamp(99) == 3.0, "an absurd value cannot blow up the frame budget")
+
+ok("def operator_dpr(self)" in pcm, "the PCM session asks its own operator's screen")
+ok("self._op_dpr: Optional[float] = None" in pcm,
+   "the scale starts unknown (a watchdog-started session still renders)")
+ok("return clamp_dpr(self._op_dpr, stream_dpr())" in pcm,
+   "and is clamped when it is set")
+ok(pcm.count("self.operator_dpr()") >= 4,
+   "every PCM scale use goes through it (launch, metrics, budget, input) "
+   "(found %d)" % pcm.count("self.operator_dpr()"))
+ok("async def set_view_scale(self, raw: Any) -> float:" in pcm,
+   "the session takes the operator's scale at runtime")
+ok('"deviceScaleFactor": dpr' in pcm,
+   "and re-asserts the emulated scale on the running page")
+rescale = pcm.split("async def set_view_scale")[1].split("async def handle_input")[0]
+ok("await self._stop_screencast_locked()" in rescale
+   and "await self._start_screencast_locked()" in rescale,
+   "the cast is restarted so the NEXT frame is already at the new scale")
+ok('"type": "view_scale", "dpr": dpr' in pcm,
+   "every subscriber is told which scale the frames are in")
+
+ok('mtype in ("view_scale", "set_dpr")' in api_src,
+   "the /ws/pcm socket accepts it")
+ok('dpr = await _pcm.set_view_scale(data.get("dpr"))' in api_src,
+   "and hands it to the session")
+
+ok("function pcmSendViewScale()" in admin, "the panel sends its screen's scale")
+ok("window.devicePixelRatio" in admin.split("function pcmScreenDpr")[1][:220],
+   "using the operator's real devicePixelRatio")
+ok("Math.min(3, Math.max(1, d))" in admin, "clamped to the range we render at")
+ok("pcmSendViewScale();" in admin.split("pcmWs.onopen")[1][:900],
+   "on connect, before the first frame is judged")
+ok("addEventListener('resize', pcmSendViewScale)" in admin,
+   "and again when the screen's scale changes (zoom, another monitor)")
+
+# ---------------------------------------------------------------------------
+# 8. A running session really rescales (not just a source-level claim)
+# ---------------------------------------------------------------------------
+import asyncio  # noqa: E402
+from pcm_manager import PCMManager  # noqa: E402
+
+
+class _FakeCdp:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, method, params=None):
+        self.sent.append((method, params or {}))
+        return {}
+
+
+class _FakePage:
+    def is_closed(self):
+        return False
+
+
+def _metrics(cdp):
+    return [p for m, p in cdp.sent if m == "Emulation.setDeviceMetricsOverride"]
+
+
+_run = asyncio.new_event_loop()
+try:
+    session = PCMManager()
+    ok(session.operator_dpr() == cfg_mod.stream_dpr(),
+       "before the panel says anything, the server default renders")
+    session._page = _FakePage()
+    session._cdp = _FakeCdp()
+    session._mode = "desktop"
+    ok(_run.run_until_complete(session.set_view_scale(2)) == 2.0,
+       "a 2x screen asks for 2x")
+    got = _metrics(session._cdp)
+    ok(len(got) == 1, "and the running page is re-emulated exactly once")
+    ok(got[0]["deviceScaleFactor"] == 2.0, "at the operator's scale")
+    ok(got[0]["width"] == 1280 and got[0]["height"] == 800,
+       "with the layout viewport unchanged (only the surface is scaled)")
+    ok(_run.run_until_complete(session.set_view_scale(1.5)) == 1.5,
+       "125% zoom keeps its fraction")
+    ok(session.operator_dpr() == 1.5, "and the session remembers it")
+    ok(_run.run_until_complete(session.set_view_scale("nope")) == cfg_mod.stream_dpr(),
+       "junk falls back to the server default instead of pinning 0")
+    session._mode = "mobile"
+    _run.run_until_complete(session.set_view_scale(9))
+    last = _metrics(session._cdp)[-1]
+    ok(last["deviceScaleFactor"] == 3.0, "an absurd DPR is capped at 3")
+    ok(last["width"] == 500 and last["height"] == 687,
+       "and a mobile session is rescaled at the mobile viewport")
+    ok(last["mobile"] is True, "still emulating a phone")
+finally:
+    # set_view_scale arms the stall watchdog; stop it before the loop closes
+    # so the test leaves nothing pending behind.
+    _watch = getattr(session, "_watch_task", None)
+    if _watch is not None:
+        _watch.cancel()
+        try:
+            _run.run_until_complete(_watch)
+        except BaseException:
+            pass
+    _run.close()
 
 print("stream scale: %d checks passed" % CHECKS)
