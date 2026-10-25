@@ -839,6 +839,52 @@ endpoint `client.html` uses, so a list never shows someone else's idea of a
 site's mark. The Admin tab icon used to be a hard-coded
 `google.com/s2/favicons?domain=tlsa.gg` URL: gone.
 
+### The LPV tab identity is in the served bytes (instant, every time)
+
+An LPV visit has a name and a favicon of its own — the operator's
+**Settings → Live pages** tab title and icon, else the **workflow's** name and
+logo. Both used to be applied twice too late to be trusted:
+
+* the head's branding block ran **before** `<link rel="icon">` and `<title>`
+  existed, so anything from the link itself was silently dropped
+  (`querySelector('link[rel*=icon]')` answered `null`);
+* the Settings values only arrived over the socket, so the tab said the site's
+  name first and changed its mind a second later — or never, if the boot
+  message was missed.
+
+Now the **server puts the identity in the document it sends**:
+
+| Where | What |
+|---|---|
+| `<title id="pageTitle">` | already the effective name — no script has run yet |
+| `<link rel="icon" id="shf-lpv-brand-icon" data-workflow-favicon="true">` | already the effective icon |
+| `<script id="lpv-preboot-data">` | `workflowName`, `tabTitle`, `color`, `logoUrl`, `tabIcon`, `title`, `icon` — everything the head and the runtime read |
+| `<script id="lpv-preboot-branding">` (in the file, **after** the title and the icon link) | applies the same, and any of it carried by the link, before the first paint |
+
+Precedence is one line in `_effective_tab_branding()`: the operator's Settings
+value, else the workflow's. The `_CLIENT_HTML_CACHE` key includes both, so
+changing them rebuilds the copy instead of serving yesterday's tab. A streamed
+visit (`?auth=&url=`) is still never branded — its tab belongs to the site.
+
+A shared workflow link now carries the identity too
+(`?workflow_name=…&brand_logo=…&brand_color=…&tab_name=…&tab_icon=…`): a link is
+the one thing that travels, and a copy of `client.html` hosted away from the
+backend can only be instant if the answer is already in its URL.
+
+**A copy the backend never renders** (static host, CDN, `file://`) asks
+`GET /api/public/boot` once, with its own query string, and gets:
+
+| Answer | What the copy does |
+|---|---|
+| `404` (visitor pages switched off) | paints the server's exact 404 bytes and stops — no socket, no reconnect loop |
+| `{open, branding, loading}` | applies the name/icon if the link had none, and mounts the custom loading page (the domain's or the workflow's spinner) while the first page comes in |
+| no answer / timeout (2.5 s) | **fails open**: a copy must not die because the backend is down |
+
+The custom spinner can also come from the host itself, with no backend at all:
+a `loading.html` next to `client.html`, or `?loading=<url>`. Either is mounted as
+the same `#lpvBootLoading` the server embeds, so the existing hand-over retires
+it when the real page is up.
+
 ## The tab is the page (streamed visits)
 
 The browser tab is part of what a visitor is looking at, so on a streamed visit
@@ -1341,7 +1387,8 @@ must never end up in a commit.
 | `index.html` | a tiny menu that links to the three pages below (no scripts, no fonts) |
 | `Admin.html` | the full panel |
 | `mini-admin.html` | the phone panel |
-| `client.html` | the page visitors open, if you serve it yourself |
+| `client.html` | the page visitors open, if you serve it yourself (it asks `/api/public/boot` for the 404 switch, its tab identity and its loading page, and honours a local `loading.html`) |
+| `404.html` | the page a static host answers an unknown path with, where the host does that by convention — the same bytes the backend's closed-site 404 has |
 | `README.txt` | what each file is, how to point it at the server, how to update |
 | `BUILD.txt` | generated-at, commit, sizes and sha1 of each copy |
 
@@ -1428,6 +1475,8 @@ python3 tests/test_domain_spinner.py   # per-domain loading screens + logo (need
 python3 tests/test_site_icon.py        # the icon the server has for a site reaches the tab
 python3 tests/test_site_icon_api.py    # /api/site/icon: the domain answers for its icon
 python3 tests/test_stream_scale.py     # viewport × DPR; the PCM pane's own scale (100 checks)
+python3 tests/test_lpv_branding.py     # the tab name/icon in the served bytes, and /api/public/boot (26 checks)
+node tests/test_lpv_branding_boot.cjs  # the head block executed against a document (26 checks)
 python3 tests/test_pcm_cast.py         # the cast really asks Chrome for those pixels (21 checks)
 python3 tests/test_logging_quiet.py    # quiet client, throttled per-event warnings
 ```

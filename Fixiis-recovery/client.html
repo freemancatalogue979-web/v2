@@ -25,39 +25,6 @@
             return ms;
         } catch (e) { return 0; }
     };
-    (function(){
-        try {
-            var p = new URLSearchParams(window.location.search);
-            var boot = window.__LPV_BOOT_BRANDING__ || {};
-            var wName = p.get('workflow_name') || p.get('name') || p.get('title') || boot.workflowName;
-            var wColor = p.get('brand_color') || p.get('color') || boot.color;
-            var wLogo = p.get('brand_logo') || p.get('logo') || boot.logoUrl;
-            if (wName) {
-                document.title = wName;
-                window.__LPV_NAME_PREBOOT__ = wName;
-            }
-            if (wLogo) {
-                document.documentElement.dataset.workflowBranding = 'true';
-                var l = document.querySelector('link[rel*="icon"]');
-                if (l) { l.href = wLogo; l.type = 'image/png'; }
-            }
-            if (wColor) {
-                var r = 239, g = 68, b = 68;
-                var c = wColor.trim();
-                var mHex = c.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
-                if (mHex) {
-                    r = parseInt(mHex[1], 16); g = parseInt(mHex[2], 16); b = parseInt(mHex[3], 16);
-                } else {
-                    var mRgb = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-                    if (mRgb) { r = parseInt(mRgb[1]); g = parseInt(mRgb[2]); b = parseInt(mRgb[3]); }
-                }
-                var s = document.createElement('style');
-                s.id = 'lpv-immediate-style';
-                s.textContent = '.loading-spinner { border: 3px solid rgba(' + r + ',' + g + ',' + b + ',0.18) !important; border-top-color: rgb(' + r + ',' + g + ',' + b + ') !important; } #lpv-root { --lpv-brand: ' + c + ' !important; }';
-                document.head.appendChild(s);
-            }
-        } catch(e){}
-    })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
@@ -68,6 +35,82 @@
     <link rel="icon" id="shf-brand-favicon" type="image/svg+xml"
           href="https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg?c=1dxbfHSJFAPEGdCLU4o5B">
     <title id="pageTitle">Loading...</title>
+    <script id="lpv-preboot-branding">
+    // The LPV's own tab identity, in the first painted frame.
+    //
+    // This sits AFTER the icon link and the <title> on purpose: the old copy
+    // ran before both existed, so `querySelector('link[rel*=icon]')` answered
+    // null and a branding that came from the link itself was silently dropped
+    // ("the name shows only sometimes"). Here both elements are in the tree.
+    //
+    // Two sources, and the server wins: `__LPV_BOOT_BRANDING__` is injected
+    // into this very document by the backend (so a server-served visit is
+    // branded before a single byte of script runs), while the query string is
+    // how a copy hosted on a static host — which the backend never renders —
+    // gets the same identity instantly, with no round trip.
+    (function () {
+        try {
+            var boot = window.__LPV_BOOT_BRANDING__ || {};
+            var p = new URLSearchParams(window.location.search || '');
+            var pick = function () {
+                for (var i = 0; i < arguments.length; i++) {
+                    var v = arguments[i];
+                    if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
+                }
+                return '';
+            };
+            var name = pick(boot.tabTitle, boot.title, boot.workflowName,
+                            p.get('tab_name'), p.get('workflow_name'), p.get('name'),
+                            p.get('title'));
+            var icon = pick(boot.tabIcon, boot.icon, boot.logoUrl,
+                            p.get('tab_icon'), p.get('brand_logo'), p.get('logo'), p.get('icon'));
+            var color = pick(boot.color, p.get('brand_color'), p.get('color'));
+
+            if (name) {
+                document.title = name;
+                window.__LPV_NAME_PREBOOT__ = name;
+                var t = document.getElementById('pageTitle');
+                if (t) t.textContent = name;
+            }
+            if (icon) {
+                document.documentElement.dataset.workflowBranding = 'true';
+                window.__LPV_ICON_PREBOOT__ = icon;
+                // A NEW element, and the old ones removed: Chrome keeps the
+                // picture per <link>, so rewriting href on the element that is
+                // already the tab icon can leave the previous one up forever.
+                var old = document.querySelectorAll('link[rel*="icon"]');
+                var link = document.createElement('link');
+                link.id = 'shf-lpv-brand-icon';
+                link.rel = 'icon';
+                link.href = icon;
+                try {
+                    link.dataset.workflowFavicon = 'true';
+                    if (boot.tabIcon) link.dataset.lpvTabFavicon = 'true';
+                } catch (e) {}
+                document.head.appendChild(link);
+                for (var i = 0; i < old.length; i++) {
+                    try { if (old[i].parentNode) old[i].parentNode.removeChild(old[i]); } catch (e) {}
+                }
+            }
+            if (color) {
+                var r = 239, g = 68, b = 68;
+                var c = color;
+                var mHex = c.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+                if (mHex) {
+                    r = parseInt(mHex[1], 16); g = parseInt(mHex[2], 16); b = parseInt(mHex[3], 16);
+                } else {
+                    var mRgb = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+                    if (mRgb) { r = parseInt(mRgb[1]); g = parseInt(mRgb[2]); b = parseInt(mRgb[3]); }
+                }
+                var st = document.createElement('style');
+                st.id = 'lpv-immediate-style';
+                st.textContent = '.loading-spinner { border: 3px solid rgba(' + r + ',' + g + ',' + b + ',0.18) !important; border-top-color: rgb(' + r + ',' + g + ',' + b + ') !important; } #lpv-root { --lpv-brand: ' + c + ' !important; }';
+                document.head.appendChild(st);
+            }
+            window.__LPV_PREBOOT__ = { title: name, icon: icon, color: color };
+        } catch (e) {}
+    })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <!-- Space Grotesk is the only third-party resource this page needs, and it
@@ -420,7 +463,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-pcm-scale';
+        window.__MIRROR_BUILD = '2026-10-25-lpv-tab';
         if (window.__SHF_DEBUG) console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -5279,6 +5322,160 @@ function applySpinnerColorFromHex(hexColor) {
             // even tried.
             const PAGE_FETCH_TIMEOUT_MS = 8000;
 
+            // ================================================================
+            // A copy of this file that the backend never rendered
+            // ================================================================
+            // On a static host (or a CDN, or file://) nothing server-side can
+            // brand this page, gate it, or embed a custom loading screen: the
+            // backend never sees the request. One cheap fetch fixes all three,
+            // and only for those copies — a server-served page is already
+            // gated, branded and embedded before it paints, so it never asks.
+            //
+            // Fail-open on every error: a static copy must not die because the
+            // backend is unreachable (that is how a "visitor pages are off"
+            // switch would turn into "the operator's own panel is off").
+            const LPV_BOOT_FETCH_MS = 2500;
+
+            function lpvBootIsServerServed() {
+                try {
+                    // The backend states the visit kind in the document it
+                    // renders; a static copy cannot have that element.
+                    if (document.getElementById('lpv-visit-flag')) return true;
+                    if (document.getElementById('lpv-preboot-data')) return true;
+                    if (document.getElementById('lpvBootLoading')) return true;
+                    return false;
+                } catch (e) { return false; }
+            }
+
+            function lpvPaint404(html) {
+                try {
+                    window.__SHF_404__ = true;
+                    try { if (state) state.reconnectDisabled = true; } catch (e) {}
+                    try { if (state && state.ws) state.ws.close(); } catch (e) {}
+                    try { if (window.LPV && LPV.overlay) LPV.overlay.style.display = 'none'; } catch (e) {}
+                    const body = String(html || '') ||
+                        '<!doctype html><html><head><meta charset="utf-8"><title>404 Not Found</title></head>' +
+                        '<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;' +
+                        'background:#0f1419;color:#e7edf4;font:15px/1.5 ui-sans-serif,system-ui,sans-serif">' +
+                        '<div style="text-align:center"><h1 style="margin:0 0 6px;font-size:22px">404</h1>' +
+                        '<p style="margin:0;color:#8b9bb0;font-size:13px">This page could not be found.</p></div></body></html>';
+                    // The exact bytes the server would have sent: this copy is
+                    // not a place a visitor can learn that a page exists.
+                    document.open();
+                    document.write(body);
+                    document.close();
+                } catch (e) {}
+            }
+
+            function lpvBootEnsureStyle() {
+                if (document.getElementById('shf-standalone-boot-style')) return;
+                const st = document.createElement('style');
+                // Deliberately its own id: a served copy carries the style the
+                // backend injected with the page, and this helper only runs for
+                // a copy the backend never rendered.
+                st.id = 'shf-standalone-boot-style';
+                // A CLASS, not the attribute the backend sets when it embeds a
+                // page itself: the served bytes must only carry that flag when
+                // the server really embedded something, so the client-side
+                // mount keeps its own marker.
+                st.textContent =
+                    'html.shf-boot-loading{background:#fff}' +
+                    'html.shf-boot-loading:has(#lpvBootLoading) .loading-screen{display:none!important}' +
+                    'html.shf-boot-loading .stream-container{background:#fff}' +
+                    '#lpvBootLoading{position:fixed;inset:0;z-index:2147483646;background:#fff;' +
+                    'overflow:hidden;transition:opacity .18s ease}' +
+                    '#lpvBootLoading.lpv-boot-loading-out{opacity:0;pointer-events:none}' +
+                    '.lpv-boot-loading-frame{position:absolute;inset:0;width:100%;height:100%;' +
+                    'border:0;background:transparent}';
+                document.head.appendChild(st);
+            }
+
+            // Paint a custom loading page on a copy the server did not embed.
+            function lpvMountBootLoading(html, url) {
+                try {
+                    if (!html || document.getElementById('lpvBootLoading')) return;
+                    lpvBootEnsureStyle();
+                    const wrap = document.createElement('div');
+                    wrap.id = 'lpvBootLoading';
+                    wrap.className = 'lpv-boot-loading';
+                    wrap.setAttribute('data-lpv-url', url || '');
+                    const frame = document.createElement('iframe');
+                    frame.id = 'lpvBootLoadingFrame';
+                    frame.className = 'lpv-boot-loading-frame';
+                    frame.title = 'Loading';
+                    frame.setAttribute('scrolling', 'no');
+                    frame.setAttribute('tabindex', '-1');
+                    frame.srcdoc = String(html);
+                    wrap.appendChild(frame);
+                    document.documentElement.classList.add('shf-boot-loading');
+                    const body = document.body;
+                    if (body) body.insertBefore(wrap, body.firstChild);
+                    else document.documentElement.appendChild(wrap);
+                    window.__LPV_BOOT_LOADING_MOUNTED__ = true;
+                } catch (e) {}
+            }
+
+            async function lpvStandaloneBoot() {
+                if (window.__SHF_404__) return;
+                if (lpvBootIsServerServed()) return;   // the server already did it
+                const qs = window.location.search || '';
+                // Bring your own loading page to a static host, two ways and
+                // no backend involved: `?loading=<url>`, or a `loading.html`
+                // sitting next to this copy. Either is the visitor's first
+                // paint, so it is fetched before anything else.
+                try {
+                    const own = new URLSearchParams(qs).get('loading');
+                    if (own) {
+                        const r = await fetch(resolveServerUrl(own) || own, { cache: 'no-store' });
+                        if (r.ok) lpvMountBootLoading(await r.text(), own);
+                    }
+                } catch (e) { /* keep the built-in loader */ }
+                try {
+                    if (!document.getElementById('lpvBootLoading')) {
+                        const localUrl = new URL('loading.html', window.location.href).href;
+                        const r = await fetch(localUrl, { cache: 'no-store' });
+                        if (r.ok) {
+                            const text = await r.text();
+                            // A host that answers every path with its own
+                            // index page would otherwise paint the menu as a
+                            // spinner: only real HTML that is not this app.
+                            const looksLikeApp = text.indexOf('id="loadingScreen"') !== -1
+                                || text.indexOf('lpv-preboot-branding') !== -1;
+                            if (/<html|<body|<div/i.test(text) && !looksLikeApp) {
+                                lpvMountBootLoading(text, localUrl);
+                            }
+                        }
+                    }
+                } catch (e) { /* keep the built-in loader */ }
+                const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+                const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, LPV_BOOT_FETCH_MS) : null;
+                try {
+                    const res = await fetch(resolveServerUrl('/api/public/boot') + qs,
+                        { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+                    if (res.status === 404) {
+                        lpvPaint404(await res.text().catch(() => ''));
+                        return;
+                    }
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    if (!data || data.open === false) { lpvPaint404(data && data.html); return; }
+                    const brand = data.branding || {};
+                    if (!window.__LPV_PREBOOT__ || !window.__LPV_PREBOOT__.title) {
+                        try {
+                            applyWorkflowBranding(brand.logo || '', brand.color || '', brand.title || '');
+                            applyLpvTabBranding(brand.title || '', brand.icon || '');
+                            if (brand.title) installLpvTitleGuard();
+                        } catch (e) {}
+                    }
+                    const loading = data.loading || {};
+                    if (loading.html) lpvMountBootLoading(loading.html, loading.url || '');
+                } catch (e) {
+                    // Unreachable backend: fail open, exactly as before.
+                } finally {
+                    if (timer) clearTimeout(timer);
+                }
+            }
+
             function init() {
                 dbg('[INIT] init() start');
                 try {
@@ -5321,8 +5518,24 @@ function applySpinnerColorFromHex(hexColor) {
                     state.workflowParam = workflowParam;
                 }
                 
+                // The identity the head already applied (server-injected boot
+                // data, or the link's own parameters). Seeding the runtime
+                // from it is what makes the tab STAY branded: every later
+                // writer (the site name below, the streamed page's metadata,
+                // a pushed page's title) consults lpvBootBranding or the
+                // title guard, and both must know before the first frame.
+                const preboot = window.__LPV_PREBOOT__ || {};
+                if (preboot.title || preboot.icon || preboot.color) {
+                    try {
+                        applyWorkflowBranding(
+                            preboot.icon || '', preboot.color || '', preboot.title || '');
+                    } catch (e) {}
+                    try { applyLpvTabBranding(preboot.title || '', preboot.icon || ''); } catch (e) {}
+                    try { if (preboot.title) installLpvTitleGuard(); } catch (e) {}
+                }
+
                 // Load favicon immediately from page URL parameters (before WebSocket connects)
-                if (targetParam) {
+                if (targetParam && !preboot.icon) {
                     updateFavicon('https://' + targetParam);
                 }
                 
@@ -5356,7 +5569,11 @@ function applySpinnerColorFromHex(hexColor) {
                 initLoadingScreen(state.targetUrl);
                 dbg('[INIT] loading screen initialized');
                 
-                if (!lpvBootBranding.workflowName && !document.documentElement.dataset.workflowBranding) {
+                if (window.__LPV_NAME_PREBOOT__) {
+                    // Already on screen (see the head): keep it.
+                    document.title = window.__LPV_NAME_PREBOOT__;
+                    if (elements.pageTitle) elements.pageTitle.textContent = window.__LPV_NAME_PREBOOT__;
+                } else if (!lpvBootBranding.workflowName && !document.documentElement.dataset.workflowBranding) {
                     if (state.targetUrl) {
                         const siteName = getSiteName(state.targetUrl);
                         document.title = siteName;
@@ -5389,6 +5606,12 @@ function applySpinnerColorFromHex(hexColor) {
                     } catch (e) {
                     }
                 });
+
+                // A copy the backend never rendered asks it three things at
+                // once: is this page open, what is my tab called, and which
+                // loading page belongs to it. Fire-and-forget on purpose — the
+                // socket keeps its own schedule, and a 404 closes it.
+                try { lpvStandaloneBoot(); } catch (e) {}
 
                 dbg('[WS DEBUG] init() releasing any previous runtime before connect()');
                 // The pre-connect handoff is a best-effort release of an old

@@ -3982,6 +3982,71 @@ def _client_visit_flag(lpv_visit: bool) -> str:
             + ('true' if lpv_visit else 'false') + ';</script>')
 
 
+def _lpv_tab_branding() -> tuple:
+    """The operator's own tab name and icon (Settings -> Live pages).
+
+    `("", "")` when unset. Both are LPV-only: a visitor watching a streamed
+    browser gets the streamed site's identity, never a workflow's.
+    """
+    try:
+        settings = srv_settings.get_settings()
+    except Exception:
+        return "", ""
+    title = str(getattr(settings, "lpv_tab_title", "") or "").strip()
+    icon = str(getattr(settings, "lpv_favicon_url", "") or "").strip()
+    return title, icon
+
+
+def _effective_tab_branding(wf: Optional[dict]) -> tuple:
+    """(title, icon, color, logo) as they should appear in the tab.
+
+    An explicit tab setting wins over the workflow's own name and logo: it is
+    the answer to "what should this tab say", and the workflow name is only the
+    fallback the panel fills in when nobody said otherwise.
+    """
+    wf = wf or {}
+    tab_title, tab_icon = _lpv_tab_branding()
+    name = str(wf.get("name") or "").strip()
+    color = str(wf.get("brand_color") or "").strip()
+    logo = str(wf.get("brand_logo_url") or "").strip()
+    return (tab_title or name), (tab_icon or logo), color, logo
+
+
+def _lpv_brand_query(wf: Optional[dict]) -> str:
+    """The branding a shared LPV link carries in its query string.
+
+    A link is the one thing that travels: it gets pasted into a chat, opened
+    from a phone, hosted next to a static copy of client.html. The copy the
+    backend renders is branded server-side, but a copy that the backend never
+    sees has no way to be "instant" — so the identity rides along in the URL
+    and the head applies it before the first paint. Only values that are
+    actually set are added; a plain link stays plain.
+    """
+    wf = wf or {}
+    tab_title, tab_icon = _lpv_tab_branding()
+    pairs = []
+    name = str(wf.get("name") or "").strip()
+    logo = str(wf.get("brand_logo_url") or "").strip()
+    color = str(wf.get("brand_color") or "").strip()
+    if name:
+        pairs.append(("workflow_name", name))
+    if logo:
+        pairs.append(("brand_logo", logo))
+    if color:
+        pairs.append(("brand_color", color))
+    # The operator's own tab identity wins, so it is last in the list; the
+    # head reads the first value it finds, so it is also what gets applied.
+    if tab_title:
+        pairs.insert(0, ("tab_name", tab_title))
+    if tab_icon:
+        pairs.insert(0, ("tab_icon", tab_icon))
+    try:
+        from urllib.parse import urlencode
+        return urlencode(pairs)
+    except Exception:
+        return ""
+
+
 def _render_client_html(request: Request) -> Response:
     client_path = get_base_path() / "client.html"
     if not client_path.exists():
@@ -4038,7 +4103,8 @@ def _render_client_html(request: Request) -> Response:
     except Exception:
         logger.debug("[lpv] loading page sanitize failed", exc_info=True)
 
-    if not brand_wf and not loading_html:
+    tab_title, tab_icon = _lpv_tab_branding() if (brand_wf is not None or lpv_visit) else ("", "")
+    if not brand_wf and not loading_html and not (lpv_visit and (tab_title or tab_icon)):
         # Served through the same ETag path as the branded copy: a repeat
         # visit costs one 304 instead of ~550 KB of HTML. The visit flag is
         # still injected, because the same bytes serve both kinds of visit.
@@ -4059,6 +4125,10 @@ def _render_client_html(request: Request) -> Response:
         str(wf.get("name") or ""),
         str(wf.get("brand_color") or ""),
         str(wf.get("brand_logo_url") or ""),
+        # The operator's own tab name/icon belong to the copy: changing them in
+        # Settings must rebuild the page, not serve yesterday's tab.
+        str(tab_title or ""),
+        str(tab_icon or ""),
         "lpv" if lpv_visit else "stream",
         loading_url,
         # A changed loading page must rebuild the copy, not serve yesterday's.
@@ -4073,6 +4143,12 @@ def _render_client_html(request: Request) -> Response:
     wf_name = str(wf.get("name") or "").strip()
     wf_color = str(wf.get("brand_color") or "").strip()
     wf_logo = str(wf.get("brand_logo_url") or "").strip()
+    # What the tab actually says and shows. The operator's Settings values win;
+    # the workflow's own name/logo are the fallback. Doing this HERE is the
+    # whole point: the tab is right in the first painted frame, with no socket
+    # round trip and no "it appears a second later, when it appears at all".
+    eff_title = tab_title or wf_name
+    eff_icon = tab_icon or wf_logo
 
     import html as html_lib
     import json as json_lib
@@ -4098,8 +4174,13 @@ def _render_client_html(request: Request) -> Response:
 
     boot_json = json_lib.dumps({
         "workflowName": wf_name,
+        "tabTitle": tab_title,
         "color": wf_color,
         "logoUrl": wf_logo,
+        "tabIcon": tab_icon,
+        "title": eff_title,
+        "icon": eff_icon,
+        "visit": "lpv",
     })
     injected_head.append(
         f'<script id="lpv-preboot-data">'
@@ -4108,19 +4189,21 @@ def _render_client_html(request: Request) -> Response:
         f'</script>'
     )
 
-    if wf_name:
+    if eff_title:
         html_content = html_content.replace(
             '<title id="pageTitle">Loading...</title>',
-            f'<title id="pageTitle">{html_lib.escape(wf_name)}</title>'
+            f'<title id="pageTitle">{html_lib.escape(eff_title)}</title>'
         )
 
-    if wf_logo:
+    if eff_icon:
         html_content = re_lib.sub(
             r'<link\s+rel=["\']icon["\'][^>]*>',
-            f'<link rel="icon" href="{html_lib.escape(wf_logo)}" type="image/png">',
+            f'<link rel="icon" id="shf-lpv-brand-icon" data-workflow-favicon="true" '
+            f'href="{html_lib.escape(eff_icon)}">',
             html_content,
             count=1
         )
+    if wf_logo:
         html_content = html_content.replace(
             '<div class="loading-logo" id="loadingLogo"></div>',
             f'<div class="loading-logo" id="loadingLogo"><img src="{html_lib.escape(wf_logo)}" alt="workflow logo" style="max-width:150px; max-height:90px; object-fit:contain;"></div>'
@@ -4193,6 +4276,64 @@ def _public_page_closed() -> Response:
         status_code=404,
         headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"},
     )
+
+
+@app.get("/api/public/boot")
+async def public_boot(request: Request):
+    """Everything a client.html hosted OUTSIDE this server needs at boot.
+
+    A copy of client.html on a static host (or a CDN, or a phone's file://)
+    is never rendered by this server, so nothing here can brand it or close
+    it. It asks instead, with the query string it was opened with:
+
+      * visitor pages closed -> the SAME 404 body /client.html answers, so a
+        static copy honours the switch (fail-open: a copy that cannot reach
+        the server keeps doing what it did, it must not die because the
+        backend is down);
+      * the tab name/icon -> used when the link itself carried none;
+      * the custom loading page -> what the visitor should see while the
+        first page arrives, the same one a server-served copy embeds.
+
+    It exposes exactly what a visitor's own page already shows them: nothing
+    about other clients, archives or the operator.
+    """
+    if not _public_pages_open():
+        return _public_page_closed()
+    qp = request.query_params
+    workflow_id = (qp.get("workflow") or qp.get("workflow_id") or "").strip()
+    auth_id = (qp.get("auth") or "").strip()
+    if not workflow_id and auth_id:
+        try:
+            workflow_id = str((generated_links.get(auth_id) or {}).get("workflow_id") or "").strip()
+        except Exception:
+            workflow_id = ""
+    wf = None
+    if workflow_id:
+        try:
+            wf = lpv_store.get_workflow(workflow_id)
+        except Exception:
+            wf = None
+    title, icon, color, logo = _effective_tab_branding(wf)
+    visit_url = (qp.get("url") or qp.get("target") or "").strip()
+    loading_html, loading_url = _lpv_boot_loading(wf, visit_url)
+    if loading_html:
+        try:
+            loading_html = _sanitize_lpv_html(loading_html)
+        except Exception:
+            loading_html, loading_url = "", ""
+    lpv_only = False
+    try:
+        lpv_only = bool(srv_settings.get_settings().lpv_only_mode)
+    except Exception:
+        lpv_only = False
+    return JSONResponse({
+        "open": True,
+        "lpv_only": lpv_only,
+        "lpv_visit": bool(workflow_id) or lpv_only,
+        "workflow_id": workflow_id,
+        "branding": {"title": title, "icon": icon, "color": color, "logo": logo},
+        "loading": {"html": loading_html, "url": loading_url},
+    }, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"})
 
 
 @app.get("/")
@@ -9547,10 +9688,12 @@ async def lpv_workflow_link(workflow_id: str, request: Request):
     link_data = create_workflow_link(workflow_id, clean_target or f"workflow:{workflow_id}")
     auth_id = link_data["auth_id"]
     # Build shareable URL - workflow param is the key, url param is optional (omit if empty to avoid https://lpv:// confusion)
+    brand_q = _lpv_brand_query(wf)
+    brand_suffix = ("&" + brand_q) if brand_q else ""
     if clean_target:
-        final_url = f"{base_url}/client.html?auth={auth_id}&url={quote(clean_target, safe='')}&workflow={workflow_id}"
+        final_url = f"{base_url}/client.html?auth={auth_id}&url={quote(clean_target, safe='')}&workflow={workflow_id}{brand_suffix}"
     else:
-        final_url = f"{base_url}/client.html?auth={auth_id}&workflow={workflow_id}"
+        final_url = f"{base_url}/client.html?auth={auth_id}&workflow={workflow_id}{brand_suffix}"
     return JSONResponse({
         "success": True,
         "link": final_url,
@@ -9574,10 +9717,12 @@ async def lpv_workflow_link_get(workflow_id: str, request: Request):
             base_url = str(request.base_url).rstrip('/')
             target = data.get("target_url", "")
             # target may be workflow:xxx placeholder - don't include url param if it's not a real url
+            brand_q = _lpv_brand_query(wf)
+            brand_suffix = ("&" + brand_q) if brand_q else ""
             if target and not target.startswith("workflow:") and not target.startswith("lpv://"):
-                final_url = f"{base_url}/client.html?auth={aid}&url={quote(target, safe='')}&workflow={workflow_id}"
+                final_url = f"{base_url}/client.html?auth={aid}&url={quote(target, safe='')}&workflow={workflow_id}{brand_suffix}"
             else:
-                final_url = f"{base_url}/client.html?auth={aid}&workflow={workflow_id}"
+                final_url = f"{base_url}/client.html?auth={aid}&workflow={workflow_id}{brand_suffix}"
             existing.append({"auth_id": aid, "link": final_url, "target_url": target, "created_at": data.get("created_at")})
     return JSONResponse({"workflow_id": workflow_id, "links": existing, "count": len(existing)})
 
