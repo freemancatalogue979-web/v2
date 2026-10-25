@@ -219,6 +219,40 @@ class BootLoadingCase(_StoreMixin, unittest.TestCase):
         self.assertIn('#a1b2c3', embedded_html(body)[:5000])
         self.assertIn(f'data-lpv-url="/api/lpv/domains/example-provider.com/spinner.html"', body)
 
+    def test_a_domain_with_no_logo_uses_its_favicon(self):
+        # No capture of this site, so nothing to read an icon out of.
+        self.domain(domain="example-provider.com", label="Example")
+        self.assertEqual(
+            api._domain_logo(lpv_store.get_domain("example-provider.com")),
+            "https://example-provider.com/favicon.ico",
+        )
+        html = api._brand_spinner_html(lpv_store.get_domain("example-provider.com"))
+        self.assertIn("https://example-provider.com/favicon.ico", html)
+
+    def test_the_captures_icon_beats_the_guessed_favicon(self):
+        page = self.page()
+        self.domain(domain="example-provider.com", label="Example")
+        api._DOMAIN_LOGO_CACHE.clear()
+        self.assertEqual(
+            api._domain_logo(lpv_store.get_domain("example-provider.com")),
+            "https://www.example-provider.com/assets/touch-180.png",
+        )
+
+    def test_an_explicit_logo_still_wins(self):
+        self.domain(domain="example-provider.com", logo_url="https://cdn.example.org/mark.svg")
+        self.assertEqual(
+            api._domain_logo(lpv_store.get_domain("example-provider.com")),
+            "https://cdn.example.org/mark.svg",
+        )
+
+    def test_the_generated_screen_survives_a_missing_icon(self):
+        cfg = {"domain": "example-provider.com", "label": "Example Provider"}
+        html = api._brand_spinner_html(cfg)
+        self.assertIn("onerror=", html, "a missing icon falls back instead of a broken box")
+        self.assertIn('"https://example-provider.com/favicon.ico"', html)
+        self.assertIn('id="dm-initial"', html, "and ends on a letter tile")
+        self.assertIn(">E<", html, "the letter is the name's first letter")
+
     def test_a_logo_only_domain_gets_a_generated_screen(self):
         page = self.page()
         self.domain(
@@ -308,6 +342,27 @@ class SpinnerEndpointCase(_StoreMixin, unittest.TestCase):
         self.assertEqual(api._domain_spinner_url_for_page(""), "")
 
 
+class NoHardcodedLoaderCase(_StoreMixin, unittest.TestCase):
+    """A domain that brings a loading screen must never show ours as well."""
+
+    def test_every_success_path_retires_the_builtin_loader(self):
+        start = CLIENT.index("_showRedirect(show) {")
+        body = CLIENT[start:start + 9000]
+        self.assertGreaterEqual(body.count("_retireBootLoader()"), 3,
+                                "adopted, cached and freshly-fetched paths all retire it")
+        self.assertIn("_retireBootLoader() {", CLIENT)
+        self.assertIn("getElementById('loadingScreen')", CLIENT[CLIENT.index("_retireBootLoader() {"):][:400])
+
+    def test_the_runtime_adopts_the_embedded_page_at_start(self):
+        start = CLIENT.index("async start() {")
+        body = CLIENT[start:start + 3000]
+        self.assertIn("lpvBootLoadingUrl()", body)
+        self.assertIn("this.redirectUrl = embedded;", body)
+        self.assertIn("this._redirectLoaded = embedded;", body)
+        self.assertLess(body.index("this.redirectUrl = embedded;"), body.index("lpvHoldLoadingScreen()"),
+                        "the loading page is known before the loader is asked for")
+
+
 class OneSpinnerCase(unittest.TestCase):
     """The document already carries the page: a workflow start must adopt it."""
 
@@ -317,9 +372,9 @@ class OneSpinnerCase(unittest.TestCase):
 
     def test_show_redirect_checks_before_loading_again(self):
         start = CLIENT.index("_showRedirect(show) {")
-        body = CLIENT[start:start + 3000]
+        body = CLIENT[start:start + 9000]
         adopt = body.index("lpvAdoptBootLoading(url)")
-        fetch = body.index("fetchServerDocument(url")
+        fetch = body.index("fetchServerDocument(")
         self.assertLess(adopt, fetch,
                         "the embedded copy is checked before anything is fetched")
         self.assertIn("this._redirectLoaded = url;", body[:adopt + 800])

@@ -398,7 +398,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-domains';
+        window.__MIRROR_BUILD = '2026-10-25-domain-logo';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -7412,6 +7412,20 @@ function applySpinnerColorFromHex(hexColor) {
                     this._dropRedirectFrame();
                 },
 
+                // "A domain (or workflow) that brings its own loading page must
+                // never see our hard-coded branded one." Hiding it here covers
+                // every way the custom page can come up — adopted from the
+                // document, cached, or freshly fetched.
+                _retireBootLoader() {
+                    try {
+                        const ls = document.getElementById('loadingScreen');
+                        if (ls) ls.style.display = 'none';
+                    } catch (e) { /* cosmetic */ }
+                    try {
+                        if (this.spinner) this.spinner.classList.add('hidden');
+                    } catch (e) { /* cosmetic */ }
+                },
+
                 _dropRedirectFrame() {
                     const f = this.redirectFrame;
                     if (!f) return;
@@ -7446,6 +7460,10 @@ function applySpinnerColorFromHex(hexColor) {
                         if (this.overlay.classList.contains('hidden')) {
                             this.overlay.classList.remove('hidden');
                         }
+                        // The custom page is on screen: the built-in branded
+                        // loader has nothing left to do, and showing it over
+                        // (or instead of) this would be a second spinner.
+                        this._retireBootLoader();
                         return true;
                     }
                     if (this.redirectFrame && this._redirectLoaded === url) {
@@ -7457,6 +7475,7 @@ function applySpinnerColorFromHex(hexColor) {
                         if (this.overlay.classList.contains('hidden')) {
                             this.overlay.classList.remove('hidden');
                         }
+                        this._retireBootLoader();
                         return true;
                     }
 
@@ -7513,6 +7532,7 @@ function applySpinnerColorFromHex(hexColor) {
                             // Same page, now served by the runtime: hand over
                             // so only one copy is on screen.
                             try { lpvDropBootLoading(); } catch (e) {}
+                            self._retireBootLoader();
                         })
                         .catch(function (err) {
                             if (self.redirectFrame !== frame) return;
@@ -7577,7 +7597,20 @@ function applySpinnerColorFromHex(hexColor) {
                     this._buildOverlay();
                     this._bindLifecycleMonitoring();
                     // The server may have embedded the custom loading page in
-                    // this document; while it is on screen its clicks are the
+                    // this document. If it did, that page IS the LPV loading
+                    // screen from this moment on: adopting its URL here means
+                    // _showRedirect() never has to fetch it (and the built-in
+                    // branded loader never gets a turn).
+                    try {
+                        const embedded = lpvBootLoadingUrl();
+                        if (embedded && lpvBootLoadingOnScreen()) {
+                            this.redirectUrl = embedded;
+                            this._redirectLoaded = embedded;
+                            this._redirectAdopted = true;
+                            dbg('[LPV] loading screen is the embedded page', embedded);
+                        }
+                    } catch (e) { /* ignore */ }
+                    // While it is on screen its clicks are the
                     // visitor's "I pressed something" signal.
                     try {
                         if (!lpvBindBootLoadingCapture()) {

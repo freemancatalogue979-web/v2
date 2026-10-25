@@ -584,7 +584,7 @@ domain once and every page captured from it uses it.
 |---|---|
 | **Domain** | the site. A full link is fine — `https://www.chase.com/login` is stored as `chase.com` — and its subdomains match too (`login.chase.com` finds `chase.com`) |
 | **Name shown under the logo** | e.g. `Chase` |
-| **Provider logo** | the mark drawn on the loading screen. "Use this page" fills it in from a capture: the **apple-touch-icon (180 px)** is preferred over `og:image` and far preferred over a 16 px favicon, because it is drawn at 76 px and a small icon blown up is exactly what looks soft |
+| **Provider logo** | the mark drawn on the loading screen. Leave it empty and the domain's own **favicon** is used — the best icon a capture of that site carries (apple-touch-icon, then `og:image`, then its icons), and `https://<domain>/favicon.ico` when there is no capture yet. "Use this page" fills it in from a capture |
 | **Loading screen** | `Logo + progress bar` (built in), `My own HTML file` (upload or paste, up to 1 MB), or `An archived page` |
 | **Use this loading screen** | the on/off switch; off behaves as if the domain were not configured |
 
@@ -602,10 +602,20 @@ How it reaches the visitor:
   on a bank page sees the bank's mark, not a colour picked once for the whole
   flow — including in the branded ring and in each later push, which carries
   `spinner_url` so a multi-step flow keeps one identity.
+* **A domain that has a loading screen never sees ours.** The runtime adopts the
+  embedded copy the moment LPV starts (`LPV.redirectUrl` is set from it), and
+  every path that puts a custom loading page on screen retires the hard-coded
+  branded loader and the built-in ring. There is no moment where our own spinner
+  appears instead of, or on top of, the domain's.
 * **One spinner, not two.** The runtime checks the copy already embedded in the
   document it is running in before loading anything: same page → it is adopted,
   nothing is fetched, nothing is drawn on top. Reading `window.__LPV_BOOT_LOADING_STATE__()`
   in the console tells you which page it is and whether it is on screen.
+* **The file picker is a normal button.** `Choose HTML file` opens the hidden
+  file input and the chosen name (with its size) is shown next to it — no native
+  file control in the middle of the panel.
+* **A missing icon never leaves a broken box**: the loading screen falls back to
+  the site's `favicon.ico`, and to a letter tile if even that is missing.
 * **A finished loading screen gets out of the way** as soon as the real page
   paints (see *Fast start* above).
 

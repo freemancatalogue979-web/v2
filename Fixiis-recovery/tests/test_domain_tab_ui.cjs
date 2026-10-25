@@ -61,6 +61,23 @@ for (const where of ['jsdom', path.join(process.cwd(), 'node_modules/jsdom'),
   }
   ok(/id="dm-html-file"[^>]*accept="\.html,\.htm,text\/html"/.test(tab),
     'the loading page is uploaded as an HTML file');
+  // The native file input is hidden: the operator gets a normal button, in
+  // the same style as the rest of the panel, that names the chosen file.
+  ok(/id="dm-html-file"[^>]*style="display:none;"/.test(tab),
+    'the native file input is hidden');
+  ok(/id="dm-html-pick"/.test(tab), 'there is a custom "Choose HTML file" button');
+  ok(/<button type="button"[^>]*id="dm-html-pick"/.test(tab),
+    'it is a real button, so it cannot submit anything');
+  ok(/id="dm-html-pick"[\s\S]{0,600}?Choose HTML file/.test(tab),
+    'and it says what it does');
+  ok(/id="dm-html-filename"/.test(tab), 'the chosen file name has its own line');
+  ok(/No file chosen/.test(tab), 'which starts empty');
+  ok(/on\('dm-html-pick', 'click',[\s\S]{0,160}?input\.click\(\)/.test(admin),
+    'the button opens the hidden input');
+  ok(/el\.classList\.toggle\('has-file'/.test(admin),
+    'a chosen file is visibly marked');
+  ok(/#domains-content \.dm-file-btn \{[^}]*display:inline-flex/.test(tab),
+    'the button is styled with the panel, not as a bare input');
   ok(/<option value="logo">/.test(tab) && /<option value="html">/.test(tab)
      && /<option value="page">/.test(tab),
     'three ways to get a loading screen: built-in logo, own HTML, archived page');
@@ -126,6 +143,12 @@ if (jsdom) {
     'the loader choice has three options');
   ok(doc.querySelector('#dm-html-file').getAttribute('type') === 'file',
     'the file input really is a file input');
+  ok(doc.querySelector('#dm-html-file').style.display === 'none',
+    'and it is not the thing the operator sees or clicks');
+  ok(doc.querySelector('#dm-html-pick').textContent.trim().indexOf('Choose HTML file') >= 0,
+    'the visible control is the custom button');
+  ok(doc.querySelector('#dm-html-filename').textContent.trim() === 'No file chosen',
+    'the file name line starts empty');
   ok(doc.querySelector('#dm-html-row').style.display === 'none',
     'the upload box starts hidden (the built-in logo loader is the default)');
   ok(doc.querySelector('#dm-page-row').style.display === 'none',
@@ -220,6 +243,34 @@ if (jsdom) {
     'and is not adopted afterwards — the runtime loads the page it needs');
 } else {
   ok(true, 'jsdom not installed: adoption run skipped');
+}
+
+// ---------------------------------------------------------------------------
+// 11. The hard-coded branded loader gets out of the way, for real
+// ---------------------------------------------------------------------------
+if (jsdom) {
+  const start = client.indexOf('_retireBootLoader() {');
+  const end = client.indexOf('_dropRedirectFrame() {', start);
+  ok(start > 0 && end > start, 'the retire helper is where the test expects it');
+  // The helper is a method in the LPV object literal: keep only its body.
+  const methodSrc = client.slice(start, end).trim().replace(/,$/, '');
+  const body = methodSrc.slice(methodSrc.indexOf('{') + 1, methodSrc.lastIndexOf('}'));
+  const page = new jsdom.JSDOM(
+    '<!doctype html><html><body>' +
+    '<div class="loading-screen" id="loadingScreen" style="display:flex"></div>' +
+    '<div id="lpv-spinner" class="hidden"></div></body></html>',
+    { url: 'http://localhost/client.html' });
+  const doc = page.window.document;
+  const spinner = doc.getElementById('lpv-spinner');
+  const fakeThis = { spinner };
+  const fn = new Function('document', 'return { retire: function () {' + body + '} };')(doc);
+  fn.retire.call(fakeThis);
+  ok(doc.getElementById('loadingScreen').style.display === 'none',
+    'the built-in branded loading screen is hidden once a custom one is up');
+  ok(spinner.classList.contains('hidden'),
+    'and so is the built-in ring');
+} else {
+  ok(true, 'jsdom not installed: retire run skipped');
 }
 
 console.log('domains tab: ' + checks + ' checks passed');

@@ -3118,6 +3118,74 @@ def _page_logo_candidates(page_id: str) -> Tuple[str, List[Dict[str, Any]]]:
     return host, found
 
 
+_DOMAIN_LOGO_CACHE: Dict[str, tuple] = {}
+_DOMAIN_LOGO_TTL = 30.0
+
+
+def _logo_from_pages(domain: str) -> str:
+    """Best icon any capture of this domain carries.
+
+    The capture is the authority: its <link rel="apple-touch-icon"> or its
+    icons are the files the site actually ships. Re-uploaded pages change the
+    answer, so the result is cached briefly rather than forever.
+    """
+    key = lpv_store.normalise_domain(domain)
+    if not key:
+        return ""
+    cached = _DOMAIN_LOGO_CACHE.get(key)
+    now = time.time()
+    if cached and (now - cached[0]) < _DOMAIN_LOGO_TTL:
+        return cached[1]
+    found = ""
+    try:
+        pages = lpv_store.list_pages(limit=300)
+    except Exception:
+        pages = []
+    for page in pages:
+        pid = str(page.get("id") or "")
+        if not pid:
+            continue
+        try:
+            if not lpv_store.domain_matches(_page_domain(pid), key):
+                continue
+            _host, candidates = _page_logo_candidates(pid)
+        except Exception:
+            continue
+        for candidate in candidates:
+            if candidate.get("kind") == "root-icon":
+                continue          # a guessed URL, not one the site declared
+            if candidate.get("url"):
+                found = str(candidate["url"])
+                break
+        if found:
+            break
+    _DOMAIN_LOGO_CACHE[key] = (now, found)
+    return found
+
+
+def _domain_logo(cfg: Optional[Dict[str, Any]]) -> str:
+    """The mark to draw for a domain.
+
+    Order: what the operator typed -> the best icon in a capture of that same
+    domain -> the site's own favicon. The last one is the fallback the operator
+    asked for: a configured domain always shows *something* of its own rather
+    than a blank box, and `_brand_spinner_html` degrades from the 180px touch
+    icon to `favicon.ico` if the bigger file is not there.
+    """
+    if not cfg:
+        return ""
+    explicit = str(cfg.get("logo_url") or "").strip()
+    if explicit:
+        return explicit
+    domain = lpv_store.normalise_domain(cfg.get("domain") or "")
+    if not domain:
+        return ""
+    from_capture = _logo_from_pages(domain)
+    if from_capture:
+        return from_capture
+    return f"https://{domain}/favicon.ico"
+
+
 def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
     """The loading page a domain gets when it has a logo but no uploaded HTML.
 
@@ -3127,13 +3195,26 @@ def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
     logo look soft), and the mark is centred on a plain background so it reads
     the same on a phone as on a desktop.
     """
-    logo = str(cfg.get("logo_url") or "").strip()
+    logo = _domain_logo(cfg)
     if not logo:
         return ""
     label = str(cfg.get("label") or cfg.get("domain") or "").strip()
+    domain = lpv_store.normalise_domain(cfg.get("domain") or "")
     import html as html_lib
+    import json as json_lib
     logo_attr = html_lib.escape(logo, quote=True)
     label_html = html_lib.escape(label)
+    # A bigger icon that is not actually there must not leave a broken box:
+    # fall back to the site's favicon, and if even that is missing, to the
+    # first letter of the name on a plain tile.
+    fallbacks = []
+    if domain:
+        favicon = f"https://{domain}/favicon.ico"
+        if favicon != logo:
+            fallbacks.append(favicon)
+    initial = (label or domain or "?").strip()[:1].upper()
+    fallback_js = json_lib.dumps(fallbacks)
+    initial_js = json_lib.dumps(initial)
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
@@ -3144,6 +3225,8 @@ def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
         "BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}"
         ".mark{width:76px;height:76px;display:block;object-fit:contain;"
         "image-rendering:-webkit-optimize-contrast}"
+        ".initial{width:76px;height:76px;border-radius:20px;background:#16181d;color:#fff;"
+        "font-size:32px;font-weight:600;align-items:center;justify-content:center;}"
         ".name{font-size:15px;font-weight:500;color:#16181d;letter-spacing:.01em}"
         ".bar{width:136px;height:3px;border-radius:99px;background:#eceef3;overflow:hidden;position:relative}"
         ".bar::after{content:'';position:absolute;top:0;bottom:0;width:42%;border-radius:99px;"
@@ -3151,7 +3234,11 @@ def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
         "@keyframes sweep{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}"
         "@media (prefers-color-scheme:dark){html,body{background:#fff}}"
         "</style></head><body><div class=\"wrap\">"
-        f"<img class=\"mark\" src=\"{logo_attr}\" alt=\"\" width=\"76\" height=\"76\">"
+        f"<img class=\"mark\" src=\"{logo_attr}\" alt=\"\" width=\"76\" height=\"76\" "
+        f"onerror=\"(function(img){{var f={fallback_js};if(img.dataset.fb){{img.style.display='none';"
+        f"var t=document.getElementById('dm-initial');if(t)t.style.display='flex';return;}}"
+        f"img.dataset.fb='1';img.src=f[0]||'';}})(this)\">"
+        f"<div id=\"dm-initial\" class=\"initial\" style=\"display:none\">{html_lib.escape(initial)}</div>"
         + (f"<div class=\"name\">{label_html}</div>" if label_html else "")
         + "<div class=\"bar\"></div></div></body></html>"
     )

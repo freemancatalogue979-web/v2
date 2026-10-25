@@ -9110,6 +9110,12 @@
                         border-color:rgba(122,162,255,0.55); background:rgba(255,255,255,0.07); }
                     #domains-content textarea { min-height:92px; resize:vertical; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; }
                     #domains-content .dm-hint { font-size:11.5px; opacity:.55; margin-top:5px; line-height:1.45; }
+                    #domains-content .dm-file { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+                    #domains-content .dm-file-btn { display:inline-flex; align-items:center; gap:7px; }
+                    #domains-content .dm-file-btn svg { opacity:.8; }
+                    #domains-content .dm-file-name { font-size:12px; opacity:.6; min-width:0;
+                        overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+                    #domains-content .dm-file-name.has-file { opacity:.9; color:#b9cdff; }
                     #domains-content .dm-split { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
                     @media (max-width: 520px) { #domains-content .dm-split { grid-template-columns:1fr; } }
                     #domains-content .dm-actions { display:flex; gap:9px; flex-wrap:wrap; margin-top:14px; }
@@ -9191,7 +9197,18 @@
 
                         <div class="dm-row" id="dm-html-row" style="display:none;">
                             <label>HTML file</label>
-                            <input type="file" id="dm-html-file" accept=".html,.htm,text/html" style="font-size:12.5px;">
+                            <!-- A native file input is ugly and looks nothing
+                                 like the rest of this panel, so it is hidden
+                                 and driven by a normal button that shows the
+                                 chosen file's name. -->
+                            <input type="file" id="dm-html-file" accept=".html,.htm,text/html" style="display:none;">
+                            <div class="dm-file">
+                                <button type="button" class="dm-btn dm-file-btn" id="dm-html-pick">
+                                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+                                    Choose HTML file
+                                </button>
+                                <span class="dm-file-name" id="dm-html-filename">No file chosen</span>
+                            </div>
                             <textarea id="dm-html" placeholder="…or paste the HTML here" spellcheck="false"></textarea>
                             <div class="dm-hint">Up to 1 MB. Scripts run inside their own frame, so the file behaves as it would in a browser.</div>
                         </div>
@@ -10341,6 +10358,7 @@
             set('dm-html', '');
             const file = dmEl('dm-html-file');
             if (file) file.value = '';
+            domainsFileName('');
             const enabled = dmEl('dm-enabled');
             if (enabled) enabled.checked = true;
             const pick = dmEl('dm-page-pick');
@@ -10363,6 +10381,9 @@
             set('dm-spinner-kind', domainsSpinnerKind(item));
             set('dm-spinner-page', item.spinner_page_id || '');
             set('dm-html', '');
+            const fileInput = dmEl('dm-html-file');
+            if (fileInput) fileInput.value = '';
+            domainsFileName(item.has_spinner_html ? 'The uploaded file is loaded below' : '');
             const enabled = dmEl('dm-enabled');
             if (enabled) enabled.checked = !!item.enabled;
             const title = dmEl('dm-form-title');
@@ -10412,9 +10433,18 @@
             }
         }
 
+        function domainsFileName(text) {
+            const el = dmEl('dm-html-filename');
+            if (!el) return;
+            const name = String(text || '').trim() || 'No file chosen';
+            el.textContent = name;
+            el.classList.toggle('has-file', name !== 'No file chosen');
+        }
+
         function domainsReadFile(file) {
-            if (!file) return;
+            if (!file) { domainsFileName(''); return; }
             if (file.size > 1024 * 1024) {
+                domainsFileName('');
                 dmNote('That file is larger than 1 MB.', 'err');
                 return;
             }
@@ -10424,7 +10454,8 @@
                 DOMAINS.html = text;
                 const box = dmEl('dm-html');
                 if (box) box.value = text;
-                dmNote('Loaded ' + file.name + ' (' + Math.round(text.length / 1024) + ' KB).', 'ok');
+                domainsFileName(file.name + ' · ' + Math.max(1, Math.round(text.length / 1024)) + ' KB');
+                dmNote('Loaded ' + file.name + '.', 'ok');
             };
             reader.onerror = () => dmNote('Could not read that file.', 'err');
             reader.readAsText(file);
@@ -10513,6 +10544,10 @@
             on('dm-spinner-kind', 'change', domainsSyncKindRows);
             on('dm-logo', 'input', domainsSyncLogoPreview);
             on('dm-page-pick', 'change', domainsFillFromPage);
+            on('dm-html-pick', 'click', () => {
+                const input = dmEl('dm-html-file');
+                if (input) input.click();
+            });
             on('dm-html-file', 'change', (e) => domainsReadFile(e.target && e.target.files && e.target.files[0]));
             domainsSyncKindRows();
             domainsSyncLogoPreview();
