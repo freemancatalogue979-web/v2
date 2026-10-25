@@ -717,9 +717,11 @@ hostname guess from a favicon service, and not the title from five minutes ago.
 | — and when the site changes either one, the change is followed | "Inbox" → "Inbox (3)", an unread-badge icon, a login flow renaming the tab |
 
 **A bad icon URL can no longer blank the tab.** The chain probes each candidate
-with an `Image()` and takes the first one that actually loads (2.5 s per
-candidate, so a host that accepts and never answers cannot freeze it on a blank
-tab). Two details are the reason this used to fail outright:
+with an `Image()` and takes the first one that actually loads — 1.2 s per
+candidate, and a 1.5 s deadline for the chain as a whole, after which the inline
+default is already up. A candidate that arrives later still replaces it, so the
+visitor sees the site's icon as soon as it is known and a real icon rather than
+a hole until then. Two details are the reason this used to fail outright:
 
 * **The base URL.** The mirrored document lives at `blob:https://…`, so its
   `baseURI` **is** that blob URL. Resolving a relative icon against it produced
@@ -777,16 +779,30 @@ __MIRROR_TAB_STATE__()
 //   icon: "…/assets/<hash>.png", appliedIcon: "…", branded: false }
 ```
 
-To see the candidates the tab chose from, in the same console:
+Two more diagnostics live in the same console — what the tab chose from, and a
+forced re-sync onto the page that is on screen:
 
 ```js
+__mirrorSyncTabFrom__()                 // re-read the live page, apply, report
 __mirrorIconCandidates__(frame.contentDocument)
 // [ "…/assets/<hash>.svg", "https://bank.example/favicon.ico",
 //   "https://www.google.com/s2/favicons?domain=bank.example&sz=64",
 //   "data:image/svg+xml;utf8,…" ]
 ```
 
-Tests: `node tests/test_tab_identity.cjs` (99 checks — the tab block, the icon
+It also runs end to end: the tests boot the real `client.html` in a DOM
+(`tests/` covers the block in a `vm`; a manual jsdom boot of the served page
+shows the same), so the chain, the fresh `<link>` and the never-blank floor are
+verified against the page that actually ships.
+
+The page's own boot icon had the same disease in a different place: it was an
+**unencoded** SVG data URI (`href="data:image/svg+xml,<svg …>"`), which is at the
+mercy of URL parsing — and a favicon whose URL fails to parse is a blank tab
+before the mirror has said anything at all. It is now the same percent-encoded
+globe, so a visit shows a deliberate mark from the first paint and the site's
+own icon replaces it as soon as it is known.
+
+Tests: `node tests/test_tab_identity.cjs` (105 checks — the tab block, the icon
 chain, the visit-flag classifier and the capture-page observer all run for
 real).
 

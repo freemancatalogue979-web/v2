@@ -355,6 +355,16 @@ function makeSandbox(outer, mirror, extras = {}) {
   // The guaranteed icon is inline, so it needs no network and cannot 404.
   const def = /const MIRROR_DEFAULT_ICON = '(data:image\/svg\+xml;utf8,)'/.exec(source);
   ok(!!def, 'there is a hard-coded default icon');
+  // The page's own boot icon has to be a VALID data URI too: an unencoded SVG
+  // inside the attribute is at the mercy of URL parsing, and a favicon that
+  // fails to parse is a blank tab ("nothing shows").
+  const bootLink = /<link rel="icon" href="(data:image\/svg\+xml[^"]*)"/.exec(
+    source.slice(0, source.indexOf('<title id="pageTitle">')));
+  ok(!!bootLink, 'client.html declares a boot icon');
+  ok(!/[<>"']/.test(bootLink[1].slice(bootLink[1].indexOf(',') + 1)),
+    'the boot icon payload is percent-encoded (no raw < > " or \' in the URL)');
+  ok(/^data:image\/svg\+xml;utf8,%3Csvg/.test(bootLink[1]),
+    'and it is the same inline globe the mirror falls back to');
   ok(/MIRROR_DEFAULT_ICON[\s\S]{0,400}encodeURIComponent/.test(source),
     'it is an inline SVG data URI (no request, no 404, no hotlink block)');
 
@@ -396,11 +406,28 @@ function makeSandbox(outer, mirror, extras = {}) {
     'a hanging icon does not paint anything yet');
   let armed = 0;
   for (let round = 0; round < 8; round++) {
-    const pending = (sbC.__timers || []).filter((t) => t.ms === 2500 && !t.done);
+    const pending = (sbC.__timers || []).filter((t) => !t.done && t.ms <= 1200);
     armed += pending.length;
     pending.forEach((t) => { t.done = true; t.fn(); });
   }
-  ok(armed >= 1, 'a 2.5 s guard is armed for the hung icon');
+  ok(armed >= 1, 'a short guard is armed for a hung icon (never a frozen chain)');
+
+  // ...and there is a chain deadline, so a page full of hung icons cannot leave
+  // the tab blank while they all time out one after another.
+  const outerDl = makeOuter();
+  const sbDl = makeSandbox(outerDl, makeMirror({ title: 'All hang', links: [{ rel: 'icon', href: '/h1.png' }] }),
+    { iconLoad: () => 'hang' });
+  sbDl.syncMirrorTabMeta(sbDl.frame.contentDocument);
+  const deadline = (sbDl.__timers || []).filter((t) => t.ms === 1500);
+  ok(deadline.length === 1, 'the chain has an overall deadline');
+  deadline[0].fn();
+  const hrefDl = outerDl.document.getElementById('shf-mirror-favicon').getAttribute('href');
+  ok(/^data:image\/svg\+xml/.test(hrefDl),
+    'when nothing has loaded by then, the tab already shows the default icon');
+  // A candidate that loads later still upgrades the tab.
+  sbDl.applyMirrorFavicon('https://bank.example/late.png');
+  ok(outerDl.document.getElementById('shf-mirror-favicon').getAttribute('href')
+    === 'https://bank.example/late.png', 'and a late-arriving icon still replaces it');
   const hrefC = outerC.document.getElementById('shf-mirror-favicon').getAttribute('href');
   ok(/^data:image\/svg\+xml/.test(hrefC), 'after the timeout the chain moves on instead of stopping');
 

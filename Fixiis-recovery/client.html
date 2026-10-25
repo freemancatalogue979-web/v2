@@ -52,7 +52,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="renderer" content="webkit">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23333'/><rect x='1' y='1' width='14' height='14' rx='2' fill='none' stroke='%23666' stroke-width='1'/><circle cx='5' cy='8' r='1.5' fill='%23666'/></svg>">
+    <!-- The boot icon is the mirror's own fallback mark, percent-encoded:
+         an unencoded SVG data URI is at the mercy of URL parsing, and a
+         favicon that fails to parse is a blank tab. -->
+    <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2032%2032%27%3E%3Crect%20width%3D%2732%27%20height%3D%2732%27%20rx%3D%277%27%20fill%3D%27%2312141a%27%2F%3E%3Ccircle%20cx%3D%2716%27%20cy%3D%2716%27%20r%3D%278.5%27%20fill%3D%27none%27%20stroke%3D%27%239aa3b8%27%20stroke-width%3D%272%27%2F%3E%3Cpath%20d%3D%27M7.5%2016h17M16%207.5c3.4%203.6%203.4%2013.4%200%2017M16%207.5c-3.4%203.6-3.4%2013.4%200%2017%27%20fill%3D%27none%27%20stroke%3D%27%239aa3b8%27%20stroke-width%3D%271.6%27%2F%3E%3C%2Fsvg%3E">
     <title id="pageTitle">Loading...</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12667,12 +12670,26 @@ function applySpinnerColorFromHex(hexColor) {
             // hotlink-protected CDN, http: on an https page) must not leave
             // the tab blank: the list always ends with an inline SVG, so this
             // function always sets *something*.
+            // A candidate that has neither loaded nor failed after this long is
+            // treated as failed; after the deadline the tab gets the inline
+            // default so it is never blank while the chain is still trying.
+            const MIRROR_ICON_TIMEOUT_MS = 1200;
+            const MIRROR_ICON_CHAIN_DEADLINE_MS = 1500;
+
             function applyMirrorIconList(list) {
                 if (!list || !list.length || mirrorTabIsBranded()) return;
                 // A newer page supersedes an older probe chain: a slow candidate
                 // from the previous page must never win over the new page's
                 // first one.
                 const seq = (mirrorTabState.iconSeq = (mirrorTabState.iconSeq || 0) + 1);
+                // Nothing is showing yet? Then show the floor value now rather
+                // than leave a blank tab while the network decides.
+                if (!mirrorTabState.icon) {
+                    setTimeout(function () {
+                        if (seq !== mirrorTabState.iconSeq || mirrorTabState.icon) return;
+                        try { applyMirrorFavicon(MIRROR_DEFAULT_ICON); } catch (e) { /* ignore */ }
+                    }, MIRROR_ICON_CHAIN_DEADLINE_MS);
+                }
                 let i = 0;
                 const next = () => {
                     if (seq !== mirrorTabState.iconSeq) return;
@@ -12694,7 +12711,7 @@ function applySpinnerColorFromHex(hexColor) {
                         probe.onerror = fail;
                         // A hung icon (a host that accepts and never answers)
                         // must not freeze the chain on a blank tab.
-                        setTimeout(fail, 2500);
+                        setTimeout(fail, MIRROR_ICON_TIMEOUT_MS);
                         probe.src = href;
                     } catch (e) { fail(); }
                 };
@@ -12784,6 +12801,17 @@ function applySpinnerColorFromHex(hexColor) {
                         branded: mirrorTabIsBranded()
                     };
                 } catch (e) { return { error: String(e) }; }
+            };
+
+            // Force the tab back onto the page that is on screen, and report
+            // what it now holds. Support one-liner: a tab that shows the wrong
+            // (or no) icon can be re-synced without reloading the visit.
+            window.__mirrorSyncTabFrom__ = function (doc) {
+                try {
+                    const d = doc || (frame && frame.contentDocument) || null;
+                    if (d) syncMirrorTabMeta(d);
+                } catch (e) { /* ignore */ }
+                return window.__MIRROR_TAB_STATE__();
             };
 
             // "Which icons did the tab choose between, and in what order?" —
