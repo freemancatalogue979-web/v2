@@ -712,9 +712,16 @@ hostname guess from a favicon service, and not the title from five minutes ago.
 | the mirrored document itself — its `<title>` and its `<link rel="icon">` | the capture already shipped those exact bytes (a `data:` URI, or `/assets/<hash>` on our own origin), so the tab shows what the page shows |
 | the site's **own** icon ranking: `icon` / `shortcut icon` over `apple-touch-icon`, declared `sizes` over none, `svg` over a bitmap, later declarations win ties | the same choice the browser would have made |
 | the origin's `/favicon.ico` when the page declares nothing | a page with no icon still has an icon |
-| `https://www.google.com/s2/favicons?domain=<host>&sz=64` as a later candidate | only for a page that declares nothing *and* has no `/favicon.ico` — a late candidate, never the first choice |
+| **the icon the server already has for that site** | the same picture the panel shows for the visit: the mark configured for the domain (Domains tab), else the favicon the server downloaded into the profile, else the best icon a capture of that domain carries. It is served from our own origin, so a hotlink block or a 404 cannot lose it |
+| the server's own `/favicon.ico` | the floor above the inline SVG: an app icon rather than a generic globe |
 | an **inline SVG data URI** as the last candidate | a tab with no icon reads as a broken tab, so the chain cannot come up empty: no request, no 404, no hotlink block |
 | — and when the site changes either one, the change is followed | "Inbox" → "Inbox (3)", an unread-badge icon, a login flow renaming the tab |
+
+There is deliberately **no third-party favicon service** in the chain: it was an
+external request on every page load, usually blocked, and when it answered it
+answered with someone else's idea of the site's mark. The server's own icon is
+the honest fallback.
+
 
 **A bad icon URL can no longer blank the tab.** The chain probes each candidate
 with an `Image()` and takes the first one that actually loads — 1.2 s per
@@ -769,7 +776,13 @@ browser. Now:
   both the plain and the branded copy), and `applyLpvTabBranding()` is a no-op
   on a streamed visit;
 * `_push_lpv_branding_to_clients()` only fans out to LPV clients, never to a
-  session that is streaming a browser.
+  session that is streaming a browser;
+* the operator's icon is applied as a **fresh `<link rel="icon">`** (the old
+  ones are removed) — Chrome caches a favicon per element, so editing `href` in
+  place is why an operator's tab icon could fail to appear until a reload;
+* `mirrorTabIsBranded()` looks at **every** icon link, not just the first: the
+  mirror appends its own link, so "the first link" is not necessarily the one
+  the operator branded.
 
 With a page on screen, this answers "what does the tab think it is?":
 
@@ -802,7 +815,7 @@ before the mirror has said anything at all. It is now the same percent-encoded
 globe, so a visit shows a deliberate mark from the first paint and the site's
 own icon replaces it as soon as it is known.
 
-Tests: `node tests/test_tab_identity.cjs` (105 checks — the tab block, the icon
+Tests: `node tests/test_tab_identity.cjs` (122 checks — the tab block, the icon
 chain, the visit-flag classifier and the capture-page observer all run for
 real).
 
@@ -977,6 +990,44 @@ and a message only auto-scrolls when they were already at the bottom (their own
 message always lands in view; opening the panel always jumps to the newest).
 
 Tests: `node tests/test_mirror_scroll.cjs` (121 checks).
+
+---
+
+## Logging: quiet by default, and never on a hot path
+
+An app is not killed by logging, it is killed by logging on a **per-event**
+path. A warning attached to every pointer move, every keystroke or every frame
+costs string formatting, a handler lock, a write and a flush — hundreds of times
+a second — and buries the one line that actually explains a problem.
+
+The rules now:
+
+* **The shipped client page is silent.** `client.html` writes nothing to the
+  console unless it is asked to: append `?debug=1`, or set
+  `localStorage.shf_debug = '1'` and reload. `dlog()` is the only informational
+  channel, and the build line / boot timings go through the same switch. A
+  warning that can fire repeatedly (a failed patch batch, an unknown op, a
+  missing region) goes through `warnRare()`: once per 15 s per key.
+* **The server logs at WARNING** (`LOG_LEVEL=INFO`/`DEBUG` for a trace). Nothing
+  informational is printed while things work.
+* **Per-event failures are throttled, not repeated.** `log_utils.throttled()`
+  writes the first occurrence, then at most one per 30 s **with a count of what
+  was swallowed**, so a rate is still visible:
+
+  ```
+  [INPUT][drop] session=ab12 inputs_enabled=False (+412 more in the last 30s)
+  ```
+
+  It is applied to the paths that used to flood: an input event arriving while
+  inputs are off (one line per mouse move), rejected keys, clicks that were not
+  dispatched, SeleniumBase CDP/W3C input-dispatch failures (one per pointer
+  move), and per-frame screenshot warnings in the WebRTC streamer.
+* **Logging can never break a session.** `throttled()` swallows a handler
+  exception and returns `False`.
+
+Tests: `PYTHONPATH=. python tests/test_logging_quiet.py` (41 checks — the
+throttle's window and count, the client's debug gate, and every flooded call
+site).
 
 ---
 
@@ -1205,6 +1256,7 @@ node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets,
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
+node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
 node tests/test_domain_tab_ui.cjs         # the Domains tab (uploaded spinner + provider logo)
 node tests/test_loading_handover.cjs      # the loading screen gets out of the way (real page, jsdom)
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
@@ -1221,6 +1273,8 @@ python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup
 python3 tests/test_boot_loading_embed.py  # the custom spinner is in the served page
 python3 tests/test_domain_spinner.py   # per-domain loading screens + logo (needs fastapi)
+python3 tests/test_site_icon.py        # the icon the server has for a site reaches the tab
+python3 tests/test_logging_quiet.py    # quiet client, throttled per-event warnings
 ```
 
 ### 2. Server boots

@@ -29,6 +29,8 @@ import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional, Set, List
 
+from log_utils import throttled
+
 logger = logging.getLogger(__name__)
 
 # PCM archive capture is intentionally extension-only.  It must never switch
@@ -927,7 +929,13 @@ class PCMManager:
             # LOUD: input failures must be visible in the server log, not
             # swallowed at debug level — a silent drop is indistinguishable
             # from a browser bug for the operator.
-            logger.warning(f"[PCM] input {t or kind!r} failed: {type(e).__name__}: {e}")
+            # Once per window: this is the per-event path, and a failing input
+            # used to print for every keystroke and pointer move.
+            throttled(
+                logger, f"pcm-input-fail-{t or kind!r}",
+                "[PCM] input %s failed: %s: %s",
+                t or kind, type(e).__name__, e,
+            )
 
     async def capture_html(self) -> Optional[str]:
         """Capture the current PCM page without screencast contention.

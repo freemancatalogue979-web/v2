@@ -3289,6 +3289,93 @@ def _domain_logo(cfg: Optional[Dict[str, Any]]) -> str:
     return f"https://{domain}/favicon.ico"
 
 
+# The icon the server itself has for a site, per (profile, domain). Short TTL:
+# a site's icon changes rarely, and this is read once per connection.
+_SITE_ICON_CACHE: Dict[str, tuple] = {}
+_SITE_ICON_TTL = 20.0
+
+
+def _profile_site_favicon(user_id: str, domain: str) -> str:
+    """The favicon THIS profile already stores for a domain, as a URL.
+
+    ``add_visited_site()`` downloads a site's icon into
+    ``<profile>/favicons/<domain_with_underscores>.png`` and records it in
+    ``visited_sites.json``; that file is what the panel shows in Visited sites.
+    Serving it from our own origin means the client's tab gets the very same
+    picture with no hotlinking, CORS or 404 involved.
+    """
+    if not user_id or not domain:
+        return ""
+    try:
+        base = Path(
+            getattr(getattr(session_manager, "config", None), "profile_base_path", "")
+            or (Path(__file__).parent / "profiles")
+        )
+        prof = base / str(user_id)
+        sites_file = prof / "visited_sites.json"
+        if not sites_file.exists():
+            return ""
+        with open(sites_file, "r", encoding="utf-8") as fh:
+            sites = json.load(fh)
+        if not isinstance(sites, list):
+            return ""
+        want = lpv_store.normalise_domain(domain)
+        for item in sites:
+            if not isinstance(item, dict):
+                continue
+            if lpv_store.normalise_domain(item.get("domain") or "") != want:
+                continue
+            local = str(item.get("favicon_local") or "").strip()
+            name = os.path.basename(local)
+            if name and (prof / "favicons" / name).exists():
+                return f"/api/profiles/favicons/{name}"
+            break
+    except Exception:
+        pass
+    return ""
+
+
+def _site_icon_url(domain: str, user_id: str = "") -> str:
+    """The icon the SERVER has for a site — the one the panel shows.
+
+    Order, and why:
+
+    * the mark the operator configured for the domain (Domains tab) — an
+      explicit choice always wins;
+    * the favicon the server downloaded for this profile's visit — already on
+      our own origin, so it cannot be blocked the way a remote icon can;
+    * the best icon a capture of that domain carries — the site's own bytes.
+
+    Returns a server-relative path or an absolute URL (the client resolves
+    either against the API origin). Empty means "the server knows nothing",
+    and the visitor's tab falls back to the page's own icons.
+    """
+    host = lpv_store.normalise_domain(domain or "")
+    if not host:
+        return ""
+    key = f"{user_id}|{host}"
+    now = time.time()
+    hit = _SITE_ICON_CACHE.get(key)
+    if hit and (now - hit[0]) < _SITE_ICON_TTL:
+        return hit[1]
+    url = ""
+    try:
+        cfg = lpv_store.find_domain(host)
+        if cfg:
+            url = str(_domain_logo(cfg) or "").strip()
+    except Exception:
+        url = ""
+    if not url:
+        url = _profile_site_favicon(user_id, host)
+    if not url:
+        try:
+            url = str(_logo_from_pages(host) or "").strip()
+        except Exception:
+            url = ""
+    _SITE_ICON_CACHE[key] = (now, url)
+    return url
+
+
 def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
     """The loading page a domain gets when it has a logo but no uploaded HTML.
 
@@ -10584,9 +10671,19 @@ async def websocket_endpoint(websocket: WebSocket):
         viewport_width = viewport.get('width', 1920)
         is_desktop_mode = viewport_width >= 768
 
+        # The icon the panel itself shows for this site: the visitor's tab
+        # carries the same picture, so "client.html has no favicon" cannot
+        # happen for a site the server already knows.
+        try:
+            _site_icon = _site_icon_url(
+                getattr(session, "current_domain", "") or url, user_id
+            )
+        except Exception:
+            _site_icon = ""
         await websocket.send_json({
             "type": "session_info",
             "session_id": session_id,
+            "site_icon": _site_icon,
             "user_id": session.user_id if hasattr(session, 'user_id') else user_id,
             "domain": session.current_domain if hasattr(session, 'current_domain') else "",
             "viewport": viewport,

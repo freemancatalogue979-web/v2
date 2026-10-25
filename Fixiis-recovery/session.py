@@ -18,6 +18,7 @@ import logging
 
 # Import frame pools for independent per-session resources
 from frame_pool import FramePool, PacketPool, StreamingPipeline
+from log_utils import throttled
 from dom_capture import DOMCaptureSession, LIVE_DELTA, is_redraw_only_host
 
 
@@ -2243,14 +2244,19 @@ class NeoStreamingSession:
     async def handle_input(self, input_data: Dict):
         """Handle remote-browser input using the client CSS pixel coordinates directly."""
         if not self.is_active or not self.page:
-            logger.warning(
+            # Per-event path: one line per window, not one per mouse move.
+            throttled(
+                logger, "input-drop-inactive-" + str(self.session_id),
                 "[INPUT][drop] session=%s active=%s page=%s",
                 self.session_id, self.is_active, bool(self.page),
             )
             return
 
         if not self.inputs_enabled:
-            logger.warning("[INPUT][drop] session=%s inputs_enabled=False", self.session_id)
+            throttled(
+                logger, "input-drop-disabled-" + str(self.session_id),
+                "[INPUT][drop] session=%s inputs_enabled=False", self.session_id,
+            )
             return
 
         event = ''
@@ -2321,7 +2327,8 @@ class NeoStreamingSession:
                 if self.dom_capture:
                     handled = await self.dom_capture.handle_click(selector=selector, mid=mid)
                     if not handled:
-                        logger.warning(
+                        throttled(
+                            logger, "input-click-miss-" + str(self.session_id),
                             "[INPUT][click] not dispatched session=%s backend=%s "
                             "page_id=%s selector=%s mid=%s",
                             self.session_id, backend, self.active_page_id, selector, mid,
@@ -2506,7 +2513,8 @@ class NeoStreamingSession:
         except Exception as e:
             error_msg = str(e)
             if "Unknown key" in error_msg or "Unidentified" in error_msg:
-                logger.warning(
+                throttled(
+                    logger, "input-key-rejected-" + str(self.session_id),
                     "[INPUT][key-rejected] session=%s backend=%s event=%s error=%s",
                     self.session_id,
                     getattr(self.get_active_page(), "_backend_name", "unknown"),

@@ -4105,6 +4105,20 @@ class DOMCaptureSession:
                         msg["title"] = _cur_title
             except Exception:
                 pass
+            # The icon the SERVER has for this site — the mark the operator
+            # configured for the domain, or the favicon the server already
+            # downloaded for this profile. The client's tab uses it when the
+            # page's own <link rel=icon> cannot be reached (a hotlink block, a
+            # 404, an http: icon on an https: mirror), so a visit never falls
+            # straight through to a blank/generic tab. Late import: api imports
+            # this module, so the reference can only be resolved at call time.
+            try:
+                import api as _api_mod
+                _site_icon = _api_mod._site_icon_url(url)
+                if _site_icon:
+                    msg["site_icon"] = _site_icon
+            except Exception:
+                pass
             if capture_delta_active:
                 # Snapshot-preferred hosts use the same patch channel between
                 # full fidelity/recovery documents; the client keeps the

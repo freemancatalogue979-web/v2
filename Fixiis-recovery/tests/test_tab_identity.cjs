@@ -142,7 +142,16 @@ function makeSandbox(outer, mirror, extras = {}) {
     String,
     Math,
     parseFloat,
-    state: extras.state || {},
+    state: extras.state || { siteIcon: '', siteIconHost: '' },
+    API_ORIGIN: extras.API_ORIGIN || 'https://panel.example',
+    location: extras.location || { search: '' },
+    // The real page resolves a server-relative path against the API origin.
+    resolveServerUrl: extras.resolveServerUrl || function (raw) {
+      const v = String(raw == null ? '' : raw).trim();
+      if (!v) return '';
+      if (/^https?:\/\//i.test(v) || /^data:/i.test(v)) return v;
+      return 'https://panel.example' + (v.charAt(0) === '/' ? '' : '/') + v;
+    },
     setTimeout: extras.setTimeout || function (fn, ms) {
       (sandbox.__timers = sandbox.__timers || []).push({ fn, ms });
       return (sandbox.__timers.length);
@@ -442,8 +451,10 @@ function makeSandbox(outer, mirror, extras = {}) {
   ok(listD[0] === 'https://bank.example/favicon.ico',
     'a blob: baseURI falls back to the real page URL (got ' + listD[0] + ')');
   ok(!listD.some((u) => /^blob:/.test(u)), 'no candidate is ever a blob: URL');
-  ok(listD.some((u) => /s2\/favicons\?domain=bank\.example&sz=64/.test(u)),
-    'a favicon service is available as a later candidate (hostname only, exact domain)');
+  ok(!listD.some((u) => /google\.com\/s2\/favicons/.test(u)),
+    'no third-party favicon service is ever asked (a request per load, usually blocked)');
+  ok(listD.some((u) => /\/favicon\.ico$/.test(u) && u.indexOf('bank.example') >= 0),
+    'the site\'s own /favicon.ico is still a candidate');
   ok(listD[listD.length - 1] === listD.filter((u) => /^data:image\/svg/.test(u)).pop(),
     'the inline default is always last');
 
@@ -499,6 +510,86 @@ function makeSandbox(outer, mirror, extras = {}) {
   const hrefH = outerH.document.getElementById('shf-mirror-favicon').getAttribute('href');
   ok(hrefH === 'https://two.example/i.png',
     'a stale probe from the previous page cannot overwrite the new page’s icon (got ' + hrefH + ')');
+}
+
+// ---------------------------------------------------------------------------
+// 6c. The icon the SERVER has for the site
+// ---------------------------------------------------------------------------
+// "client.html favicon doesn't show the one server is using." The panel already
+// knows a site's icon — the mark configured for the domain, or the favicon the
+// server downloaded for this profile. It is a picture on OUR origin, so unlike
+// the site's own icon it cannot be hotlink-blocked, refused by CORS, or 404.
+{
+  const outer = makeOuter();
+  const mirror = makeMirror({ title: 'Bank', links: [{ rel: 'icon', href: '/own.png' }] });
+  const sb = makeSandbox(outer, mirror, { iconLoad: () => 'error' });
+
+  // a) A server-relative path is resolved against the API origin.
+  sb.adoptSiteIcon('/api/profiles/favicons/bank_com.png', 'https://bank.example/login');
+  ok(sb.state.siteIcon === 'https://panel.example/api/profiles/favicons/bank_com.png',
+    'a server-relative icon is resolved against the API origin (got ' + sb.state.siteIcon + ')');
+  ok(sb.state.siteIconHost === 'bank.example', 'and it remembers which host it belongs to');
+
+  // b) It is used for that host, and dropped for another one.
+  ok(sb.siteIconFor('https://bank.example/account') === sb.state.siteIcon,
+    'the server icon applies to the site it was resolved for');
+  ok(sb.siteIconFor('https://other.example/') === '',
+    'and never leaks onto a different site in the same tab');
+
+  // c) In the chain it comes before any guess, and the server's own icon is
+  //    the floor above the inline SVG.
+  const list = sb.mirrorIconCandidates(mirror.doc);
+  const at = (needle) => list.findIndex((u) => u.indexOf(needle) >= 0);
+  ok(list[at('favicons/bank_com.png')] === sb.state.siteIcon,
+    'the server icon is a candidate');
+  ok(at('favicons/bank_com.png') > at('bank.example/own.png'),
+    'the page’s own declared icon still comes first');
+  ok(at('favicons/bank_com.png') < at('bank.example/favicon.ico'),
+    'the server icon comes before the site’s guessed /favicon.ico');
+  ok(list[list.length - 1].indexOf('data:image/svg+xml') === 0, 'the inline SVG is last');
+  ok(list[list.length - 2] === 'https://panel.example/favicon.ico',
+    'the server’s own icon is the floor above it, so a tab is never generic '
+      + '(got ' + list[list.length - 2] + ')');
+
+  // d) With every candidate failing, the tab ends up on the server's icon —
+  //    the same picture the panel uses — and not on the globe.
+  const outer2 = makeOuter();
+  const sb2 = makeSandbox(outer2, mirror, {
+    // Only the server's picture of the site exists; everything the page
+    // declares is unreachable (the hotlink-blocked case).
+    iconLoad: (h) => (String(h).indexOf('favicons/bank_com.png') >= 0 ? 'load' : 'error'),
+  });
+  sb2.adoptSiteIcon('/api/profiles/favicons/bank_com.png', 'https://bank.example/');
+  sb2.syncMirrorTabMeta(mirror.doc);
+  const href = outer2.document.getElementById('shf-mirror-favicon').getAttribute('href');
+  ok(href === 'https://panel.example/api/profiles/favicons/bank_com.png',
+    'a page whose own icon is unreachable shows the server’s icon (got ' + href + ')');
+
+  // e) Branding on ANY icon link stands the mirror down — the mirror appends
+  //    its own link, so "the first link" is not necessarily the branded one.
+  outer2.links.push({
+    tagName: 'LINK', dataset: { lpvTabFavicon: 'true' },
+    _attrs: { rel: 'icon', href: 'https://panel.example/brand.png' },
+    parentNode: null,
+    getAttribute(n) { return this._attrs[n] == null ? null : this._attrs[n]; },
+    setAttribute(n, v) { this._attrs[n] = String(v); },
+    removeAttribute(n) { delete this._attrs[n]; },
+  });
+  ok(sb2.mirrorTabIsBranded() === true,
+    'a branded link anywhere in the panel wins, not just the first one');
+
+  // f) The operator's own tab icon is applied as a FRESH element (Chrome caches
+  //    a favicon per element — editing href in place is why it never showed).
+  const lpvAt = source.indexOf('function applyLpvTabBranding(');
+  ok(lpvAt > 0, 'applyLpvTabBranding exists');
+  const lpv = source.slice(lpvAt, source.indexOf('\n            function ', lpvAt + 10));
+  ok(/if \(!clientIsLpvVisit\(\)\) return;/.test(lpv),
+    'the operator’s tab settings refuse to touch a streamed visit');
+  ok(/document\.createElement\('link'\)/.test(lpv),
+    'the branded icon is a new <link> element');
+  ok(/lpvTabFavicon = 'true'/.test(lpv) && /removeChild/.test(lpv),
+    'and the previous icon links are removed, so exactly one icon is up');
+  ok(/function clientIsLpvVisit\(\)/.test(source), 'the visit kind is classifiable');
 }
 
 // ---------------------------------------------------------------------------

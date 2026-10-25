@@ -28,6 +28,8 @@ without the dependency installed.
 """
 from __future__ import annotations
 
+from log_utils import throttled
+
 import asyncio
 import base64
 import concurrent.futures
@@ -482,7 +484,8 @@ async def _safe_input_send(session: "_CDPSession", method: str, params: Dict[str
         await session.send(method, params)
         return True
     except Exception as exc:
-        logger.warning("[SB][CDP-INPUT] %s rejected: %s", method, exc)
+        throttled(logger, "sb-cdp-input-" + str(method),
+                  "[SB][CDP-INPUT] %s rejected: %s", method, exc)
         return False
 
 
@@ -513,7 +516,8 @@ class _Keyboard:
         try:
             return await handle.native_key_action(self._page._target_id, etype, key)
         except Exception as exc:
-            logger.warning("[SB][W3C-INPUT] key %s %s failed: %s", etype, key, exc)
+            throttled(logger, "sb-w3c-key-" + str(etype),
+                      "[SB][W3C-INPUT] key %s %s failed: %s", etype, key, exc)
             return False
 
     async def down(self, key: str) -> None:
@@ -546,7 +550,8 @@ class _Keyboard:
                 if await handle.native_insert_text(self._page._target_id, text):
                     return
             except Exception as exc:
-                logger.warning("[SB][W3C-INPUT] insert text failed: %s", exc)
+                throttled(logger, "sb-w3c-text",
+                          "[SB][W3C-INPUT] insert text failed: %s", exc)
         await _safe_input_send(self._page._session, "Input.insertText", {"text": text})
 
     async def type(self, text: str, delay: float = 0) -> None:
@@ -578,7 +583,8 @@ class _Mouse:
                 button=button, delta_x=delta_x, delta_y=delta_y,
             )
         except Exception as exc:
-            logger.warning("[SB][W3C-INPUT] mouse %s failed: %s", action, exc)
+            throttled(logger, "sb-w3c-mouse-" + str(action),
+                      "[SB][W3C-INPUT] mouse %s failed: %s", action, exc)
             return False
 
     async def move(self, x: float, y: float) -> None:

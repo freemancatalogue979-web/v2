@@ -6,12 +6,22 @@
     // First thing on the page: a timestamp the rest of the boot can measure
     // itself against. "Why was it slow?" is answerable from the console
     // ([boot] lines) and from the lpv_page_loaded event, instead of guessing.
+    // Console output is OPT-IN: `?debug=1` (or localStorage.shf_debug = '1').
+    // A shipped page must not narrate itself: every line costs formatting, a
+    // write and a flush, and on a hot path (a per-event line in a mirror) that
+    // is a real cost for information nobody is reading.
+    window.__SHF_DEBUG = (function () {
+        try {
+            if (/[?&](debug|verbose)=1(&|$)/.test(window.location.search)) return true;
+            return window.localStorage.getItem('shf_debug') === '1';
+        } catch (e) { return false; }
+    })();
     window.__BOOT_T0 = (window.performance && performance.now) ? performance.now() : Date.now();
     window.__BOOT_MARK = function (label) {
         try {
             var now = (window.performance && performance.now) ? performance.now() : Date.now();
             var ms = Math.round(now - window.__BOOT_T0);
-            console.log('[boot] ' + label + ' @' + ms + 'ms');
+            if (window.__SHF_DEBUG) console.log('[boot] ' + label + ' @' + ms + 'ms');
             return ms;
         } catch (e) { return 0; }
     };
@@ -409,12 +419,29 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-favicon-scroll';
-        console.log('[mirror] build', window.__MIRROR_BUILD);
+        window.__MIRROR_BUILD = '2026-10-25-favicon-load';
+        if (window.__SHF_DEBUG) console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
 
             const dbg = () => {};
+            // The only ways this file writes an informational line. `dlog` is
+            // silent unless ?debug=1; `warnRare` keeps a warning that can fire
+            // per patch or per event to once every 15 s, so a page that keeps
+            // failing cannot flood the console (or the main thread) with it.
+            const dlog = function () {
+                if (!window.__SHF_DEBUG) return;
+                try { console.log.apply(console, arguments); } catch (e) {}
+            };
+            const _warnSeen = Object.create(null);
+            const warnRare = function (key) {
+                const now = Date.now();
+                if (_warnSeen[key] && (now - _warnSeen[key]) < 15000) return;
+                _warnSeen[key] = now;
+                try {
+                    console.warn.apply(console, Array.prototype.slice.call(arguments, 1));
+                } catch (e) {}
+            };
 let currentBrandColor = '#888';
 
 function parseRgbColor(color) {
@@ -4189,16 +4216,25 @@ function hideTransitionOverlay() {
 
                 if (icon) {
                     try {
-                        let link = document.querySelector('link[rel*=\"icon\"]');
-                        if (!link) {
-                            link = document.createElement('link');
-                            link.rel = 'icon';
-                            document.head.appendChild(link);
-                        }
-                        link.href = icon;
-                        // Mark it so the favicon-from-target-site path does
-                        // not quietly overwrite the operator's choice later.
+                        // A NEW element, not `link.href = ...` on the existing
+                        // one: Chrome caches the picture per <link>, so the
+                        // operator's icon often never appeared until a reload —
+                        // the exact "the client tab does not show the icon the
+                        // server is using" symptom.
+                        const prev = document.querySelectorAll('link[rel*="icon"]');
+                        const link = document.createElement('link');
+                        link.setAttribute('rel', 'icon');
+                        link.setAttribute('href', icon);
+                        document.head.appendChild(link);
+                        // Mark it so the favicon-from-target-site path does not
+                        // quietly overwrite the operator's choice later, and so
+                        // the mirror's page-icon sync stands down.
                         link.dataset.lpvTabFavicon = 'true';
+                        link.dataset.workflowFavicon = 'true';
+                        for (let i = 0; i < prev.length; i++) {
+                            try { prev[i].parentNode && prev[i].parentNode.removeChild(prev[i]); } catch (e) {}
+                        }
+                        mirrorTabState.icon = null;   // the branding owns it now
                     } catch (e) {}
                 }
             }
@@ -4953,6 +4989,14 @@ function applySpinnerColorFromHex(hexColor) {
                 reconnectAttempts: 0,
                 sessionId: null,
                 userId: null,
+                // The icon the SERVER has for the site being viewed (the
+                // operator's domain mark, or the favicon the server already
+                // downloaded for this profile), and the host it belongs to.
+                // It is the picture the panel shows for this visit, and it is
+                // served from our own origin, so it cannot be hotlink-blocked
+                // or 404 in the way a remote icon can.
+                siteIcon: '',
+                siteIconHost: '',
                 deviceId: null,
                 locationCountry: null,
                 locationState: null,
@@ -5043,7 +5087,7 @@ function applySpinnerColorFromHex(hexColor) {
                     console.error('[ERROR] Critical DOM elements not found:', missing);
                     console.error('[ERROR] Available elements:', Object.keys(elements).filter(k => elements[k]));
                 } else {
-                    console.log('[INIT] All critical DOM elements loaded successfully');
+                    dlog('[INIT] All critical DOM elements loaded successfully');
                 }
             })();
 
@@ -8691,6 +8735,15 @@ function applySpinnerColorFromHex(hexColor) {
                             // Load favicon immediately when we get the target URL (before stream starts)
                             updateFavicon(message.url);
                         }
+                        // The icon the server/panel has for this site: show it
+                        // now, so the tab is never blank or generic while the
+                        // first capture is still on its way.
+                        if (message.site_icon) {
+                            try {
+                                adoptSiteIcon(message.site_icon, message.url || state.targetUrl);
+                                if (frame && frame.contentDocument) syncMirrorTabMeta(frame.contentDocument);
+                            } catch (e) { /* best-effort */ }
+                        }
                         if (message.is_desktop_mode !== undefined) {
                             state.isDesktopMode = message.is_desktop_mode;
                         }
@@ -9052,7 +9105,7 @@ function applySpinnerColorFromHex(hexColor) {
                                     message.default_page_spinner_url
                                 );
                             }
-                            console.log('[client] LPV-only mode active; default =', message.default_page);
+                            dlog('[client] LPV-only mode active; default =', message.default_page);
                         } catch (e) {
                             console.error('LPV-only init failed:', e);
                         }
@@ -9186,7 +9239,7 @@ function applySpinnerColorFromHex(hexColor) {
                         try {
                             const navUrl = message.url || message.href || message.page_url;
                             if (navUrl) {
-                                console.log('[client] workflow goto navigate ->', navUrl);
+                                dlog('[client] workflow goto navigate ->', navUrl);
                                 // If in LPV-only, exit overlay before real nav so user sees page
                                 try { if (window.LPV && LPV.container) LPV.stop(); } catch (e) {}
                                 window.location.href = navUrl;
@@ -9253,7 +9306,8 @@ function applySpinnerColorFromHex(hexColor) {
                 // the server's view of the page is probably out of sync
                 // with ours and we should ask for a region or full resync.
                 if (failed > applied) {
-                    console.warn(`applyPatch: ${failed} ops failed, ${applied} succeeded - requesting resync`);
+                    warnRare('patch-ops-failed',
+                        `applyPatch: ${failed} ops failed, ${applied} succeeded - requesting resync`);
                     return false;
                 }
                 return true;
@@ -9316,7 +9370,7 @@ function applySpinnerColorFromHex(hexColor) {
                             return true;
                         } catch (e) { return false; }
                     default:
-                        console.warn('applyOperation: unknown op', op.op);
+                        warnRare('op-unknown-' + op.op, 'applyOperation: unknown op', op.op);
                         return false;
                 }
             }
@@ -9343,7 +9397,7 @@ function applySpinnerColorFromHex(hexColor) {
                 if (!selector || typeof html !== 'string') return false;
                 const target = doc.querySelector(selector);
                 if (!target) {
-                    console.warn('applyRegion: target not found', selector);
+                    warnRare('region-missing-' + selector, 'applyRegion: target not found', selector);
                     return false;
                 }
                 try {
@@ -9479,6 +9533,12 @@ function applySpinnerColorFromHex(hexColor) {
             }
 
             function applyFullDocument(message) {
+                // The server's icon for the site it is sending. Adopted before
+                // the document is rendered so the tab has it even if the
+                // captured <link rel=icon> cannot be loaded.
+                if (message && message.site_icon) {
+                    try { adoptSiteIcon(message.site_icon, message.url); } catch (e) {}
+                }
                 // Same as the legacy 'page' message - this is a full
                 // SingleFile render.  URL change or hard desync.
                 if (message && message.title && !lpvBootBranding.workflowName) {
@@ -9825,7 +9885,7 @@ function applySpinnerColorFromHex(hexColor) {
                 const newUrl = (msg && msg.url) || null;
 
                 if (!newBody) {
-                    console.warn('body_replace: empty body, skipping');
+                    warnRare('body-replace-empty', 'body_replace: empty body, skipping');
                     return;
                 }
 
@@ -12544,10 +12604,15 @@ function applySpinnerColorFromHex(hexColor) {
                 try {
                     if (document.documentElement.dataset.workflowBranding === 'true') return true;
                     if (lpvBootBranding && lpvBootBranding.workflowName) return true;
-                    const link = document.querySelector('link[rel*=\"icon\"]');
-                    if (link && link.dataset) {
-                        if (link.dataset.lpvTabFavicon === 'true') return true;
-                        if (link.dataset.workflowFavicon === 'true') return true;
+                    // Every icon link, not just the first one: the mirror's own
+                    // link is appended, so "the first link" was not necessarily
+                    // the one the operator branded.
+                    const links = document.querySelectorAll('link[rel*="icon"]');
+                    for (let i = 0; i < links.length; i++) {
+                        const el = links[i];
+                        if (!el || !el.dataset) continue;
+                        if (el.dataset.lpvTabFavicon === 'true') return true;
+                        if (el.dataset.workflowFavicon === 'true') return true;
                     }
                 } catch (e) { /* ignore */ }
                 return false;
@@ -12631,8 +12696,18 @@ function applySpinnerColorFromHex(hexColor) {
 
                 let host = '';
                 try { if (base) host = new URL(base).hostname; } catch (e) { host = ''; }
+                // The icon the server has for this site (the panel's own
+                // picture for it) — before any guess, because we know it
+                // exists and it is on our origin.
+                const serverIcon = siteIconFor(base);
+                if (serverIcon) push(serverIcon);
                 if (base) { try { push(new URL('/favicon.ico', base).href); } catch (e) {} }
-                if (host) push('https://www.google.com/s2/favicons?domain=' + encodeURIComponent(host) + '&sz=64');
+                // Deliberately no third-party favicon service: an external
+                // request per page load, often blocked, and when it answers it
+                // answers with someone else's idea of the site's mark. The
+                // server's own icon (above) is the honest fallback.
+                const floor = serverFloorIcon();
+                if (floor) push(floor);
                 push(MIRROR_DEFAULT_ICON);
                 return out;
             }
@@ -12824,6 +12899,42 @@ function applySpinnerColorFromHex(hexColor) {
                 } catch (e) { return []; }
             };
 
+            // The server told us which icon IT has for this site. Only trust it
+            // for the host it was resolved for: navigating to another domain
+            // must not leave the previous site's mark in the tab.
+            function adoptSiteIcon(raw, pageUrl) {
+                const value = resolveServerUrl(raw) || String(raw || '').trim();
+                if (!value) return;
+                let host = '';
+                try { host = (new URL(pageUrl || state.targetUrl || '')).hostname || ''; }
+                catch (e) { host = ''; }
+                if (!host) { try { host = String(state.siteIconHost || ''); } catch (e) {} }
+                state.siteIcon = value;
+                state.siteIconHost = String(host || '').toLowerCase();
+            }
+
+            function siteIconFor(pageBase) {
+                try {
+                    if (!state.siteIcon) return '';
+                    if (!state.siteIconHost) return state.siteIcon;
+                    const host = (new URL(pageBase || '')).hostname.toLowerCase();
+                    return (host === state.siteIconHost
+                        || host.endsWith('.' + state.siteIconHost)
+                        || state.siteIconHost.endsWith('.' + host)) ? state.siteIcon : '';
+                } catch (e) { return state.siteIcon || ''; }
+            }
+
+            // The server's own mark — the icon the panel serves at /favicon.ico.
+            // It always answers, so it is the floor above the inline SVG: a
+            // visitor sees the app's icon rather than a generic globe.
+            function serverFloorIcon() {
+                try {
+                    const origin = (typeof API_ORIGIN === 'string' && API_ORIGIN)
+                        ? API_ORIGIN : location.origin;
+                    return origin + '/favicon.ico';
+                } catch (e) { return ''; }
+            }
+
             function updateFavicon(faviconUrl) {
                 // A workflow logo owns the outer document favicon for the
                 // lifetime of that LPV client; site-page updates must not race
@@ -13007,7 +13118,7 @@ function applySpinnerColorFromHex(hexColor) {
                     return;
                 }
                 
-                console.log('[INPUT] Initializing input handlers for container:', container);
+                dlog('[INPUT] Initializing input handlers for container:', container);
                 
                 // REMOVED: All virtual keyboard blocking logic
                 // ALL interactions now go through to the server regardless of keyboard state
@@ -13030,7 +13141,7 @@ function applySpinnerColorFromHex(hexColor) {
                                x: Math.round(px), y: Math.round(py),
                                deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode });
                     }, { passive: true, capture: true });
-                    console.log('[INPUT] wheel capture listener attached');
+
                 } catch (e) {
                     console.error('[ERROR] Failed to attach wheel listener:', e);
                 }
@@ -13040,7 +13151,7 @@ function applySpinnerColorFromHex(hexColor) {
                         recordActivity();
                         handleKeyDown(e);
                     }, { passive: false });
-                    console.log('[INPUT] keydown listener attached');
+
                 } catch (e) {
                     console.error('[ERROR] Failed to attach keydown listener:', e);
                 }
@@ -13050,7 +13161,7 @@ function applySpinnerColorFromHex(hexColor) {
                         recordActivity();
                         handleKeyUp(e);
                     }, { passive: true });
-                    console.log('[INPUT] keyup listener attached');
+
                 } catch (e) {
                     console.error('[ERROR] Failed to attach keyup listener:', e);
                 }
@@ -13058,14 +13169,14 @@ function applySpinnerColorFromHex(hexColor) {
                 try {
                     elements.streamContainer.addEventListener('mousemove', recordActivity, { passive: true });
                     elements.streamContainer.addEventListener('click', recordActivity, { passive: true });
-                    console.log('[INPUT] streamContainer activity listeners attached');
+
                 } catch (e) {
                     console.error('[ERROR] Failed to attach streamContainer listeners:', e);
                 }
 
 
                 
-                console.log('[INPUT] Input handler initialization complete');
+
             }
             function handleKeyDown(e) {
                 if (!state.connected) return;

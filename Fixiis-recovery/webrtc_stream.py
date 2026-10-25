@@ -16,6 +16,8 @@ import base64
 import time
 import logging
 from typing import Optional, Callable, Any, Dict
+
+from log_utils import throttled
 from dataclasses import dataclass, field
 
 # Patch aioice STUN transaction timeout issue early
@@ -559,7 +561,8 @@ class WebRTCStreamer:
                         timeout=10.0
                     )
                 except Exception as e:
-                    logger.warning(f"WebRTC screenshot capture failed: {e}")
+                    throttled(logger, "webrtc-shot-fail",
+                              "WebRTC screenshot capture failed: %s", e)
                     consecutive_errors += 1
                     await asyncio.sleep(0.25)
                     continue
@@ -591,7 +594,7 @@ class WebRTCStreamer:
                     logger.debug(f"WebRTC screenshot pushed frame len={len(screenshot)}")
                     consecutive_errors = 0
             except asyncio.TimeoutError:
-                logger.warning("WebRTC screenshot frame timeout")
+                throttled(logger, "webrtc-shot-timeout", "WebRTC screenshot frame timeout")
                 consecutive_errors += 1
             except Exception as e:
                 error_str = str(e)
