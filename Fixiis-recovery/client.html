@@ -396,7 +396,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-09-10-element-pure';
+        window.__MIRROR_BUILD = '2026-10-25-scroll-rescue';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -5223,6 +5223,192 @@ function applySpinnerColorFromHex(hexColor) {
                 return { width: window.innerWidth, height: window.innerHeight };
             }
 
+            // -----------------------------------------------------------------
+            // Scrolling a captured page
+            // -----------------------------------------------------------------
+            // A DOM capture is the page's HTML + CSS with its scripts stripped.
+            // Everything the page did with script is therefore inert — including
+            // the very common "the window never scrolls, this full-height shell
+            // does" layout: `height:100%` + `overflow:hidden` around the content,
+            // with a scroll handler, a virtualised list or a swipe deck meant to
+            // move it. The content is all there and taller than the frame, but
+            // nothing moves, which reads as "the client is blocking my scroll".
+            //
+            // ensureMirrorScrolling() hands the page back to the visitor without
+            // changing how it looks:
+            //
+            //   * html/body stay scrollable (`overflow:auto`, `height:auto`). The
+            //     reset stylesheet says the same and is now injected LAST in
+            //     <head>, so an author `!important` rule cannot outrank it
+            //     (before, it sat first and lost every tie);
+            //   * a full-height wrapper that clips its own content becomes a
+            //     scroll container — wheel, trackpad, scrollbar and finger all
+            //     work again;
+            //   * `position:fixed` / `sticky` boxes are never touched: that is
+            //     where modals, cookie bars and sticky headers live, and letting
+            //     one of those scroll would be a new bug;
+            //   * a page that already scrolls is left completely alone, so
+            //     ordinary captures keep their exact rendering.
+            //
+            // It runs on every document commit, on the LPV push path, and again
+            // the moment the visitor tries to scroll and the page still refuses.
+            const SCROLL_RESCUE_NODES = 600;
+            let scrollRescueAt = 0;
+
+            function pageScrolls(doc, view) {
+                try {
+                    const html = doc && doc.documentElement;
+                    if (!html) return false;
+                    const v = view || doc.defaultView || null;
+                    // "More content than it shows" is not enough: an element
+                    // with `overflow:hidden` reports the same numbers while
+                    // nothing can move. Count it only when it is actually a
+                    // scroller — a page that merely *looks* scrollable must
+                    // not skip the rescue below.
+                    const canMove = (el, isRoot) => {
+                        if (!el) return false;
+                        if ((el.scrollHeight - el.clientHeight) <= 8) return false;
+                        let overflowY = '';
+                        try {
+                            const cs = (v && v.getComputedStyle) ? v.getComputedStyle(el) : null;
+                            overflowY = cs ? String(cs.overflowY || cs.overflow || '') : '';
+                        } catch (e) { overflowY = ''; }
+                        if (!overflowY) return true;             // no view: trust the numbers
+                        if (isRoot) return overflowY !== 'hidden' && overflowY !== 'clip';
+                        return overflowY === 'auto' || overflowY === 'scroll'
+                            || overflowY === 'overlay';
+                    };
+                    const scroller = doc.scrollingElement || html;
+                    if (canMove(scroller, scroller === html)) return true;
+                    if (scroller !== html && canMove(html, true)) return true;
+                    return canMove(doc.body, false);
+                } catch (e) { /* ignore */ }
+                return false;
+            }
+
+            function ensureMirrorScrolling(doc, win, force) {
+                if (!doc || !doc.documentElement) return false;
+                const view = win || doc.defaultView || null;
+                const html = doc.documentElement;
+                const body = doc.body || null;
+
+                // 1. The two elements every page starts from.
+                try {
+                    html.style.overflow = 'auto';
+                    html.style.webkitOverflowScrolling = 'touch';
+                } catch (e) { /* ignore */ }
+                try {
+                    if (body) {
+                        body.style.overflow = 'auto';
+                        body.style.webkitOverflowScrolling = 'touch';
+                    }
+                } catch (e) { /* ignore */ }
+
+                if (!force && pageScrolls(doc, view)) return true;
+
+                // 2. Clipping wrappers. Read first, write after: one scan costs a
+                //    couple of layouts instead of one per element. Fixed-position
+                //    boxes are only collected, never touched here — that is where
+                //    modals, cookie bars and sticky headers live.
+                let visible = 0;
+                try { visible = (view && view.innerHeight) || html.clientHeight || 0; } catch (e) { visible = 0; }
+                const minHeight = Math.max(140, Math.min(visible * 0.4, 600));
+                const fullHeight = Math.max(320, visible * 0.9);
+                const clipped = [];
+                const fixedShells = [];
+                const styleOf = (el) => {
+                    try { return (view && view.getComputedStyle) ? view.getComputedStyle(el) : null; }
+                    catch (e) { return null; }
+                };
+                let budget = SCROLL_RESCUE_NODES;
+                const consider = (el) => {
+                    if (!el || budget <= 0) return;
+                    let shows = 0, more = 0, cs = null;
+                    try {
+                        shows = el.clientHeight || 0;
+                        more = (el.scrollHeight || 0) - shows;
+                        if (more < 24) return;
+                        cs = styleOf(el);
+                    } catch (e) { return; }
+                    if (!cs) return;
+                    const overflowY = String(cs.overflowY || cs.overflow || '');
+                    if (overflowY !== 'hidden' && overflowY !== 'clip') return;
+                    if (cs.position === 'fixed') {
+                        // A full-viewport fixed shell (app layout) — the last
+                        // thing to try, and only if nothing else can move.
+                        if (shows >= fullHeight) fixedShells.push(el);
+                        return;
+                    }
+                    if (cs.position === 'sticky') return;
+                    if (shows < minHeight) return;
+                    clipped.push(el);
+                };
+                const walk = (root, depth) => {
+                    if (!root || budget <= 0) return;
+                    for (let child = root.firstElementChild; child && budget > 0; child = child.nextElementSibling) {
+                        budget--;
+                        consider(child);
+                        if (depth < 8 && budget > 0) walk(child, depth + 1);
+                    }
+                };
+                consider(body);
+                walk(body, 1);
+
+                const rescue = (list) => {
+                    let n = 0;
+                    for (let i = 0; i < list.length && n < 6; i++) {
+                        const el = list[i];
+                        try {
+                            el.style.setProperty('overflow-y', 'auto', 'important');
+                            el.style.setProperty('-webkit-overflow-scrolling', 'touch');
+                            el.style.setProperty('overscroll-behavior', 'contain');
+                            el.setAttribute('data-scroll-rescued', '1');
+                            n++;
+                        } catch (e) { /* ignore */ }
+                    }
+                    return n;
+                };
+
+                let rescued = rescue(clipped);
+                let ok = pageScrolls(doc, view);
+
+                // 3. Nothing can move and the whole layout sits inside a fixed
+                //    full-viewport shell. Now — with the page otherwise dead —
+                //    letting that shell scroll is strictly better.
+                if (!ok && fixedShells.length) {
+                    rescued += rescue(fixedShells);
+                    ok = pageScrolls(doc, view);
+                }
+
+                // 4. Last resort: still dead. Let the document take its natural
+                //    height and scroll itself (an author rule we could not
+                //    outrank, or a layout the capture flattened).
+                if (!ok && body) {
+                    try {
+                        const tall = (body.scrollHeight || 0) > minHeight;
+                        if (tall && !doc.getElementById('__shifix_scroll_rescue__')) {
+                            const st = doc.createElement('style');
+                            st.id = '__shifix_scroll_rescue__';
+                            st.textContent = 'html,body{height:auto!important;max-height:none!important;'
+                                + 'overflow:visible!important;min-height:100%!important;}';
+                            (doc.head || html).appendChild(st);
+                        }
+                    } catch (e) { /* ignore */ }
+                    ok = pageScrolls(doc, view);
+                }
+                return rescued > 0 || ok;
+            }
+
+            // Called from the wheel / touch handlers: the visitor is trying to
+            // scroll, so check again — throttled, because one gesture is a
+            // stream of events rather than a single one.
+            function nudgeScrollRescue(doc, win) {
+                const now = Date.now();
+                if (now - scrollRescueAt < 1500) return;
+                scrollRescueAt = now;
+                try { ensureMirrorScrolling(doc, win); } catch (e) { /* ignore */ }
+            }
+
             function initializeViewportState() {
                 // DOM-capture mode: keep logical viewport + server viewport
                 // state.  (Canvas-era code also sized and super-sampled a
@@ -7523,6 +7709,16 @@ function applySpinnerColorFromHex(hexColor) {
                                     innerDoc.body.style.maxHeight = 'none';
                                     innerDoc.body.style.maxWidth = '100%';
                                 }
+                                // A pushed page whose scroller was driven by its
+                                // own scripts (now stripped) would sit there
+                                // unable to move: hand the scroll back.
+                                try {
+                                    ensureMirrorScrolling(innerDoc, frame.contentWindow);
+                                    const _pd = innerDoc, _pw = frame.contentWindow;
+                                    setTimeout(function () {
+                                        try { ensureMirrorScrolling(_pd, _pw); } catch (e) { /* ignore */ }
+                                    }, 800);
+                                } catch (e) { /* ignore */ }
 
                                 const capture = (eventName, ev) => {
                                     const currentTarget = ev && ev.target ? ev.target : null;
@@ -9462,6 +9658,7 @@ function applySpinnerColorFromHex(hexColor) {
                     newFrame.style.border = 'none';
                     newFrame.style.opacity = '1';
                     newFrame.style.overflow = 'auto';
+                    newFrame.style.webkitOverflowScrolling = 'touch';
                     // Defensive: keep the first frame inert until onload
                     // finishes injecting the html/body reset + event listeners,
                     // otherwise users see one paint of un-styled DOM (the
@@ -9496,6 +9693,7 @@ function applySpinnerColorFromHex(hexColor) {
                         mirrorFrameB.style.border = 'none';
                         mirrorFrameB.style.opacity = '0';
                         mirrorFrameB.style.overflow = 'auto';
+                        mirrorFrameB.style.webkitOverflowScrolling = 'touch';
                         mirrorFrameB.style.visibility = 'hidden';
                         mirrorFrameB.style.pointerEvents = 'none';
                         mirrorFrameB.dataset.state = 'loading';
@@ -9703,7 +9901,17 @@ function applySpinnerColorFromHex(hexColor) {
                         // on every full-document swap without doubling up.
                         try {
                             const htmlRoot = d.documentElement;
-                            if (htmlRoot && !d.getElementById('__shifix_stream_reset__')) {
+                            const existingReset = d.getElementById('__shifix_stream_reset__');
+                            if (existingReset) {
+                                // Keep it LAST in <head>: an author `!important`
+                                // rule with the same specificity would outrank it
+                                // if it sat earlier in the cascade.
+                                try {
+                                    if (existingReset.nextElementSibling) {
+                                        (d.head || htmlRoot).appendChild(existingReset);
+                                    }
+                                } catch (e) { /* ignore */ }
+                            } else if (htmlRoot) {
                                 const resetCss = d.createElement('style');
                                 resetCss.id = '__shifix_stream_reset__';
                                 resetCss.setAttribute('data-stream-injected', 'true');
@@ -9711,19 +9919,19 @@ function applySpinnerColorFromHex(hexColor) {
                                     'html, body {',
                                     '  width: 100% !important;',
                                     '  height: auto !important;',
+                                    '  max-height: none !important;',
                                     '  min-height: 100% !important;',
                                     '  margin: 0 !important;',
                                     '  overflow: auto !important;',
                                     '  overscroll-behavior: contain !important;',
+                                    '  -webkit-overflow-scrolling: touch !important;',
                                     '}',
                                     'body { min-height: 100vh !important; }',
                                 ].join('\n');
+                                // Appended, never prepended: last rule in the
+                                // head wins the ties it is there to win.
                                 const head2 = d.head || htmlRoot;
-                                if (head2 && head2.firstChild) {
-                                    head2.insertBefore(resetCss, head2.firstChild);
-                                } else if (head2) {
-                                    head2.appendChild(resetCss);
-                                }
+                                if (head2) head2.appendChild(resetCss);
                                 // Belt-and-braces on the live documentElement
                                 // so fixed-positioned overlays size to the
                                 // iframe's actual viewport even when the
@@ -9735,6 +9943,20 @@ function applySpinnerColorFromHex(hexColor) {
                                     d.body.style.overflow = 'auto';
                                 } catch (e) { /* ignore */ }
                             }
+                            // A captured page cannot run its own scroll code,
+                            // so give the document back to the visitor: this is
+                            // what fixes "I can't scroll the mirrored page".
+                            try {
+                                ensureMirrorScrolling(d, doc.defaultView);
+                                // Layout settles late (fonts, images): a page
+                                // that had nothing to scan yet is checked once
+                                // more. It still does nothing if the page can
+                                // scroll by then.
+                                const _sd = d, _sw = doc.defaultView;
+                                setTimeout(function () {
+                                    try { ensureMirrorScrolling(_sd, _sw); } catch (e) { /* ignore */ }
+                                }, 800);
+                            } catch (e) { /* ignore — non-fatal */ }
                         } catch (e) { /* ignore — non-fatal */ }
                     } catch (e) {
                         console.error('Cannot access iframe document:', e);
@@ -10946,22 +11168,19 @@ function applySpinnerColorFromHex(hexColor) {
             function setupIframeEventListeners(d) {
                 setupFloatingLabelOverlay(d);
 
-                try {
-                    if (d.documentElement) {
-                        d.documentElement.style.overflow = 'auto';
-                        d.documentElement.style.webkitOverflowScrolling = 'touch';
-                    }
-                    if (d.body) {
-                        d.body.style.overflow = 'auto';
-                        d.body.style.webkitOverflowScrolling = 'touch';
-                    }
-                } catch (e) {}
+                // html/body scrollability plus the clipping-wrapper rescue — the
+                // page's own scroll code did not survive the capture, so this is
+                // what keeps it scrollable.
+                try { ensureMirrorScrolling(d, d.defaultView); } catch (e) {}
 
                 // Desktop wheel listener on iframe document without preventing default:
                 try {
                     d.addEventListener('wheel', (e) => {
                         if (!state.connected) return;
                         recordActivity();
+                        // The visitor is trying to scroll: if the page still
+                        // cannot move, give it another go now.
+                        try { nudgeScrollRescue(d, d.defaultView); } catch (e2) {}
                         send({
                             type: 'input',
                             subtype: 'wheel',
@@ -11543,6 +11762,9 @@ function applySpinnerColorFromHex(hexColor) {
                 d.addEventListener('touchmove', (ev) => {
                     try {
                         state._lastUserTouchTime = Date.now();
+                        // A finger dragging on a page that will not move: same
+                        // retry as the wheel path.
+                        try { nudgeScrollRescue(d, d.defaultView); } catch (e2) {}
                         const t = ev.touches && ev.touches[0];
                         if (!t) return;
                         if (Math.abs(t.clientX - tStartX) > TOUCH_MOVE_SLOP || Math.abs(t.clientY - tStartY) > TOUCH_MOVE_SLOP) {

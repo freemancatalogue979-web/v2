@@ -574,6 +574,45 @@ Tests: `python3 tests/test_boot_loading_embed.py`.
 
 ---
 
+## Scrolling a mirrored page
+
+A captured page arrives as HTML + CSS with its scripts removed, so anything the
+original page moved with **script** cannot move here. The most common shape is
+a full-height shell (`height:100%` + `overflow:hidden`) wrapping several screens
+of content, with a scroll handler that is no longer there: the page is all
+there, but nothing scrolls. It reads as "the client is blocking my scroll".
+
+`client.html` puts the page back under your finger without changing how it
+looks:
+
+| What it finds | What it does |
+|---|---|
+| A page that already scrolls | **Nothing.** Ordinary captures keep their exact rendering |
+| A full-height wrapper that clips more than it shows | makes **that wrapper** scroll (wheel, trackpad, scrollbar, finger) |
+| A modal / cookie bar / sticky header (`fixed`, `sticky`) | left alone — making one of those scroll would be a new bug |
+| The whole layout inside one fixed full-screen shell | only when the page is otherwise dead: lets that shell scroll |
+| Still nothing, yet the body is taller than the frame | lets `html`/`body` take their natural height and scroll the document |
+
+Details that matter:
+
+* **It retries when you try.** A wheel or a finger drag on a page that still
+  refuses to move re-runs the check (throttled to one pass per 1.5 s), which
+  also covers a page whose layout only becomes tall after its images load.
+* **The page reset stylesheet is the last rule in `<head>`.** It used to be
+  injected first, so an author `html,body { overflow:hidden !important }` with
+  the same specificity silently outranked it.
+* **Both surfaces are covered:** the live mirror (`renderPageSnapshot`,
+  `body_replace`) and an LPV page pushed from the panel.
+* iOS momentum scrolling (`-webkit-overflow-scrolling: touch`) is set on the
+  frames and on whatever it rescues — without it a finger drag does not move a
+  nested scroller on an iPhone.
+* A rescued element is tagged `data-scroll-rescued="1"`, so it is visible in
+  devtools when a page misbehaves.
+
+Tests: `node tests/test_mirror_scroll.cjs`.
+
+---
+
 ## Troubleshooting "it connects but nothing works"
 
 Run these first, in this order:
@@ -739,6 +778,7 @@ node tests/test_chat_switch.cjs           # chat on/off + which device sees the 
 node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; skipped otherwise)
 node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
+node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step
 python3 tests/test_click_action_resolution.py  # which rule a click runs (drift, device pairs;
@@ -751,6 +791,7 @@ python3 tests/test_page_bindings.py    # text / element / regex rewriting engine
 python3 tests/test_desktop_variant.py  # device versions (phone + desktop page pair)
 python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup
+python3 tests/test_boot_loading_embed.py  # the custom spinner is in the served page
 ```
 
 ### 2. Server boots
