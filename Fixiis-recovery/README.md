@@ -629,9 +629,12 @@ How it reaches the visitor:
   file control in the middle of the panel.
 * **A missing icon never leaves a broken box**: the mark walks
   `apple-touch-icon.png` → `favicon.ico` → a letter tile, one step per failed
-  load, and the panel's list shows the mark the visitor actually gets (not an
-  empty box) with a **Preview** button that opens the exact document served at
-  `/api/lpv/domains/<domain>/spinner.html`.
+  load. The same chain runs in the Domains list, so every configured row shows
+  that site's own icon — your logo, else the icon a capture carries, else
+  `https://<domain>/favicon.ico`, else the first letter — instead of a column of
+  grey squares, and the form previews the typed domain's favicon before you
+  save. Each row also has a **Preview** button that opens the exact document
+  served at `/api/lpv/domains/<domain>/spinner.html`.
 * **A finished loading screen gets out of the way** as soon as the real page
   paints (see *Fast start* above).
 

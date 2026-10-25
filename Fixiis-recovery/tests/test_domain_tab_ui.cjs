@@ -74,7 +74,7 @@ for (const where of ['jsdom', path.join(process.cwd(), 'node_modules/jsdom'),
   ok(/No file chosen/.test(tab), 'which starts empty');
   ok(/data-dm-preview=/.test(admin) && /function domainsPreview\(domain\)/.test(admin),
     'the list can preview the exact document a visitor is served');
-  ok(/item\.logo_url \|\| item\.resolved_logo/.test(admin),
+  ok(/const chain = domainsMarkChain\(item\)/.test(admin),
     'the list shows the resolved mark, not an empty box');
   ok(/on\('dm-html-pick', 'click',[\s\S]{0,160}?input\.click\(\)/.test(admin),
     'the button opens the hidden input');
@@ -130,6 +130,126 @@ for (const where of ['jsdom', path.join(process.cwd(), 'node_modules/jsdom'),
     'each row can be switched off, edited and deleted');
   ok(/domain: domain, enabled: !item\.enabled/.test(admin),
     'the on/off switch sends only the domain and the new state');
+}
+
+// ---------------------------------------------------------------------------
+// 5b. Every row carries the site's own icon, so domains read as brands
+// ---------------------------------------------------------------------------
+{
+  ok(/function domainsMarkChain\(item\)/.test(admin),
+    'each row has an icon chain: your logo -> the captured icon -> the favicon');
+  ok(/push\('https:\/\/' \+ host \+ '\/favicon\.ico'\)/.test(admin),
+    'the site\'s favicon is the floor, so a configured domain always has a mark');
+  ok(/data-dm-chain=/.test(admin) && /class="dm-initial"/.test(admin),
+    'the row falls back to the next file, then to a letter tile');
+  ok(/addEventListener\('error'[\s\S]{0,400}?dm-initial/.test(admin),
+    'a file that does not exist does not leave an empty box');
+  ok(/domainsHostOf\(domainEl && domainEl\.value\)/.test(admin),
+    'the form previews the typed domain\'s favicon before anything is saved');
+  ok(/on\('dm-domain', 'input', domainsSyncLogoPreview\)/.test(admin),
+    'and updates as the domain is typed');
+}
+
+if (jsdom) {
+  // The helpers themselves, run for real: hosts are cleaned the same way the
+  // server cleans them, so a pasted link still yields a favicon.
+  const grab = (name) => {
+    const at = admin.indexOf('function ' + name + '(');
+    if (at < 0) return '';
+    let depth = 0;
+    for (let i = admin.indexOf('{', at); i < admin.length; i += 1) {
+      if (admin[i] === '{') depth += 1;
+      else if (admin[i] === '}') { depth -= 1; if (!depth) return admin.slice(at, i + 1); }
+    }
+    return '';
+  };
+  const src = grab('domainsHostOf') + '\n' + grab('domainsMarkChain') + '\n' +
+              grab('domainsInitial') +
+              '\nreturn { domainsHostOf, domainsMarkChain, domainsInitial };';
+  const helpers = new Function(src)();
+
+  ok(helpers.domainsHostOf('https://www.Google.com:8443/search?q=1') === 'google.com',
+    'a pasted link becomes a bare host');
+  ok(helpers.domainsHostOf('') === '' && helpers.domainsHostOf('nonsense') === '',
+    'no host, no favicon guess');
+
+  const bare = helpers.domainsMarkChain({ domain: 'google.com' });
+  ok(bare.length === 1 && bare[0] === 'https://google.com/favicon.ico',
+    'a domain with nothing configured still shows its favicon');
+
+  const captured = helpers.domainsMarkChain({
+    domain: 'example-provider.com',
+    resolved_logo: 'https://www.example-provider.com/touch-180.png',
+  });
+  ok(captured[0] === 'https://www.example-provider.com/touch-180.png' &&
+     captured[captured.length - 1] === 'https://example-provider.com/favicon.ico',
+    'the captured icon is preferred, the favicon is the safety net');
+
+  const deduped = helpers.domainsMarkChain({
+    domain: 'example-provider.com',
+    logo_url: 'https://example-provider.com/favicon.ico',
+  });
+  ok(deduped.filter((u) => u === 'https://example-provider.com/favicon.ico').length === 1,
+    'the same file is never tried twice');
+
+  ok(helpers.domainsInitial({ domain: 'chase.com' }) === 'C' &&
+     helpers.domainsInitial({ domain: 'chase.com', label: 'bank' }) === 'B',
+    'the letter tile uses the name when there is one');
+}
+
+// ---------------------------------------------------------------------------
+// 5c. The rendered list, built for real in a DOM
+// ---------------------------------------------------------------------------
+if (jsdom) {
+  const grabAll = (names) => names.map((name) => {
+    const at = admin.indexOf('function ' + name + '(');
+    if (at < 0) throw new Error('missing function ' + name);
+    let depth = 0;
+    for (let i = admin.indexOf('{', at); i < admin.length; i += 1) {
+      if (admin[i] === '{') depth += 1;
+      else if (admin[i] === '}') { depth -= 1; if (!depth) return admin.slice(at, i + 1); }
+    }
+    throw new Error('unbalanced ' + name);
+  }).join('\n');
+
+  const page = new jsdom.JSDOM(
+    '<!doctype html><html><body><div id="dm-list"></div></body></html>',
+    { url: 'http://localhost/admin' });
+  const doc = page.window.document;
+  const DOMAINS = { items: [
+    { domain: 'example-bank.test', label: 'Example Bank', enabled: true,
+      spinner_html: '', spinner_page_id: '',
+      resolved_logo: 'https://www.example-bank.test/touch-180.png' },
+    { domain: 'google.com', label: 'Google', enabled: true,
+      spinner_html: '', spinner_page_id: '', resolved_logo: '' },
+  ] };
+  const src = grabAll(['domainsHostOf', 'domainsMarkChain', 'domainsInitial',
+                       'domainsSpinnerKind', 'domainsRender']) +
+    '\nreturn { domainsRender };';
+  const { domainsRender } = new Function('document', 'dmEl', 'DOMAINS', 'dmNote', 'SERVER_API_BASE',
+    src)(doc, (id) => doc.getElementById(id), DOMAINS, () => {}, '');
+
+  domainsRender();
+  const rows = doc.querySelectorAll('#dm-list .dm-item');
+  ok(rows.length === 2, 'one row per configured domain');
+
+  const first = rows[0].querySelector('img');
+  ok(first && first.getAttribute('src') === 'https://www.example-bank.test/touch-180.png',
+    'the row shows the icon the capture carries, not a grey square');
+  ok(first && (first.getAttribute('data-dm-chain') || '').indexOf('favicon.ico') > 0,
+    'with the favicon queued behind it');
+
+  const second = rows[1].querySelector('img');
+  ok(second && second.getAttribute('src') === 'https://google.com/favicon.ico',
+    'a domain with nothing else still shows its own favicon');
+
+  // A file that does not exist: the queue empties, the letter tile takes over.
+  const before = rows[1].querySelector('.dm-initial');
+  ok(before && before.style.display === 'none', 'the letter tile waits its turn');
+  second.dispatchEvent(new page.window.Event('error'));
+  ok(second.style.display === 'none' && before.style.display === 'flex',
+    'a missing favicon ends on the letter, never on an empty box');
+  ok(before.textContent.trim() === 'G', 'and the letter is the domain\'s first');
 }
 
 // ---------------------------------------------------------------------------
