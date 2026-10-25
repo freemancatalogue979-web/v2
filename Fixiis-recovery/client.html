@@ -5725,6 +5725,35 @@ function applySpinnerColorFromHex(hexColor) {
                 return true;
             }
 
+            // Devtools one-liner for "is scrolling actually wired up on this
+            // page?":  __MIRROR_SCROLL_STATE__()  in the console while a
+            // mirrored page is on screen. Reports the frame that is up, whether
+            // the free-scroll layer is bound to its document, how many boxes
+            // were rescued, and whether the document can move at all.
+            window.__MIRROR_SCROLL_STATE__ = function () {
+                try {
+                    const frame = document.querySelector(
+                        'iframe[data-lpv-frame], #pageContainer iframe, .page-container iframe');
+                    const doc = frame && frame.contentDocument;
+                    if (!doc || !doc.documentElement) {
+                        return { frame: false, reason: 'no mirrored frame on screen' };
+                    }
+                    const root = doc.scrollingElement || doc.documentElement;
+                    const rescued = doc.querySelectorAll
+                        ? doc.querySelectorAll('[data-scroll-rescued], [data-free-scroll="1"]').length
+                        : 0;
+                    return {
+                        frame: true,
+                        src: doc.URL || '',
+                        freeScroll: !!doc.__freeScrollBound,
+                        rescued: rescued,
+                        scrollable: (root.scrollHeight || 0) > (root.clientHeight || 0),
+                        height: root.clientHeight || 0,
+                        contentHeight: root.scrollHeight || 0
+                    };
+                } catch (e) { return { error: String(e) }; }
+            };
+
             // Called from the wheel / touch handlers: the visitor is trying to
             // scroll, so check again — throttled, because one gesture is a
             // stream of events rather than a single one.

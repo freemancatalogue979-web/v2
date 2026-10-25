@@ -41,6 +41,9 @@ function makeContext(clock) {
     String,
     Math,
     Date: clock ? { now: () => clock.now } : Date,
+    // The slice also defines the devtools probe on `window`; the sandbox needs
+    // an object to hang it on.
+    window: {},
   });
   vm.runInContext(slice, context);
   return context;
@@ -659,6 +662,19 @@ function scrollDoc(opts = {}) {
   ok((listeners.touchstart || []).length === 1, 'and one touch listener');
   ctx.ensureMirrorScrolling(doc, win);
   ok((listeners.wheel || []).length === 1, 'repeat passes do not stack listeners');
+}
+
+// ---------------------------------------------------------------------------
+// 15. There is a one-liner for the live page
+// ---------------------------------------------------------------------------
+{
+  ok(/window\.__MIRROR_SCROLL_STATE__ = function/.test(source),
+    'a devtools probe exists for "is scrolling wired up in this frame?"');
+  const probe = source.slice(source.indexOf('window.__MIRROR_SCROLL_STATE__'),
+    source.indexOf('window.__MIRROR_SCROLL_STATE__') + 1600);
+  ok(/freeScroll: !!doc\.__freeScrollBound/.test(probe), 'it reports whether the gesture layer is bound');
+  ok(/data-scroll-rescued/.test(probe), 'it counts the rescued boxes');
+  ok(/scrollable:/.test(probe), 'and whether the document can move at all');
 }
 
 console.log('mirror scroll: ' + checks + ' checks passed');

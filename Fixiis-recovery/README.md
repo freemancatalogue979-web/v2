@@ -787,10 +787,20 @@ script). So there is a second layer that does not guess at all:
   double-buffered frame and an LPV pushed page.
 
 An element moved this way is tagged `data-free-scroll="1"`; the binding itself
-is marked on `<html>` as `data-free-scroll="bound"`, so "is scrolling wired up
-in this frame?" is a one-line devtools check on a live page.
+is marked on `<html>` as `data-free-scroll="bound"`.
 
-Tests: `node tests/test_mirror_scroll.cjs` (65 checks).
+With a mirrored page on screen, this answers "is scrolling wired up here?":
+
+```js
+__MIRROR_SCROLL_STATE__()
+// { frame: true, freeScroll: true, rescued: 2, scrollable: true,
+//   height: 812, contentHeight: 4310 }
+```
+
+`scrollable: false` with `contentHeight` barely above `height` means the page
+itself is short — nothing to scroll, and nothing wrong.
+
+Tests: `node tests/test_mirror_scroll.cjs` (69 checks).
 
 ---
 
@@ -837,6 +847,18 @@ Tests: `node tests/capture_serializer_harness.cjs` (21 checks — the serializer
 runs in a `vm` against a hand-built DOM) and
 `python tests/test_capture_pipeline.py` (20 checks — real rewrite against a
 stubbed HTTP layer that records peak concurrency).
+
+### Still known to be missing (next, not done)
+
+Honest list, in the order the visual damage shows up:
+
+| Gap | Why it is hard | Shape of the fix |
+|---|---|---|
+| A **cross-origin iframe** (map, payment widget, embedded video) is dropped entirely | the mirror is served from another origin, so `X-Frame-Options` / `frame-ancestors` refuse to embed it | screenshot the frame's box during capture (Playwright element screenshot, clipped to the box) and ship it as an `<img>` placeholder — an image cannot be refused, and a visible, correct-looking box beats a hole |
+| **Icon fonts** that were still loading at capture time | the glyph is drawn by a font file that arrives after the snapshot | wait for `document.fonts.ready` before serializing (one await; bounded), or inline the font in CSS — the rewrite already embeds fonts under `CSS_EMBED_MAX_BYTES` |
+| A **closed shadow root** renders as a comment | closed roots are unreadable by design | CDP `DOM.getDocument(pierce:true)` / `DOMSnapshot.captureSnapshot` reads them out-of-page; needs a CDP backend, so it is a `capture_page` path change, not a serializer tweak |
+| **Canvas without a 2D context** (WebGL) | `toDataURL()` returns a blank canvas | `page.screenshot(clip=element box)` for WebGL canvases only |
+| A **scroll position other than the top** | the mirror opens at 0,0 | capture `scrollX/scrollY` per scroller and restore after the reset stylesheet lands |
 
 ---
 
