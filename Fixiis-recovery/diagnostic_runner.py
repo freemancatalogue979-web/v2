@@ -39,6 +39,11 @@ from pathlib import Path
 # production browser sees.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from stealth_advanced import build_advanced_stealth_script, DIAGNOSTIC_JS  # noqa: E402
+from config import stream_dpr as _stream_dpr  # noqa: E402
+
+# The browser rasterises at this scale (config.stream_dpr), so
+# window.devicePixelRatio must report it - not the old fixed 1.0.
+_STREAM_DPR = _stream_dpr()
 
 
 DEFAULT_TEST_URLS = [
@@ -58,7 +63,7 @@ SCORECARD = [
     ("deviceMemory",      16,              "Should match fingerprint"),
     ("maxTouchPoints",    0,               "0 desktop, 5 mobile"),
     ("uaData",            None,            "Should be present and consistent"),
-    ("dpr",               1.0,             "Must be 1.0 - logical-pixel policy"),
+    ("dpr",               _STREAM_DPR,     "Must equal the stream render scale (config.stream_dpr)"),
     ("outerW",            None,            "Should be > innerW + 0"),
     ("outerH",            None,            "Should be > innerH + 0"),
     ("availH",            None,            "Should be < screenH (taskbar)"),

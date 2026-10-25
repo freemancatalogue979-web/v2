@@ -101,6 +101,15 @@ class UltraConfig:
     bitrate: int = 10000  # 50 Mbps - maximum quality
     keyframe_interval: int = 30
 
+    # Stream render scale (device pixel ratio)
+    # ---------------------------------------
+    # Chrome never upscales a screencast frame, and a 1x render shown at
+    # 200% is always soft. Every live view therefore renders its page at
+    # `CSS viewport x stream_dpr` and the panel displays that frame back at
+    # the CSS size. 2.0 = retina-sharp text; 1.0 = the old logical-pixel
+    # behaviour (smaller frames, visibly softer).
+    stream_dpr: float = 2.0
+
     # Adaptive FPS Settings - ENABLED for 60 FPS
     adaptive_fps: bool = True  # Enabled - allows dynamic FPS adjustment
     fps_min: int = 60  # Minimum FPS (60 FPS target)
@@ -306,6 +315,7 @@ class UltraConfig:
             "SERVER_DOMAIN": ("server_domain", str),
             "USE_HTTPS": ("use_https", lambda x: x.lower() == "true"),
             "TARGET_FPS": ("target_fps", int),
+            "STREAM_DPR": ("stream_dpr", float),
             "QUALITY": ("quality", int),
             "BITRATE": ("bitrate", int),
             "USE_GPU": ("use_gpu", lambda x: x.lower() == "true"),
@@ -381,6 +391,9 @@ class UltraConfig:
         if not 1 <= self.target_fps <= 144:
             self.target_fps = 60
 
+        if not 1.0 <= self.stream_dpr <= 3.0:
+            self.stream_dpr = 2.0
+
         if not 10 <= self.quality <= 100:
             self.quality = 100
 
@@ -444,6 +457,37 @@ class UltraConfig:
 
 # Global config instance
 CONFIG = UltraConfig()
+
+
+def stream_dpr() -> float:
+    """Render scale every streamed browser surface uses (1.0 - 3.0).
+
+    Kept here so the browser launch, the CDP screencast size and the input
+    mapping can never disagree about it: a frame rendered at 2x but mapped
+    as 1x would put every click at half its real position.
+    """
+    try:
+        value = float(getattr(CONFIG, "stream_dpr", 2.0) or 2.0)
+    except (TypeError, ValueError):
+        return 2.0
+    return min(3.0, max(1.0, value))
+
+
+def frame_to_css(value, dpr: float = None) -> float:
+    """Convert a screencast-frame coordinate (CSS x DPR) back to CSS px.
+
+    page.mouse works in CSS pixels while the operator canvas measures the
+    frame it can see, which is DPR times bigger.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    scale = stream_dpr() if dpr is None else float(dpr or 1.0)
+    if scale <= 0:
+        scale = 1.0
+    return number / scale
+
 
 # Paths
 BASE_DIR = Path(__file__).parent

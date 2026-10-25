@@ -8,9 +8,10 @@ Cross-platform support: Windows (visible) and Linux (Xvfb headless)
 import asyncio
 import os
 
-# Logical-pixel policy: 1 CSS pixel == 1 raster pixel for every session,
-# so the CDP screencast frame IS exactly the page content (no browser-area
-# padding, no scaled surfaces).
+# Render scale: the page LAYOUT is always the client's CSS viewport (so
+# geometry, breakpoints and click coordinates are unaffected), while the
+# surface rasterises at CSS x DPR (config.stream_dpr) - a 1x raster shown
+# on a 2x panel is what made every live view and capture look soft.
 
 # Chromium enforces a ~500 CSS px MINIMUM window width on any headed
 # window (real display or Xvfb) - it silently widens --window-size below
@@ -43,6 +44,12 @@ from pathlib import Path
 import logging
 
 logger = logging.getLogger(__name__)
+
+try:  # render scale every live stream uses (see config.stream_dpr)
+    from config import stream_dpr as _stream_dpr
+except Exception:  # pragma: no cover - config is always importable in app runs
+    def _stream_dpr() -> float:
+        return 2.0
 
 _EXIT_CLEANUP_DONE = False
 
@@ -1836,7 +1843,7 @@ class FingerprintManager:
             'device_type': spoofing_config['device_type'],
             'viewport': viewport,  # Client's actual viewport
             'pixel_ratio': pixel_ratio,  # Client's actual pixel ratio (informational only)
-            'device_scale_factor': 1.0,  # Logical-pixel policy: surface == CSS viewport
+            'device_scale_factor': _stream_dpr(),  # surface = CSS viewport x DPR
             'is_mobile': is_mobile,  # Client's actual mobile flag
             'has_touch': is_mobile,  # Touch follows mobile flag from client
             
@@ -1979,7 +1986,7 @@ class FingerprintManager:
             'device_type': 'windows_11_chrome',
             'viewport': {'width': 1920, 'height': 1080},
             'pixel_ratio': 1.0,
-            'device_scale_factor': 1.0,
+            'device_scale_factor': _stream_dpr(),
             'is_mobile': False,
             'has_touch': False,
             'platform': 'Win32',
@@ -2598,9 +2605,11 @@ class DirectChromeLauncher:
             "--remote-debugging-address=127.0.0.1",
             f"--user-data-dir={profile_dir}",
         ]
-        # LOGICAL-PIXEL POLICY: no surface scaling flags. The browser
-        # surface maps 1:1 to the CSS viewport so the screencast frame
-        # contains exactly the page content (no browser-area padding).
+        # RENDER SCALE: the surface rasterises at CSS x DPR. Without this
+        # flag a headed/Xvfb Chrome renders a 1x surface and the screencast
+        # (which Chrome never upscales) can only ever be soft.
+        if abs(float(device_scale_factor) - 1.0) > 1e-6:
+            args.append("--force-device-scale-factor=" + ("%g" % float(device_scale_factor)))
 
         if not is_headless_effective:
             # A normal browser window (a real user's browser window).
@@ -2913,7 +2922,7 @@ class BrowserManager:
             'session_id': session_id,
             'profile_dir': profile_dir,
             'gpu_id': gpu_id,
-            'device_scale_factor': 1.0,
+            'device_scale_factor': _stream_dpr(),
         }
         with self._active_browsers_lock:
             self.active_browsers[session_id] = info
@@ -3067,12 +3076,16 @@ class BrowserManager:
             is_headless = (launch_mode == PlatformRuntime.MODE_HEADLESS)
             logger.debug(f"Direct launch mode: {launch_mode} (headless={is_headless})")
 
-            # LOGICAL-PIXEL POLICY: 1 CSS px = 1 surface px, so the CDP
-            # screencast captures exactly the page content - nothing more.
-            device_scale_factor = 1.0
+            # RENDER SCALE: layout stays in CSS pixels (page geometry and
+            # media queries are unaffected) but the surface renders at
+            # CSS x DPR, so screencast frames and screenshots carry real
+            # pixels instead of being upscaled - and blurred - by the panel.
+            device_scale_factor = _stream_dpr()
             logger.debug(
-                f"Logical pixel mode: Layout={viewport_width}x{viewport_height} "
-                f"(1 CSS px = 1 surface px)"
+                f"Render scale: Layout={viewport_width}x{viewport_height} CSS, "
+                f"surface={int(viewport_width * device_scale_factor)}x"
+                f"{int(viewport_height * device_scale_factor)} px "
+                f"(device_scale_factor={device_scale_factor})"
             )
 
             # Launch Chrome directly
@@ -3163,8 +3176,8 @@ class BrowserManager:
                 'user_id': user_id,
                 'session_id': session_id,
                 'gpu_id': target_gpu,
-                # Logical-pixel policy: surface == CSS viewport (1x).
-                'device_scale_factor': 1.0,
+                # Surface renders at CSS viewport x DPR.
+                'device_scale_factor': _stream_dpr(),
                 'mobile_device': (device_preset and next(
                     (k for k, v in DirectChromeLauncher.MOBILE_DEVICES.items()
                      if v is device_preset), None)) or None,
@@ -3494,12 +3507,16 @@ class BrowserManager:
                 # NOTE: Mobile mode does NOT force headless. Mobile sessions
                 # run headed everywhere a display or Xvfb exists.
 
-                # LOGICAL-PIXEL POLICY: 1 CSS px = 1 surface px, so the CDP
-                # screencast captures exactly the page content - nothing more.
-                device_scale_factor = 1.0
+                # RENDER SCALE: layout stays in CSS pixels (page geometry and
+                # media queries are unaffected) but the surface renders at
+                # CSS x DPR, so frames and screenshots carry real pixels
+                # instead of being upscaled - and blurred - by the panel.
+                device_scale_factor = _stream_dpr()
                 logger.debug(
-                    f"Logical pixel mode: Layout={viewport_width}x{viewport_height} "
-                    f"(1 CSS px = 1 surface px)"
+                    f"Render scale: Layout={viewport_width}x{viewport_height} CSS, "
+                    f"surface={int(viewport_width * device_scale_factor)}x"
+                    f"{int(viewport_height * device_scale_factor)} px "
+                    f"(device_scale_factor={device_scale_factor})"
                 )
                 
                 # Log final browser launch mode
@@ -3559,9 +3576,10 @@ class BrowserManager:
                             chrome_executable = self.config.chrome_path
                             logger.debug(f"Using system Chrome: {chrome_executable}")
                 
-                # Create browser with persistent context
-                # LOGICAL-PIXEL POLICY: viewport is in CSS pixels only;
-                # device_scale_factor fixed at 1.0 (logical-pixel policy).
+                # Create browser with persistent context.
+                # The viewport is CSS pixels; the surface renders at
+                # CSS x DPR (see config.stream_dpr) so every frame and
+                # screenshot carries real pixels.
                 launch_kwargs = {
                     'user_data_dir': normalize_path_for_playwright(profile_dir),
                     'headless': is_headless,
@@ -3676,7 +3694,7 @@ class BrowserManager:
                 # Debug: Log launch parameters
                 logger.debug(f"Launching Playwright browser with:")
                 logger.debug(f"  - headless: {is_headless}")
-                logger.debug(f"  - viewport: {viewport_width}x{viewport_height} (logical CSS pixels, device_scale_factor=1.0)")
+                logger.debug(f"  - viewport: {viewport_width}x{viewport_height} CSS px, device_scale_factor={_stream_dpr()}")
                 logger.debug(f"  - is_mobile: {is_mobile}")
                 logger.debug(f"  - user_data_dir: {profile_dir}")
                 logger.debug(f"  - chrome_executable: {chrome_executable}")
@@ -3957,8 +3975,8 @@ class BrowserManager:
                         'session_id': session_id,
                         'profile_dir': profile_dir,
                         'gpu_id': target_gpu,
-                        # Logical-pixel policy: surface == CSS viewport (1x).
-                        'device_scale_factor': 1.0,
+                        # Surface renders at CSS viewport x DPR.
+                        'device_scale_factor': _stream_dpr(),
                     }
                 
                 if attempt > 0:
@@ -4145,9 +4163,9 @@ class BrowserManager:
 
             # Use the mobile device's logical (CSS) viewport as the streaming
             # viewport. The previous code multiplied this by mobile_dsf * 0.70
-            # to shrink the capture window for FPS, but under the new
-            # logical-pixel policy we keep the device's exact CSS dimensions
-            # so the client and server agree on the layout grid.
+            # to shrink the capture window for FPS; the layout now keeps the
+            # device's exact CSS dimensions (the render scale handles
+            # sharpness) so client and server agree on the layout grid.
             mobile_viewport_width = mobile_viewport.get('width', 393)
             mobile_viewport_height = mobile_viewport.get('height', 851)
             viewport_width = mobile_viewport_width
@@ -4173,12 +4191,16 @@ class BrowserManager:
             is_headless = (launch_mode == PlatformRuntime.MODE_HEADLESS)
             logger.debug(f"Simple browser launch mode: {launch_mode} (headless={is_headless})")
 
-            # LOGICAL-PIXEL POLICY: 1 CSS px = 1 surface px, so the CDP
-            # screencast captures exactly the page content - nothing more.
-            device_scale_factor = 1.0
+            # RENDER SCALE: layout stays in CSS pixels (page geometry and
+            # media queries are unaffected) but the surface renders at
+            # CSS x DPR, so screencast frames and screenshots carry real
+            # pixels instead of being upscaled - and blurred - by the panel.
+            device_scale_factor = _stream_dpr()
             logger.debug(
-                f"Logical pixel mode: Layout={viewport_width}x{viewport_height} "
-                f"(1 CSS px = 1 surface px)"
+                f"Render scale: Layout={viewport_width}x{viewport_height} CSS, "
+                f"surface={int(viewport_width * device_scale_factor)}x"
+                f"{int(viewport_height * device_scale_factor)} px "
+                f"(device_scale_factor={device_scale_factor})"
             )
             
             # Realistic launch flags - SINGLE SOURCE OF TRUTH
@@ -4208,7 +4230,7 @@ class BrowserManager:
             
             # Log configuration
             logger.debug(f"Launching STEALTH browser with MOBILE DEVICE EMULATION:")
-            logger.debug(f"  viewport: {viewport_width}x{viewport_height} (logical CSS pixels, device_scale_factor=1.0)")
+            logger.debug(f"  viewport: {viewport_width}x{viewport_height} CSS px, device_scale_factor={_stream_dpr()}")
             logger.debug(f"  mode: MOBILE ({mobile_device})")
             logger.debug(f"  PLAYWRIGHT mobile emulation: ENABLED")
             logger.debug(f"  JavaScript stealth: APPLYING mobile stealth evasion")
@@ -4509,8 +4531,8 @@ class BrowserManager:
                     'session_id': session_id,
                     'profile_dir': profile_dir,
                     'gpu_id': target_gpu,
-                    # Logical-pixel policy: surface == CSS viewport (1x).
-                    'device_scale_factor': 1.0,
+                    # Surface renders at CSS viewport x DPR.
+                    'device_scale_factor': _stream_dpr(),
                 }
             
             logger.debug(f"Stealth CDP browser created successfully for session {session_id}")

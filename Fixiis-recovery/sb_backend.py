@@ -49,6 +49,12 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
+try:  # the render scale every live stream uses (see config.stream_dpr)
+    from config import stream_dpr as _stream_dpr
+except Exception:  # pragma: no cover - config is always importable in app runs
+    def _stream_dpr() -> float:
+        return 2.0
+
 # SeleniumBase sessions deliberately get private Xvfb processes.  The async
 # lock prevents two handles in this process from selecting the same display;
 # the thread lock protects the short-lived DISPLAY environment override while
@@ -1298,7 +1304,8 @@ class SBPage:
         await self._session.send("Emulation.setDeviceMetricsOverride", {
             "width": int(size.get("width", 1280)),
             "height": int(size.get("height", 720)),
-            "deviceScaleFactor": float(size.get("deviceScaleFactor", self._ctx._pixel_ratio or 1)),
+            "deviceScaleFactor": float(size.get(
+                "deviceScaleFactor", self._ctx._pixel_ratio or _stream_dpr())),
             "mobile": bool(self._mobile),
         })
 
@@ -1754,9 +1761,13 @@ class SBHandle:
         # that flag for its own channel and conflicts break UC's attach.
         # Chrome's actual port is read from DevToolsActivePort in the profile
         # (deterministic), with probed fallbacks.
+        _scale = _stream_dpr()
         args = [
             "--remote-allow-origins=*",
-            "--force-device-scale-factor=1",
+            # Same scale the emulation below uses: a browser forced to 1x
+            # while the page is told 2x renders a 1x surface and every frame
+            # comes out soft again.
+            "--force-device-scale-factor=" + ("%g" % _scale),
             "--password-store=basic",
             "--enable-features=PasswordManager,CredentialManager",
         ]
@@ -2596,7 +2607,8 @@ async def launch_for_pcm(profile_dir: Optional[str], viewport: Dict[str, Any],
     """PCM pilot factory: desktop/mobile preview browser."""
     mobile = (mode == "mobile")
     logger.debug("[SB] launching UC browser for PCM (%s, profile=%s)", mode, profile_dir)
-    return await _launch_stack(profile_dir, viewport, user_agent, None, mobile, 1.0, headless)
+    return await _launch_stack(profile_dir, viewport, user_agent, None, mobile,
+                               _stream_dpr(), headless)
 
 
 async def launch_for_access(profile_dir: Optional[str], viewport: Dict[str, Any],
@@ -2604,7 +2616,8 @@ async def launch_for_access(profile_dir: Optional[str], viewport: Dict[str, Any]
                             headless: bool = False) -> SBBrowser:
     """Launch one operator Access browser with its own SB/Xvfb ownership."""
     logger.debug("[SB] launching UC browser for Access (profile=%s)", profile_dir)
-    return await _launch_stack(profile_dir, viewport, user_agent, None, False, 1.0, headless)
+    return await _launch_stack(profile_dir, viewport, user_agent, None, False,
+                               _stream_dpr(), headless)
 
 
 __all__ = [

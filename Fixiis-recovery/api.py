@@ -39,6 +39,7 @@ from reconnect_utils import should_skip_previous_session_kick
 
 import lpv_store
 import server_settings as srv_settings
+from config import stream_dpr
 
 logger = logging.getLogger(__name__)
 
@@ -237,14 +238,12 @@ async def _admin_screencast_start(session_id: str):
         # below (frame_crop) so streams and coordinates stay page-exact.
         content_w = int(vp.get('width', 1280) or 1280)
         content_h = int(vp.get('height', 720) or 720)
-        w = content_w
-        h = content_h
-        # Screencast frames are DOWNSCALED to fit maxWidth/maxHeight; cap at
-        # the CSS viewport itself (1 CSS px = 1 surface px) with a sane floor
-        # for tiny mobile widths — overshooting is harmless (Chrome never
-        # upscales past the native surface).
-        w = max(640, min(int(w), 1920))
-        h = max(360, min(int(h), 2600))
+        # The panel displays the frame back at the CSS size, so the frame is
+        # rendered at CSS x DPR (config.stream_dpr). A 1x frame scaled up to
+        # fill the panel is what made the live view soft.
+        _dpr = stream_dpr()
+        w = int(round(max(640, min(int(content_w), 1920)) * _dpr))
+        h = int(round(max(360, min(int(content_h), 2600)) * _dpr))
 
         frame_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
 
@@ -382,9 +381,13 @@ async def _admin_screencast_start(session_id: str):
             except Exception:
                 pass
             return
-        logger.debug(f"[admin-cast] started {session_id} {w}x{h}")
+        logger.debug(f"[admin-cast] started {session_id} {w}x{h} (css {content_w}x{content_h}, dpr={_dpr})")
         # notify admins of meta
-        await _broadcast_to_admins({'type': 'screencast_started', 'client_id': session_id, 'width': w, 'height': h})
+        await _broadcast_to_admins({
+            'type': 'screencast_started', 'client_id': session_id,
+            'width': w, 'height': h,
+            'css_width': content_w, 'css_height': content_h, 'dpr': _dpr,
+        })
     except Exception as e:
         logger.warning(f"[admin-cast] start failed {session_id}: {e}")
     finally:
@@ -805,6 +808,24 @@ async def favicon():
         content=FAVICON_SVG.encode('utf-8'),
         media_type="image/svg+xml",
         headers={"Content-Length": str(len(FAVICON_SVG.encode('utf-8')))}
+    )
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon_svg():
+    """The app's own mark, served as what it actually is.
+
+    /favicon.ico answers the conventional request, but a browser's tab-icon
+    loader routinely discards an SVG that arrives under a .ico name. The
+    client asks for this path by name (and declares the type), so the
+    visitor's tab falls back to the server's icon instead of a blank globe.
+    """
+    body = FAVICON_SVG.encode('utf-8')
+    return Response(
+        content=body,
+        media_type="image/svg+xml",
+        headers={"Content-Length": str(len(body)),
+                 "Cache-Control": "public, max-age=86400"},
     )
 
 # CORS middleware - allow remote-hosted static admin/client pages by default
@@ -3104,21 +3125,40 @@ def _page_domain(page_id: str) -> str:
     return hosts[0] if hosts else ""
 
 
+def _same_site(a: str, b: str) -> bool:
+    """True when two hosts belong to the same site (either may be the parent)."""
+    return lpv_store.domain_matches(a, b) or lpv_store.domain_matches(b, a)
+
+
 def _domain_config_for_page(page_id: str) -> Optional[Dict[str, Any]]:
     """The domain configuration that applies to an archived page.
 
-    "Applies" is not the same as "the first host in the markup": a Google
-    capture is full of gstatic.com assets, a bank's page may open with an
-    Akamai URL. Every host the page mentions is tried in turn, and the first
-    one the operator has configured wins — so a site's loading screen is found
-    even when the page's first URL belongs to its CDN.
+    The page's OWN host decides. `_page_hosts` already ranks the page's real
+    address (<base>, canonical, og:url) above the asset hosts it merely
+    mentions, and only a configuration for the same site as that host is
+    accepted here — a page that embeds one asset from another provider must not
+    be branded as that provider, and one site's custom loading page must never
+    stand in for another's.
     """
-    for host in _page_hosts(page_id):
+    hosts = _page_hosts(page_id)
+    if not hosts:
+        return None
+    primary = hosts[0]
+    try:
+        cfg = lpv_store.find_domain(primary)
+    except Exception:
+        cfg = None
+    if cfg and _same_site(primary, str(cfg.get("domain") or "")):
+        return cfg
+    # Rare: the capture's first host is an asset origin. A configuration still
+    # applies only when it is the SAME site as that host — never a different
+    # operator domain that the markup merely links to.
+    for host in hosts[1:]:
         try:
             cfg = lpv_store.find_domain(host)
         except Exception:
             cfg = None
-        if cfg:
+        if cfg and _same_site(primary, str(cfg.get("domain") or "")):
             return cfg
     return None
 
@@ -3376,6 +3416,271 @@ def _site_icon_url(domain: str, user_id: str = "") -> str:
     return url
 
 
+# ---------------------------------------------------------------------------
+# The site icon API: "ask the domain the page is on for its icon"
+# ---------------------------------------------------------------------------
+# The visitor's tab renders a page from a domain, and it wants THAT domain's
+# icon. Asking the browser to load the icon from the site directly fails for
+# the usual reasons (CORS on an SVG, a hotlink block, an icon behind a WAF, a
+# 200 HTML "soft 404" at /favicon.ico), and asking a third-party favicon
+# service returns someone else's idea of the mark. So the tab asks our API,
+# which fetches the icon from the domain itself and serves the bytes from our
+# own origin.
+_SITE_ICON_BYTES: Dict[str, tuple] = {}
+_SITE_ICON_BYTES_TTL = 6 * 3600.0
+_SITE_ICON_MAX_BYTES = 512 * 1024
+
+# Any http(s) page fetch we make for an icon. Short: this is a nicety on a
+# loading path, never something a visitor waits on.
+_ICON_FETCH_TIMEOUT = 4.0
+_ICON_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+)
+
+
+# Whether our icon fetches verify the certificate. It is True unless this
+# machine's TLS verification actually fails (a TLS-intercepting proxy with its
+# CA not installed in Python's store is the usual reason). An icon is not a
+# secret — it is a public picture we hand to a browser tab — so a failed
+# handshake is retried once without verification and remembered, instead of
+# silently turning the whole endpoint into a 404 on that machine.
+_ICON_TLS_STATE: Dict[str, bool] = {"verify": True}
+
+
+def _icon_cert_error(exc: BaseException) -> bool:
+    text = str(exc)
+    if "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text:
+        return True
+    try:
+        import ssl as _ssl
+        return isinstance(exc, _ssl.SSLError)
+    except Exception:
+        return False
+
+
+async def _icon_http_get(url: str, accept: str) -> Any:
+    """GET `url` for an icon; None on any failure. Retries once unverified."""
+    for verify in ((True, False) if _ICON_TLS_STATE["verify"] else (False,)):
+        try:
+            async with httpx.AsyncClient(
+                timeout=_ICON_FETCH_TIMEOUT, follow_redirects=True, verify=verify,
+                headers={"User-Agent": _ICON_USER_AGENT, "Accept": accept},
+            ) as client:
+                return await client.get(url)
+        except Exception as exc:
+            if verify and _icon_cert_error(exc):
+                # Remember it: every further fetch on this machine would pay
+                # for the same failed handshake first.
+                _ICON_TLS_STATE["verify"] = False
+                continue
+            return None
+    return None
+
+
+def _icon_host_is_safe(host: str) -> bool:
+    """True for a plausible public hostname (no IPs, no ports, no localhost)."""
+    value = (host or "").strip().lower().rstrip(".")
+    if not value or len(value) > 253:
+        return False
+    if ":" in value or "/" in value or "@" in value:
+        return False
+    if value in ("localhost", "localhost.localdomain") or value.endswith(".local"):
+        return False
+    if value.startswith("[") or value.endswith("]"):
+        return False
+    labels = value.split(".")
+    if len(labels) < 2 or any(not label for label in labels):
+        return False
+    # An IPv4 literal (0-255 in every part) is not a website.
+    if all(part.isdigit() for part in labels) and len(labels) == 4:
+        return False
+    return True
+
+
+def _icon_bytes(raw: bytes) -> Tuple[bytes, str]:
+    """(bytes, media type) when `raw` really is an image, else ("", "").
+
+    A soft 404 page is the reason a tab used to sit on nothing: the server
+    answered 200, the "icon" was HTML, and the browser decoded nothing.
+    """
+    if not raw or len(raw) > _SITE_ICON_MAX_BYTES:
+        return b"", ""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return raw, "image/png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return raw, "image/jpeg"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return raw, "image/gif"
+    if raw[:4] == b"\x00\x00\x01\x00":
+        return raw, "image/x-icon"
+    head = raw[:512].lstrip().lower()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in raw[:2048].lower()):
+        return raw, "image/svg+xml"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return raw, "image/webp"
+    return b"", ""
+
+
+def _icon_url_candidates(host: str, page_url: str = "") -> Tuple[List[str], str]:
+    """Where to look for this site's icon, best-and-cheapest first."""
+    root = f"https://{host}"
+    candidates = [
+        root + "/apple-touch-icon.png",       # usually 180px: sharp, one request
+        root + "/favicon.ico",
+    ]
+    page = (page_url or "").strip()
+    if page and not re.match(r"^https?://", page, re.IGNORECASE):
+        page = "https://" + page.lstrip("/")
+    return candidates, page
+
+
+async def _fetch_declared_icons(page_url: str) -> List[str]:
+    """The icons a page declares, best first (empty when the page is unreachable)."""
+    if not page_url:
+        return []
+    try:
+        response = await _icon_http_get(page_url, "text/html,*/*")
+        if response is None or response.status_code >= 400:
+            return []
+        html = response.text[:400000]
+        base = page_url
+        m = re.search(r"""<base\b[^>]*\bhref\s*=\s*["']([^"']+)["']""", html, re.IGNORECASE)
+        if m:
+            candidate = _absolute(m.group(1), page_url)
+            if candidate:
+                base = candidate
+        ranked: List[Tuple[float, str]] = []
+        for tag in re.findall(r"<link\b[^>]*>", html, re.IGNORECASE):
+            rel_m = re.search(r"""\brel\s*=\s*["']([^"']*)["']""", tag, re.IGNORECASE)
+            href_m = re.search(r"""\bhref\s*=\s*["']([^"']+)["']""", tag, re.IGNORECASE)
+            if not (rel_m and href_m):
+                continue
+            rel = rel_m.group(1).lower()
+            if "icon" not in rel:
+                continue
+            href = _absolute(href_m.group(1), base)
+            if not href or not href.lower().startswith(("http://", "https://", "data:")):
+                continue
+            if href.lower().startswith("data:"):
+                continue          # already inline in the capture; nothing to fetch
+            sizes_m = re.search(r"""\bsizes\s*=\s*["']([^"']+)["']""", tag, re.IGNORECASE)
+            big = 0
+            if sizes_m:
+                digits = re.match(r"\s*(\d+)", sizes_m.group(1))
+                if digits:
+                    big = int(digits.group(1))
+            score = 100.0 if "apple-touch-icon" in rel else 50.0
+            score += min(40.0, big / 8.0)
+            if href.lower().split("?")[0].endswith(".svg"):
+                score += 12.0
+            ranked.append((score, href))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        out: List[str] = []
+        for _score, href in ranked:
+            if href not in out:
+                out.append(href)
+        return out[:4]
+    except Exception:
+        return []
+
+
+async def _fetch_icon_bytes(candidates: List[str]) -> Tuple[bytes, str]:
+    """First candidate that really returns an image."""
+    if not candidates:
+        return b"", ""
+    accept = "image/avif,image/webp,image/png,image/svg+xml,*/*"
+    for url in candidates:
+        response = await _icon_http_get(url, accept)
+        if response is None or response.status_code >= 400:
+            continue
+        if len(response.content) > _SITE_ICON_MAX_BYTES:
+            continue
+        data, media = _icon_bytes(response.content)
+        if data:
+            return data, media
+    return b"", ""
+
+
+def _stored_icon_bytes(url: str) -> Tuple[bytes, str]:
+    """The server's own copy of a site icon, read from disk."""
+    raw = str(url or "").strip()
+    if not raw or not raw.startswith("/api/profiles/favicons/"):
+        return b"", ""
+    name = raw.rsplit("/", 1)[-1]
+    try:
+        from config import CONFIG as _C
+        base_path = Path(str(getattr(_C, "profile_base_path", "./profiles") or "./profiles"))
+        if not base_path.is_absolute():
+            base_path = get_base_path() / base_path
+        for profile_dir in Path(base_path).glob("*"):
+            candidate = profile_dir / "favicons" / name
+            if candidate.is_file():
+                data, media = _icon_bytes(candidate.read_bytes())
+                if data:
+                    return data, media
+    except Exception:
+        return b"", ""
+    return b"", ""
+
+
+async def _site_icon_payload(host: str, page_url: str = "") -> Tuple[bytes, str, str]:
+    """(bytes, media type, source) for a domain's icon; empty when unknown."""
+    now = time.time()
+    hit = _SITE_ICON_BYTES.get(host)
+    if hit and (now - hit[0]) < _SITE_ICON_BYTES_TTL:
+        return hit[1], hit[2], hit[3]
+
+    candidates, page = _icon_url_candidates(host, page_url)
+    data, media = await _fetch_icon_bytes(candidates)
+    source = "domain"
+    if not data:
+        # The page's declared icons are usually the sharper mark.
+        declared = await _fetch_declared_icons(page or f"https://{host}/")
+        data, media = await _fetch_icon_bytes(declared)
+        source = "declared"
+    if not data:
+        # Last resort: the copy the server already keeps for this site, so a
+        # visitor still sees the provider's mark when the site itself refuses.
+        try:
+            stored_url = _site_icon_url(host)
+        except Exception:
+            stored_url = ""
+        data, media = _stored_icon_bytes(stored_url)
+        source = "stored"
+    if data:
+        _SITE_ICON_BYTES[host] = (now, data, media, source)
+    return data, media, source
+
+
+@app.get("/api/site/icon")
+async def site_icon(domain: str = "", url: str = ""):
+    """The icon of the site the page is on, fetched from that domain.
+
+    The visitor's tab asks this instead of loading a favicon from the site
+    directly (CORS, hotlink blocks, soft 404s) or from a third-party service
+    (someone else's mark). Served from our origin, cached, image-typed.
+    """
+    host = lpv_store.normalise_domain(domain or url)
+    if not host or not _icon_host_is_safe(host):
+        raise HTTPException(status_code=400, detail="a domain is required")
+    # The page URL is optional: a caller that only names the domain still gets
+    # the site's home page scanned for its declared icons (only reached when
+    # the two cheap guesses both failed).
+    page = (url or "").strip()
+    if not page and "://" in (domain or ""):
+        page = domain.strip()
+    data, media, source = await _site_icon_payload(host, page or f"https://{host}/")
+    if not data:
+        raise HTTPException(status_code=404, detail="no icon for that domain")
+    headers = {
+        "Cache-Control": "public, max-age=86400",
+        "Content-Length": str(len(data)),
+        "X-Icon-Source": source,
+    }
+    return Response(content=data, media_type=media, headers=headers)
+
+
 def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
     """The loading page a domain gets when it has a logo but no uploaded HTML.
 
@@ -3510,27 +3815,26 @@ def _domain_loading(wf: Optional[dict]) -> Tuple[str, str, Optional[Dict[str, An
     return html, f"/api/lpv/domains/{cfg['domain']}/spinner.html", cfg
 
 
-def _sole_domain_loading() -> Tuple[str, str, Optional[Dict[str, Any]]]:
-    """The loading screen to use when the visit's page is not known yet.
+def _visit_domain_loading(visit_url: str) -> Tuple[str, str, Optional[Dict[str, Any]]]:
+    """The loading screen of the site THIS visit is going to.
 
-    A visitor can open client.html before the operator pushes anything and
-    without a workflow naming the landing page. If exactly one site is
-    configured with a loading screen that is unambiguously the one they should
-    see, so it is embedded instead of our own branded ring. Two or more sites
-    and there is no honest answer — the runtime swaps the right one in as soon
-    as a page is pushed.
+    The visitor's own target (`?url=`) names the site, so its configuration is
+    the only honest answer for the wait: a domain's custom HTML belongs to that
+    domain. A visit to a site with no configuration gets nothing here, and the
+    page keeps its default branded loading screen — one site's custom screen is
+    never shown to another site's visitor, which is what "there is only one
+    domain configured" used to do.
     """
-    try:
-        domains = [row for row in lpv_store.list_domains() if row.get("enabled")]
-    except Exception:
-        return "", "", None
-    if len(domains) != 1:
+    host = _host_of(visit_url or "")
+    if not host:
         return "", "", None
     try:
-        cfg = lpv_store.get_domain(domains[0].get("domain") or "")
+        cfg = lpv_store.find_domain(host)
     except Exception:
         cfg = None
     if not cfg:
+        return "", "", None
+    if not _same_site(host, str(cfg.get("domain") or "")):
         return "", "", None
     html = _domain_spinner_for(cfg)
     if not html:
@@ -3538,7 +3842,7 @@ def _sole_domain_loading() -> Tuple[str, str, Optional[Dict[str, Any]]]:
     return html, f"/api/lpv/domains/{cfg['domain']}/spinner.html", cfg
 
 
-def _lpv_boot_loading(wf: Optional[dict]) -> tuple:
+def _lpv_boot_loading(wf: Optional[dict], visit_url: str = "") -> tuple:
     """The loading page to embed for THIS visit.
 
     Resolution order (most specific first):
@@ -3546,8 +3850,11 @@ def _lpv_boot_loading(wf: Optional[dict]) -> tuple:
       1. the workflow's own custom loading page (an explicit choice);
       2. the loading page / logo configured for the site this visit lands on
          (Domains tab) — "the provider's own spinner, not our branding";
-      3. the LPV landing page, while visitors boot straight into LPV mode;
-      4. nothing: client.html keeps its own (now branded) ring.
+      3. the site named by the visit itself (`?url=`), for the
+         "open the client link, push a page by hand" path;
+      4. the LPV landing page, while visitors boot straight into LPV mode;
+      5. nothing: client.html keeps its own (now branded) ring, which is what
+         a site with no customization must see.
     """
     html, url = _workflow_loading_page(wf)
     if html:
@@ -3555,10 +3862,7 @@ def _lpv_boot_loading(wf: Optional[dict]) -> tuple:
     html, url, _cfg = _domain_loading(wf)
     if html:
         return html, url
-    # No workflow and no landing page: with a single configured site there is
-    # only one screen the visitor can be waiting behind, so use it. This is the
-    # "open the client link, push a page by hand" path.
-    html, url, _cfg = _sole_domain_loading()
+    html, url, _cfg = _visit_domain_loading(visit_url)
     if html:
         return html, url
     try:
@@ -3678,7 +3982,10 @@ def _render_client_html(request: Request) -> Response:
 
     # The custom loading page this visitor should see while anything is still
     # loading. Embedding it is what makes it a first paint rather than a fetch.
-    loading_html, loading_url = _lpv_boot_loading(brand_wf)
+    # The visit's own target decides which site's screen applies, if any.
+    visit_url = (request.query_params.get("url")
+                 or request.query_params.get("target") or "").strip()
+    loading_html, loading_url = _lpv_boot_loading(brand_wf, visit_url)
     try:
         loading_html = _sanitize_lpv_html(loading_html or "")
     except Exception:
@@ -10683,6 +10990,7 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_json({
             "type": "session_info",
             "session_id": session_id,
+            "url": url,
             "site_icon": _site_icon,
             "user_id": session.user_id if hasattr(session, 'user_id') else user_id,
             "domain": session.current_domain if hasattr(session, 'current_domain') else "",

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set, List
 
 from log_utils import throttled
+from config import stream_dpr, frame_to_css
 
 logger = logging.getLogger(__name__)
 
@@ -513,16 +514,20 @@ class PCMManager:
                 # SOURCE: layout == surface, no cropping needed, 1:1 coords.
                 # 500 is still under every mobile media-query breakpoint
                 # that matters for captures (>480 layouts stay phone-like).
+                # Render scale: the operator panel shows the frame at CSS
+                # size, so the surface is rendered at CSS x DPR (stream_dpr)
+                # or text comes out soft (see config.stream_dpr).
+                _dpr = stream_dpr()
                 if self._mode == "mobile":
-                    viewport = {"width": 500, "height": 687, "pixelRatio": 1.0}
+                    viewport = {"width": 500, "height": 687, "pixelRatio": _dpr}
                     is_mobile = True
                     ua = "Mozilla/5.0 (Linux; Android 15; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36"
                 else:
-                    viewport = {"width": 1280, "height": 800, "pixelRatio": 1.0}
+                    viewport = {"width": 1280, "height": 800, "pixelRatio": _dpr}
                     is_mobile = False
                     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
 
-                pixel_ratio = viewport.get("pixelRatio", 1.0)
+                pixel_ratio = viewport.get("pixelRatio", stream_dpr())
                 # Use PCM isolated ids so profile is data/pcm_profile not per user
                 target = url or self._current_url
                 if not target.startswith("http"):
@@ -834,18 +839,31 @@ class PCMManager:
             except Exception:
                 return default
 
+        # The operator canvas measures the frame it can see, which is
+        # CSS x DPR pixels while page.mouse() expects CSS pixels. Senders
+        # mark those payloads with frame=true; keyboard and wheel deltas
+        # are already CSS-space and are left alone.
+        _frame_space = bool(data.get("frame"))
+        _dpr = stream_dpr()
+
+        def _pt(value):
+            number = _num(value, 0.0)
+            if _frame_space:
+                return int(round(frame_to_css(number, _dpr)))
+            return int(number)
+
         try:
             t = data.get("type") or data.get("subtype") or data.get("event") or ""
             # support nested input wrapper: {type:"input", subtype:"click", x,y}
             if t == "input":
                 t = data.get("subtype") or data.get("event") or ""
             if t in ("mousemove", "mouse_move"):
-                x = int(_num(data.get("x", 0)))
-                y = int(_num(data.get("y", 0)))
+                x = _pt(data.get("x", 0))
+                y = _pt(data.get("y", 0))
                 await page.mouse.move(x, y)
             elif t in ("mousedown", "mouseDown"):
-                x = int(_num(data.get("x", 0)))
-                y = int(_num(data.get("y", 0)))
+                x = _pt(data.get("x", 0))
+                y = _pt(data.get("y", 0))
                 btn = data.get("button", 0)
                 btn_map = {0: "left", 1: "middle", 2: "right"}
                 try:
@@ -855,8 +873,8 @@ class PCMManager:
                 await page.mouse.move(x, y)
                 await page.mouse.down(button=btn_map.get(btn_i, "left"))
             elif t in ("mouseup", "mouseUp"):
-                x = int(_num(data.get("x", 0)))
-                y = int(_num(data.get("y", 0)))
+                x = _pt(data.get("x", 0))
+                y = _pt(data.get("y", 0))
                 btn = data.get("button", 0)
                 btn_map = {0: "left", 1: "middle", 2: "right"}
                 try:
@@ -866,8 +884,8 @@ class PCMManager:
                 await page.mouse.move(x, y)
                 await page.mouse.up(button=btn_map.get(btn_i, "left"))
             elif t in ("click", "tap"):
-                x = int(_num(data.get("x", 0)))
-                y = int(_num(data.get("y", 0)))
+                x = _pt(data.get("x", 0))
+                y = _pt(data.get("y", 0))
                 sel = data.get("selector")
                 if sel:
                     try:
@@ -877,8 +895,8 @@ class PCMManager:
                 else:
                     await page.mouse.click(x, y)
             elif t == "wheel":
-                x = int(_num(data.get("x", 0)))
-                y = int(_num(data.get("y", 0)))
+                x = _pt(data.get("x", 0))
+                y = _pt(data.get("y", 0))
                 dx = _num(data.get("deltaX", data.get("delta_x", 0)))
                 dy = _num(data.get("deltaY", data.get("delta_y", 0)))
                 dm = int(_num(data.get("deltaMode", 0)))
@@ -1160,7 +1178,8 @@ class PCMManager:
                     try:
                         await self._cdp.send("Emulation.setDeviceMetricsOverride", {
                             'width': int(mcw), 'height': int(mch),
-                            'deviceScaleFactor': 1.0, 'mobile': (self._mode == 'mobile')})
+                            'deviceScaleFactor': stream_dpr(),
+                            'mobile': (self._mode == 'mobile')})
                         await self._cdp.send("Emulation.setTouchEmulationEnabled",
                                              {'enabled': True, 'maxTouchPoints': 5})
                     except Exception as e2:
@@ -1184,16 +1203,23 @@ class PCMManager:
             except Exception as e:
                 logger.debug(f"[PCM] layout probe unavailable: {e}")
 
-            w = max(640, min(int(mcw), 1920))
-            h = max(360, min(int(mch), 2600))
-            # Content rect = REAL page layout viewport. Frames may come back
-            # wider (min window width / full-screen surface) and are cropped
-            # to this rect in _on_frame before broadcast — stream px == page
-            # CSS px, so click coordinates map 1:1.
+            # Frame budget = CSS viewport x DPR. Chrome renders the surface
+            # at deviceScaleFactor and never upscales a screencast frame, so
+            # asking for the CSS size alone is what made every live view
+            # soft once the panel scaled it up.
+            _dpr = stream_dpr()
+            css_w = max(640, min(int(mcw), 1920))
+            css_h = max(360, min(int(mch), 2600))
+            w = int(round(css_w * _dpr))
+            h = int(round(css_h * _dpr))
+            # Content rect stays in CSS pixels: input from the operator
+            # canvas arrives in FRAME pixels and is converted with
+            # frame_to_css() in handle_input, so the page still gets CSS
+            # coordinates (page.mouse works in CSS px).
             self._cast_content = (int(mcw), int(mch), mquality)
             await self._cdp.send("Page.startScreencast", {"format": "png", "maxWidth": w, "maxHeight": h, "everyNthFrame": 1})
             self._screencast_running = True
-            logger.debug(f"[PCM] screencast started {w}x{h} (mode={self._mode}, q={mquality})")
+            logger.debug(f"[PCM] screencast started {w}x{h} (css {int(mcw)}x{int(mch)}, dpr={_dpr}, mode={self._mode}, q={mquality})")
         except Exception as e:
             logger.warning(f"[PCM] start screencast failed: {e}")
             self._cdp = None

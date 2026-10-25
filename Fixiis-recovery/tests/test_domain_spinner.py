@@ -15,9 +15,11 @@ Pinned here:
     host, subdomains included, most specific parent first;
   * a domain with a logo and no uploaded page gets a generated loading screen
     that draws the logo at its natural size (crisp, never scaled up);
-  * the boot resolution order: workflow page -> the site's page -> the one
-    configured site (when the visit's landing page is not known yet) -> LPV
-    landing page -> nothing;
+  * the boot resolution order: workflow page -> the site the landing page
+    belongs to -> the site the VISIT names (`?url=`) -> LPV landing page ->
+    nothing. A domain's custom screen is only ever shown for that domain: a
+    site with no customization keeps the default branded ring, and "there is
+    only one domain configured" is not a reason to show it to everybody;
   * a capture's host is not simply its first URL: <base>, rel=canonical and
     og:url are believed first, then URLs by how often they appear — so a
     gstatic/akamai asset at the top of the markup cannot stop a site's own
@@ -391,36 +393,77 @@ class PlainVisitCase(_StoreMixin, unittest.TestCase):
     """client.html opened before any page is known.
 
     This is the "send the visitor the client link and push a page by hand"
-    path: there is no workflow and no landing page, so the server used to fall
-    back to its own branded loader even though the site had a screen.
+    path. The visitor's own `?url=` names the site they are going to, and ONLY
+    that site's configured screen applies. A plain link that names no site gets
+    the default branded loading screen — a domain's custom HTML is never
+    borrowed for another site, however few domains are configured.
     """
 
-    def test_a_plain_visit_shows_the_only_configured_site(self):
+    def test_the_visit_s_own_site_gets_its_screen(self):
         self.domain(domain="example-provider.com", label="Example",
                     spinner_html=SPINNER_HTML)
-        body = served("")
+        body = served("url=https%3A%2F%2Fwww.example-provider.com%2Flogin")
         self.assertIn('<div id="lpvBootLoading"', body)
         self.assertIn('data-lpv-url="/api/lpv/domains/example-provider.com/spinner.html"', body)
         self.assertIn("#0b1020", embedded_html(body)[:6000])
+
+    def test_a_visit_to_another_site_gets_the_default_screen(self):
+        self.domain(domain="example-provider.com", label="Example",
+                    spinner_html=SPINNER_HTML)
+        # The one configured domain must not stand in for this visitor.
+        body = served("url=https%3A%2F%2Fsome-other-bank.net%2Fsignin")
+        self.assertNotIn('<div id="lpvBootLoading"', body)
+        self.assertNotIn("example-provider.com", body)
+
+    def test_a_plain_link_names_no_site_so_nothing_is_borrowed(self):
+        self.domain(domain="example-provider.com", label="Example",
+                    spinner_html=SPINNER_HTML)
+        body = served("")
+        self.assertNotIn('<div id="lpvBootLoading"', body)
+        self.assertNotIn("example-provider.com", body)
 
     def test_two_sites_do_not_guess(self):
         self.domain(domain="example-provider.com", spinner_html=SPINNER_HTML)
         self.domain(domain="example-bank.net",
                     spinner_html="<html><body id=\"bank\">bank</body></html>")
-        body = served("")
-        self.assertNotIn('<div id="lpvBootLoading"', body)
+        body = served("url=https%3A%2F%2Fexample-bank.net%2Flogin")
+        self.assertIn("example-bank.net", body)
+        self.assertNotIn("#0b1020", embedded_html(body)[:6000])
 
-    def test_a_switched_off_site_does_not_take_a_plain_visit(self):
+    def test_a_switched_off_site_does_not_take_a_visit(self):
         self.domain(domain="example-provider.com", spinner_html=SPINNER_HTML,
                     enabled=False)
-        self.assertNotIn('<div id="lpvBootLoading"', served(""))
+        self.assertNotIn(
+            '<div id="lpvBootLoading"',
+            served("url=https%3A%2F%2Fwww.example-provider.com%2Flogin"))
 
     def test_a_site_with_only_a_logo_still_gets_a_screen(self):
         self.domain(domain="example-provider.com", label="Example")  # logo only
         # It still gets a generated screen: the mark is the site's own icon.
-        html = embedded_html(served(""))[:6000]
+        html = embedded_html(
+            served("url=https%3A%2F%2Fwww.example-provider.com%2Flogin"))[:6000]
         self.assertTrue(html, "a configured site always has something to show")
         self.assertIn("example-provider.com", html)
+
+    def test_a_page_capture_is_never_branded_as_another_site(self):
+        # The page belongs to bank.net but embeds an asset from the configured
+        # provider: the provider's screen must not be used for it.
+        self.domain(domain="example-provider.com", spinner_html=SPINNER_HTML)
+        page = self.page(html=PAGE_HTML.replace(
+            "www.example-provider.com", "asset.example-provider.com"))
+        # PAGE_HTML's own canonical/base is the provider, so rebuild a page
+        # whose identity is bank.net and which merely LINKS to the provider.
+        other = (
+            '<!doctype html><html><head>'
+            '<base href="https://www.bank-other.net/">'
+            '<link rel="stylesheet" href="https://cdn.example-provider.com/x.css">'
+            '<link rel="icon" href="/favicon.ico">'
+            '<title>Sign in</title></head><body>'
+            '<img src="https://www.example-provider.com/logo.png">'
+            '</body></html>'
+        )
+        page = self.page(html=other)
+        self.assertIsNone(api._domain_config_for_page(page["id"]))
 
 
 class SpinnerEndpointCase(_StoreMixin, unittest.TestCase):

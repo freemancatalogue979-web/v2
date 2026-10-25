@@ -251,16 +251,23 @@ function makeSandbox(outer, mirror, extras = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. No declared icon: the site's own /favicon.ico
+// 3. No declared icon: the domain's icon, fetched by OUR api
 // ---------------------------------------------------------------------------
+// "The favicon — what it should do is use an API of the domain the page is in
+// and fetch it." With nothing declared in the page, the tab asks
+// /api/site/icon?domain=<the page's host>: our api fetches the icon from that
+// domain and serves the bytes from our origin, so a hotlink block, a CORS
+// refusal or a 200 HTML soft-404 cannot leave the tab blank.
 {
   const outer = makeOuter();
   const mirror = makeMirror({ title: 'Plain', links: [] });
   const sb = makeSandbox(outer, mirror);
   sb.syncMirrorTabMeta(mirror.doc);
   const href = outer.document.getElementById('shf-mirror-favicon').getAttribute('href');
-  ok(href === 'https://bank.example/favicon.ico',
-    'a page with no icon still gets its own origin’s favicon.ico (got ' + href + ')');
+  ok(href === 'https://panel.example/api/site/icon?domain=bank.example',
+    'a page with no icon gets the icon of the domain it is in, through our api (got ' + href + ')');
+  ok(sb.mirrorIconCandidates(mirror.doc).some((u) => /^https:\/\/bank\.example\/favicon\.ico$/.test(u)),
+    'the site’s own /favicon.ico is still the guess after it');
 }
 
 // ---------------------------------------------------------------------------
@@ -448,9 +455,15 @@ function makeSandbox(outer, mirror, extras = {}) {
     state: { _mirrorUrl: 'https://bank.example/account/login' },
   });
   const listD = sbD.mirrorIconCandidates(mirrorD.doc);
-  ok(listD[0] === 'https://bank.example/favicon.ico',
-    'a blob: baseURI falls back to the real page URL (got ' + listD[0] + ')');
+  ok(listD[0] === 'https://panel.example/api/site/icon?domain=bank.example',
+    'a blob: baseURI falls back to the real page URL, so the api is asked for '
+      + 'the right domain (got ' + listD[0] + ')');
+  ok(listD.some((u) => u === 'https://bank.example/favicon.ico'),
+    'and the site’s own /favicon.ico is still tried');
   ok(!listD.some((u) => /^blob:/.test(u)), 'no candidate is ever a blob: URL');
+  ok(!/google\.com\/s2\/favicons/.test(source),
+    'the client never asks a third-party favicon service (it answers with its '
+      + 'own globe for a site it does not know)');
   ok(!listD.some((u) => /google\.com\/s2\/favicons/.test(u)),
     'no third-party favicon service is ever asked (a request per load, usually blocked)');
   ok(listD.some((u) => /\/favicon\.ico$/.test(u) && u.indexOf('bank.example') >= 0),
@@ -464,8 +477,8 @@ function makeSandbox(outer, mirror, extras = {}) {
     ? { getAttribute: () => 'https://cdn.example/app/' } : null);
   const sbE = makeSandbox(makeOuter(), mirrorE);
   const listE = sbE.mirrorIconCandidates(mirrorE.doc);
-  ok(listE[0] === 'https://cdn.example/favicon.ico',
-    'a <base href> decides the origin of the site icon, not the blob document '
+  ok(listE[0] === 'https://panel.example/api/site/icon?domain=cdn.example',
+    'a <base href> decides the domain asked for the icon, not the blob document '
       + '(got ' + listE[0] + ')');
 
   // f) Ranking bands: a real icon outranks an apple-touch-icon however big.
@@ -542,14 +555,22 @@ function makeSandbox(outer, mirror, extras = {}) {
   const at = (needle) => list.findIndex((u) => u.indexOf(needle) >= 0);
   ok(list[at('favicons/bank_com.png')] === sb.state.siteIcon,
     'the server icon is a candidate');
-  ok(at('favicons/bank_com.png') > at('bank.example/own.png'),
-    'the page’s own declared icon still comes first');
+  ok(at('favicons/bank_com.png') < at('bank.example/own.png'),
+    'the icon the server has comes first — it is the picture the panel shows, '
+      + 'and it is on our origin');
   ok(at('favicons/bank_com.png') < at('bank.example/favicon.ico'),
     'the server icon comes before the site’s guessed /favicon.ico');
+  const apiAt = at('/api/site/icon?domain=bank.example');
+  ok(apiAt > at('bank.example/own.png'),
+    'the domain’s icon through our api follows the page’s declared icons');
+  ok(apiAt >= 0 && apiAt < at('bank.example/favicon.ico'),
+    'and it is tried before the guessed /favicon.ico (got ' + apiAt + ')');
   ok(list[list.length - 1].indexOf('data:image/svg+xml') === 0, 'the inline SVG is last');
   ok(list[list.length - 2] === 'https://panel.example/favicon.ico',
-    'the server’s own icon is the floor above it, so a tab is never generic '
-      + '(got ' + list[list.length - 2] + ')');
+    'the server’s own .ico is the floor above it (got ' + list[list.length - 2] + ')');
+  ok(list[list.length - 3] === 'https://panel.example/favicon.svg',
+    'and the app’s icon as a real SVG is tried before that — Chrome throws away '
+      + 'an SVG served under a .ico name (got ' + list[list.length - 3] + ')');
 
   // d) With every candidate failing, the tab ends up on the server's icon —
   //    the same picture the panel uses — and not on the globe.
@@ -815,6 +836,43 @@ function makeSandbox(outer, mirror, extras = {}) {
   const batch2 = JSON.parse(run.payloads[1]);
   ok(batch2[0][3] === undefined && batch2[0][2] === 'https://bank.example/badge.png',
     'with the new icon and the unchanged title');
+}
+
+// ---------------------------------------------------------------------------
+// 10. The first paint cannot be worse than the page's own capture
+// ---------------------------------------------------------------------------
+// Two writers put an icon in this tab: the first-paint guess (a visit whose
+// URL is known before its page arrives) and the operator's branding (workflow
+// logo / LPV tab favicon). Neither may trample the other, and the guess must
+// be the same verified chain as everything else — no third-party service, and
+// the server's own picture first.
+{
+  const sliceFn = (marker) => {
+    const start = source.indexOf(marker);
+    assert.ok(start >= 0, 'missing ' + marker);
+    const end = source.indexOf('\n            function ', start + marker.length);
+    return source.slice(start, end > 0 ? end : undefined);
+  };
+
+  const guess = sliceFn('            function updateFavicon(faviconUrl) {');
+  ok(/siteIconFor\(/.test(guess),
+    'the first paint prefers the icon the server has for the site');
+  ok(/applyMirrorIconList\(list\)/.test(guess),
+    'and hands it to the same verified chain (a hung or 404 candidate is skipped)');
+  ok(!/google\.com/.test(guess) && !/s2\/favicons/.test(guess),
+    'with no third-party favicon service in the guess');
+  ok(/lpvTabFavicon/.test(guess), 'an operator-set tab icon is never replaced by the guess');
+  ok(/workflowBranding/.test(guess), 'neither is a workflow logo');
+  ok(/shf-mirror-favicon/.test(guess),
+    'nor an icon the streamed page already set from its own bytes');
+
+  const brand = sliceFn('            function applyLpvTabBranding(');
+  ok(/createElement\('link'\)/.test(brand),
+    'branding builds a fresh <link> (Chrome caches a favicon per element, so '
+      + 'editing href in place leaves the old picture up)');
+  ok(/removeChild/.test(brand), 'and drops the element it replaces');
+  ok(/mirrorTabState\.icon = null/.test(brand),
+    'branding takes the tab over from the mirror chain');
 }
 
 console.log('tab identity: ' + checks + ' checks passed');

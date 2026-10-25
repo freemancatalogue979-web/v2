@@ -789,15 +789,17 @@ class NeoStreamingSession:
             # This prevents the race condition where _send_metadata() was called before
             # _streaming_loop_independent() could set _physical_viewport_width/height
             #
-            # LOGICAL-PIXEL POLICY: physical viewport == logical viewport,
-            # the client's CSS pixels straight through. No scaling anywhere.
+            # LAYOUT IS CSS PIXELS: the streamed viewport equals the client's
+            # CSS viewport. The surface itself rasterises at CSS x DPR (see
+            # config.stream_dpr), which is why frames look sharp while every
+            # coordinate stays in CSS pixels.
             logical_width = self.viewport.get('width', 1920)
             logical_height = self.viewport.get('height', 1080)
 
             self._physical_viewport_width = logical_width
             self._physical_viewport_height = logical_height
             logger.debug(
-                f"[STARTUP] Logical-pixel viewport set: "
+                f"[STARTUP] CSS viewport set: "
                 f"{self._physical_viewport_width}x{self._physical_viewport_height} "
                 f"(no surface scaling)"
             )
@@ -2260,6 +2262,25 @@ class NeoStreamingSession:
             return
 
         event = ''
+        # The admin Display canvas measures the frame it can see, which is
+        # rendered at CSS x DPR (config.stream_dpr) while page.mouse() takes
+        # CSS pixels. Those payloads are flagged frame=true; visitor mirror
+        # input is already CSS and never carries the flag.
+        _frame_space = bool(input_data.get('frame'))
+        try:
+            from config import frame_to_css as _frame_to_css
+        except Exception:
+            _frame_to_css = None
+
+        def _px(value):
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return 0
+            if _frame_space and _frame_to_css is not None:
+                return int(round(_frame_to_css(number)))
+            return int(number)
+
         try:
             self.last_activity = time.time()
             self._sync_dom_capture()
@@ -2288,15 +2309,15 @@ class NeoStreamingSession:
                 return
 
             if event == 'mousemove':
-                x = int(input_data.get('x', 0))
-                y = int(input_data.get('y', 0))
+                x = _px(input_data.get('x', 0))
+                y = _px(input_data.get('y', 0))
                 self.mouse_position = {'x': x, 'y': y}
                 self.mouse_buttons = input_data.get('buttons', 0)
                 await page.mouse.move(x, y)
 
             elif event == 'mousedown':
-                x = int(input_data.get('x', 0))
-                y = int(input_data.get('y', 0))
+                x = _px(input_data.get('x', 0))
+                y = _px(input_data.get('y', 0))
                 button = input_data.get('button', 0)
                 button_map = {0: 'left', 1: 'middle', 2: 'right'}
                 button_name = button_map.get(button, 'left')
@@ -2304,8 +2325,8 @@ class NeoStreamingSession:
                 await page.mouse.down(button=button_name)
 
             elif event == 'mouseup':
-                x = int(input_data.get('x', 0))
-                y = int(input_data.get('y', 0))
+                x = _px(input_data.get('x', 0))
+                y = _px(input_data.get('y', 0))
                 button = input_data.get('button', 0)
                 button_map = {0: 'left', 1: 'middle', 2: 'right'}
                 button_name = button_map.get(button, 'left')
@@ -2343,8 +2364,8 @@ class NeoStreamingSession:
                 await self.capture_remote_page(reason='click')
 
             elif event == 'wheel':
-                x = int(input_data.get('x', 0))
-                y = int(input_data.get('y', 0))
+                x = _px(input_data.get('x', 0))
+                y = _px(input_data.get('y', 0))
                 delta_x = input_data.get('deltaX', 0)
                 delta_y = input_data.get('deltaY', 0)
                 delta_mode = input_data.get('deltaMode', 0)
@@ -2522,11 +2543,17 @@ class NeoStreamingSession:
                     error_msg,
                 )
             else:
-                logger.exception(
-                    "[INPUT][failed] session=%s backend=%s event=%s",
+                # Per-event path: a failing gesture used to print a full
+                # traceback for every pointer move. One line per window keeps
+                # the failure visible without costing the gesture.
+                throttled(
+                    logger, "input-failed-" + str(self.session_id),
+                    "[INPUT][failed] session=%s backend=%s event=%s error=%s",
                     self.session_id,
                     getattr(self.get_active_page(), "_backend_name", "unknown"),
                     event,
+                    error_msg,
+                    every=30.0,
                 )
 
     async def handle_click(self, selector: Optional[str] = None, mid: Optional[str] = None):

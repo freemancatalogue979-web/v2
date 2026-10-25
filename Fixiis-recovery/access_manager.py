@@ -19,6 +19,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any, Dict, Optional, Set
 
+from config import stream_dpr, frame_to_css
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,6 +56,9 @@ class AccessSession:
         self.last_activity = self.created_at
         self._cast_width = 1280
         self._cast_height = 720
+        # CSS -> frame render scale in use by the live view (see
+        # config.stream_dpr). Operator payloads arrive in FRAME pixels.
+        self._cast_dpr = stream_dpr()
         # Keep CDP acknowledgements independent from browser/operator network
         # latency. A one-item latest-frame queue prevents slow admin sockets
         # from building an unbounded task backlog while preserving every
@@ -455,11 +460,12 @@ class AccessSession:
         try:
             cdp.on("Page.screencastFrame", on_frame)
             await cdp.send("Page.enable")
+            _dpr = stream_dpr()
             try:
                 await cdp.send("Emulation.setDeviceMetricsOverride", {
                     "width": 1280,
                     "height": 720,
-                    "deviceScaleFactor": 1,
+                    "deviceScaleFactor": _dpr,
                     "mobile": False,
                 })
             except Exception:
@@ -471,10 +477,15 @@ class AccessSession:
                 self._cast_height = int(viewport.get("height") or 720)
             except Exception:
                 self._cast_width, self._cast_height = 1280, 720
-            # Pass the measured CSS viewport through unchanged. The operator
-            # surface displays the native viewport; no downscaling is used.
+            # The measured size is the CSS viewport; the operator surface
+            # displays the frame back at that size, so the frame itself is
+            # rendered at CSS x DPR (see config.stream_dpr) - a 1x frame
+            # scaled up to fill the panel is always soft.
             self._cast_width = max(1, self._cast_width)
             self._cast_height = max(1, self._cast_height)
+            self._cast_dpr = _dpr
+            _frame_w = int(round(self._cast_width * _dpr))
+            _frame_h = int(round(self._cast_height * _dpr))
             # Mark the stream live before startScreencast so a frame emitted
             # during that command is queued and acknowledged rather than
             # being dropped and stalling Chrome.
@@ -484,8 +495,8 @@ class AccessSession:
             )
             await cdp.send("Page.startScreencast", {
                 "format": "png",
-                "maxWidth": self._cast_width,
-                "maxHeight": self._cast_height,
+                "maxWidth": _frame_w,
+                "maxHeight": _frame_h,
                 "everyNthFrame": 1,
             })
         except Exception:
@@ -581,19 +592,29 @@ class AccessSession:
                 except Exception:
                     return default
 
+            # The operator canvas measures the frame it can see (CSS x DPR)
+            # while page.mouse() and elementFromPoint() work in CSS pixels.
+            _frame_space = bool(data.get("frame"))
+
+            def point(name: str) -> float:
+                value = number(name)
+                if _frame_space:
+                    return frame_to_css(value, getattr(self, "_cast_dpr", None))
+                return value
+
             # Every websocket gets its own ownership set. Calls made by a
             # direct test/integration hook use a shared ``None`` owner.
             owner_buttons = self._pressed_mouse_buttons.setdefault(websocket, set())
             if kind in ("mousemove", "mouse_move"):
-                await page.mouse.move(number("x"), number("y"))
+                await page.mouse.move(point("x"), point("y"))
             elif kind in ("mousedown", "mouseDown"):
                 button = _normalize_mouse_button(data.get("button", 0))
-                await page.mouse.move(number("x"), number("y"))
+                await page.mouse.move(point("x"), point("y"))
                 await page.mouse.down(button=button)
                 owner_buttons.add(button)
             elif kind in ("mouseup", "mouseUp"):
                 button = _normalize_mouse_button(data.get("button", 0))
-                await page.mouse.move(number("x"), number("y"))
+                await page.mouse.move(point("x"), point("y"))
                 try:
                     await page.mouse.up(button=button)
                 finally:
@@ -601,9 +622,9 @@ class AccessSession:
                     # while the event was in flight.
                     owner_buttons.discard(button)
             elif kind in ("click", "tap"):
-                await page.mouse.click(number("x"), number("y"), button=_normalize_mouse_button(data.get("button", 0)))
+                await page.mouse.click(point("x"), point("y"), button=_normalize_mouse_button(data.get("button", 0)))
             elif kind in ("wheel", "scroll"):
-                await page.mouse.move(number("x"), number("y"))
+                await page.mouse.move(point("x"), point("y"))
                 await page.mouse.wheel(number("deltaX"), number("deltaY"))
             elif kind in ("keydown", "keyDown"):
                 key = str(data.get("key") or "")
@@ -633,7 +654,7 @@ class AccessSession:
                     except Exception:
                         pass
             elif kind == "highlight":
-                x, y = number("x"), number("y")
+                x, y = point("x"), point("y")
                 # Highlight the element under the operator's pointer. This is
                 # an operator aid only; it does not alter the page's DOM
                 # permanently and disappears after two seconds.

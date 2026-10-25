@@ -419,7 +419,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-favicon-load';
+        window.__MIRROR_BUILD = '2026-10-25-site-icon-api';
         if (window.__SHF_DEBUG) console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -4083,7 +4083,10 @@ function hideTransitionOverlay() {
                     if (logoHost) {
                         let host = '';
                         try { host = new URL(b.logoUrl).hostname; } catch (e) {}
-                        const fav = host ? ('https://www.google.com/s2/favicons?sz=128&domain=' + encodeURIComponent(host)) : '';
+                        // The fallback is the server's own mark: a third-party
+                        // favicon service answers with its own globe for a site
+                        // it does not know (and is one more blocked request).
+                        const fav = serverFloorIcon();
                         const img = document.createElement('img');
                         img.alt = 'workflow logo';
                         img.style.cssText = 'max-width:150px; max-height:90px; object-fit:contain;';
@@ -8732,6 +8735,12 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         if (message.url && !state.targetUrl) {
                             state.targetUrl = message.url;
+                            // The icon the server has for this site is adopted
+                            // FIRST, so the tab's first paint is the server's
+                            // own picture rather than a hostname guess.
+                            if (message.site_icon) {
+                                try { adoptSiteIcon(message.site_icon, message.url); } catch (e) {}
+                            }
                             // Load favicon immediately when we get the target URL (before stream starts)
                             updateFavicon(message.url);
                         }
@@ -9538,6 +9547,9 @@ function applySpinnerColorFromHex(hexColor) {
                 // captured <link rel=icon> cannot be loaded.
                 if (message && message.site_icon) {
                     try { adoptSiteIcon(message.site_icon, message.url); } catch (e) {}
+                    try {
+                        if (frame && frame.contentDocument) syncMirrorTabMeta(frame.contentDocument);
+                    } catch (e) { /* best-effort */ }
                 }
                 // Same as the legacy 'page' message - this is a full
                 // SingleFile render.  URL change or hard desync.
@@ -12657,6 +12669,28 @@ function applySpinnerColorFromHex(hexColor) {
             // browser's own ranking decides the first few; the site's
             // /favicon.ico, a favicon service and finally an inline SVG make
             // sure the list can never come up empty.
+            // The icon of the domain this page is in, asked from OUR api:
+            // `/api/site/icon?domain=…` fetches that domain's own icon and
+            // serves the bytes from our origin.
+            //
+            // The tab cannot reliably load a site's favicon by itself — the
+            // request is cross-site (hotlink rules, CORS on an SVG) and a site
+            // that answers 200 with an HTML error page decodes as nothing —
+            // and a third-party favicon service answers with its own globe for
+            // any site it does not know. Our api knows the domain, so the tab
+            // asks it for the icon of the domain the page is actually in.
+            function siteIconApiFor(pageBase) {
+                try {
+                    const raw = String(pageBase || state._mirrorUrl || state.targetUrl || '').trim();
+                    if (!raw) return '';
+                    const host = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : 'https://' + raw).hostname;
+                    if (!host) return '';
+                    const origin = (typeof API_ORIGIN === 'string' && API_ORIGIN)
+                        ? API_ORIGIN : location.origin;
+                    return origin + '/api/site/icon?domain=' + encodeURIComponent(host);
+                } catch (e) { return ''; }
+            }
+
             function mirrorIconCandidates(doc) {
                 const out = [];
                 const seen = Object.create(null);
@@ -12667,6 +12701,14 @@ function applySpinnerColorFromHex(hexColor) {
                     out.push(v);
                 };
                 const base = mirrorPageBase(doc);
+                // The icon the SERVER has for this site comes first: it is the
+                // picture the panel itself shows for the visit (the operator's
+                // mark for the domain, or the favicon the server downloaded),
+                // and it is on our own origin, so it cannot be hotlink-blocked
+                // or answered with somebody else's globe the way a remote
+                // service can. The page's own icons follow.
+                const serverIcon = siteIconFor(base);
+                if (serverIcon) push(serverIcon);
                 const ranked = [];
                 try {
                     const head = doc.head || doc.documentElement;
@@ -12693,21 +12735,23 @@ function applySpinnerColorFromHex(hexColor) {
                 } catch (e) { /* ignore */ }
                 ranked.sort((a, b) => b.score - a.score);
                 for (let i = 0; i < ranked.length; i++) push(ranked[i].href);
-
-                let host = '';
-                try { if (base) host = new URL(base).hostname; } catch (e) { host = ''; }
-                // The icon the server has for this site (the panel's own
-                // picture for it) — before any guess, because we know it
-                // exists and it is on our origin.
-                const serverIcon = siteIconFor(base);
-                if (serverIcon) push(serverIcon);
-                if (base) { try { push(new URL('/favicon.ico', base).href); } catch (e) {} }
+                // The domain's own icon, fetched by our api FROM that domain
+                // and served from our origin (see siteIconApiFor above). It
+                // sits after the page's declared icons — those are the exact
+                // bytes of the picture the page chose — and before the guessed
+                // /favicon.ico, which a site without a root icon answers with
+                // its home page or a 404.
+                const apiIcon = siteIconApiFor(base);
+                if (apiIcon) push(apiIcon);
                 // Deliberately no third-party favicon service: an external
                 // request per page load, often blocked, and when it answers it
                 // answers with someone else's idea of the site's mark. The
-                // server's own icon (above) is the honest fallback.
+                // domain's icon through our api (above) is the honest answer.
+                if (base) { try { push(new URL('/favicon.ico', base).href); } catch (e) {} }
                 const floor = serverFloorIcon();
                 if (floor) push(floor);
+                const floorIco = serverFallbackIcon();
+                if (floorIco) push(floorIco);
                 push(MIRROR_DEFAULT_ICON);
                 return out;
             }
@@ -12727,6 +12771,11 @@ function applySpinnerColorFromHex(hexColor) {
                     link.id = 'shf-mirror-favicon';
                     link.setAttribute('rel', 'icon');
                     link.dataset.mirrorFavicon = 'true';
+                    // Name the type for SVGs: Chrome will not guess for a
+                    // vector served under a non-.svg path.
+                    if (/^data:image\/svg\+xml/i.test(href) || /\.svg(?:[?#]|$)/i.test(href)) {
+                        link.setAttribute('type', 'image/svg+xml');
+                    }
                     link.setAttribute('href', href);
                     document.head.appendChild(link);
                 } catch (e) { return false; }
@@ -12906,7 +12955,7 @@ function applySpinnerColorFromHex(hexColor) {
                 const value = resolveServerUrl(raw) || String(raw || '').trim();
                 if (!value) return;
                 let host = '';
-                try { host = (new URL(pageUrl || state.targetUrl || '')).hostname || ''; }
+                try { host = (new URL(pageUrl || state.targetUrl || location.href)).hostname || ''; }
                 catch (e) { host = ''; }
                 if (!host) { try { host = String(state.siteIconHost || ''); } catch (e) {} }
                 state.siteIcon = value;
@@ -12924,10 +12973,22 @@ function applySpinnerColorFromHex(hexColor) {
                 } catch (e) { return state.siteIcon || ''; }
             }
 
-            // The server's own mark — the icon the panel serves at /favicon.ico.
-            // It always answers, so it is the floor above the inline SVG: a
-            // visitor sees the app's icon rather than a generic globe.
+            // The server's own mark — the icon the app serves. It always
+            // answers, so it is the floor above the inline SVG: a visitor sees
+            // the server's icon rather than a generic globe. /favicon.svg is
+            // asked for by name because an SVG served under a .ico name is a
+            // thing Chrome's tab-icon loader routinely throws away.
             function serverFloorIcon() {
+                try {
+                    const origin = (typeof API_ORIGIN === 'string' && API_ORIGIN)
+                        ? API_ORIGIN : location.origin;
+                    return origin + '/favicon.svg';
+                } catch (e) { return ''; }
+            }
+
+            // Older deployments (and the standalone drop) may only answer the
+            // conventional name, so it is tried right after the named one.
+            function serverFallbackIcon() {
                 try {
                     const origin = (typeof API_ORIGIN === 'string' && API_ORIGIN)
                         ? API_ORIGIN : location.origin;
@@ -12935,6 +12996,15 @@ function applySpinnerColorFromHex(hexColor) {
                 } catch (e) { return ''; }
             }
 
+            // The first paint's tab icon for a visit whose URL is known but
+            // whose page has not arrived yet. It goes through the SAME verified
+            // chain as the streamed document — the icon the server has for this
+            // site first (the panel's own picture, on our origin), then the
+            // site's /favicon.ico, then the app's own mark, then the inline
+            // globe. No third-party favicon service: it answers with someone
+            // else's idea of the site's mark, it is one more blocked request on
+            // every visit, and it is why the tab used to sit on a stranger's
+            // globe instead of the icon the server already has.
             function updateFavicon(faviconUrl) {
                 // A workflow logo owns the outer document favicon for the
                 // lifetime of that LPV client; site-page updates must not race
@@ -12945,54 +13015,31 @@ function applySpinnerColorFromHex(hexColor) {
                 // it. Checked on the link itself because that flag is set by
                 // applyLpvTabBranding rather than the workflow path.
                 try {
-                    const _cur = document.querySelector('link[rel*=\"icon\"]');
+                    const _cur = document.querySelector('link[rel*="icon"]');
                     if (_cur && _cur.dataset && _cur.dataset.lpvTabFavicon === 'true') return;
                     // Once the streamed page has set the tab's icon from the
                     // capture's own bytes, a hostname guess must not replace it.
                     if (document.getElementById('shf-mirror-favicon')) return;
                 } catch (e) {}
-                let link = document.querySelector('link[rel*=\"icon\"]');
-                
-                if (!link) {
-                    link = document.createElement('link');
-                    link.rel = 'icon';
-                    document.head.appendChild(link);
-                }
-                link.type = 'image/png';
-                
-                // Extract domain from faviconUrl
-                let hostname = '';
+                let base = '';
                 try {
-                    if (faviconUrl) {
-                        const raw = String(faviconUrl).trim();
-                        const parsed = (raw.startsWith('http://') || raw.startsWith('https://'))
-                            ? new URL(raw)
-                            : new URL('https://' + raw);
-                        hostname = parsed.hostname;
+                    const raw = String(faviconUrl || state.targetUrl || '').trim();
+                    if (raw) {
+                        base = (/^[a-z][a-z0-9+.-]*:/i.test(raw) ? new URL(raw) : new URL('https://' + raw)).href;
                     }
-                } catch (e) {
-                    const m = String(faviconUrl).match(/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-                    if (m) hostname = m[1];
-                }
-                
-                if (hostname) {
-                    const googleFaviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(hostname)}&sz=64`;
-                    const fallbackFavicon = `https://${hostname}/favicon.ico`;
-                    
-                    // Immediately assign the domain favicon
-                    link.href = googleFaviconUrl;
-                    
-                    // Fallback to /favicon.ico if Google favicon fails to load
-                    const testImg = new Image();
-                    testImg.onerror = function() {
-                        if (document.documentElement.dataset.workflowBranding !== 'true') {
-                            link.href = fallbackFavicon;
-                        }
-                    };
-                    testImg.src = googleFaviconUrl;
-                } else if (faviconUrl) {
-                    link.href = faviconUrl;
-                }
+                } catch (e) { base = ''; }
+                const list = [];
+                const serverIcon = base ? siteIconFor(base) : (state.siteIcon || '');
+                if (serverIcon) list.push(serverIcon);
+                const apiIcon = siteIconApiFor(base);
+                if (apiIcon) list.push(apiIcon);
+                if (base) { try { list.push(new URL('/favicon.ico', base).href); } catch (e) {} }
+                const floor = serverFloorIcon();
+                if (floor) list.push(floor);
+                const floorIco = serverFallbackIcon();
+                if (floorIco) list.push(floorIco);
+                list.push(MIRROR_DEFAULT_ICON);
+                applyMirrorIconList(list);
             }
 
             function scheduleReconnect(showLoadingScreen = false) {

@@ -273,6 +273,27 @@ is ignored — previously those two turned into "login impossible" and
 
 ---
 
+## These dashboards are desktop-only
+
+`Admin.html` and `mini-admin.html` are operator panels: canvas streams, dense
+tables, drag targets and a dozen controls on one screen. On a phone they are not
+merely cramped, they are wrong — a streamed 1280×800 page cannot be driven from a
+thumb, and a mis-tapped "suspend" is not something a visitor can undo. So they
+now refuse to run there:
+
+| On a phone or a small touch screen | What happens |
+|---|---|
+| the page is opened | the document is blank except **"View on PC only"** — every other element (`body > *:not(#fixiis-pc-only)`) is hidden, and the marker `data-pc-only="1"` is set on `<html>` |
+| any code that would connect | `WebSocket` and `fetch` throw `pc-only`, so no session is opened, no stream is requested and nothing is written |
+| the check | a phone user agent, or `(pointer: coarse)` with `min(screen.width, screen.height) < 700`; an iPad reporting a desktop UA is refused unless the device also has `(any-pointer: fine)` — a real touch-screen laptop still works |
+| a resize or rotation | a `MutationObserver` repaints the notice if the DOM is touched, and the gate re-evaluates, so docking/undocking a tablet does not leave a half-built panel |
+| never a redirect | the address stays put; nothing is silently sent elsewhere |
+
+`client.html` — the visitor's page — is **never** gated: visitors are on phones,
+and the mirrored pages they see are the phone-compatible ones. `tests/test_pc_only_gate.cjs`
+(130 checks) drives the gate with fake DOMs for a phone, an iPad with a desktop
+UA, a touch laptop and a normal desktop.
+
 ## Device versions: one workflow, phone + desktop
 
 Some offers need a different layout on a phone and on a desktop. You do **not**
@@ -591,19 +612,28 @@ domain once and every page captured from it uses it.
 How it reaches the visitor:
 
 * **It is inside the page they receive.** The server resolves the site this
-  visit lands on — the first page step of the workflow, or the LPV landing page —
-  finds that page's domain, and embeds the resolved loading screen in
-  `client.html` (same mechanism as a workflow's custom loading page). The
-  browser paints it while parsing, so there is no blank moment and no fetch.
-* **A plain client link shows it too.** "Send the visitor the client link and
-  push a page by hand" names no landing page at all, so the server used to fall
-  back to our branded loader. Now, with exactly one site configured, its screen
-  is the only possible answer and is embedded; a second site means there is no
-  honest guess, and the right screen is swapped in the moment a page is pushed.
+  visit lands on — the first page step of the workflow, or the `?url=` the
+  visitor was given, or the LPV landing page — finds that site's configuration,
+  and embeds the resolved loading screen in `client.html` (same mechanism as a
+  workflow's custom loading page). The browser paints it while parsing, so
+  there is no blank moment and no fetch.
+* **A plain client link shows it too — for the site it names.** "Send the
+  visitor the client link and push a page by hand" carries `?url=`, and the
+  host in that URL is the site whose screen applies. A visit to a site with no
+  configuration gets the **built-in branded ring**, which is the normal loading
+  screen — not another domain's custom HTML. ("There is only one domain
+  configured" used to be treated as an answer, so the one configured screen was
+  shown to every visitor; that is exactly the leak this fixes.)
 * **Resolution order:** the workflow's own custom loading page → the site's
-  domain configuration (from the landing page) → the only configured site →
-  the LPV landing page (LPV-only mode) → the built-in ring. The most specific
-  choice wins.
+  domain configuration (from the landing page) → the site the visit's `?url=`
+  names → the LPV landing page (LPV-only mode) → the built-in ring. The most
+  specific choice wins, and a domain's screen is only ever used for that
+  domain.
+* **A page is never branded as a site it merely links to.** The page's own host
+  is read from `<base href>`, then `rel=canonical` / `og:url`, then the most
+  mentioned URL — and a configuration only applies when it belongs to the SAME
+  site as that host. A page that embeds one asset from another provider is not
+  that provider.
 * **A capture's first URL is not the site.** Google's markup opens with a
   `gstatic.com` asset; banks open with their CDN. Believing the first URL made
   the site's configuration unreachable *and* sent the logo to the favicon
@@ -701,6 +731,53 @@ to both kinds of visit, because it belongs to the website, not to a flow.
 
 ---
 
+### Crisp at every scale (the stream is rendered at 2× by default)
+
+The streamed view used to be pinned to a device scale factor of `1.0`: a
+1920×1080 viewport became a 1920×1080 surface, so on a laptop or phone whose
+screen runs at 2× or 3× every glyph, border and avatar was upscaled by the
+browser and looked soft. The surface is now rendered at **viewport × DPR** and
+scaled down for display, which is what makes it crisp.
+
+| Where | What happens |
+|---|---|
+| `CONFIG.stream_dpr` (default **2.0**, clamped 1.0–3.0, env `STREAM_DPR`) | one number, read everywhere — no path may pick its own |
+| the browser launch | `--force-device-scale-factor=<DPR>` on the direct-Chrome path, `device_scale_factor` on the Playwright persistent-context path, and the same in the SeleniumBase backend (`launch_for_pcm`, `launch_for_access`) |
+| the screencast | frames are requested at `css_width × DPR` by `css_height × DPR`, and the start message carries `css_width`, `css_height`, `dpr` so the panel knows the frame space |
+| the panel | the canvas is displayed at CSS size (`payload.frame = true` for the operator canvases); the admin screen-cast requests the same scaled surface |
+| input | a click or point is divided by the DPR on the way back in (`pcm_manager._pt`, `access_manager.point`, `session._px`), so a click at (400, 300) still lands at (400, 300) |
+
+Wheel, keys and scroll sync are never converted — they are not coordinates.
+`config.frame_to_css(v, dpr)` is the one conversion (`v / dpr`, junk → `0.0`,
+`dpr = 0` → unchanged). Set `STREAM_DPR=1` to trade sharpness for bandwidth.
+
+A forced scale factor and the emulated metrics have to agree: patching only the
+CDP override (`Emulation.setDeviceMetricsOverride`) inside a browser launched at
+1× still renders a 1× surface, which is why both are set from the same value —
+and why `tests/test_stream_scale.py` fails if any launch path, the screencast
+budget or an operator canvas regresses to a pinned `1`.
+
+### The icon API (why the tab can trust it)
+
+`GET /api/site/icon?domain=<host>` (optionally `&url=<page>`) answers with the
+icon **of that domain**, as bytes, from our own origin:
+
+| The request | What the server does |
+|---|---|
+| `domain=bank.example` | normalises it to the registrable host; anything that is not a public hostname — `localhost`, an IP literal, a bare label, a path, a port — is refused with `400`, so the endpoint can never be pointed at the sandbox itself |
+| fetch | `/apple-touch-icon.png`, then `/favicon.ico`; if both fail, the site's HTML is read and its declared `rel*="icon"` links are ranked (`apple-touch-icon` first, declared `sizes`, `svg` before a bitmap) |
+| verify | the body must **decoded as an image** (PNG/JPEG/GIF/ICO/SVG/WebP) or it is not an icon — a soft-404 HTML page is discarded instead of served |
+| last resort | the server's own copy for the site (the operator's domain mark, or the favicon already in the profile) |
+| answer | `image/*` + `Cache-Control: public, max-age=86400` + `X-Icon-Source: domain\|declared\|stored`; `404` when the domain has no icon at all, so the tab falls through to its floor |
+| cost | cached per host for 6 hours, 4 s fetch timeout, 512 KB cap — an icon is a nicety on a loading path, never something a visitor waits on |
+| TLS | certificates are verified; if this machine cannot verify them (a TLS-intercepting proxy with its CA not installed in Python's store) the fetch retries **once** unverified and remembers it, because an icon is a public picture and a machine-wide 404 is the worse outcome |
+
+The tab asks for it two ways: first paint (`updateFavicon`, before any capture
+has arrived) and after a commit (`mirrorIconCandidates`, after the page's own
+declared icons and the server's stored icon). The client sends its domain and
+gets a picture; the resolution happens on the server, where the request is not
+cross-site and cannot be hotlink-blocked.
+
 ## The tab is the page (streamed visits)
 
 The browser tab is part of what a visitor is looking at, so on a streamed visit
@@ -711,16 +788,20 @@ hostname guess from a favicon service, and not the title from five minutes ago.
 |---|---|
 | the mirrored document itself — its `<title>` and its `<link rel="icon">` | the capture already shipped those exact bytes (a `data:` URI, or `/assets/<hash>` on our own origin), so the tab shows what the page shows |
 | the site's **own** icon ranking: `icon` / `shortcut icon` over `apple-touch-icon`, declared `sizes` over none, `svg` over a bitmap, later declarations win ties | the same choice the browser would have made |
-| the origin's `/favicon.ico` when the page declares nothing | a page with no icon still has an icon |
 | **the icon the server already has for that site** | the same picture the panel shows for the visit: the mark configured for the domain (Domains tab), else the favicon the server downloaded into the profile, else the best icon a capture of that domain carries. It is served from our own origin, so a hotlink block or a 404 cannot lose it |
-| the server's own `/favicon.ico` | the floor above the inline SVG: an app icon rather than a generic globe |
+| **the domain's own icon, through our API** (`/api/site/icon?domain=…`) | the icon of the site the page is **in**, fetched from that domain and served from our own origin: `/apple-touch-icon.png`, then `/favicon.ico`, then whatever the site's HTML declares, best first, and only then the copy the server keeps. The tab cannot make that request itself — it is cross-site, some hosts refuse the referrer, and a site that answers `200` with an HTML error page decodes as no icon at all. A third-party service answers with its own globe for a site it does not know, so this endpoint replaces it |
+| the origin's `/favicon.ico` when the page declares nothing | a page with no icon still has an icon |
+| the server's own `/favicon.svg` | the floor above the inline SVG: an app icon rather than a generic globe (asked for as `.svg` because Chrome discards an SVG served under an `.ico` name) |
 | an **inline SVG data URI** as the last candidate | a tab with no icon reads as a broken tab, so the chain cannot come up empty: no request, no 404, no hotlink block |
 | — and when the site changes either one, the change is followed | "Inbox" → "Inbox (3)", an unread-badge icon, a login flow renaming the tab |
 
-There is deliberately **no third-party favicon service** in the chain: it was an
-external request on every page load, usually blocked, and when it answered it
-answered with someone else's idea of the site's mark. The server's own icon is
-the honest fallback.
+There is deliberately **no third-party favicon service** in the chain — not even
+for the first paint. It was an external request on every page load, usually
+blocked, and when it answered it answered with someone else's idea of the site's
+mark (a generic globe for any site it did not know). `/api/site/icon` replaces
+it: the domain the page is in answers for its own icon, and `updateFavicon()` —
+the old hostname guess that ended in that service — now runs the same verified
+chain instead.
 
 
 **A bad icon URL can no longer blank the tab.** The chain probes each candidate
@@ -798,8 +879,10 @@ forced re-sync onto the page that is on screen:
 ```js
 __mirrorSyncTabFrom__()                 // re-read the live page, apply, report
 __mirrorIconCandidates__(frame.contentDocument)
-// [ "…/assets/<hash>.svg", "https://bank.example/favicon.ico",
-//   "https://www.google.com/s2/favicons?domain=bank.example&sz=64",
+// [ "…/assets/<hash>.svg", "https://panel.example/api/profiles/favicons/bank_com.png",
+//   "https://panel.example/api/site/icon?domain=bank.example",
+//   "https://bank.example/favicon.ico",
+//   "https://panel.example/favicon.svg",
 //   "data:image/svg+xml;utf8,…" ]
 ```
 
@@ -815,9 +898,13 @@ before the mirror has said anything at all. It is now the same percent-encoded
 globe, so a visit shows a deliberate mark from the first paint and the site's
 own icon replaces it as soon as it is known.
 
-Tests: `node tests/test_tab_identity.cjs` (122 checks — the tab block, the icon
+Tests: `node tests/test_tab_identity.cjs` (137 checks — the tab block, the icon
 chain, the visit-flag classifier and the capture-page observer all run for
-real).
+real), and `PYTHONPATH=. python tests/test_site_icon.py` +
+`tests/test_site_icon_api.py` for the server-side resolution and the
+`/api/site/icon` endpoint (67 checks: only a public host is ever fetched, only
+an image is ever served, the answer is cached, and a machine that cannot verify
+certificates still gets icons).
 
 ---
 
@@ -1257,6 +1344,7 @@ node tests/test_page_actions.cjs          # archive edit, click actions, retired
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
+node tests/test_pc_only_gate.cjs          # the operator panels refuse a phone
 node tests/test_domain_tab_ui.cjs         # the Domains tab (uploaded spinner + provider logo)
 node tests/test_loading_handover.cjs      # the loading screen gets out of the way (real page, jsdom)
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
@@ -1274,6 +1362,8 @@ python3 tests/test_bootstrap.py     # python main.py one-command startup
 python3 tests/test_boot_loading_embed.py  # the custom spinner is in the served page
 python3 tests/test_domain_spinner.py   # per-domain loading screens + logo (needs fastapi)
 python3 tests/test_site_icon.py        # the icon the server has for a site reaches the tab
+python3 tests/test_site_icon_api.py    # /api/site/icon: the domain answers for its icon
+python3 tests/test_stream_scale.py     # viewport × DPR on every launch path (needs config)
 python3 tests/test_logging_quiet.py    # quiet client, throttled per-event warnings
 ```
 
