@@ -419,7 +419,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-site-icon-api';
+        window.__MIRROR_BUILD = '2026-10-25-cssom-styles';
         if (window.__SHF_DEBUG) console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -10922,6 +10922,32 @@ function applySpinnerColorFromHex(hexColor) {
                                 if (op[3] === null || op[3] === undefined) el.removeAttribute(op[2]);
                                 else el.setAttribute(op[2], op[3]);
                                 applied++;
+                            } else if (kind === 's') {
+                                // Stylesheet refresh. insertRule() renderers
+                                // (Griffel/Fluent, Emotion, styled-components)
+                                // grow an <style> element without touching its
+                                // text and without a DOM mutation, so a
+                                // component rendered after the first capture
+                                // used to arrive with its classes but none of
+                                // their rules — six one-time-code boxes as
+                                // full-width default inputs, for example.
+                                // op[1] === 0 targets the adopted-stylesheet
+                                // dump the full capture emits (created here if
+                                // this document has none yet).
+                                const cssText = String(op[2] == null ? '' : op[2]);
+                                let el = op[1] ? map.get(op[1]) : null;
+                                if (!el && !op[1]) {
+                                    el = doc.querySelector('style[data-shf-adopted="1"]');
+                                    if (!el) {
+                                        try {
+                                            el = doc.createElement('style');
+                                            el.setAttribute('data-shf-adopted', '1');
+                                            (doc.head || doc.documentElement).appendChild(el);
+                                        } catch (e) { el = null; }
+                                    }
+                                }
+                                if (!el) { continue; }   // styles catch up on the next full capture
+                                try { el.textContent = cssText; applied++; } catch (e) { /* ignore */ }
                             } else if (kind === 't') {
                                 // characterData op: op[2] is the index of the
                                 // text node within el's childNodes (counting

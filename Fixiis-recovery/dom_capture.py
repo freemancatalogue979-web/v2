@@ -3155,6 +3155,88 @@ _DELTA_OBSERVER_JS = r"""
   const escText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const escAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+  // ---------------------------------------------------------------------
+  // CSSOM truth (delta channel)
+  // ---------------------------------------------------------------------
+  // Griffel (Fluent UI), Emotion, styled-components and every other
+  // insertRule() renderer add rules to an <style> element that ALREADY
+  // exists, without touching its text and without a DOM mutation. That is
+  // invisible to a MutationObserver, and `el.textContent` is stale — so a
+  // component rendered after the first capture reached the mirror with its
+  // classes but none of their rules. On a sign-in page that is exactly what a
+  // one-time-code step looks like in the mirror: six <input maxlength="1">
+  // boxes laid out as full-width default inputs, in the wrong place, instead
+  // of six small rounded cells.
+  //
+  // The rule COUNT is a cheap signature (O(sheets), no serialisation); when it
+  // changes the affected <style> elements are re-sent from the CSSOM.
+  const rulesToCss = (rules, depth) => {
+    let css = '';
+    try {
+      for (const r of (rules || [])) {
+        if (r && r.type === 3 /* IMPORT_RULE */) {
+          try {
+            if (depth < 3 && r.styleSheet && r.styleSheet.cssRules) {
+              css += rulesToCss(r.styleSheet.cssRules, depth + 1);
+              continue;
+            }
+          } catch (e) { /* cross-origin import */ }
+        }
+        css += (r ? r.cssText : '') + '\n';
+      }
+    } catch (e) { /* sheet vanished mid-walk */ }
+    return css;
+  };
+  const sheetRuleCount = (sheet) => {
+    try { return (sheet && sheet.cssRules) ? sheet.cssRules.length : 0; } catch (e) { return 0; }
+  };
+  const liveSheetCss = (sheet) => {
+    try { return (sheet && sheet.cssRules) ? rulesToCss(sheet.cssRules, 0) : ''; }
+    catch (e) { return ''; }        // SecurityError on a cross-origin sheet
+  };
+  const adoptedSheets = () => {
+    try { return document.adoptedStyleSheets || []; } catch (e) { return []; }
+  };
+  const adoptedLiveCss = () => {
+    let css = '';
+    for (const sh of adoptedSheets()) {
+      try { for (const r of sh.cssRules) css += r.cssText + '\n'; } catch (e) { /* cross-origin */ }
+    }
+    return css;
+  };
+  const adoptedRuleCount = () => {
+    let n = 0;
+    for (const sh of adoptedSheets()) n += sheetRuleCount(sh);
+    return n;
+  };
+  const styleElements = () => {
+    try { return document.querySelectorAll('style'); } catch (e) { return []; }
+  };
+  const cssSignature = () => {
+    let n = 0;
+    const els = styleElements();
+    for (let i = 0; i < els.length; i++) n += sheetRuleCount(els[i].sheet);
+    return n + '/' + els.length + '/' + adoptedRuleCount();
+  };
+  let lastCssSig = cssSignature();
+  const flushStyleOps = () => {
+    const sig = cssSignature();
+    if (sig === lastCssSig) return false;
+    lastCssSig = sig;
+    const els = styleElements();
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
+      const css = liveSheetCss(el.sheet);
+      if (!css) continue;                  // empty or cross-origin: nothing to add
+      const id = midOf(el);
+      if (!id) continue;
+      pushCoalesced('s|' + id, ['s', id, css]);
+    }
+    const adopted = adoptedLiveCss();
+    if (adopted) pushCoalesced('s|0', ['s', 0, adopted]);
+    return true;
+  };
+
   const serSubtree = (node, out) => {
     const t = node.nodeType;
     if (t === 3) { out.push(escText(node.nodeValue)); return; }
@@ -3202,7 +3284,9 @@ _DELTA_OBSERVER_JS = r"""
     if (VOID.has(tag)) return;
     if (tag === 'textarea') { out.push(escText(el.value == null ? '' : el.value), '</textarea>'); return; }
     if (tag === 'script' || tag === 'style') {
-      let raw = el.textContent || '';
+      // <style>: CSSOM wins (insertRule renderers leave the text empty).
+      let raw = (tag === 'style') ? (liveSheetCss(el.sheet) || el.textContent || '')
+                                 : (el.textContent || '');
       if (tag === 'script') raw = raw.replace(/<\/script/gi, '<\\/script');
       out.push(raw, '</', tag, '>');
       return;
@@ -3233,6 +3317,9 @@ _DELTA_OBSERVER_JS = r"""
   };
   const flush = () => {
     scheduled = false;
+    // A stylesheet can grow with no DOM mutation at all (insertRule), so the
+    // batch is also the moment to look at the CSSOM.
+    try { flushStyleOps(); } catch (e) { /* ignore */ }
     // A renamed tab or a new icon is a change with no patchable DOM target in
     // the mirror, so it rides at the head of the batch. Never while overflowed:
     // that control frame must stay byte-exact.
@@ -3357,6 +3444,14 @@ _DELTA_OBSERVER_JS = r"""
   document.addEventListener('input', onFormEvent, true);
   document.addEventListener('change', onFormEvent, true);
   window.__shifixDeltaFlush = flush;
+  // A component can insert its rules a moment after it mounts, with no
+  // further DOM change. 1.2 s of rule counting is cheap; a mirror missing a
+  // component's styles is not.
+  try {
+    setInterval(() => {
+      try { if (flushStyleOps()) flush(); } catch (e) { /* ignore */ }
+    }, 1200);
+  } catch (e) { /* no timers */ }
   // A document can reload to the same URL.  Its token changes even when the
   // URL watcher cannot, so the server can force a full navigation resync
   // instead of letting new-document mids patch the old mirror.

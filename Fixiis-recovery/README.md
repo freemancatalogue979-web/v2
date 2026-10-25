@@ -1164,6 +1164,7 @@ are exactly what "some content is missing" looks like.
 | switches a control off in script (`el.disabled = true`) | `disabled`/`readOnly` are properties and never reflect back to the attribute, so the mirror came out clickable | shipped as attributes, in full captures and in delta patches |
 | shows a responsive image via `<picture>` / `srcset` | the `src` we resolved was outranked by the `<source>` list at render time | the source list is dropped and `src` is the candidate the page's own viewport actually displayed (`currentSrc`) |
 | lazy-loads images (`loading="lazy"`) | native lazy loading defers them again in the mirror's frame | forced eager — the capture is a photograph of a loaded page |
+| styles a component with `insertRule()` — Fluent UI/Griffel, Emotion, styled-components | the rules live in the CSSOM of an `<style>` element that already exists: no DOM text, no MutationObserver record. A component rendered **after** the first capture reached the mirror with its classes (`fui-Input__input r12stul0`) and none of their declarations — on a sign-in step that is six one-time-code boxes drawn as full-width default inputs, in the wrong place | every `<style>` is serialized from `sheet.cssRules`, never from stale text; a cheap **rule-count signature** notices growth (even with no DOM change at all) and the changed stylesheets are re-shipped as `s` ops on the delta channel, with a 1.2 s check for rules inserted just after a mount. `tests/test_cssom_styles.cjs` runs the real observer against a Fluent-shaped page and asserts the six cells arrive with `width:44px; border-radius:6px` |
 
 ### Speed: where the wall clock went
 
@@ -1372,6 +1373,7 @@ node tests/test_page_actions.cjs          # archive edit, click actions, retired
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
+node tests/test_cssom_styles.cjs          # insertRule() CSS reaches the mirror (needs jsdom)
 node tests/test_pc_only_gate.cjs          # the CDP cast screens refuse a phone
 node tests/test_domain_tab_ui.cjs         # the Domains tab (uploaded spinner + provider logo)
 node tests/test_loading_handover.cjs      # the loading screen gets out of the way (real page, jsdom)
