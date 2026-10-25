@@ -253,6 +253,77 @@ finally:
     _config.CONFIG.profile_base_path = real_base
 
 # ---------------------------------------------------------------------------
+# 7b. One fetch per host: concurrent visitors share it, a miss is remembered
+# ---------------------------------------------------------------------------
+api._SITE_ICON_BYTES.clear()
+api._SITE_ICON_MISS.clear()
+api._SITE_ICON_LOCKS.clear()
+calls = {"n": 0}
+real_fetch = api._fetch_icon_bytes
+real_declared = api._fetch_declared_icons
+real_stored = api._stored_icon_bytes
+
+
+async def slow_fetch(candidates):
+    calls["n"] += 1
+    await asyncio.sleep(0.05)
+    return PNG, "image/png"
+
+
+async def no_declared(page_url):
+    return []
+
+
+api._fetch_icon_bytes = slow_fetch
+api._fetch_declared_icons = no_declared
+try:
+    async def burst():
+        return await asyncio.gather(*[api._site_icon_payload("bank.example")
+                                      for _ in range(8)])
+
+    results = asyncio.run(burst())
+    ok(all(len(r[0]) == len(PNG) for r in results), "every caller gets the icon bytes")
+    ok(calls["n"] == 1,
+       "eight simultaneous visitors cost ONE fetch of the site (got %d)" % calls["n"])
+    ok(len(api._SITE_ICON_LOCKS) == 1, "the lock is per host")
+
+    # A site with no icon at all: one fetch, then a quiet 404 for a few minutes.
+    calls["n"] = 0
+    api._SITE_ICON_BYTES.clear()
+    api._SITE_ICON_MISS.clear()
+
+    async def nothing(candidates):
+        if candidates:                 # an empty list is not a fetch
+            calls["n"] += 1
+        return b"", ""
+
+    api._fetch_icon_bytes = nothing
+    api._stored_icon_bytes = lambda url: (b"", "")
+    try:
+        first = asyncio.run(api._site_icon_payload("noicon.example"))
+        second = asyncio.run(api._site_icon_payload("noicon.example"))
+        ok(first[0] == b"" and second[0] == b"", "a host with no icon resolves to nothing")
+        ok(calls["n"] == 1,
+           "and the miss is remembered instead of hammering the site (got %d)" % calls["n"])
+        api._SITE_ICON_MISS.clear()
+    finally:
+        api._stored_icon_bytes = real_stored
+finally:
+    api._fetch_icon_bytes = real_fetch
+    api._fetch_declared_icons = real_declared
+    api._SITE_ICON_BYTES.clear()
+    api._SITE_ICON_MISS.clear()
+    api._SITE_ICON_LOCKS.clear()
+
+# The per-host dictionaries cannot grow without bound.
+for i in range(api._SITE_ICON_MAX_HOSTS + 40):
+    api._SITE_ICON_BYTES["h%d.example" % i] = (api.time.time(), PNG, "image/png", "domain")
+api._site_icon_prune(api.time.time())
+ok(len(api._SITE_ICON_BYTES) <= api._SITE_ICON_MAX_HOSTS,
+   "the icon cache is bounded (%d entries)" % len(api._SITE_ICON_BYTES))
+api._SITE_ICON_BYTES.clear()
+
+# ---------------------------------------------------------------------------
 # 8. A machine that cannot verify certificates still gets icons
 # ---------------------------------------------------------------------------
 # A TLS-intercepting proxy whose CA is not in Python's store makes every

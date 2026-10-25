@@ -770,6 +770,7 @@ icon **of that domain**, as bytes, from our own origin:
 | last resort | the server's own copy for the site (the operator's domain mark, or the favicon already in the profile) |
 | answer | `image/*` + `Cache-Control: public, max-age=86400` + `X-Icon-Source: domain\|declared\|stored`; `404` when the domain has no icon at all, so the tab falls through to its floor |
 | cost | cached per host for 6 hours, 4 s fetch timeout, 512 KB cap — an icon is a nicety on a loading path, never something a visitor waits on |
+| load | **one fetch per host at a time**: ten visitors opening the same site share the first fetch instead of starting ten, and a host with no icon is remembered (`_SITE_ICON_MISS`, 5 min) instead of being asked again on every page load |
 | TLS | certificates are verified; if this machine cannot verify them (a TLS-intercepting proxy with its CA not installed in Python's store) the fetch retries **once** unverified and remembers it, because an icon is a public picture and a machine-wide 404 is the worse outcome |
 
 The tab asks for it two ways: first paint (`updateFavicon`, before any capture
@@ -902,7 +903,7 @@ Tests: `node tests/test_tab_identity.cjs` (137 checks — the tab block, the ico
 chain, the visit-flag classifier and the capture-page observer all run for
 real), and `PYTHONPATH=. python tests/test_site_icon.py` +
 `tests/test_site_icon_api.py` for the server-side resolution and the
-`/api/site/icon` endpoint (67 checks: only a public host is ever fetched, only
+`/api/site/icon` endpoint (73 checks: only a public host is ever fetched, only
 an image is ever served, the answer is cached, and a machine that cannot verify
 certificates still gets icons).
 

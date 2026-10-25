@@ -3429,6 +3429,15 @@ def _site_icon_url(domain: str, user_id: str = "") -> str:
 _SITE_ICON_BYTES: Dict[str, tuple] = {}
 _SITE_ICON_BYTES_TTL = 6 * 3600.0
 _SITE_ICON_MAX_BYTES = 512 * 1024
+# A site with no icon must not be asked again on every page load: one fetch per
+# host, and a miss is remembered for a few minutes.
+_SITE_ICON_MISS: Dict[str, float] = {}
+_SITE_ICON_MISS_TTL = 300.0
+# One fetch per host at a time. Ten visitors opening the same site at once
+# share the first fetch instead of starting ten (an icon is a nicety; it must
+# not become load on the site or on us).
+_SITE_ICON_LOCKS: Dict[str, Any] = {}
+_SITE_ICON_MAX_HOSTS = 512
 
 # Any http(s) page fetch we make for an icon. Short: this is a nicety on a
 # loading path, never something a visitor waits on.
@@ -3624,13 +3633,47 @@ def _stored_icon_bytes(url: str) -> Tuple[bytes, str]:
     return b"", ""
 
 
+def _site_icon_prune(now: float) -> None:
+    """Keep the per-host dictionaries bounded (a busy server sees many hosts)."""
+    for store, ttl in ((_SITE_ICON_BYTES, _SITE_ICON_BYTES_TTL),
+                       (_SITE_ICON_MISS, _SITE_ICON_MISS_TTL)):
+        if len(store) <= _SITE_ICON_MAX_HOSTS:
+            continue
+        for key in [k for k, v in store.items() if (now - v[0] if isinstance(v, tuple) else now - v) > ttl]:
+            store.pop(key, None)
+        if len(store) > _SITE_ICON_MAX_HOSTS:
+            for key in list(store)[: len(store) - _SITE_ICON_MAX_HOSTS]:
+                store.pop(key, None)
+    if len(_SITE_ICON_LOCKS) > _SITE_ICON_MAX_HOSTS:
+        _SITE_ICON_LOCKS.clear()      # locks are only a coalescing device
+
+
 async def _site_icon_payload(host: str, page_url: str = "") -> Tuple[bytes, str, str]:
     """(bytes, media type, source) for a domain's icon; empty when unknown."""
     now = time.time()
     hit = _SITE_ICON_BYTES.get(host)
     if hit and (now - hit[0]) < _SITE_ICON_BYTES_TTL:
         return hit[1], hit[2], hit[3]
+    missed_at = _SITE_ICON_MISS.get(host)
+    if missed_at and (now - missed_at) < _SITE_ICON_MISS_TTL:
+        return b"", "", "none"
 
+    lock = _SITE_ICON_LOCKS.get(host)
+    if lock is None:
+        lock = _SITE_ICON_LOCKS[host] = asyncio.Lock()
+    async with lock:
+        # Another request may have answered while we waited for the lock.
+        now = time.time()
+        hit = _SITE_ICON_BYTES.get(host)
+        if hit and (now - hit[0]) < _SITE_ICON_BYTES_TTL:
+            return hit[1], hit[2], hit[3]
+        missed_at = _SITE_ICON_MISS.get(host)
+        if missed_at and (now - missed_at) < _SITE_ICON_MISS_TTL:
+            return b"", "", "none"
+        return await _site_icon_resolve(host, page_url, now)
+
+
+async def _site_icon_resolve(host: str, page_url: str, now: float) -> Tuple[bytes, str, str]:
     candidates, page = _icon_url_candidates(host, page_url)
     data, media = await _fetch_icon_bytes(candidates)
     source = "domain"
@@ -3649,7 +3692,11 @@ async def _site_icon_payload(host: str, page_url: str = "") -> Tuple[bytes, str,
         data, media = _stored_icon_bytes(stored_url)
         source = "stored"
     if data:
+        _SITE_ICON_MISS.pop(host, None)
         _SITE_ICON_BYTES[host] = (now, data, media, source)
+    else:
+        _SITE_ICON_MISS[host] = now
+    _site_icon_prune(now)
     return data, media, source
 
 
