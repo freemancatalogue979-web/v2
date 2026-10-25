@@ -574,6 +574,59 @@ Tests: `python3 tests/test_boot_loading_embed.py`.
 
 ---
 
+## Domains: a site's own loading screen
+
+**Domains** tab (next to *Live pages*). One row per site — the loading screen
+that site's visitors see, and the provider's logo they recognise. Configure a
+domain once and every page captured from it uses it.
+
+| Field | What it does |
+|---|---|
+| **Domain** | the site. A full link is fine — `https://www.chase.com/login` is stored as `chase.com` — and its subdomains match too (`login.chase.com` finds `chase.com`) |
+| **Name shown under the logo** | e.g. `Chase` |
+| **Provider logo** | the mark drawn on the loading screen. "Use this page" fills it in from a capture: the **apple-touch-icon (180 px)** is preferred over `og:image` and far preferred over a 16 px favicon, because it is drawn at 76 px and a small icon blown up is exactly what looks soft |
+| **Loading screen** | `Logo + progress bar` (built in), `My own HTML file` (upload or paste, up to 1 MB), or `An archived page` |
+| **Use this loading screen** | the on/off switch; off behaves as if the domain were not configured |
+
+How it reaches the visitor:
+
+* **It is inside the page they receive.** The server resolves the site this
+  visit lands on — the first page step of the workflow, or the LPV landing page —
+  finds that page's domain, and embeds the resolved loading screen in
+  `client.html` (same mechanism as a workflow's custom loading page). The
+  browser paints it while parsing, so there is no blank moment and no fetch.
+* **Resolution order:** the workflow's own custom loading page → the site's
+  domain configuration → the LPV landing page (LPV-only mode) → the built-in
+  ring. The most specific choice wins.
+* **The provider's logo replaces the workflow's "custom branding".** A visitor
+  on a bank page sees the bank's mark, not a colour picked once for the whole
+  flow — including in the branded ring and in each later push, which carries
+  `spinner_url` so a multi-step flow keeps one identity.
+* **One spinner, not two.** The runtime checks the copy already embedded in the
+  document it is running in before loading anything: same page → it is adopted,
+  nothing is fetched, nothing is drawn on top. Reading `window.__LPV_BOOT_LOADING_STATE__()`
+  in the console tells you which page it is and whether it is on screen.
+* **A finished loading screen gets out of the way** as soon as the real page
+  paints (see *Fast start* above).
+
+Picking a page with **Use this page** reads the domain *and* the logo out of the
+capture itself (`GET /api/lpv/pages/<id>/logo`) — no external lookup, no
+guessing — so it works on a machine with no internet.
+
+Over HTTP:
+
+| Call | Purpose |
+|---|---|
+| `GET /api/lpv/domains` | every configuration, without the (large) HTML |
+| `POST /api/lpv/domains` | `{domain, label, logo_url, spinner_html, spinner_page_id, enabled}` — omit a field to keep it |
+| `DELETE /api/lpv/domains/<domain>` | remove one |
+| `GET /api/lpv/domains/<domain>/spinner.html` | the resolved loading screen (404 when the domain is off) |
+| `GET /api/lpv/pages/<id>/logo` | the page's domain + logo candidates, best first |
+
+Tests: `python3 tests/test_domain_spinner.py`, `node tests/test_domain_tab_ui.cjs`.
+
+---
+
 ## The font: Space Grotesk everywhere
 
 `client.html` and both panels are set in **Space Grotesk**, so a mirrored page
@@ -811,6 +864,7 @@ node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets,
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Space Grotesk across a mirrored page
+node tests/test_domain_tab_ui.cjs         # the Domains tab (uploaded spinner + provider logo)
 node tests/test_page_actions_ui.cjs       # the action editor, picker + chat modes (needs jsdom)
 python3 tests/test_page_actions.py     # replace HTML + action rules + action step
 python3 tests/test_click_action_resolution.py  # which rule a click runs (drift, device pairs;
@@ -824,6 +878,7 @@ python3 tests/test_desktop_variant.py  # device versions (phone + desktop page p
 python3 tests/test_autoupdate.py     # auto_update: what restarts the app
 python3 tests/test_bootstrap.py     # python main.py one-command startup
 python3 tests/test_boot_loading_embed.py  # the custom spinner is in the served page
+python3 tests/test_domain_spinner.py   # per-domain loading screens + logo (needs fastapi)
 ```
 
 ### 2. Server boots

