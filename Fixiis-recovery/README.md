@@ -1066,7 +1066,7 @@ look like one product. That captured document gets two things injected into its
 | `<link rel="stylesheet">` for Space Grotesk | the page can actually render the font; the shell already fetched the same file, so it comes from cache |
 | `<style id="__shifix_mirror_font__">` | `html`, `body` and every element in the page get the family with `!important`, so the site's own `font-family` cannot win |
 
-**An LPV page keeps its own typography, always.** A pushed Live-pages document
+**An LPV page keeps its own typography by default.** A pushed Live-pages document
 is the operator's own saved page, shown to a visitor exactly as it was captured:
 its fonts are part of what it is, and restyling it in our font would be changing
 their page. It is enforced in three places, so no call site can re-introduce it:
@@ -1096,8 +1096,43 @@ Details that still apply to the live mirror:
   `onload`), so a slow or filtered network never delays the page; the system
   stack (`-apple-system`, Segoe UI, Roboto) covers the gap.
 
+### The one exception: "Set live pages in Space Mono"
+
+**Settings → Live page branding → Set live pages in Space Mono** (off by
+default) re-sets the text of every pushed page in **Space Mono**, our monospace
+face. It exists for the two cases where a page's own fonts let an operator down:
+
+* a capture that references a font file the visitor's phone cannot fetch, so the
+  text falls out in whatever fallback the browser picks;
+* a decorative face that is unreadable at phone size.
+
+What it does and does not touch:
+
+| | Space Grotesk (shell/mirror) | Space Mono (this switch) |
+|---|---|---|
+| the panels and the shell | yes | no |
+| the streamed mirror | yes | no |
+| a pushed **live page** | never | only when the switch is on |
+
+* Icons, `svg` and anything declaring itself an icon are excluded, exactly as in
+  the mirror theme — their glyphs are characters in their own family.
+* Italics are normalised (`font-style: normal`), because Space Mono has no
+  italic and a synthesised slant reads worse than upright text.
+* It applies **live** to a visitor already reading a page (the same
+  `lpv_branding` message that carries the tab title), and switching it back off
+  removes both injected nodes instead of leaving them behind.
+* It reaches every kind of copy: the served `client.html` carries the answer as
+  a boot flag (`window.__LPV_BOOT_FONTS__` — the plain, unbranded copy too, as
+  it never sees the branding blob), a copy hosted elsewhere reads it from
+  `GET /api/public/boot` (`fonts.mono`), and `?mono_font=1|0` overrides it for a
+  single visit without touching Settings.
+* Off is the fallback everywhere: a copy that cannot reach the backend, or a
+  saved file written before this switch existed, keeps the page's own fonts.
+
 Tests: `node tests/test_mirror_font.cjs` (74 checks, including the LPV refusal
-executed against a fake document).
+executed against a fake document), `node tests/test_lpv_mono_font.cjs`
+(51 checks — the switch itself) and `python tests/test_lpv_font_switch.py`
+(20 checks — setting, boot flag, live push, panel wiring).
 
 ---
 
@@ -1507,6 +1542,7 @@ node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets,
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Space Grotesk in the live mirror, never an LPV page
+node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
 node tests/test_cssom_styles.cjs          # insertRule() CSS reaches the mirror (needs jsdom)
 node tests/test_pc_only_gate.cjs          # the CDP cast screens refuse a phone

@@ -113,6 +113,19 @@ class ServerSettings:
     lpv_tab_title: str = ""
     lpv_favicon_url: str = ""
 
+    # Should a pushed Live-pages document be re-set in our monospace face
+    # (Space Mono)?
+    #
+    # OFF (default) is the promise an LPV page has always made: it is shown
+    # exactly as it was captured, typography included, so what the visitor
+    # sees is the operator's page and nothing else. It is a switch rather
+    # than a nicety because of one real failure: a capture whose font files
+    # the visitor's phone cannot fetch renders in whatever fallback the
+    # browser picks. ON forces Space Mono on every live page (icons and svg
+    # excepted, so Font Awesome and friends keep their glyphs), for every
+    # visitor, until it is switched back off.
+    lpv_mono_font: bool = False
+
     # -------------------------------------------------------------------------
     # Auto-workflow
     # -------------------------------------------------------------------------
@@ -324,6 +337,12 @@ def normalise_setting(key: str, value: Any) -> Any:
         return kind if kind in _CHAT_REDIRECT_KINDS else "link"
     if key in ("chat_redirect_url", "chat_redirect_page_id"):
         return str(value or "").strip()[:2048]
+    if key == "lpv_mono_font":
+        # Defaults to OFF, so only an explicit yes switches it on — a
+        # hand-edited file with "false"/"0"/"off" must stay off.
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "on", "yes")
+        return bool(value)
     if key == "public_pages_enabled":
         # A form or a hand-edited file can send "false"/"0"/"off"; anything
         # that is not an explicit no means the pages stay on.

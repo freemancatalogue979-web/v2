@@ -263,8 +263,11 @@ class PublicBootCase(_Base):
         _, data = boot_json("workflow=" + wf["id"])
         self.assertEqual(set(data.keys()),
                          {"open", "lpv_only", "lpv_visit", "workflow_id",
-                          "branding", "loading"})
+                          "branding", "fonts", "loading"})
         self.assertEqual(set(data["branding"].keys()), {"title", "icon", "color", "logo"})
+        # The font answer is a single boolean about the visit, nothing else.
+        self.assertEqual(set(data["fonts"].keys()), {"mono"})
+        self.assertIsInstance(data["fonts"]["mono"], bool)
 
 
 # ---------------------------------------------------------------------------

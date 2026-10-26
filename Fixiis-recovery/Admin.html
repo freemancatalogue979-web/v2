@@ -8966,6 +8966,21 @@
                             Any image URL — <code>.ico</code>, <code>.png</code> or <code>.svg</code>. Shows in the
                             browser tab and in the viewer header.
                         </div>
+
+                        <label class="settings-row" style="display:flex; align-items:flex-start; gap:10px; padding:10px 0 2px; cursor:pointer; border-top:1px solid var(--border); margin-top:10px;">
+                            <input type="checkbox" id="settings-lpv-mono-font" style="margin-top:3px;" />
+                            <div>
+                                <div style="font-weight:500;">Set live pages in Space Mono</div>
+                                <div style="color:var(--text-muted); font-size:11px; margin-top:3px;">
+                                    OFF (default) leaves every live page exactly as it was captured, its own
+                                    typography included. ON re-sets the text of every live page in Space Mono —
+                                    icons and logos keep their own font, so Font Awesome and friends still draw.
+                                    Use it when a captured page's fonts do not arrive on a phone, or when its
+                                    face is unreadable at that size. Applies live, to visitors already reading
+                                    a page, and does not affect the streamed mirror or this panel.
+                                </div>
+                            </div>
+                        </label>
                     </div>
 
                     <!-- ============== Live chat ============== -->
@@ -20490,6 +20505,7 @@ function lpvFormatBytes(n) {
                 if (typeof window.lpvChatTargetPaint === 'function') window.lpvChatTargetPaint();
                 if ($('settings-lpv-tab-title'))   $('settings-lpv-tab-title').value       = s.lpv_tab_title || '';
                 if ($('settings-lpv-favicon-url')) $('settings-lpv-favicon-url').value     = s.lpv_favicon_url || '';
+                if ($('settings-lpv-mono-font'))   $('settings-lpv-mono-font').checked     = !!s.lpv_mono_font;
                 if (typeof updateLpvFaviconPreview === 'function') updateLpvFaviconPreview();
                 const fp = $('settings-file-path');
                 if (fp) fp.textContent = SETTINGS_STATE.file || '—';
@@ -20530,6 +20546,7 @@ function lpvFormatBytes(n) {
                     chat_redirect_page_id:       (document.getElementById('settings-chat-page') || {}).value || '',
                     lpv_tab_title:               (document.getElementById('settings-lpv-tab-title').value || '').trim(),
                     lpv_favicon_url:             (document.getElementById('settings-lpv-favicon-url').value || '').trim(),
+                    lpv_mono_font:               !!document.getElementById('settings-lpv-mono-font').checked,
                 };
                 setStatus('Saving…');
                 try {

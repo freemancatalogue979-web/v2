@@ -2646,6 +2646,9 @@ async def _push_lpv_branding_to_clients() -> None:
         "type": "lpv_branding",
         "tab_title": (getattr(settings, "lpv_tab_title", "") or "").strip(),
         "favicon_url": (getattr(settings, "lpv_favicon_url", "") or "").strip(),
+        # The font switch rides along: a visitor already reading a pushed
+        # page is re-set (or given their page's own fonts back) immediately.
+        "mono_font": bool(getattr(settings, "lpv_mono_font", False)),
     }
     # LPV clients only. This used to fan out to every connected session, which
     # included visitors watching a streamed browser: an operator saving a tab
@@ -4378,6 +4381,23 @@ def _client_visit_flag(lpv_visit: bool) -> str:
             + ('true' if lpv_visit else 'false') + ';</script>')
 
 
+def _client_font_flag() -> str:
+    """Tell the served document how a pushed page should be set.
+
+    `__LPV_BOOT_BRANDING__` only rides on a copy that carries branding; the
+    plain copy (no workflow, no tab name/icon) is served straight from disk
+    through the ETag path, so the font choice gets its own always-injected
+    flag instead of a ride-along. Off is the default: a live page keeps its
+    own typography.
+    """
+    try:
+        mono = bool(getattr(srv_settings.get_settings(), "lpv_mono_font", False))
+    except Exception:
+        mono = False
+    return ('<script id="lpv-font-flag">window.__LPV_BOOT_FONTS__ = {"mono": '
+            + ('true' if mono else 'false') + '};</script>')
+
+
 def _lpv_tab_branding() -> tuple:
     """The operator's own tab name and icon (Settings -> Live pages).
 
@@ -4506,7 +4526,11 @@ def _render_client_html(request: Request) -> Response:
         # still injected, because the same bytes serve both kinds of visit.
         plain = _client_file_html(client_path)
         if "</head>" in plain:
-            plain = plain.replace("</head>", _client_visit_flag(lpv_visit) + "</head>", 1)
+            plain = plain.replace(
+                "</head>",
+                _client_visit_flag(lpv_visit) + _client_font_flag() + "</head>",
+                1,
+            )
         return _client_html_response(request, plain)
 
     wf = brand_wf or {}
@@ -4515,8 +4539,15 @@ def _render_client_html(request: Request) -> Response:
         stamp = "%d:%d" % (int(stat.st_mtime), stat.st_size)
     except Exception:
         stamp = "0"
+    # Live pages in Space Mono (Settings -> Live page branding). Read per
+    # render: the switch changes the bytes the visitor's copy carries.
+    try:
+        mono_font = bool(getattr(srv_settings.get_settings(), "lpv_mono_font", False))
+    except Exception:
+        mono_font = False
     cache_key = "|".join([
         stamp,
+        "mono" if mono_font else "own-fonts",
         str(wf.get("id") or ""),
         str(wf.get("name") or ""),
         str(wf.get("brand_color") or ""),
@@ -4550,7 +4581,7 @@ def _render_client_html(request: Request) -> Response:
     import json as json_lib
     import re as re_lib
 
-    injected_head = [_client_visit_flag(lpv_visit)]
+    injected_head = [_client_visit_flag(lpv_visit), _client_font_flag()]
 
     if wf_color:
         r, g, b = 239, 68, 68
@@ -4718,16 +4749,23 @@ async def public_boot(request: Request):
         except Exception:
             loading_html, loading_url = "", ""
     lpv_only = False
+    mono_font = False
     try:
-        lpv_only = bool(srv_settings.get_settings().lpv_only_mode)
+        _settings = srv_settings.get_settings()
+        lpv_only = bool(_settings.lpv_only_mode)
+        mono_font = bool(getattr(_settings, "lpv_mono_font", False))
     except Exception:
         lpv_only = False
+        mono_font = False
     return JSONResponse({
         "open": True,
         "lpv_only": lpv_only,
         "lpv_visit": bool(workflow_id) or lpv_only,
         "workflow_id": workflow_id,
         "branding": {"title": title, "icon": icon, "color": color, "logo": logo},
+        # How a pushed page should be set: its own captured typography
+        # (default) or our monospace face.
+        "fonts": {"mono": mono_font},
         "loading": {"html": loading_html, "url": loading_url},
     }, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"})
 
@@ -8223,7 +8261,8 @@ async def settings_update(request: Request):
             logger.debug("[chat] config push failed", exc_info=True)
     # Tab title / favicon changed — retitle the tab of everyone already
     # sitting on a live page instead of waiting for a reload.
-    if any(str(k) in ("lpv_tab_title", "lpv_favicon_url") for k in body.keys()):
+    if any(str(k) in ("lpv_tab_title", "lpv_favicon_url", "lpv_mono_font")
+           for k in body.keys()):
         try:
             await _push_lpv_branding_to_clients()
         except Exception:

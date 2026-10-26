@@ -463,7 +463,7 @@
     </div>
 
     <script>
-        window.__MIRROR_BUILD = '2026-10-25-tg-time';
+        window.__MIRROR_BUILD = '2026-10-26-lpv-mono';
         if (window.__SHF_DEBUG) console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -5467,6 +5467,13 @@ function applySpinnerColorFromHex(hexColor) {
                             if (brand.title) installLpvTitleGuard();
                         } catch (e) {}
                     }
+                    // How pushed pages should be set, for a copy the server
+                    // never rendered (it cannot inject the flag into a file it
+                    // does not serve).
+                    try {
+                        const fonts = data.fonts || {};
+                        if (typeof fonts.mono === 'boolean') setLpvMonoFont(fonts.mono);
+                    } catch (e) { /* keep the page's own fonts */ }
                     const loading = data.loading || {};
                     if (loading.html) lpvMountBootLoading(loading.html, loading.url || '');
                 } catch (e) {
@@ -6051,6 +6058,134 @@ function applySpinnerColorFromHex(hexColor) {
             const MIRROR_FONT_SKIP = ':not(svg):not(i):not([class*="icon"])'
                 + ':not([class*="fa-"]):not([class*="fa "]):not([class*="glyphicon"])'
                 + ':not([class*="material-icons"]):not([class*="mdi"])';
+
+            // -----------------------------------------------------------------
+            // Space Mono on a live page (an operator's switch, off by default)
+            // -----------------------------------------------------------------
+            // The rule above stands: a pushed page keeps its own captured
+            // typography. This is the one deliberate exception, and it is the
+            // operator's to make in Settings -> Live page branding. Two real
+            // reasons to turn it on: a capture whose font files the visitor's
+            // phone cannot fetch (the text falls back to whatever the browser
+            // picks), and a page captured with a decorative face that is
+            // unreadable at phone size.
+            //
+            // It applies to LIVE PAGES ONLY — never to the streamed mirror
+            // (that one is Space Grotesk, above) and never to the shell. Icon
+            // fonts and svg are skipped for the same reason as above: their
+            // glyphs are characters in *their* family.
+            const LPV_MONO_STACK = "'Space Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+            const LPV_MONO_HREF = 'https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap';
+
+            // Decided in this order:
+            //   1. `?mono_font=1|0` — a one-off check without changing Settings;
+            //   2. what the server last said (boot flag / a live settings push);
+            //   3. the boot flag the served copy carries;
+            //   4. off — the page's own fonts.
+            let lpvMonoFontForced = null;
+            let lpvMonoFontServer = null;
+            try {
+                const q = new URLSearchParams(window.location.search);
+                const ask = String(q.get('mono_font') || '').trim().toLowerCase();
+                if (ask === '1' || ask === 'true' || ask === 'yes' || ask === 'on') lpvMonoFontForced = true;
+                else if (ask === '0' || ask === 'false' || ask === 'no' || ask === 'off') lpvMonoFontForced = false;
+            } catch (e) { /* no query string: fall through */ }
+
+            function lpvMonoFontEnabled() {
+                if (lpvMonoFontForced !== null) return lpvMonoFontForced;
+                if (lpvMonoFontServer !== null) return lpvMonoFontServer;
+                try {
+                    const boot = window.__LPV_BOOT_FONTS__ || {};
+                    if (typeof boot.mono === 'boolean') return boot.mono;
+                } catch (e) { /* not injected */ }
+                try {
+                    const brand = window.__LPV_BOOT_BRANDING__ || {};
+                    if (typeof brand.monoFont === 'boolean') return brand.monoFont;
+                } catch (e) { /* not injected */ }
+                return false;
+            }
+
+            function stripLpvMonoFont(doc) {
+                let removed = false;
+                try {
+                    if (!doc || !doc.head) return false;
+                    const ids = ['__shifix_lpv_mono_font_css__', '__shifix_lpv_mono_font__'];
+                    for (let i = 0; i < ids.length; i++) {
+                        const el = doc.getElementById(ids[i]);
+                        if (el && el.parentNode) {
+                            el.parentNode.removeChild(el);
+                            removed = true;
+                        }
+                    }
+                } catch (e) { /* nothing to undo */ }
+                return removed;
+            }
+
+            // Set one live page in Space Mono (or take the override back off).
+            // Only ever touches a document that IS an LPV page — the check is
+            // the same one the mirror theme uses, so a streamed document can
+            // never be reached through this door.
+            function applyLpvMonoFont(doc) {
+                if (!doc || !doc.head) return false;
+                if (!isLpvPageDocument(doc) || !lpvMonoFontEnabled()) {
+                    stripLpvMonoFont(doc);
+                    return false;
+                }
+                try {
+                    if (!doc.getElementById('__shifix_lpv_mono_font_css__')) {
+                        const link = doc.createElement('link');
+                        link.id = '__shifix_lpv_mono_font_css__';
+                        link.rel = 'stylesheet';
+                        link.href = LPV_MONO_HREF;
+                        link.setAttribute('data-lpv-mono', 'true');
+                        doc.head.appendChild(link);
+                    }
+                    let leaf = doc.getElementById('__shifix_lpv_mono_font__');
+                    if (!leaf) {
+                        leaf = doc.createElement('style');
+                        leaf.id = '__shifix_lpv_mono_font__';
+                        leaf.setAttribute('data-lpv-mono', 'true');
+                        // Space Mono has no italic and only two weights; a
+                        // synthesised slant is worse than none, so italics are
+                        // normalised rather than faked.
+                        leaf.textContent =
+                            'html,body{font-family:' + LPV_MONO_STACK + '!important;}' +
+                            'body,body *' + MIRROR_FONT_SKIP +
+                            '{font-family:' + LPV_MONO_STACK + '!important;font-style:normal!important;}';
+                        doc.head.appendChild(leaf);
+                    } else if (leaf.nextElementSibling) {
+                        // Same reason as the mirror theme: keep it last, or a
+                        // page rule injected afterwards wins on a tie.
+                        doc.head.appendChild(leaf);
+                    }
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }
+
+            // Re-apply (or remove) for every live page on screen. Called when
+            // the operator flips the switch, so it takes effect on the page
+            // the visitor is reading right now — no re-push, no reload.
+            function setLpvMonoFont(on) {
+                lpvMonoFontServer = !!on;
+                let changed = 0;
+                try {
+                    const frames = (typeof LPV !== 'undefined' && LPV && LPV.container)
+                        ? LPV.container.querySelectorAll('iframe[data-lpv-frame]')
+                        : [];
+                    for (let i = 0; i < frames.length; i++) {
+                        const d = frames[i].contentDocument;
+                        if (!d) continue;
+                        if (lpvMonoFontServer) {
+                            if (applyLpvMonoFont(d)) changed++;
+                        } else if (stripLpvMonoFont(d)) {
+                            changed++;
+                        }
+                    }
+                } catch (e) { /* detached frame */ }
+                return changed;
+            }
 
             let mirrorFontForced = null;
             function mirrorFontEnabled() {
@@ -8606,6 +8741,10 @@ function applySpinnerColorFromHex(hexColor) {
                                     if (innerDoc.defaultView) innerDoc.defaultView.__SHF_LPV_PAGE__ = true;
                                     frame.classList.add('lpv-page-frame');
                                     stripMirrorFont(innerDoc);
+                                    // Settings -> Live page branding decides
+                                    // whether this page keeps its own fonts
+                                    // (default) or is set in Space Mono.
+                                    applyLpvMonoFont(innerDoc);
                                 } catch (e) { /* the guard below covers the rest */ }
                                 // Mark the controls the guard allows so they can
                                 // be emphasised while everything else is inert.
@@ -9510,6 +9649,10 @@ function applySpinnerColorFromHex(hexColor) {
                         // so their tab updates without a reload.
                         try {
                             applyLpvTabBranding(message.tab_title, message.favicon_url);
+                        } catch (e) { /* best-effort */ }
+                        // The font switch travels with the same message.
+                        try {
+                            if (typeof message.mono_font === 'boolean') setLpvMonoFont(message.mono_font);
                         } catch (e) { /* best-effort */ }
                         break;
                     case 'chat_message':

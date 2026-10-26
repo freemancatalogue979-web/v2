@@ -747,9 +747,18 @@ function makeSandbox(outer, mirror, extras = {}) {
     'the served document carries a visit flag');
   ok(/<script id="lpv-visit-flag">window\.__LPV_VISIT__ = /.test(api),
     'as window.__LPV_VISIT__, before any other script uses it');
-  ok(/_client_visit_flag\(lpv_visit\) \+ "<\/head>"/.test(api),
+  // Both served paths carry the visit flag (and the live-page font choice
+  // that rides beside it): the plain copy is served straight from disk
+  // through the ETag path, so it never sees the branding blob.
+  const plainPath = api.slice(api.indexOf('plain = _client_file_html(client_path)'),
+                              api.indexOf('plain = _client_file_html(client_path)') + 500);
+  ok(/_client_visit_flag\(lpv_visit\)/.test(plainPath) &&
+     /_client_font_flag\(\)/.test(plainPath) &&
+     /"<\/head>"/.test(plainPath),
     'the plain (streamed) copy gets it too, not only the branded one');
-  ok(/injected_head = \[_client_visit_flag\(lpv_visit\)\]/.test(api),
+  const brandedHead = api.slice(api.indexOf('injected_head = ['),
+                                api.indexOf('injected_head = [') + 200);
+  ok(/_client_visit_flag\(lpv_visit\)/.test(brandedHead),
     'the branded copy carries the same flag');
   ok(/"lpv" if lpv_visit else "stream"/.test(api),
     'the cached copy is keyed by visit type (a stream never gets an LPV copy)');
