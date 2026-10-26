@@ -113,6 +113,34 @@ straight to serving. Full details: [Run](#run) below.
 The server stores sessions, files, and profiles on disk next to the code, so
 that folder must be writable by the user running it.
 
+### Where the app keeps its own files
+
+Everything the server *writes about itself* lives in `data/` — never beside the
+code:
+
+| File | What it holds |
+|---|---|
+| `data/persistent_links.json` | generated visitor / workflow links |
+| `data/telegram_config.json` | bot token, chat id, every notification switch |
+| `data/server_settings.json` | panel settings (LPV mode, branding, chat, the Space Mono switch) |
+| `data/server_sessions.json` | remembered sessions |
+| `data/client_profiles.json` | remembered client profiles |
+| `data/chat/` | uploaded chat logos |
+
+The rule matters for three reasons: the repo root is source only (a `.json`
+next to `api.py` reads like something a person put there on purpose and comes
+back as an untracked file after every run), a deploy that uploads "the code"
+cannot accidentally ship yesterday's links, and every path is absolute —
+`persistent_links.json` used to be a bare relative name, so starting the app
+from another folder silently forgot every link.
+
+* `NEO_DATA_DIR=/mnt/state` moves the whole folder (mounted volume, read-only
+  app directory); `SERVER_SETTINGS_PATH` still moves that one file.
+* An older install keeps its files at the repo root: they are moved into
+  `data/` on the next boot, and when a name exists in both places the `data/`
+  copy wins and the old file is left alone. Nothing is ever deleted.
+* `data/` is in `.gitignore`, so none of it is committed. Back it up.
+
 ---
 
 ## Run
@@ -1543,6 +1571,7 @@ node tests/test_page_actions.cjs          # archive edit, click actions, retired
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Space Grotesk in the live mirror, never an LPV page
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages
+python3 tests/test_lpv_font_switch.py     # the switch end to end: setting, boot flag, live push, panel
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
 node tests/test_cssom_styles.cjs          # insertRule() CSS reaches the mirror (needs jsdom)
 node tests/test_pc_only_gate.cjs          # the CDP cast screens refuse a phone
@@ -1570,6 +1599,7 @@ python3 tests/test_lpv_branding.py     # the tab name/icon in the served bytes, 
 node tests/test_lpv_branding_boot.cjs  # the head block executed against a document (26 checks)
 python3 tests/test_pcm_cast.py         # the cast really asks Chrome for those pixels (21 checks)
 python3 tests/test_logging_quiet.py    # quiet client, throttled per-event warnings
+python3 tests/test_data_files.py       # runtime state lives in data/, and old files move there
 ```
 
 ### 2. Server boots

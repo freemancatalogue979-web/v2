@@ -513,6 +513,80 @@ PROFILES_DIR = BASE_DIR / "profiles"
 LOGS_DIR = BASE_DIR / "logs"
 CACHE_DIR = BASE_DIR / "cache"
 
+# Every file the app *writes about itself* — links, settings, Telegram config,
+# remembered sessions — lives here, never beside the code. The repo root is for
+# source; a .json next to api.py is indistinguishable from something a person
+# put there on purpose, comes back as an untracked file after every run, and
+# gets swept into a deploy that only meant to upload code.
+#
+# NEO_DATA_DIR moves the whole folder (a container with a mounted volume, or a
+# read-only app directory). Relative values are resolved against the repo.
+DATA_DIR = Path(os.environ.get("NEO_DATA_DIR") or (BASE_DIR / "data"))
+if not DATA_DIR.is_absolute():
+    DATA_DIR = (BASE_DIR / DATA_DIR).resolve()
+
+# Runtime state that older versions wrote at the repo root. On boot each is
+# moved into DATA_DIR exactly once (see migrate_legacy_state_files) so an
+# upgrade never loses its links or settings.
+LEGACY_ROOT_STATE_FILES = (
+    "persistent_links.json",     # generated visitor/workflow links
+    "telegram_config.json",
+    "server_settings.json",
+    "server_sessions.json",
+    "client_profiles.json",
+)
+
+
+def data_path(name: str) -> Path:
+    """The absolute path of one runtime-state file inside DATA_DIR.
+
+    Only the file name is used, so a caller cannot walk out of the folder
+    with ``../../etc/passwd`` and quietly rewrite something else.
+    """
+    safe = os.path.basename(str(name or "").strip().replace("\\", "/"))
+    if not safe or safe in (".", ".."):
+        raise ValueError("a data file needs a name")
+    return DATA_DIR / safe
+
+
+def migrate_legacy_state_files(base_dir=None, data_dir=None) -> List[str]:
+    """Move root-level state files into the data folder. Idempotent.
+
+    Returns the names that were moved. When a file exists in BOTH places the
+    data-folder copy wins (it is the one the app has been reading) and the root
+    copy is left alone with a warning — deleting somebody's links to tidy up a
+    folder is not a trade worth making.
+    """
+    import shutil
+
+    src_root = Path(base_dir) if base_dir is not None else BASE_DIR
+    dest_dir = Path(data_dir) if data_dir is not None else DATA_DIR
+    moved: List[str] = []
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return moved
+    for name in LEGACY_ROOT_STATE_FILES:
+        legacy = src_root / name
+        target = dest_dir / name
+        try:
+            if not legacy.is_file():
+                continue
+            if target.exists():
+                print(
+                    "[config] %s exists both at the repo root and in %s; using the "
+                    "data copy and leaving the old one alone" % (name, dest_dir)
+                )
+                continue
+            shutil.move(str(legacy), str(target))
+            moved.append(name)
+        except Exception as exc:  # a read-only folder must not stop boot
+            print("[config] could not move %s into %s: %s" % (name, dest_dir, exc))
+    if moved:
+        print("[config] moved %d state file(s) into %s: %s"
+              % (len(moved), dest_dir, ", ".join(moved)))
+    return moved
+
 # LPV (Live Panel Version) — page archive + audit log storage
 LPV_DIR = BASE_DIR / "lpv"
 LPV_PAGES_DIR = LPV_DIR / "pages"
@@ -524,6 +598,11 @@ LOGS_DIR.mkdir(exist_ok=True)
 CACHE_DIR.mkdir(exist_ok=True)
 LPV_DIR.mkdir(exist_ok=True)
 LPV_PAGES_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Bring an older install's root-level state files into data/ before any module
+# (server_settings, api) reads them at import time. A no-op on a clean tree.
+migrate_legacy_state_files()
 
 
 def reload_config():

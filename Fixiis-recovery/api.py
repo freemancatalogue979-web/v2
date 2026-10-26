@@ -39,7 +39,7 @@ from reconnect_utils import should_skip_previous_session_kick
 
 import lpv_store
 import server_settings as srv_settings
-from config import stream_dpr
+from config import stream_dpr, data_path, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +185,7 @@ except ImportError:
 # Structure: {client_id: {profile_data, last_updated, created_at}}
 _server_client_profiles: Dict[str, Dict] = {}
 _client_profiles_lock = asyncio.Lock()
-_profiles_persistence_path = Path(__file__).parent / "data" / "client_profiles.json"
+_profiles_persistence_path = data_path("client_profiles.json")
 
 
 # Admin CDP screencast relay — replaces the old single-shot
@@ -659,10 +659,9 @@ async def _broadcast_profile_update(client_id: str, profile_data: Dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager - load sessions on startup"""
-    # Ensure data directory exists
+    # Ensure the runtime-state folder exists (config owns where it is).
     try:
-        data_dir = Path(__file__).parent / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
 
@@ -1091,7 +1090,7 @@ admin_stream_manager = AdminStreamManager()
 # Telegram Configuration Storage (server-side)
 telegram_config: Dict[str, Any] = {}
 telegram_config_loaded = False
-CONFIG_FILE = Path(__file__).parent / "data" / "telegram_config.json"
+CONFIG_FILE = data_path("telegram_config.json")
 
 
 # Every on/off switch the Telegram settings can carry, with the value used
@@ -2140,7 +2139,7 @@ hidden_sessions: set = set()
 # Server-side session storage for Admin panel
 # Clients report events, server stores them, admin receives real-time updates
 # Persists to disk so data survives any disconnections
-SERVER_SESSIONS_FILE = Path(__file__).parent / "data" / "server_sessions.json"
+SERVER_SESSIONS_FILE = data_path("server_sessions.json")
 server_sessions: Dict[str, Any] = {}
 server_sessions_lock = asyncio.Lock()
 server_sessions_loaded = False
@@ -2961,9 +2960,8 @@ def _apply_redaction(payload: dict, rules: list) -> dict:
 
 def get_sessions_file() -> Path:
     """Get the sessions data file path, creating directory if needed"""
-    file_path = Path(__file__).parent / "data"
-    file_path.mkdir(parents=True, exist_ok=True)
-    return file_path / "server_sessions.json"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return SERVER_SESSIONS_FILE
 
 
 async def load_server_sessions(force: bool = False) -> Dict[str, Any]:
@@ -3081,7 +3079,11 @@ async def broadcast_session_update(client_id: str, session_data: Dict[str, Any])
 # Links are reusable by multiple people and never expire
 # PERSISTENT - saved to disk and loaded on server start
 generated_links: Dict[str, Dict] = {}
-LINKS_FILE = "persistent_links.json"
+# Runtime state lives in data/, never beside the code (see config.data_path):
+# a root-level .json comes back as an untracked file after every run, and used
+# to be resolved against the *working directory*, so starting the app from
+# anywhere else silently forgot every generated link.
+LINKS_FILE = str(data_path("persistent_links.json"))
 
 def load_persistent_links():
     """Load links from disk on server startup"""
@@ -3097,10 +3099,13 @@ def load_persistent_links():
 def save_persistent_links():
     """Save links to disk"""
     try:
+        parent = os.path.dirname(LINKS_FILE)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(LINKS_FILE, 'w') as f:
             json.dump(generated_links, f, indent=2)
     except Exception:
-        pass
+        logger.debug("[LINKS] could not persist links", exc_info=True)
 
 # Load links on module import
 load_persistent_links()
@@ -9518,7 +9523,8 @@ async def lpv_page_logo(page_id: str):
 # Live chat
 # ===========================================================================
 
-_CHAT_LOGO_DIR = Path(__file__).parent / "data" / "chat"
+# Uploaded chat logos are runtime state too, so they live in the same folder.
+_CHAT_LOGO_DIR = data_path("chat")
 
 
 @app.get("/api/lpv/chat/threads")

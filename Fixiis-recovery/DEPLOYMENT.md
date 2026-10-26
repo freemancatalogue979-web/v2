@@ -372,7 +372,32 @@ Created automatically at startup (`config.py`):
 | `logs/` | Application and proxy logs |
 | `cache/` | Temporary capture data |
 | `lpv/` | Live page state, plus `lpv/pages/` for saved pages |
-| `data/` | Telegram config and server settings |
+| `data/` | **All runtime state**: generated links (`persistent_links.json`), Telegram config, server settings, remembered sessions and client profiles, uploaded chat logos |
+
+Every file the app writes about itself lives in `data/`, never beside the code.
+The repo root is for source only: a `.json` next to `api.py` looks like
+something a person put there on purpose, reappears as an untracked file after
+every run, and used to be resolved against the *working directory* — so
+starting the app from anywhere else quietly forgot every generated link.
+
+| What | Where |
+|---|---|
+| generated visitor/workflow links | `data/persistent_links.json` |
+| Telegram bot token + per-alert switches | `data/telegram_config.json` |
+| panel settings (LPV mode, branding, chat…) | `data/server_settings.json` |
+| remembered server sessions | `data/server_sessions.json` |
+| remembered client profiles | `data/client_profiles.json` |
+| uploaded chat logos | `data/chat/` |
+
+Two extras:
+
+* `NEO_DATA_DIR=/mnt/state` (or any absolute path) moves the whole folder — for
+  a container with a mounted volume, or an app directory that is read-only.
+  `SERVER_SETTINGS_PATH` still moves that one file if you need it.
+* An install from before this change keeps its files at the repo root. They are
+  moved into `data/` on the next boot (`config.migrate_legacy_state_files`), and
+  if a name exists in both places the `data/` copy wins and the old one is left
+  untouched.
 
 All of these are in `.gitignore`, so they stay out of git. Back up
 `data/` and `lpv/pages/` — that's your configuration and saved work.

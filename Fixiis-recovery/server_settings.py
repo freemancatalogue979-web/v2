@@ -45,9 +45,14 @@ logger = logging.getLogger(__name__)
 
 # Where the JSON file lives.  ``data/`` already exists; if not, we create it.
 _BASE_DIR = Path(__file__).resolve().parent
-_SETTINGS_PATH = Path(
-    os.environ.get("SERVER_SETTINGS_PATH", str(_BASE_DIR / "data" / "server_settings.json"))
-)
+try:
+    # One answer for "where does runtime state live" (config.DATA_DIR, which
+    # NEO_DATA_DIR can move). SERVER_SETTINGS_PATH still wins for a single file.
+    from config import data_path as _data_path
+    _DEFAULT_SETTINGS_PATH = _data_path("server_settings.json")
+except Exception:  # config not importable (a bare checkout, a test harness)
+    _DEFAULT_SETTINGS_PATH = _BASE_DIR / "data" / "server_settings.json"
+_SETTINGS_PATH = Path(os.environ.get("SERVER_SETTINGS_PATH", str(_DEFAULT_SETTINGS_PATH)))
 
 
 @dataclass

@@ -18,8 +18,18 @@ venv/
 .venv/
 env/
 
-# Runtime state created on start (persistent links, settings overrides)
+# Runtime state created on start: links, settings, Telegram config, remembered
+# sessions. Every one of them lives in data/ (see config.data_path).
 data/
+
+# Older versions wrote these beside the code; they are moved into data/ on the
+# next boot (config.migrate_legacy_state_files). Ignored too so a half-done
+# upgrade cannot show up as an untracked file that looks like source.
+/persistent_links.json
+/telegram_config.json
+/server_settings.json
+/server_sessions.json
+/client_profiles.json
 
 # Caches
 __pycache__/
