@@ -122,7 +122,7 @@ code:
 |---|---|
 | `data/persistent_links.json` | generated visitor / workflow links |
 | `data/telegram_config.json` | bot token, chat id, every notification switch |
-| `data/server_settings.json` | panel settings (LPV mode, branding, chat, the Space Mono switch) |
+| `data/server_settings.json` | panel settings (LPV mode, branding, chat, the Space Mono switch, the timezone) |
 | `data/server_sessions.json` | remembered sessions |
 | `data/client_profiles.json` | remembered client profiles |
 | `data/chat/` | uploaded chat logos |
@@ -1164,6 +1164,82 @@ executed against a fake document), `node tests/test_lpv_mono_font.cjs`
 
 ---
 
+## The server's clock: which timezone the alerts are written in
+
+Every timestamp the server writes comes from one clock: the Telegram alerts,
+the audit trail the panel shows, the session metadata and the `logs/` lines.
+On a VPS that clock is whatever the container was started with (usually UTC),
+which is why an alert could arrive saying `03:14` while it was `04:14` where
+the operator was standing.
+
+**Settings → Clock → Timezone** sets it, and it applies **the moment it is
+saved** — nothing to restart, and the next alert is already in the new zone.
+
+| Value | Meaning |
+|---|---|
+| *Server default* (the empty value) | the machine's own clock, exactly as before |
+| an IANA name — `Africa/Lagos`, `Asia/Tokyo`, `America/New_York` | that zone, **with its daylight-saving rules** |
+| a fixed offset — `+01:00`, `GMT-5`, `UTC+2` | that offset all year, no DST. Stored as `±HH:MM` |
+
+* The picker lists the zones the **browser** knows (via
+  `Intl.supportedValuesOf('timeZone')`, so it is complete and never stale) with
+  a short list of common ones first; a copy of `Admin.html` on an older browser,
+  or hosted against a remote backend, falls back to the server's own list from
+  `GET /api/admin/clock`.
+* Under the picker a live **Server time** line ticks every second and says
+  whether the value you are looking at is *active* or still a *preview* — pick a
+  zone, watch the time, press Save.
+* Names are matched case-insensitively (`africa/lagos` works). Unrecognised
+  text is **refused with a reason** rather than saved, so a typo cannot silently
+  leave the clock where it was.
+* Two admins: the change is broadcast (`server_settings_update` carries the new
+  `clock`), so a second panel updates its picker and status line without a
+  reload.
+* The setting is stored in `data/server_settings.json`, so it survives a restart
+  and a redeploy. It is not a container/host setting; `TZ` in the environment is
+  still what the process starts with when the setting is empty.
+
+What actually moves: applying a zone sets `TZ` and calls `time.tzset()` for the
+running process, so `time.strftime`, `time.localtime`, the logging formatter and
+`app_clock.stamp()` all shift together — an alert and the log line beside it
+always read the same minute. The POSIX `TZ` syntax inverts the sign for numeric
+offsets (`+05:30` becomes `TZ=UTC-5:30`); `app_clock` does that conversion, so
+never hand-write a numeric `TZ`.
+
+The **panels print in that clock too** — the session list, the activity log, the
+captured-field trail, the chat times, the export headers, and the alert rows in
+`mini-admin.html`. That is the point of calling it "in sync": one event shows
+the same minute everywhere. Two consequences worth knowing:
+
+* the phone panel asks once per boot (`GET /api/admin/clock`), so it agrees with
+  the desktop even when the phone itself is in another country;
+* with *Server default* selected the panels go back to the device's own clock,
+  which is exactly what they did before this setting existed.
+
+Endpoints:
+
+```bash
+curl -s localhost:8446/api/admin/clock -H "Authorization: Bearer $TOKEN" | jq
+# { "name": "Africa/Lagos", "source": "admin", "command": "Africa/Lagos",
+#   "offset": "+01:00", "tzname": "WAT", "now": "2026-10-27 14:02:11",
+#   "format": "%Y-%m-%d %H:%M:%S", "zones": [ … ], "server_default": "UTC" }
+
+curl -s -X POST localhost:8446/api/admin/clock -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' -d '{"timezone": "Africa/Lagos"}' | jq .clock
+```
+
+The same clock is reported by `GET /api/settings` (`clock`) and
+`GET /api/diagnostics/server` (`clock`), so a support question about a wrong
+timestamp can be answered from one response.
+
+Tests: `python3 tests/test_timezone.py` (36 checks — parsing, the applied
+clock versus libc, DST, the alert timestamp, saving live, both endpoints, the
+panel wiring) and `node tests/test_clock_panel.cjs` (32 checks — the panel's own
+formatter, run out of `Admin.html` and `mini-admin.html`: a named zone, a fixed
+offset, DST, the date line, and the fallback when the server uses its own clock).
+
+---
+
 ## Scrolling a mirrored page
 
 A captured page arrives as HTML + CSS with its scripts removed, so anything the
@@ -1572,6 +1648,8 @@ node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolle
 node tests/test_mirror_font.cjs           # Space Grotesk in the live mirror, never an LPV page
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages
 python3 tests/test_lpv_font_switch.py     # the switch end to end: setting, boot flag, live push, panel
+python3 tests/test_timezone.py            # the clock alerts are written in: setting, apply, live save, panel
+node tests/test_clock_panel.cjs           # panels print in that same clock (32 checks)
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
 node tests/test_cssom_styles.cjs          # insertRule() CSS reaches the mirror (needs jsdom)
 node tests/test_pc_only_gate.cjs          # the CDP cast screens refuse a phone

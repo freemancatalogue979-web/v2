@@ -7898,6 +7898,24 @@
          the dashboard keeps working, and the visitor pages are never gated.
     ---------------------------------------------------------------------- -->
     <script>
+    /* Timestamps, in the SERVER's clock.
+       Every time printed below is an instant the server saw: when a client
+       connected, when a page was pushed, when an alert went out. Printing it
+       with the viewer's device clock is how an operator ends up comparing an
+       alert that says 14:02 with a row that says 06:02. Settings -> Clock
+       picks the zone, and this formatter follows it. Until the settings block
+       has loaded (or when the server is on its own clock) it falls back to the
+       device's time, which is what this panel always did. */
+    window.clockFormat = function (value, opts) {
+        try {
+            var d = value instanceof Date ? value : new Date(value);
+            if (isNaN(d.getTime())) return '';
+            return d.toLocaleString(undefined, opts || {year:'numeric', month:'numeric', day:'numeric'});
+        } catch (e) { return ''; }
+    };
+    window.clockTime = function (value, opts) {
+        return window.clockFormat(value, opts || {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    };
     (function () {
         var ua = String((navigator && navigator.userAgent) || '');
         var phoneUA = /Android.*Mobile|iPhone|iPod|Windows Phone|IEMobile|BlackBerry|Opera Mini|Opera Mobi|Silk\/|Mobile Safari/i.test(ua);
@@ -8981,6 +8999,31 @@
                                 </div>
                             </div>
                         </label>
+                    </div>
+
+                    <!-- ============== Clock ============== -->
+                    <div class="settings-group" style="margin-bottom:24px; padding:14px; border:1px solid var(--border); border-radius:6px;">
+                        <div style="font-weight:600; font-size:13px; margin-bottom:4px;">Clock</div>
+                        <div style="color:var(--text-muted); font-size:11px; margin-bottom:10px;">
+                            The timezone the <b>server</b> writes in: Telegram alerts, the audit trail, log lines
+                            and session metadata. Applies the moment you save — no restart, and alerts already
+                            being sent switch with it.
+                        </div>
+
+                        <div class="settings-row" style="display:flex; align-items:center; gap:10px; padding:8px 0;">
+                            <div style="min-width:140px; color:var(--text-muted); font-size:12px;">Timezone</div>
+                            <select id="settings-timezone" class="lpv-input" style="flex:1; max-width:420px;">
+                                <option value="">Server default</option>
+                            </select>
+                        </div>
+
+                        <div id="settings-clock-now" style="margin-left:150px; color:var(--text-muted); font-size:11px;">
+                            Server time: —
+                        </div>
+                        <div style="color:var(--text-muted); font-size:11px; margin-left:150px; margin-top:4px;">
+                            Alerts show this clock. The panels themselves show your own device's time, so keep
+                            this matching it and the two agree.
+                        </div>
                     </div>
 
                     <!-- ============== Live chat ============== -->
@@ -12593,13 +12636,12 @@
         }
 
         function formatTimestamp(timestamp) {
-            return new Date(normalizeTimestamp(timestamp)).toLocaleString();
+            return clockFormat(normalizeTimestamp(timestamp));
         }
 
         function formatTimeShort(timestamp) {
-            const d = new Date(normalizeTimestamp(timestamp));
-            const pad = n => String(n).padStart(2, '0');
-            return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+            return clockTime(normalizeTimestamp(timestamp),
+                             { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
         }
 
         function levelForEvent(item) {
@@ -13351,7 +13393,8 @@
                         // Check if date is valid
                         if (!isNaN(date.getTime())) {
                             // Show date and time in a nice format
-                            formattedDate = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                            formattedDate = clockFormat(date, {year: 'numeric', month: 'numeric', day: 'numeric',
+                                                             hour: '2-digit', minute: '2-digit'});
                         }
                     } catch (e) {
                         formattedDate = 'Unknown date';
@@ -13571,7 +13614,7 @@
         }
 
         function addLog(type, title, details) {
-            const timestamp = new Date().toLocaleTimeString();
+            const timestamp = clockTime(new Date());
             const logEntry = {
                 id: Date.now(),
                 timestamp,
@@ -13631,7 +13674,7 @@
                 const recent = Array.isArray(j.recent) ? j.recent.slice().reverse() : [];
                 const body = recent.length
                     ? recent.map(e => {
-                        const when = new Date((e.at || 0) * 1000).toLocaleTimeString();
+                        const when = clockTime((e.at || 0) * 1000);
                         const level = String(e.level || 'WARNING').toLowerCase();
                         return '<div class="log-entry"><div class="log-time message-text">' + escapeHtml(when) + '</div>' +
                             '<div class="log-type ' + (level === 'error' || level === 'critical' ? 'error' : 'warning') + '">' +
@@ -13712,7 +13755,7 @@
             }
             
             let logText = '=== ADMIN PANEL SESSION LOGS ===\n';
-            logText += `Generated: ${new Date().toLocaleString()}\n`;
+            logText += `Generated: ${clockFormat(new Date())}\n`;
             logText += '================================\n\n';
             
             logs.forEach(log => {
@@ -14174,7 +14217,7 @@
         }
 
         function addTelegramActivity(type, message) {
-            const timestamp = new Date().toLocaleTimeString();
+            const timestamp = clockTime(new Date());
             tgActivityLog.push({
                 type,
                 message,
@@ -14854,7 +14897,7 @@
             capacityBarChart.update('none');
             
             // Update line chart
-            const now = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const now = clockTime(new Date(), { hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' });
             
             metricsHistory.labels.push(now);
             metricsHistory.memory.push(memoryPercent);
@@ -15557,8 +15600,8 @@
             const displayUrl = lastUrl.replace(/^https?:\/\//, '').slice(0, 50);
             const timeSince = formatTime(Date.now() - session.last_seen);
             const totalUptime = formatTime((session.total_uptime || 0) * 1000);
-            const firstSeen = new Date(session.first_seen).toLocaleString();
-            const lastSeen = new Date(session.last_seen).toLocaleString();
+            const firstSeen = clockFormat(session.first_seen);
+            const lastSeen = clockFormat(session.last_seen);
             const historyCount = session.history ? session.history.length : 0;
             const faviconUrl = getFaviconUrl(lastUrl);
 
@@ -15568,7 +15611,7 @@
                 [...session.history].reverse().forEach(entry => {
                     const entryUrl = entry.url || 'Unknown';
                     const entryDisplay = entryUrl.replace(/^https?:\/\//, '').slice(0, 50);
-                    const entryTime = new Date(entry.timestamp).toLocaleString();
+                    const entryTime = clockFormat(entry.timestamp);
                     const entryDuration = formatTime(entry.duration || 0);
                     const entryFavicon = entry.favicon || getFaviconUrl(entry.url);
 
@@ -16180,8 +16223,7 @@
             } else {
                 let logsHtml = '';
                 visibleLogs.forEach((log, index) => {
-                    const timestamp = new Date(log.timestamp * 1000);
-                    const timeStr = timestamp.toLocaleDateString() + ' ' + timestamp.toLocaleTimeString();
+                    const timeStr = clockFormat((log.timestamp || 0) * 1000);
                     const typeClass = log.type === 'form_submit' ? 'form_submit' : (log.type === 'form_data' ? 'form_data' : 'keydown');
                     
                     // Determine label based on type
@@ -16336,7 +16378,7 @@
                 return;
             }
 
-            const logText = logs.map(log => `[${new Date(log.timestamp * 1000).toLocaleString()}] [${log.type}] ${log.data}`).join('\n');
+            const logText = logs.map(log => `[${clockFormat((log.timestamp || 0) * 1000)}] [${log.type}] ${log.data}`).join('\n');
             
             navigator.clipboard.writeText(logText).then(() => {
                 showToast(`${logs.length} log entries copied!`, 'success');
@@ -16496,7 +16538,7 @@
             let message = '';
             
             message += '* . * . * 2026 Admin Notification * . * . *\n';
-            message += new Date().toLocaleString() + '\n';
+            message += clockFormat(new Date()) + '\n';
             message += '================================\n\n';
             
             message += '=== Impersonation Link Generated ===\n\n';
@@ -16543,7 +16585,7 @@
             }
 
             const exportData = {
-                exported: new Date().toLocaleString(),
+                exported: clockFormat(new Date()),
                 total_sessions: Object.keys(allSessions).length,
                 sessions: allSessions
             };
@@ -16599,8 +16641,7 @@
 
             function lpvFormatTime(ts) {
                 if (!ts) return '';
-                const d = new Date(ts * 1000);
-                return d.toLocaleTimeString();
+                return clockTime(ts * 1000);
             }
 
             /* Event names arrive from the server in snake_case. Show operators plain
@@ -18553,11 +18594,10 @@ function lpvFormatBytes(n) {
                 if (!ts) return '';
                 const d = new Date(Number(ts) * 1000);
                 if (isNaN(d.getTime())) return '';
-                const now = new Date();
-                const sameDay = d.toDateString() === now.toDateString();
+                const sameDay = clockSameDay(d, new Date());
                 return sameDay
-                    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                    : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                    ? clockFormat(d, { hour: '2-digit', minute: '2-digit' })
+                    : clockFormat(d, { month: 'short', day: 'numeric' });
             }
 
             async function lpvChatLoadThreads() {
@@ -20506,6 +20546,7 @@ function lpvFormatBytes(n) {
                 if ($('settings-lpv-tab-title'))   $('settings-lpv-tab-title').value       = s.lpv_tab_title || '';
                 if ($('settings-lpv-favicon-url')) $('settings-lpv-favicon-url').value     = s.lpv_favicon_url || '';
                 if ($('settings-lpv-mono-font'))   $('settings-lpv-mono-font').checked     = !!s.lpv_mono_font;
+                if ($('settings-timezone'))        $('settings-timezone').value           = s.timezone || '';
                 if (typeof updateLpvFaviconPreview === 'function') updateLpvFaviconPreview();
                 const fp = $('settings-file-path');
                 if (fp) fp.textContent = SETTINGS_STATE.file || '—';
@@ -20515,6 +20556,234 @@ function lpvFormatBytes(n) {
             // these fields after it saves the same settings.
             window.applySettingsToUI = applySettingsToUI;
 
+            // ----- Clock (the timezone the SERVER writes in) ----------------
+            // The browser already knows how to render any zone, including its
+            // DST rules, so the picker is filled from Intl when it can be and
+            // from the server's own list when it cannot. Either way the value
+            // saved is the same string app_clock understands.
+            const CLOCK_COMMON = [
+                'Africa/Lagos', 'Africa/Accra', 'Africa/Nairobi', 'Africa/Johannesburg',
+                'Africa/Cairo', 'Europe/London', 'Europe/Paris', 'Europe/Berlin',
+                'Europe/Madrid', 'Europe/Istanbul', 'Europe/Moscow',
+                'America/New_York', 'America/Chicago', 'America/Denver',
+                'America/Los_Angeles', 'America/Sao_Paulo', 'Asia/Dubai',
+                'Asia/Karachi', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Shanghai',
+                'Asia/Hong_Kong', 'Asia/Tokyo', 'Australia/Sydney', 'Pacific/Auckland',
+                'UTC'
+            ];
+            // Offsets that never shift, for an operator who thinks in "UTC+1".
+            const CLOCK_OFFSETS = ['-08:00', '-05:00', '-04:00', '+00:00', '+01:00',
+                                   '+02:00', '+03:00', '+05:30', '+07:00', '+08:00',
+                                   '+09:00', '+10:00'];
+            window.__CLOCK_STATE = { zones: [], clock: {}, saved: '', timer: null };
+
+            // ----- Printing an instant in the configured clock ---------------
+            // Two kinds of answer, because an operator can pick two kinds of
+            // value: an IANA zone (ask Intl, so DST is its problem, not ours)
+            // or a fixed offset (shift the instant, print it as UTC).
+            function clockZoneSpec() {
+                const clock = window.__CLOCK_STATE.clock || {};
+                const name = clock.name || '';
+                if (name && name.indexOf('/') !== -1) return { zone: name };
+                if (/^[+-]\d{2}:\d{2}$/.test(clock.offset || '')) {
+                    // "Server default" describes the machine's own clock; the
+                    // panel keeps showing the device's time in that case,
+                    // exactly as it did before this setting existed.
+                    if (clock.source !== 'admin') return null;
+                    return { offset: clock.offset };
+                }
+                return null;
+            }
+
+            function zoneMinutesEast(date, zone) {
+                const parts = new Intl.DateTimeFormat('en-US', {
+                    timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+                    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
+                }).formatToParts(date);
+                const pick = (t) => {
+                    const hit = parts.find((p) => p.type === t);
+                    return hit ? hit.value : '0';
+                };
+                const asUTC = Date.UTC(parseInt(pick('year'), 10), parseInt(pick('month'), 10) - 1,
+                                       parseInt(pick('day'), 10), parseInt(pick('hour'), 10) % 24,
+                                       parseInt(pick('minute'), 10), parseInt(pick('second'), 10));
+                return Math.round((asUTC - date.getTime()) / 60000);
+            }
+
+            function clockFormat(value, opts) {
+                let d;
+                try {
+                    d = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+                } catch (e) { return ''; }
+                if (isNaN(d.getTime())) return '';
+                const options = opts || { year: 'numeric', month: 'numeric', day: 'numeric',
+                                          hour: 'numeric', minute: '2-digit', second: '2-digit' };
+                const spec = (window.__CLOCK_ZONE__ || clockZoneSpec)();
+                if (!spec) {
+                    try { return d.toLocaleString(undefined, options); }
+                    catch (e) { return d.toLocaleString(); }
+                }
+                try {
+                    let shift;
+                    if (spec.zone) {
+                        shift = zoneMinutesEast(d, spec.zone);
+                    } else {
+                        const m = /^([+-])(\d{2}):(\d{2})$/.exec(spec.offset);
+                        shift = m ? (m[1] === '-' ? -1 : 1) * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10)) : 0;
+                    }
+                    const moved = new Date(d.getTime() + shift * 60000);
+                    return new Intl.DateTimeFormat(undefined, Object.assign({}, options, { timeZone: 'UTC' }))
+                        .format(moved);
+                } catch (e) {
+                    try { return d.toLocaleString(undefined, options); } catch (e2) { return ''; }
+                }
+            }
+
+            function clockTime(value, opts) {
+                return clockFormat(value, opts || { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            }
+
+            // "Is this the same day" has to use the same clock, or a message
+            // sent at 23:50 shows a time while the row beside it shows a date.
+            function clockSameDay(a, b) {
+                const f = (v) => clockFormat(v, { year: 'numeric', month: '2-digit', day: '2-digit' });
+                return f(a) === f(b || new Date());
+            }
+
+            window.clockFormat = clockFormat;
+            window.clockTime = clockTime;
+            window.clockSameDay = clockSameDay;
+            window.__CLOCK_ZONE__ = clockZoneSpec;
+
+            function clockZones() {
+                try {
+                    if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+                        const list = Intl.supportedValuesOf('timeZone');
+                        if (Array.isArray(list) && list.length) return list;
+                    }
+                } catch (e) { /* older browser */ }
+                return window.__CLOCK_STATE.zones || [];
+            }
+
+            function fillClockPicker() {
+                const sel = document.getElementById('settings-timezone');
+                if (!sel) return;
+                const keep = sel.value;
+                const zones = clockZones();
+                const seen = {};
+                const add = (parent, value, label) => {
+                    if (value === '' || seen[value]) return;
+                    seen[value] = true;
+                    const opt = document.createElement('option');
+                    opt.value = value;
+                    opt.textContent = label;
+                    parent.appendChild(opt);
+                };
+                sel.innerHTML = '';
+                const clock = window.__CLOCK_STATE.clock || {};
+                const serverLabel = clock.tzname
+                    ? ('Server default — ' + clock.tzname + ' (' + (clock.offset || '') + ')')
+                    : 'Server default';
+                add(sel, '', serverLabel);
+
+                const common = document.createElement('optgroup');
+                common.label = 'Common';
+                CLOCK_COMMON.forEach((z) => add(common, z, z));
+                sel.appendChild(common);
+
+                if (zones.length) {
+                    const all = document.createElement('optgroup');
+                    all.label = 'All timezones';
+                    zones.forEach((z) => add(all, z, z));
+                    sel.appendChild(all);
+                }
+
+                const offsets = document.createElement('optgroup');
+                offsets.label = 'Fixed offset (never shifts for DST)';
+                CLOCK_OFFSETS.forEach((z) => add(offsets, z, 'UTC' + z));
+                sel.appendChild(offsets);
+
+                // A value the server has that neither list knew (older name,
+                // or a fixed offset we do not list) still has to show.
+                const saved = (SETTINGS_STATE.current || {}).timezone || '';
+                if (saved && !seen[saved]) add(sel, saved, saved + ' (saved)');
+                sel.value = keep || saved || '';
+                if (sel.value !== (keep || saved || '')) sel.value = '';
+                paintClockNow();
+            }
+
+            function clockStampFor(value) {
+                const now = new Date();
+                try {
+                    if (value && value.indexOf('/') !== -1 && typeof Intl !== 'undefined') {
+                        const parts = new Intl.DateTimeFormat('en-GB', {
+                            timeZone: value, year: 'numeric', month: '2-digit', day: '2-digit',
+                            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                        }).formatToParts(now);
+                        const pick = (t) => (parts.find((p) => p.type === t) || {}).value || '';
+                        return pick('year') + '-' + pick('month') + '-' + pick('day') + ' ' +
+                               pick('hour') + ':' + pick('minute') + ':' + pick('second');
+                    }
+                    const m = /^([+-])(\d{2}):(\d{2})$/.exec(value || '');
+                    let shift = 0;
+                    if (m) shift = (m[1] === '-' ? -1 : 1) * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
+                    const d = new Date(now.getTime() + shift * 60000);
+                    const p2 = (n) => String(n).padStart(2, '0');
+                    return d.getUTCFullYear() + '-' + p2(d.getUTCMonth() + 1) + '-' + p2(d.getUTCDate()) +
+                           ' ' + p2(d.getUTCHours()) + ':' + p2(d.getUTCMinutes()) + ':' + p2(d.getUTCSeconds());
+                } catch (e) {
+                    return '';
+                }
+            }
+
+            function paintClockNow() {
+                const host = document.getElementById('settings-clock-now');
+                const sel = document.getElementById('settings-timezone');
+                if (!host || !sel) return;
+                const chosen = sel.value || '';
+                const saved = (SETTINGS_STATE.current || {}).timezone || '';
+                const stamp = clockStampFor(chosen);
+                if (!stamp) {
+                    host.textContent = 'Server time: not available in this browser';
+                    return;
+                }
+                const name = chosen || (window.__CLOCK_STATE.clock || {}).tzname || 'server default';
+                const dirty = chosen !== saved;
+                host.innerHTML = 'Server time: <b style="color:var(--text-primary);">' + stamp + '</b>'
+                    + ' <span style="opacity:.75;">(' + name + ')</span>'
+                    + (dirty
+                        ? ' <span style="color:var(--warning);">— preview, press Save to apply</span>'
+                        : ' <span style="color:var(--success, #22c55e);">— active</span>');
+            }
+
+            function startClockPreview() {
+                const sel = document.getElementById('settings-timezone');
+                if (!sel) return;
+                if (!sel.__wired) {
+                    sel.__wired = true;
+                    sel.addEventListener('change', paintClockNow);
+                }
+                fillClockPicker();
+                paintClockNow();
+                if (window.__CLOCK_STATE.timer) return;
+                window.__CLOCK_STATE.timer = setInterval(paintClockNow, 1000);
+            }
+            window.paintClockNow = paintClockNow;
+            window.fillClockPicker = fillClockPicker;
+
+            // What the server actually resolved (offset + abbreviation), which
+            // is the only honest source for the "Server default" label.
+            async function loadClock() {
+                try {
+                    const r = await serverFetch('/api/admin/clock');
+                    if (!r.ok) return;
+                    const j = await r.json();
+                    window.__CLOCK_STATE.clock = j || {};
+                    window.__CLOCK_STATE.zones = (j && Array.isArray(j.zones)) ? j.zones : [];
+                    fillClockPicker();
+                } catch (e) { /* the picker still works from Intl */ }
+            }
+
             async function settingsLoad() {
                 try {
                     const r = await serverFetch('/api/settings');
@@ -20523,6 +20792,8 @@ function lpvFormatBytes(n) {
                     SETTINGS_STATE.current = j.settings || {};
                     SETTINGS_STATE.file = j.settings_file || null;
                     applySettingsToUI(SETTINGS_STATE.current);
+                    await loadClock();
+                    startClockPreview();
                     // Page pickers in the chat group need the archive list.
                     if (typeof window.lpvChatSettingsPaintAll === 'function') {
                         await window.lpvChatSettingsPaintAll(true);
@@ -20547,6 +20818,7 @@ function lpvFormatBytes(n) {
                     lpv_tab_title:               (document.getElementById('settings-lpv-tab-title').value || '').trim(),
                     lpv_favicon_url:             (document.getElementById('settings-lpv-favicon-url').value || '').trim(),
                     lpv_mono_font:               !!document.getElementById('settings-lpv-mono-font').checked,
+                    timezone:                    (document.getElementById('settings-timezone') || {}).value || '',
                 };
                 setStatus('Saving…');
                 try {
@@ -20562,6 +20834,11 @@ function lpvFormatBytes(n) {
                     const j = await r.json();
                     SETTINGS_STATE.current = j.settings || body;
                     applySettingsToUI(SETTINGS_STATE.current);
+                    // The server answers the clock it resolved (a named zone
+                    // can have two offsets), so the line under the picker
+                    // switches from "preview" to "active" straight away.
+                    await loadClock();
+                    paintClockNow();
                     // Keep the Chat pane's copy of these controls in step.
                     if (typeof lpvChatSettingsLoad === 'function') {
                         try { await lpvChatSettingsLoad(); } catch (e) { /* non-fatal */ }
@@ -20602,7 +20879,19 @@ function lpvFormatBytes(n) {
                 if (!s) return;
                 SETTINGS_STATE.current = s;
                 applySettingsToUI(s);
-                setStatus('Updated by server', 'ok');
+                if (detail.clock) window.__CLOCK_STATE.clock = detail.clock;
+                try { fillClockPicker(); } catch (e) {}
+                // The clock changed (another admin, or the save that just
+                // landed): say so, because every future alert uses it.
+                const touchedClock = detail.key === 'timezone'
+                    || detail.changed_key === 'timezone'
+                    || (detail.patch && detail.patch.timezone !== undefined);
+                if (touchedClock) {
+                    setStatus('Timezone applied — alerts and logs now use it', 'ok');
+                    setTimeout(() => setStatus(''), 2500);
+                } else {
+                    setStatus('Updated by server', 'ok');
+                }
                 setTimeout(() => setStatus(''), 1500);
             });
 

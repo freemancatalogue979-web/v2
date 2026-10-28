@@ -556,6 +556,20 @@ async def send_telegram_notification(message: str, config) -> bool:
         return False
 
 
+def _clock_stamp_labeled() -> str:
+    """The server's time, with the zone it is actually in.
+
+    Settings -> Clock -> Timezone decides this; the label says which. Falls
+    back to plain UTC if the clock module is unavailable, so a /status reply
+    can never fail because of a formatting problem.
+    """
+    try:
+        import app_clock
+        return "%s %s" % (app_clock.stamp(), app_clock.tz_abbreviation() or "UTC")
+    except Exception:
+        return time.strftime('%Y-%m-%d %H:%M:%S UTC')
+
+
 class TelegramBot:
     """
     Telegram Bot class handling all bot functionality.
@@ -870,7 +884,7 @@ An error occurred during link generation. Please try again."""
 <b>GPU Memory:</b> {gpu_status.get('gpu_memory_used_mb', 0):.1f} MB
 <b>GPU Utilization:</b> {gpu_status.get('gpu_utilization', 0):.1f}%
 
-<b>Timestamp:</b> <code>{time.strftime('%Y-%m-%d %H:%M:%S UTC')}</code>"""
+<b>Timestamp:</b> <code>{_clock_stamp_labeled()}</code>"""
                 await self._send_telegram_message(chat_id, message.strip())
             
         except Exception as e:

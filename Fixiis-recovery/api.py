@@ -1314,16 +1314,22 @@ def _tg_flag(flag: str, default: bool = True) -> bool:
 
 
 def _tg_stamp(when: Optional[float] = None) -> str:
-    """The clock time a notification is about, in the server's local time.
+    """The clock time a notification is about, in the operator's timezone.
 
     Sortable and unambiguous, so two alerts from the same visitor can be told
-    apart at a glance on a phone.
+    apart at a glance on a phone. The zone is Settings -> Clock -> Timezone
+    (see app_clock): it applies to the alerts the moment it is saved, without
+    a restart, and matches the log lines beside them.
     """
     try:
-        moment = datetime.fromtimestamp(when) if when else datetime.now()
+        import app_clock
+        return app_clock.stamp(when)
     except Exception:
-        moment = datetime.now()
-    return moment.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            moment = datetime.fromtimestamp(when) if when else datetime.now()
+        except Exception:
+            moment = datetime.now()
+        return moment.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _tg_time_row(when: Optional[float] = None, label: str = "Time"):
@@ -4889,6 +4895,67 @@ def _build_info() -> Dict[str, Any]:
     }
 
 
+def _clock_describe() -> Dict[str, Any]:
+    """The applied clock, or {} if the module is unavailable."""
+    try:
+        import app_clock
+        return app_clock.describe()
+    except Exception:
+        return {}
+
+
+@app.get("/api/admin/clock")
+async def get_clock(request: Request):
+    """The server's clock: the zone in force, the real offset, and the time.
+
+    `zones` is what this machine knows, so the picker works even in a browser
+    without Intl.supportedValuesOf (and so the list matches what the server
+    can actually resolve). `applied` is the truth, not the saved value: an
+    invalid name falls back to the server's own clock and says so.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    info = _clock_describe()
+    try:
+        import app_clock
+        info["zones"] = app_clock.known_zones()
+        info["server_default"] = app_clock.describe() if not app_clock.current_name() else {}
+    except Exception:
+        info.setdefault("zones", [])
+    return JSONResponse(info)
+
+
+@app.post("/api/admin/clock")
+async def set_clock(request: Request):
+    """Set the timezone now. Body: {"timezone": "Africa/Lagos"} ("" = server).
+
+    Same code path as the Settings save (server_settings -> app_clock), so a
+    script and a click do exactly the same thing.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected JSON object"}, status_code=400)
+    raw = body.get("timezone", "")
+    try:
+        import app_clock
+        verdict = app_clock.explain(raw)
+    except Exception:
+        return JSONResponse({"error": "clock module unavailable"}, status_code=500)
+    if not verdict["ok"]:
+        return JSONResponse({"error": verdict["message"]}, status_code=400)
+    await srv_settings.set_settings({"timezone": verdict["stored"]})
+    return JSONResponse({
+        "success": True,
+        "timezone": verdict["stored"],
+        "clock": _clock_describe(),
+    })
+
+
 @app.get("/api/diagnostics/server")
 async def server_diagnostics(request: Request):
     """What this server is doing and what went wrong recently (admin).
@@ -4900,7 +4967,7 @@ async def server_diagnostics(request: Request):
     if not await verify_admin_token(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     out: Dict[str, Any] = {"build": _build_info(), "log_level": logging.getLevelName(
-        logging.getLogger().getEffectiveLevel())}
+        logging.getLogger().getEffectiveLevel()), "clock": _clock_describe()}
 
     try:
         if telegram_config_loaded and telegram_config:
@@ -8234,6 +8301,10 @@ async def settings_get(request: Request):
     return {
         "settings": srv_settings.get_settings_dict(),
         "settings_file": srv_settings.settings_file_path(),
+        # The clock the server actually writes in (name, offset, now). The
+        # panel shows it beside the picker so a choice can be checked at a
+        # glance instead of trusted.
+        "clock": _clock_describe(),
     }
 
 
@@ -8283,6 +8354,13 @@ async def _broadcast_settings_update(payload: Dict[str, Any]) -> None:
             "type": "server_settings_update",
             "settings": payload.get("settings", {}),
             "changed_key": payload.get("key"),
+            "changed_value": payload.get("value"),
+            "patch": payload.get("patch") or {},
+            # The clock that is now in force. Without it a second panel
+            # knows the setting changed but not what the server resolved it
+            # to (a DST zone has two offsets), so it keeps printing the old
+            # one until somebody reloads.
+            "clock": payload.get("clock") or {},
         })
     except Exception as exc:
         logger.debug("[settings] admin broadcast skipped: %s", exc)

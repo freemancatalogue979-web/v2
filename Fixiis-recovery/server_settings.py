@@ -118,6 +118,16 @@ class ServerSettings:
     lpv_tab_title: str = ""
     lpv_favicon_url: str = ""
 
+    # -------------------------------------------------------------------------
+    # The clock every server-side timestamp is written in.
+    # -------------------------------------------------------------------------
+    # "" means "whatever the machine is set to" (the old behaviour). Any IANA
+    # name ("Africa/Lagos") or fixed offset ("+01:00") instead makes the server
+    # write *that* local time — in Telegram alerts, the audit trail, the logs
+    # and the session metadata — and takes effect immediately, no restart.
+    # Applied by app_clock.apply() (see _apply_runtime for the hook).
+    timezone: str = ""
+
     # Should a pushed Live-pages document be re-set in our monospace face
     # (Space Mono)?
     #
@@ -242,10 +252,27 @@ def _save_to_disk(settings: ServerSettings) -> None:
 
 
 # ---------------------------------------------------------------------------
+def _apply_runtime(settings: "ServerSettings") -> None:
+    """Push settings that own process-wide state onto it.
+
+    Only the timezone qualifies today: it changes ``TZ`` for the whole process,
+    so it must be applied the moment it is loaded or saved — not on the next
+    restart, and not only for the Telegram path.
+    """
+    try:
+        import app_clock
+        app_clock.apply(getattr(settings, "timezone", "") or "")
+    except Exception:
+        logger.debug("[server_settings] could not apply the timezone", exc_info=True)
+
+
 # Module-level state
 # ---------------------------------------------------------------------------
 
 _settings: ServerSettings = _load_from_disk()
+# The saved timezone is process-wide state (TZ + tzset), so it has to be on
+# before anything writes a timestamp — including the first log line.
+_apply_runtime(_settings)
 _settings_lock = asyncio.Lock()
 # Subscribers get notified after every successful mutation.  Used by the
 # WebSocket layer in api.py to broadcast to admin panels.
@@ -272,6 +299,7 @@ def reload_from_disk() -> ServerSettings:
     never calls this."""
     global _settings
     _settings = _load_from_disk()
+    _apply_runtime(_settings)
     return _settings
 
 
@@ -342,6 +370,14 @@ def normalise_setting(key: str, value: Any) -> Any:
         return kind if kind in _CHAT_REDIRECT_KINDS else "link"
     if key in ("chat_redirect_url", "chat_redirect_page_id"):
         return str(value or "").strip()[:2048]
+    if key == "timezone":
+        # Junk keeps the server's own clock rather than breaking the save;
+        # app_clock.explain() is what tells an operator why.
+        try:
+            import app_clock
+            return app_clock.normalise(value)
+        except Exception:
+            return ""
     if key == "lpv_mono_font":
         # Defaults to OFF, so only an explicit yes switches it on — a
         # hand-edited file with "false"/"0"/"off" must stay off.
@@ -374,12 +410,14 @@ async def update_setting(key: str, value: Any) -> ServerSettings:
         current["updated_at"] = time.time()
         _settings = ServerSettings(**current)
         _save_to_disk(_settings)
+        _apply_runtime(_settings)
 
     await _notify_subscribers({
         "type": "settings_update",
         "key": key,
         "value": value,
         "settings": _settings.to_dict(),
+        "clock": _clock_describe(),
     })
     return _settings
 
@@ -405,13 +443,24 @@ async def set_settings(patch: Dict[str, Any]) -> ServerSettings:
         current["updated_at"] = time.time()
         _settings = ServerSettings(**current)
         _save_to_disk(_settings)
+        _apply_runtime(_settings)
 
     await _notify_subscribers({
         "type": "settings_update",
         "patch": patch,
         "settings": _settings.to_dict(),
+        "clock": _clock_describe(),
     })
     return _settings
+
+
+def _clock_describe() -> Dict[str, Any]:
+    """The applied clock, for a broadcast payload (empty if unavailable)."""
+    try:
+        import app_clock
+        return app_clock.describe()
+    except Exception:
+        return {}
 
 
 def settings_file_path() -> str:

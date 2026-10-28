@@ -1255,11 +1255,64 @@ function relTime(ts){
   if(d < 3600) return Math.floor(d/60)+'m ago';
   if(d < 86400) return Math.floor(d/3600)+'h ago';
   if(d < 604800) return Math.floor(d/86400)+'d ago';
-  return new Date(ts*1000).toLocaleDateString();
+  return clockFormat(ts*1000, {year:'numeric',month:'numeric',day:'numeric'});
+}
+/* The server's clock, not the phone's.
+   Alert times here are the ones the server printed; if an operator sets
+   Settings -> Clock -> Timezone on the desktop panel, this phone must agree
+   with it, or a 14:02 alert shows as 06:02 next to it. CLOCK holds what the
+   backend says is in force (see loadClock). With no answer - or with the
+   server on its own clock - we fall back to the phone's time, as before. */
+let CLOCK = { zone: '', offset: '', source: '' };
+
+function clockFormat(value, opts){
+  let d;
+  try { d = value instanceof Date ? value : new Date(value); } catch(e){ return ''; }
+  if(!d || isNaN(d.getTime())) return '';
+  const options = opts || {hour:'2-digit',minute:'2-digit',second:'2-digit'};
+  if(!CLOCK.zone && !CLOCK.offset){
+    try { return d.toLocaleString(undefined, options); } catch(e){ return ''; }
+  }
+  try{
+    let shift = 0;
+    if(CLOCK.zone){
+      const parts = new Intl.DateTimeFormat('en-US', {timeZone:CLOCK.zone, hourCycle:'h23',
+        year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'
+      }).formatToParts(d);
+      const pick = t => { const h = parts.find(p => p.type === t); return h ? h.value : '0'; };
+      const asUTC = Date.UTC(+pick('year'), +pick('month')-1, +pick('day'),
+                             (+pick('hour'))%24, +pick('minute'), +pick('second'));
+      shift = Math.round((asUTC - d.getTime()) / 60000);
+    } else {
+      const m = /^([+-])(\d{2}):(\d{2})$/.exec(CLOCK.offset);
+      shift = m ? (m[1] === '-' ? -1 : 1) * (+m[2]*60 + +m[3]) : 0;
+    }
+    return new Intl.DateTimeFormat(undefined, Object.assign({}, options, {timeZone:'UTC'}))
+      .format(new Date(d.getTime() + shift*60000));
+  }catch(e){
+    try { return d.toLocaleString(undefined, options); } catch(e2){ return ''; }
+  }
 }
 function clockTime(ts){
-  return new Date((ts||Date.now()/1000)*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  return clockFormat((ts||Date.now()/1000)*1000, {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
+
+/* Ask the backend which clock it writes in. Cheap, once per boot, and again
+   whenever the desktop panel says the setting changed. */
+async function loadClock(){
+  try{
+    const j = await get('/api/admin/clock');
+    if(!j) return;
+    const name = j.name || '';
+    CLOCK = {
+      zone: (name && name.indexOf('/') !== -1) ? name : '',
+      offset: (j.source === 'admin' && /^[+-]\d{2}:\d{2}$/.test(j.offset || '')) ? j.offset : '',
+      source: j.source || ''
+    };
+    if(typeof loadAlerts === 'function') { try { loadAlerts(); } catch(e){} }
+  }catch(e){ /* offline: keep the phone's time */ }
+}
+window.loadClock = loadClock;
 function hostOf(url){
   try { return new URL(url).hostname.replace(/^www\./,''); } catch { return String(url||'').slice(0,42) || '—'; }
 }
@@ -2882,6 +2935,7 @@ function emptyBlock(title, body, svg){
 function boot(){
   connectAdmin();
   connectManager();
+  loadClock();
   loadAll();
   go('clients');
   setInterval(() => { if(S.view === 'profiles') loadProfiles(); }, 20000);

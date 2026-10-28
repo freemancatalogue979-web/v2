@@ -384,7 +384,7 @@ starting the app from anywhere else quietly forgot every generated link.
 |---|---|
 | generated visitor/workflow links | `data/persistent_links.json` |
 | Telegram bot token + per-alert switches | `data/telegram_config.json` |
-| panel settings (LPV mode, branding, chat…) | `data/server_settings.json` |
+| panel settings (LPV mode, branding, chat, timezone…) | `data/server_settings.json` |
 | remembered server sessions | `data/server_sessions.json` |
 | remembered client profiles | `data/client_profiles.json` |
 | uploaded chat logos | `data/chat/` |
