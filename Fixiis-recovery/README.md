@@ -1437,6 +1437,7 @@ are exactly what "some content is missing" looks like.
 | switches a control off in script (`el.disabled = true`) | `disabled`/`readOnly` are properties and never reflect back to the attribute, so the mirror came out clickable | shipped as attributes, in full captures and in delta patches |
 | shows a responsive image via `<picture>` / `srcset` | the `src` we resolved was outranked by the `<source>` list at render time | the source list is dropped and `src` is the candidate the page's own viewport actually displayed (`currentSrc`) |
 | lazy-loads images (`loading="lazy"`) | native lazy loading defers them again in the mirror's frame | forced eager — the capture is a photograph of a loaded page |
+| declares a **font, background image or sprite icon inside the page** — `@font-face` in its own `<style>`, `style="background-image:url(…)"`, `<use href="/sprite.svg#icon">`, `<video poster>` | the rewrite only saw URLs that are attributes of `<img>`/`<script>`/`<link>`. Everything reached through CSS or SVG stayed pointed at the site: a **webfont is fetched in CORS mode**, the site sends no `Access-Control-Allow-Origin` for its own fonts, so every inline-declared font was blocked and the whole page rendered in the fallback face (silently); `<use>` of a **cross-origin** file is refused outright, so sprite icons vanished; backgrounds were re-fetched from the site and broke under hotlink protection | the same collection pass now reads `<style>` bodies, `style=""` attributes, `<video poster>` and SVG `<use>`/`<image>` hrefs. Small ones are embedded as `data:` URIs (fonts included — nothing left to block), larger ones go to `/assets/<hash>`, and a sprite keeps its `#fragment`. Refs inside `<script>` bodies and comments are never touched |
 | styles a component with `insertRule()` — Fluent UI/Griffel, Emotion, styled-components | the rules live in the CSSOM of an `<style>` element that already exists: no DOM text, no MutationObserver record. A component rendered **after** the first capture reached the mirror with its classes (`fui-Input__input r12stul0`) and none of their declarations — on a sign-in step that is six one-time-code boxes drawn as full-width default inputs, in the wrong place | every `<style>` is serialized from `sheet.cssRules`, never from stale text; a cheap **rule-count signature** notices growth (even with no DOM change at all) and the changed stylesheets are re-shipped as `s` ops on the delta channel, with a 1.2 s check for rules inserted just after a mount. `tests/test_cssom_styles.cjs` runs the real observer against a Fluent-shaped page and asserts the six cells arrive with `width:44px; border-radius:6px` |
 
 ### Speed: where the wall clock went
@@ -1455,14 +1456,37 @@ stylesheet's inner refs (sprites, fonts, nested `@import`) are fetched together:
 * The global budget (`DOM_CAPTURE_ASSET_TOTAL_TIMEOUT_S`, default 10 s) still
   holds: whatever finished is kept, the rest keeps its authored URL — the same
   degradation as any other failed asset, never an error.
-* `dom_capture._LAST_REWRITE_STATS` records `refs`, `memo_hits`, `fetched`,
-  `css_sheets`, `embedded`, `cached` and `ms` for the pass, so "why was this
-  page slow" has an answer in the capture log instead of a guess.
+* `dom_capture._LAST_REWRITE_STATS` records `refs`, `doc_refs` (the CSS/SVG
+  indirection refs above), `memo_hits`, `fetched`, `css_sheets`, `embedded`,
+  `cached` and `ms` for the pass, so "why was this page slow" has an answer in
+  the capture log instead of a guess.
+* At most `DOM_CAPTURE_DOC_REF_MAX` (default **96**) of those indirection refs
+  enter one pass. They are collected first — a miss on one of them is not
+  recoverable later — but a page with hundreds of inline backgrounds must not
+  eat the per-page budget and starve the `<img>` tags that always had it.
+* A URL fragment is not part of what gets fetched. `sprite.svg#icon` and
+  `font.eot?#iefix` are keyed without it (so twelve icons are one download)
+  and the fragment is re-attached on the way out.
+
+A **recapture is skipped when the DOM fingerprint is unchanged** — but only
+when something else is carrying the change. With the live delta observer
+installed, every patchable mutation already streamed as an op, so a
+checksum-equal page has nothing new to say. Without it (delta off, or the
+observer failed to install) that capture is the mirror's only source of truth,
+and the fingerprint — elements : text length : scroll height — cannot see an
+attribute-only change: a class swap that recolours or hides a block leaves all
+three numbers identical. The skip is now gated on the observer, so a rollback
+to `LIVE_DELTA=0` cannot go permanently stale.
 
 Tests: `node tests/capture_serializer_harness.cjs` (21 checks — the serializer
-runs in a `vm` against a hand-built DOM) and
-`python tests/test_capture_pipeline.py` (20 checks — real rewrite against a
-stubbed HTTP layer that records peak concurrency).
+runs in a `vm` against a hand-built DOM), `python tests/test_capture_pipeline.py`
+(20 checks — real rewrite against a stubbed HTTP layer that records peak
+concurrency) and `python tests/test_capture_inline_assets.py` (65 checks — the
+CSS/SVG indirection refs, the unchanged-skip guard, and the client-side
+absolutising that makes `/assets/...` loadable from a `blob:` document) and
+`python tests/test_capture_live_assets.py` (17 checks — the same rewrite over a
+real HTTP server and the real httpx client, so the MIME types and URL joins are
+not just agreed with by a stub).
 
 ### Still known to be missing (next, not done)
 
@@ -1471,7 +1495,7 @@ Honest list, in the order the visual damage shows up:
 | Gap | Why it is hard | Shape of the fix |
 |---|---|---|
 | A **cross-origin iframe** (map, payment widget, embedded video) is dropped entirely | the mirror is served from another origin, so `X-Frame-Options` / `frame-ancestors` refuse to embed it | screenshot the frame's box during capture (Playwright element screenshot, clipped to the box) and ship it as an `<img>` placeholder — an image cannot be refused, and a visible, correct-looking box beats a hole |
-| **Icon fonts** that were still loading at capture time | the glyph is drawn by a font file that arrives after the snapshot | wait for `document.fonts.ready` before serializing (one await; bounded), or inline the font in CSS — the rewrite already embeds fonts under `CSS_EMBED_MAX_BYTES` |
+| A font that is only referenced from a **delta-injected** stylesheet | the delta relay forwards ops byte-for-byte (that is what makes it fast), so a stylesheet that arrives *after* the first capture keeps the site's URLs and its font is CORS-blocked | run the same `url()` rewrite on `s` / `i` ops, asynchronously, with the same budget — or let the next full capture fix it, which is what happens today |
 | A **closed shadow root** renders as a comment | closed roots are unreadable by design | CDP `DOM.getDocument(pierce:true)` / `DOMSnapshot.captureSnapshot` reads them out-of-page; needs a CDP backend, so it is a `capture_page` path change, not a serializer tweak |
 | **Canvas without a 2D context** (WebGL) | `toDataURL()` returns a blank canvas | `page.screenshot(clip=element box)` for WebGL canvases only |
 | A **scroll position other than the top** | the mirror opens at 0,0 | capture `scrollX/scrollY` per scroller and restore after the reset stylesheet lands |

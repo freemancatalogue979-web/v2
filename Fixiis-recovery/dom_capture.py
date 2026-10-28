@@ -55,7 +55,7 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
 
 # Shared JSON helper for CDP evaluation payloads.
@@ -1340,6 +1340,37 @@ _COLD_REASONS = frozenset((
 ))
 
 
+# Reasons where a checksum-equal DOM must still be captured: the mirror is
+# known to be behind (overflow / navigation / an explicit resync), so "looks
+# the same to the checksum" is not evidence that it IS the same.
+_SKIP_EXEMPT_PREFIXES = (
+    "delta_overflow", "navigation", "coalesce:delta_overflow",
+    "coalesce:navigation", "resync",
+)
+
+
+def _may_skip_unchanged(reason: Optional[str], settle: str,
+                        delta_installed: bool, last_checksum: Optional[str]) -> bool:
+    """May a checksum-equal DOM be treated as "nothing to send"?
+
+    Only when something ELSE is carrying the change.  With the live delta
+    observer installed, every patchable mutation already streamed as an op, so
+    a checksum-equal page has nothing new to say and the capture is pure cost.
+
+    Without the observer this recapture is the mirror's only source of truth,
+    and the checksum (element count : text length : scroll height) cannot see
+    an attribute-only change.  A class swap that recolours or hides a block
+    leaves all three numbers identical — so with delta off, or after a failed
+    observer install, the old code skipped forever and the mirror stayed
+    stale with no error to point at.
+    """
+    if not SKIP_UNCHANGED or not delta_installed or settle != "none":
+        return False
+    if last_checksum is None:
+        return False
+    return not str(reason or "").lower().startswith(_SKIP_EXEMPT_PREFIXES)
+
+
 def _settle_for_reason(reason: Optional[str]) -> str:
     """Map a capture reason to a settle level.
 
@@ -1376,6 +1407,99 @@ _LINK_ATTR_RE = re.compile(r'(\w[\w-]*)\s*=\s*(["\'])([^"\']*)\2')
 _LINK_CACHEABLE_REL_RE = re.compile(r'(stylesheet|icon|apple-touch-icon|mask-icon|manifest|shortcut)', re.IGNORECASE)
 _CSS_URL_RE = re.compile(r'url\(\s*(["\']?)([^"\')\s][^"\')]*?)\1\s*\)', re.IGNORECASE)
 _CSS_IMPORT_RE = re.compile(r'@import\s+(?:url\(\s*)?(["\'])([^"\']+)\1', re.IGNORECASE)
+# --- refs reachable only through CSS / SVG indirection ---------------------
+#
+# The collector below sees a URL when it is an attribute of <img>, <script> or
+# <link>.  Every other reference a page makes goes through indirection, and
+# those were left pointing at the SITE — which the mirror cannot use from its
+# own origin.  Each one fails differently, and all of them are silent:
+#
+#   * `@font-face { src: url(/f/x.woff2) }` inside the page's OWN <style>
+#     block.  Web fonts are always fetched in CORS mode.  A font on the site's
+#     origin, requested from the mirror's origin (a blob: document inherits
+#     ours), is BLOCKED unless the site sends Access-Control-Allow-Origin — and
+#     sites do not, for their own fonts.  Symptom: every page that declares its
+#     fonts inline renders in the fallback face, and nothing anywhere says why.
+#   * `style="background-image:url(/hero.jpg)"` and `url()` inside <style>:
+#     not CORS, but re-fetched from the site on every mirror load, so hotlink
+#     protection (Referer: ours) turns the hero into a blank box.
+#   * `<use href="/sprite.svg#icon">`: browsers refuse CROSS-ORIGIN references
+#     from <use> outright, so every icon in a sprite vanished.
+#   * `<video poster>`: same as a background image.
+#
+# Routing these through the asset cache (or embedding the small ones) makes
+# the mirror's own origin the source of truth, which is the only origin it is
+# allowed to read.
+_CSS_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style\s*>)", re.IGNORECASE | re.DOTALL)
+_CSS_ATTR_RE = re.compile(r"(\sstyle\s*=\s*)([\"'])(.*?)\2", re.IGNORECASE | re.DOTALL)
+_POSTER_RE = re.compile(r"(<(?:video|audio)\b[^>]*?\sposter\s*=\s*)([\"'])([^\"']*)\2", re.IGNORECASE)
+_USE_HREF_RE = re.compile(r"(<use\b[^>]*?\s(?:xlink:href|href)\s*=\s*)([\"'])([^\"']*)\2", re.IGNORECASE)
+_SVG_IMAGE_RE = re.compile(r"(<image\b[^>]*?\s(?:xlink:href|href)\s*=\s*)([\"'])([^\"']*)\2", re.IGNORECASE)
+_SCRIPT_OR_COMMENT_RE = re.compile(r"<!--.*?-->|<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DOTALL)
+
+
+def _outside_scripts(html: str) -> List[str]:
+    """The markup that is neither a comment nor a <script> body.
+
+    <style> bodies are deliberately NOT excluded: CSS is what this is for.
+    A script is excluded because JS text is full of string literals that look
+    like refs (`el.style.background='url(' + x + ')'`), and rewriting them
+    would corrupt the capture we are about to strip anyway."""
+    pieces: List[str] = []
+    cursor = 0
+    for protected in _SCRIPT_OR_COMMENT_RE.finditer(html):
+        pieces.append(html[cursor:protected.start()])
+        cursor = protected.end()
+    pieces.append(html[cursor:])
+    return pieces
+
+
+def _map_outside_scripts(html: str, transform: Any) -> str:
+    """Apply `transform` to every chunk `_outside_scripts` returns."""
+    out: List[str] = []
+    cursor = 0
+    for protected in _SCRIPT_OR_COMMENT_RE.finditer(html):
+        out.append(transform(html[cursor:protected.start()]))
+        out.append(protected.group(0))
+        cursor = protected.end()
+    out.append(transform(html[cursor:]))
+    return "".join(out)
+
+
+def _css_refs(css: str) -> List[str]:
+    """Every url() and @import target in a CSS body, in document order."""
+    refs = [m.group(2) for m in _CSS_URL_RE.finditer(css)]
+    refs.extend(m.group(2) for m in _CSS_IMPORT_RE.finditer(css))
+    return refs
+
+
+def _iter_document_refs(html: str) -> Iterator[Tuple[str, str]]:
+    """(ref, kind) for the indirection refs: 'img' is fetchable and may be
+    embedded; 'svg' must be SERVED (a data: URI in <use> is unreliable)."""
+    for chunk in _outside_scripts(html):
+        for m in _CSS_BLOCK_RE.finditer(chunk):
+            for ref in _css_refs(m.group(2)):
+                yield ref, "img"
+        for m in _CSS_ATTR_RE.finditer(chunk):
+            for ref in _css_refs(m.group(3)):
+                yield ref, "img"
+        for m in _POSTER_RE.finditer(chunk):
+            yield m.group(3), "img"
+        for m in _USE_HREF_RE.finditer(chunk):
+            yield m.group(3), "svg"
+        for m in _SVG_IMAGE_RE.finditer(chunk):
+            yield m.group(3), "img"
+
+
+# How many of the CSS/SVG indirection refs may enter one rewrite pass.
+# They are collected first because a miss on one of them is unrecoverable (a
+# CORS-blocked font, a refused cross-origin <use>), but a page with thousands
+# of inline background images must not eat the whole per-page budget and
+# starve the <img> tags that used to get it. 96 is far more than the fonts and
+# hero images a real page has, and leaves the rest of ASSET_MAX_PER_PAGE for
+# the tags the collector has always handled.
+DOC_REF_MAX: int = max(0, int(os.environ.get("DOM_CAPTURE_DOC_REF_MAX", "96")))
+
 _REWRITE_GLOBAL_BUDGET_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_TOTAL_TIMEOUT_S", "10"))
 
 # How many asset downloads may be in flight at once.  Six was chosen for the
@@ -1573,11 +1697,29 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
 
     def _add(ref: str, kind: str) -> None:
         abs_u = _resolvable_url(ref, base_url)
+        # A fragment identifies a SYMBOL inside one file (sprite.svg#icon,
+        # font.eot?#iefix).  It is not part of what gets fetched, and treating
+        # it as one would download the same sprite once per icon and miss the
+        # cache every time.  The fragment is re-attached when the ref is
+        # rewritten (see _lookup).
+        if abs_u and "#" in abs_u:
+            abs_u = abs_u.split("#", 1)[0]
         if abs_u and abs_u not in seen:
             seen.add(abs_u)
             candidates.append(abs_u)
             kind_by_url[abs_u] = kind
 
+    # Indirection refs FIRST: they are the ones that cannot survive a miss
+    # (a CORS-blocked font, a cross-origin <use>), and the per-page cap
+    # truncates the tail of this list on very heavy pages.
+    doc_refs = 0
+    for ref, kind in _iter_document_refs(html):
+        if doc_refs >= DOC_REF_MAX:
+            break
+        before = len(candidates)
+        _add(ref, kind)
+        if len(candidates) > before:
+            doc_refs += 1
     for m in _IMG_SRC_RE.finditer(html):
         _add(m.group(3), "img")
     if not DOM_CAPTURE_STRIP_SCRIPTS:
@@ -1756,7 +1898,8 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         logger.debug("asset rewrite: %d embedded, %d cached, %d untouched (memo_hits=%d)",
                      n_embed, n_cache, len(candidates) - n_embed - n_cache,
                      len(candidates) - len(fetch_list))
-    _stats(refs=len(candidates), memo_hits=len(candidates) - len(fetch_list),
+    _stats(refs=len(candidates), doc_refs=doc_refs,
+           memo_hits=len(candidates) - len(fetch_list),
            fetched=len(fetch_list), css_sheets=len(fresh_css),
            embedded=n_embed, cached=n_cache)
     if not repl and not inline_css:
@@ -1765,7 +1908,14 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     # -- 4. Rewrite HTML ---------------------------------------------------
     def _lookup(ref: str) -> Optional[str]:
         abs_u = _resolvable_url(ref, base_url)
-        return repl.get(abs_u) if abs_u else None
+        if not abs_u:
+            return None
+        frag = ""
+        if "#" in abs_u:
+            abs_u, frag = abs_u.split("#", 1)
+            frag = "#" + frag
+        new_ref = repl.get(abs_u)
+        return (new_ref + frag) if new_ref else None
 
     def _sub_src(m: "re.Match[str]") -> str:
         new = _lookup(m.group(3))
@@ -1809,6 +1959,32 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         return _LINK_ATTR_RE.sub(_fix, tag)
 
     html = _LINK_TAG_RE.sub(_sub_link, html)
+
+    # ---- 5. CSS that lives inside the document -------------------------
+    # Same replacement table, applied to the places the collector just read:
+    # <style> bodies, style="" attributes, <video poster>, and SVG <use> /
+    # <image> hrefs.  A ref that could not be fetched is left exactly as the
+    # page authored it (the injected <base href> still resolves it against the
+    # site, which is the old behaviour).
+    def _sub_css_text(css: str) -> str:
+        def _one(m: "re.Match[str]") -> str:
+            new_u = _lookup(m.group(2))
+            if not new_u:
+                return m.group(0)
+            return m.group(0).replace(m.group(2), new_u, 1)
+        return _CSS_IMPORT_RE.sub(_one, _CSS_URL_RE.sub(_one, css))
+
+    def _sub_markup(chunk: str) -> str:
+        chunk = _CSS_BLOCK_RE.sub(
+            lambda m: m.group(1) + _sub_css_text(m.group(2)) + m.group(3), chunk)
+        chunk = _CSS_ATTR_RE.sub(
+            lambda m: m.group(1) + m.group(2) + _sub_css_text(m.group(3)) + m.group(2), chunk)
+        chunk = _POSTER_RE.sub(_sub_src, chunk)
+        chunk = _USE_HREF_RE.sub(_sub_src, chunk)
+        chunk = _SVG_IMAGE_RE.sub(_sub_src, chunk)
+        return chunk
+
+    html = _map_outside_scripts(html, _sub_markup)
 
     return html, list(meta_by_digest.values())
 
@@ -4112,12 +4288,9 @@ class DOMCaptureSession:
 
             # ---- unchanged-DOM skip (only for hot interaction reasons) ----
             checksum: Optional[str] = None
-            if (SKIP_UNCHANGED and settle == "none"
-                    and self._last_checksum is not None
-                    and not str(reason).lower().startswith((
-                        "delta_overflow", "navigation", "coalesce:delta_overflow",
-                        "coalesce:navigation", "resync"
-                    ))):
+            if _may_skip_unchanged(reason, settle,
+                                   bool(LIVE_DELTA and self._delta_installed),
+                                   self._last_checksum):
                 checksum = await self._dom_checksum()
                 if checksum and checksum == self._last_checksum:
                     logger.debug("dc skip(unchanged) reason=%s gen=%s", reason, self._gen)
