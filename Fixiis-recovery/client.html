@@ -5105,6 +5105,14 @@ function applySpinnerColorFromHex(hexColor) {
                 resyncRequestPending: false,
                 resyncRequestTimer: null,
                 deltaDocumentToken: null,
+                // Progressive assets: the document can arrive before its
+                // fonts and backgrounds are resolved, followed by an
+                // asset_map of "this text became this".  Applied to the HTML
+                // at render time and to the live DOM as an in-place edit, so
+                // an upgrade never re-renders the frame.
+                _assetMaps: new Map(),   // page URL -> Map(authored -> edit)
+                _assetUrl: null,
+                _docGen: null,
             };
 
             const elements = {
@@ -9265,6 +9273,13 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         if (message.url) reportPageChange(message.url);
                         break;
+                    case 'asset_map':
+                        // A document that arrived before its fonts/backgrounds
+                        // were fetched: these are the edits that finish it.
+                        try { handleAssetMap(message); } catch (e) {
+                            console.warn('asset_map failed:', e);
+                        }
+                        break;
                     case 'full_document':
                         // URL changed or major desync.  Apply as a fresh
                         // SingleFile-style render.
@@ -9278,6 +9293,7 @@ function applySpinnerColorFromHex(hexColor) {
                             // /assets entries to pre-cache.  Legacy servers
                             // send neither — the checks degrade gracefully.
                             state._deltaGen = (typeof message.gen === 'number') ? message.gen : null;
+                            state._docGen = state._deltaGen;
                             state._deltaOn = !!(message.delta && state._deltaGen !== null);
                             state.deltaDocumentToken = null;
                             state._midmap = new Map();
@@ -10594,6 +10610,181 @@ function applySpinnerColorFromHex(hexColor) {
             // it to body to trigger execution.  Both inline content and
             // src=... external scripts are supported.
 
+            // --- Progressive assets ---------------------------------------
+            // The server sends the page first, then the refs it managed to
+            // resolve (data: URIs, /assets/<hash>, inlined stylesheets).  Two
+            // consumers: the render path (so a re-render is complete) and the
+            // live document (so an upgrade needs no re-render at all).
+            //
+            // Keys are the AUTHORED text — exactly what the server saw in the
+            // HTML it sent — so a match is a plain substring, never a URL
+            // resolution.
+            function assetMapFor(url) {
+                // "/logo.png" means a different file on a different site, so
+                // the cache is per document URL.  Keeping a few pages means a
+                // map that arrives a moment late for the page we just left is
+                // still useful when we go back, and never applied to the page
+                // we are on now.
+                const key = String(url || '');
+                let map = state._assetMaps.get(key);
+                if (!map) {
+                    map = new Map();
+                    state._assetMaps.set(key, map);
+                    // Small LRU: the operator visits a handful of pages.
+                    while (state._assetMaps.size > 8) {
+                        const oldest = state._assetMaps.keys().next().value;
+                        state._assetMaps.delete(oldest);
+                    }
+                }
+                return map;
+            }
+
+            function mergeAssetSwaps(url, swap) {
+                if (!Array.isArray(swap) || !swap.length) return;
+                const map = assetMapFor(url);
+                for (const s of swap) {
+                    if (!s || typeof s.from !== 'string' || typeof s.to !== 'string') continue;
+                    if (s.from === s.to) continue;
+                    map.set(s.from, { to: s.to, tag: !!s.tag });
+                }
+            }
+
+            function escapeRegExp(text) {
+                return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            }
+
+            function applyAssetSwapsToHtml(html, url) {
+                // Rendering a document is what makes it "the page we are on".
+                state._assetUrl = String(url || '');
+                const map = assetMapFor(url);
+                if (!map || !map.size || typeof html !== 'string') return html;
+                for (const [from, entry] of map) {
+                    if (entry.tag) {
+                        // A stylesheet that was inlined: the whole <link> tag
+                        // becomes a <style> block (that is the one edit a
+                        // substring swap cannot express).
+                        const re = new RegExp('<link\\b[^>]*\\bhref\\s*=\\s*["\']'
+                                              + escapeRegExp(from) + '["\'][^>]*>', 'i');
+                        if (re.test(html)) html = html.replace(re, () => entry.to);
+                    } else if (html.indexOf(from) !== -1) {
+                        html = html.split(from).join(entry.to);
+                    }
+                }
+                return html;
+            }
+
+            // One walk of the live document per upgrade: attribute values that
+            // ARE the authored text (src/href/poster), style attributes and
+            // <style> text that CONTAIN it.  A Map lookup per value, so the
+            // cost is proportional to the number of elements, not to the map.
+            function applyAssetSwapsLive(swap, url) {
+                const doc = frame && frame.contentDocument;
+                if (!doc || !doc.documentElement) return 0;
+                const map = assetMapFor(url);
+                if (!map || !map.size) return 0;
+                // Only the edits in THIS message: the cache can hold a
+                // hundred refs by now, and walking every element against all
+                // of them for a three-ref update is wasted work.
+                const wanted = new Map();
+                for (const s of swap) {
+                    const entry = s && map.get(s.from);
+                    if (entry && !entry.tag) wanted.set(s.from, entry);
+                }
+                if (!wanted.size && !swap.some((s) => (s && map.get(s.from) || {}).tag)) {
+                    return 0;
+                }
+                let changed = 0;
+
+                // Stylesheets first: a <link> becomes a <style>.
+                for (const s of swap) {
+                    const entry = s && map.get(s.from);
+                    if (!entry || !entry.tag) continue;
+                    const links = doc.querySelectorAll('link[href]');
+                    for (const el of links) {
+                        if (el.getAttribute('href') !== s.from) continue;
+                        try {
+                            const style = doc.createElement('style');
+                            const holder = doc.createElement('div');
+                            holder.innerHTML = entry.to;
+                            const parsed = holder.querySelector('style');
+                            if (parsed) {
+                                for (const a of parsed.attributes) style.setAttribute(a.name, a.value);
+                                style.textContent = parsed.textContent;
+                            }
+                            el.parentNode.replaceChild(style, el);
+                            changed++;
+                        } catch (e) { /* leave the link */ }
+                        break;
+                    }
+                }
+
+                if (!wanted.size) return changed;
+                const ATTRS = ['src', 'href', 'poster', 'xlink:href', 'data-src'];
+                const all = doc.querySelectorAll('*');
+                for (const el of all) {
+                    for (const name of ATTRS) {
+                        let val = null;
+                        try { val = el.getAttribute(name); } catch (e) { continue; }
+                        if (val === null || val === '') continue;
+                        const entry = wanted.get(val);
+                        if (!entry) continue;
+                        try { el.setAttribute(name, entry.to); changed++; } catch (e) {}
+                    }
+                    // style="…url(/x.png)…" and <style> bodies.
+                    let styleVal = null;
+                    try { styleVal = el.getAttribute('style'); } catch (e) {}
+                    if (styleVal && styleVal.indexOf('url(') !== -1) {
+                        let next = styleVal;
+                        for (const [from, entry] of wanted) {
+                            if (!entry.tag && next.indexOf(from) !== -1) {
+                                next = next.split(from).join(entry.to);
+                            }
+                        }
+                        if (next !== styleVal) {
+                            try { el.setAttribute('style', next); changed++; } catch (e) {}
+                        }
+                    }
+                    if (el.tagName === 'STYLE' && el.textContent && el.textContent.indexOf('url(') !== -1) {
+                        let next = el.textContent;
+                        for (const [from, entry] of wanted) {
+                            if (!entry.tag && next.indexOf(from) !== -1) {
+                                next = next.split(from).join(entry.to);
+                            }
+                        }
+                        if (next !== el.textContent) {
+                            // Re-assigning text makes the browser re-parse the
+                            // sheet, which is what actually applies the font.
+                            el.textContent = next;
+                            changed++;
+                        }
+                    }
+                }
+                return changed;
+            }
+
+            function handleAssetMap(message) {
+                if (!message || !Array.isArray(message.swap)) return;
+                const mapUrl = message.url || state._assetUrl;
+                mergeAssetSwaps(mapUrl, message.swap);
+                if (Array.isArray(message.assets) && message.assets.length) {
+                    try { dispatchAssetList(message.assets); } catch (e) {}
+                }
+                // Apply to what is on screen only when it is the same
+                // document AND the same page; a map for an older generation
+                // (or for the page we just navigated away from) is kept for
+                // the next render of that page.
+                const sameDoc = (mapUrl === state._assetUrl)
+                    && (message.gen == null || state._docGen == null
+                        || message.gen === state._docGen);
+                if (!sameDoc) return;
+                try {
+                    const n = applyAssetSwapsLive(message.swap, mapUrl);
+                    if (n && window.__SHF_DEBUG) console.log('asset_map applied', n, 'edits');
+                } catch (e) {
+                    console.warn('asset_map live apply failed:', e);
+                }
+            }
+
             function renderPageSnapshot(html, url) {
                 // Identity skip: servers may push the same document twice
                 // (interaction debounce windows, LPV re-pushes); a byte-equal
@@ -10617,6 +10808,10 @@ function applySpinnerColorFromHex(hexColor) {
                 // and sibling-CDN scripts (e.g. s.yimg.com chunks) get blocked by
                 // rules meant for the ORIGINAL origin.  Blob documents get our
                 // permissive injected CSP instead.
+                // Refs the server resolved AFTER this document first went
+                // out (progressive assets) are applied here, so a re-render is
+                // always the complete document.
+                try { html = applyAssetSwapsToHtml(html, url); } catch (e) {}
                 html = html.replace(/<meta[^>]*http-equiv\s*=\s*["']?content-security-policy(?:-report-only)?["']?[^>]*>/gi, '');
                 // Chrome paints error pages inside frames whose load failed
                 // (DNS, refused, X-Frame-Options); that markup must never

@@ -1562,6 +1562,28 @@ def _apply_doc_ref_spans(html: str, spans: List[Tuple[int, int, str, str]],
 # the tags the collector has always handled.
 DOC_REF_MAX: int = max(0, int(os.environ.get("DOM_CAPTURE_DOC_REF_MAX", "96")))
 
+# Send the page, then resolve its assets.
+#
+# The asset phase is the slow half of a capture: it fetches what the mirror
+# would otherwise request from the site (fonts, backgrounds, sprites) and can
+# take a second or more on a cold page.  The document used to wait for all of
+# it — nothing reached the viewer until the last font came back, and the live
+# patch channel was held closed for the same time (a full capture owns
+# ``_send_inflight``).  So a navigation felt like a freeze, not a page.
+#
+# Now the document goes out as soon as it is serialized, with the refs the
+# asset cache has never seen still pointing at the site (they resolve through
+# the injected <base href>, exactly as they did before the cache existed).
+# The rewrite then runs, and the refs it resolved are shipped as an
+# ``asset_map`` the client applies IN PLACE — no re-render, no flash, and a
+# ``data:`` URI or /assets/<hash> replaces the URL that was still loading.
+# Result on the client is byte-for-byte the document the old path would have
+# sent; it just arrives in two pieces instead of one late piece.
+PROGRESSIVE_ASSETS: bool = (
+    os.environ.get("DOM_CAPTURE_PROGRESSIVE_ASSETS", "1").strip().lower()
+    not in ("0", "false", "no", "off")
+)
+
 _REWRITE_GLOBAL_BUDGET_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_TOTAL_TIMEOUT_S", "10"))
 
 # How many asset downloads may be in flight at once.  Six was chosen for the
@@ -1727,7 +1749,10 @@ def _strip_script_tags(html: str) -> str:
 
 
 async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
-                                  owner_id: Optional[str] = None) -> Tuple[str, List[Dict[str, Any]]]:
+                                  owner_id: Optional[str] = None, *,
+                                  allow_fetch: bool = True,
+                                  report: Optional[Dict[str, Any]] = None
+                                  ) -> Tuple[str, List[Dict[str, Any]]]:
     """Resolve external asset refs in captured HTML: small images/icons are
     data-URI EMBEDDED (see EMBED_MAX_BYTES), small stylesheets become inline
     <style> blocks with their inner refs rewritten (CSS_EMBED_MAX_BYTES),
@@ -1739,9 +1764,26 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     Any fetch failure leaves the original URL — the injected <base href>
     then resolves it against the origin exactly like pre-cache behavior.
     ``ImportError`` (no httpx) propagates so the caller can kill-switch.
+
+    ``allow_fetch=False`` answers from the fetch-once memo only and never
+    touches the network: that is the "what can I show right now?" pass.  Any
+    ref it could not resolve is listed in ``report["missing"]`` so the caller
+    knows a real pass would still have work to do.
+
+    ``report``, when given, is filled with:
+
+      ``swap``     ``[{"from": authored, "to": replacement}]`` — the edits
+                   that turn the ORIGINAL html into the rewritten one. A
+                   client that already rendered the original can apply these
+                   in place instead of re-rendering.
+      ``missing``  absolute URLs that would need a network fetch.
+      ``applied``  how many refs the swap covers.
     """
     manager = get_global_asset_manager()
     _t_start = time.monotonic()
+    if report is not None:
+        report.clear()
+        report.update({"swap": [], "missing": [], "applied": 0})
 
     def _stats(**extra: Any) -> None:
         """Record what this pass cost. Read by the capture log only."""
@@ -1807,6 +1849,18 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     if not candidates:
         _stats(refs=0)
         return html, []
+
+    if not allow_fetch:
+        # Memo-only pass.  Everything below this point may go to the network;
+        # this is the "what do I already have?" question, asked before the
+        # document is sent so the common recapture (every asset known) still
+        # goes out complete and in one piece.
+        missing = [u for u in candidates if manager.get_by_url(u, owner_id=owner_id) is None]
+        if report is not None:
+            report["missing"] = missing
+        if missing:
+            _stats(refs=len(candidates), missing=len(missing), ms=0.0)
+            return html, []
 
     # -- 2. URL-memo: reuse bytes fetched in earlier captures --------------
     hits: Dict[str, Tuple[bytes, str]] = {}
@@ -1972,6 +2026,23 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     # The indirection refs first, while the spans collected in step 1 still
     # line up with this exact string (every substitution below changes the
     # document's length).  One splice per ref, no re-scan.
+    #
+    # Every successful edit is also recorded as "this authored text became
+    # this" — that list is what lets a client apply the result to a document
+    # it ALREADY rendered (see PROGRESSIVE_ASSETS).  A text that resolves two
+    # different ways is dropped from that list rather than guessed at.
+    swapped: Dict[str, Dict[str, Any]] = {}
+
+    def _record(authored: str, resolved: str, tag: bool = False) -> None:
+        if not authored or authored == resolved:
+            return
+        prior = swapped.get(authored)
+        if prior is None:
+            swapped[authored] = {"from": authored, "to": resolved, "tag": tag}
+        elif prior["to"] != resolved:
+            if not prior.get("conflict"):
+                prior["conflict"] = True
+
     def _lookup(ref: str) -> Optional[str]:
         abs_u = _resolvable_url(ref, base_url)
         if not abs_u:
@@ -1981,7 +2052,11 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
             abs_u, frag = abs_u.split("#", 1)
             frag = "#" + frag
         new_ref = repl.get(abs_u)
-        return (new_ref + frag) if new_ref else None
+        if not new_ref:
+            return None
+        resolved = new_ref + frag
+        _record(ref, resolved)
+        return resolved
 
     def _sub_src(m: "re.Match[str]") -> str:
         new = _lookup(m.group(3))
@@ -2024,7 +2099,10 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
             if abs_u and abs_u in inline_css:
                 media_attr = ' media="%s"' % media.replace('"', "&quot;") if media else ""
                 src_attr = ' data-shfcss="%s"' % abs_u.replace('"', "&quot;")
-                return "<style" + src_attr + media_attr + ">" + _inline_css_safe(inline_css[abs_u]) + "</style>"
+                style_tag = ("<style" + src_attr + media_attr + ">"
+                             + _inline_css_safe(inline_css[abs_u]) + "</style>")
+                _record(href, style_tag, tag=True)
+                return style_tag
         def _fix(am2: "re.Match[str]") -> str:
             if am2.group(1).lower() != "href":
                 return am2.group(0)
@@ -2035,6 +2113,12 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         return _LINK_ATTR_RE.sub(_fix, tag)
 
     html = _LINK_TAG_RE.sub(_sub_link, html)
+
+    # Published last: the <link> pass above is what records the
+    # stylesheet→<style> swap, so anything earlier would miss it.
+    if report is not None:
+        report["swap"] = [v for v in swapped.values() if not v.get("conflict")]
+        report["applied"] = doc_refs_applied
 
     return html, list(meta_by_digest.values())
 
@@ -3747,8 +3831,12 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                 return
             if not session._delta_active:
                 return  # current full-capture tier cannot carry safe mids
-            if session._send_inflight:
-                return  # pending full snapshot supersedes queued patches
+            if session._send_inflight and not session._assets_pending:
+                # A full snapshot supersedes queued patches — unless the only
+                # thing still in flight is the asset fetch for a document the
+                # client is ALREADY showing.  Holding patches shut for that
+                # window is what made a navigation feel frozen.
+                return
 
             # The browser already paid for JSON.stringify(batch).  Wrap that
             # exact JSON text instead of parsing and serializing the operation
@@ -3945,6 +4033,12 @@ class DOMCaptureSession:
         # successfully — typing recaptures are redundant while patches
         # ('v' value ops) carry the keystrokes to the client live.
         self._delta_installed: bool = False  # observer/binding is ready
+        # Progressive assets: a document can go out before its fonts and
+        # backgrounds are fetched.  While that fetch runs the delta channel
+        # must stay open (the page is on screen and must keep moving), and the
+        # swaps already delivered must not be sent again.
+        self._assets_pending: bool = False
+        self._sent_asset_swaps: Dict[str, str] = {}
         self._delta_active: bool = False     # current client generation has data-mid
         self._explicit_navigation_in_progress: bool = False
         self._capture_install_lock = asyncio.Lock()
@@ -4030,6 +4124,11 @@ class DOMCaptureSession:
         self.last_sent_url = None
         self.last_sent_html = None
         self._sent_asset_digests.clear()
+        # The asset_map edit list is per CLIENT-DOCUMENT: the same authored
+        # text ("/logo.png") means a different file on a different site, so a
+        # reset here (rebind/replace) is what keeps the client's cache honest.
+        self._sent_asset_swaps.clear()
+        self._assets_pending = False
 
     async def start(self) -> None:
         """Install the generic interaction trigger.  Idempotent; safe
@@ -4362,17 +4461,46 @@ class DOMCaptureSession:
                 html_data = _inject_base_href(html_data, url)
 
             # ---- asset-cache rewrite (fast captures only) ----
+            #
+            # Two ways through here:
+            #
+            #   * every ref the page needs is already in the fetch-once memo
+            #     (the normal recapture) -> rewrite inline and send ONE
+            #     complete document, exactly as before;
+            #   * something still has to be downloaded (a new page, a new
+            #     font, a changed image) -> send the document NOW with those
+            #     refs still pointing at the site, and ship the resolved ones
+            #     as an ``asset_map`` the client swaps in place afterwards.
+            #     The viewer is looking at the page in capture+send time
+            #     instead of waiting out the network, and the live patch
+            #     channel stays open while the fetches run.
             assets_meta: List[Dict[str, Any]] = []
             rewrite_ms = 0.0
+            deferred: Optional[Dict[str, Any]] = None
             supports_assets = self._last_capture_supports_assets
             if supports_assets and url and self._assets_ok:
                 t_rw = time.perf_counter()
                 try:
                     if DOM_CAPTURE_STRIP_SCRIPTS:
                         html_data = _strip_script_tags(html_data)
-                    html_data, assets_meta = await _rewrite_assets_to_cache(
-                        html_data, url, self.page, owner_id=self.client_id
-                    )
+                    if PROGRESSIVE_ASSETS:
+                        plan: Dict[str, Any] = {}
+                        ready_html, _ready_meta = await _rewrite_assets_to_cache(
+                            html_data, url, self.page, owner_id=self.client_id,
+                            allow_fetch=False, report=plan,
+                        )
+                        if plan.get("missing"):
+                            deferred = {"html": html_data, "url": url,
+                                        "missing": plan["missing"]}
+                            logger.debug(
+                                "dc progressive: showing the page first, %d ref(s) pending",
+                                len(plan["missing"]))
+                        else:
+                            html_data = ready_html
+                    else:
+                        html_data, assets_meta = await _rewrite_assets_to_cache(
+                            html_data, url, self.page, owner_id=self.client_id
+                        )
                 except ImportError:
                     self._assets_ok = False
                 except Exception as exc:
@@ -4408,6 +4536,11 @@ class DOMCaptureSession:
                 logger.debug("dc skip(identical snapshot) reason=%s", reason)
                 return url
 
+            if url != self.last_sent_url:
+                # Different page: the client's cached edits are keyed by that
+                # page's URL, so a new page must be told everything again
+                # (and an entry that is no longer true must not be reused).
+                self._sent_asset_swaps.clear()
             self._gen += 1
             msg: Dict[str, Any] = {
                 "type": "full_document",
@@ -4437,6 +4570,12 @@ class DOMCaptureSession:
                     msg["site_icon"] = _site_icon
             except Exception:
                 pass
+            if deferred is not None:
+                # "This document is complete except for assets that are still
+                # being fetched; an asset_map for this generation is coming."
+                # Purely informational: an older client ignores it and simply
+                # uses the site URLs (which resolve through <base href>).
+                msg["assets_pending"] = len(deferred["missing"])
             if capture_delta_active:
                 # Snapshot-preferred hosts use the same patch channel between
                 # full fidelity/recovery documents; the client keeps the
@@ -4482,6 +4621,17 @@ class DOMCaptureSession:
                 len(assets_to_send), self._gen, self._overlap_count,
                 (time.perf_counter() - t_start) * 1000.0,
             )
+            if deferred is not None:
+                # The document is on screen.  Keep the delta channel open
+                # while the fetches run (``_assets_pending``), then send what
+                # they resolved.
+                self._assets_pending = True
+                try:
+                    await self._send_asset_upgrade(deferred, url)
+                except Exception as exc:
+                    logger.debug("dc progressive upgrade failed: %s", exc)
+                finally:
+                    self._assets_pending = False
             return url
         finally:
             self._send_inflight = False
@@ -4490,6 +4640,62 @@ class DOMCaptureSession:
             if SEND_COALESCE and pending and not self._stopped:
                 # Recompute URL/task state inside the follow-up.
                 asyncio.create_task(self._send_full(None, reason=f"coalesce:{pending}"))
+
+    async def _send_asset_upgrade(self, deferred: Dict[str, Any],
+                                  url: Optional[str]) -> None:
+        """Resolve the assets left out of a progressive document, then send
+        only the EDITS as an ``asset_map``.
+
+        The client applies these to the document it is already showing, so
+        the result is the same HTML the non-progressive path would have sent
+        (``tests/test_asset_upgrade.py`` asserts that equality on the wire)
+        without re-rendering the frame, losing scroll, or repainting.
+        """
+        raw_html = deferred["html"]
+        report: Dict[str, Any] = {}
+        t0 = time.perf_counter()
+        html_data, assets_meta = await _rewrite_assets_to_cache(
+            raw_html, deferred["url"] or url or "", self.page,
+            owner_id=self.client_id, report=report,
+        )
+        swap = [s for s in (report.get("swap") or [])
+                if self._sent_asset_swaps.get(s["from"]) != s["to"]]
+        if not swap and not assets_meta:
+            logger.debug("dc progressive: nothing resolved to upgrade")
+            return
+        for s in swap:
+            self._sent_asset_swaps[s["from"]] = s["to"]
+        new_assets = [
+            meta for meta in assets_meta
+            if isinstance(meta, dict) and meta.get("hash") not in self._sent_asset_digests
+        ]
+        for meta in new_assets:
+            if meta.get("hash"):
+                self._sent_asset_digests.add(meta["hash"])
+        msg: Dict[str, Any] = {
+            "type": "asset_map",
+            "gen": self._gen,
+            "url": deferred["url"] or url,
+            "swap": swap,
+        }
+        if new_assets:
+            msg["assets"] = new_assets
+        try:
+            frame = json.dumps(msg, ensure_ascii=False)
+            async with self._ws_send_lock:
+                await self.websocket.send_text(frame)
+        except Exception as exc:
+            logger.debug("asset_map send failed: %s", exc)
+            return
+        # From here on the document the CLIENT is showing is the fully
+        # rewritten one, so the identical-snapshot skip has to compare
+        # against that rather than the raw HTML that went over the wire.
+        self.last_sent_html = html_data
+        logger.debug(
+            "dc asset_map swaps=%d assets=%d bytes=%d total_ms=%.0f gen=%d",
+            len(swap), len(new_assets), len(frame), (time.perf_counter() - t0) * 1000.0,
+            self._gen,
+        )
 
     # ------------------------------------------------------------------
     # Event handlers

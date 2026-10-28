@@ -1506,17 +1506,71 @@ attribute-only change: a class swap that recolours or hides a block leaves all
 three numbers identical. The skip is now gated on the observer, so a rollback
 to `LIVE_DELTA=0` cannot go permanently stale.
 
+#### Seeing the page before its assets land
+
+All of the above made the asset phase *cheaper*; it did not stop the asset phase
+from holding the document hostage. Every capture that had something to download
+— a new page, a font it had never seen, an image that changed — waited for the
+last fetch before the viewer saw anything, so time-to-first-paint was
+time-to-last-font. On a 120 ms link that is the whole difference between a page
+and a blank frame.
+
+The document is now sent **as soon as it is captured**. Refs whose bytes are
+still missing stay pointed at the site (they resolve through the injected
+`<base href>`, which is where they pointed before this feature existed), the
+message carries `assets_pending: N`, and the resolved bytes follow immediately
+after as one `asset_map` message:
+
+```json
+{ "type": "asset_map", "gen": 12, "url": "https://bank.example/login",
+  "swap": [ { "from": "https://bank.example/f/brand.woff2",
+              "to": "data:font/woff2;base64,…" } ] }
+```
+
+The client applies each swap to the DOM it is already showing — attribute,
+`style`, or `<style>` body text, keyed by the exact string that was sent — so
+nothing is re-rendered, scroll and focus survive, and the document is byte-for-
+byte the one the old path would have sent (`tests/test_asset_upgrade.py` asserts
+that equality on the wire, and the jsdom test asserts the live apply touches
+five refs without replacing a single element). Swaps are kept per page URL, so a
+later re-render of the same page still gets them, and a page with nothing
+pending is still exactly one message — the normal recapture looks and costs
+exactly as it did.
+
+While the fetches run, `assets_pending` holds the delta gate open, so clicks,
+typing and scrolling keep streaming at full rate instead of queueing behind the
+upgrade. `DOM_CAPTURE_PROGRESSIVE_ASSETS=0` restores the single-message path
+(`tests/test_asset_upgrade.py` covers the switch, the ordering, the replays and
+a failed upgrade).
+
+Measured with `python3 tests/bench_time_to_first_paint.py` (30 assets at
+120 ms each, so the network is the only cost worth measuring):
+
+| assets × latency | document on screen, before | after | whole page complete |
+|---|---|---|---|
+| 10 × 120 ms | 127 ms | **4 ms** | 125 ms (unchanged) |
+| 30 × 120 ms | 368 ms | **6 ms** | 368 ms (unchanged) |
+| 60 × 120 ms | 728 ms | **5 ms** | 730 ms (unchanged) |
+
+First paint no longer depends on the asset count at all — it is capture, rewrite
+and one socket write. The tail is unchanged, which is the point: the same bytes
+still arrive, they just stop being a prerequisite for seeing the page.
+
 Benchmark: `python3 tests/bench_asset_rewrite.py` (above).
 
 Tests: `node tests/capture_serializer_harness.cjs` (21 checks — the serializer
 runs in a `vm` against a hand-built DOM), `python tests/test_capture_pipeline.py`
 (20 checks — real rewrite against a stubbed HTTP layer that records peak
-concurrency) and `python tests/test_capture_inline_assets.py` (65 checks — the
+concurrency) and `python tests/test_capture_inline_assets.py` (77 checks — the
 CSS/SVG indirection refs, the unchanged-skip guard, and the client-side
-absolutising that makes `/assets/...` loadable from a `blob:` document) and
+absolutising that makes `/assets/...` loadable from a `blob:` document),
 `python tests/test_capture_live_assets.py` (17 checks — the same rewrite over a
 real HTTP server and the real httpx client, so the MIME types and URL joins are
-not just agreed with by a stub).
+not just agreed with by a stub), `python tests/test_asset_upgrade.py` (43 checks
+— the progressive split: order, the replay-equals-one-piece equality, the delta
+channel staying open, no duplicate swaps, a new page, the kill switch) and
+`node tests/test_asset_upgrade_client.cjs` (23 checks — the same swaps applied
+to a live document in jsdom, per-URL caches included).
 
 ### Still known to be missing (next, not done)
 
