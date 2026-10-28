@@ -308,6 +308,64 @@ def test_document_refs_are_capped_so_img_tags_keep_their_budget():
 
 
 # ---------------------------------------------------------------------------
+# 6a. Offset maths of the splice (one scan, then replace exact ranges)
+# ---------------------------------------------------------------------------
+def test_refs_after_a_script_or_a_comment_are_still_found():
+    html = ('<script>"url(/img/x.png)"</script>'
+            '<div style="background:url(/img/x.png)"></div>'
+            '<!-- url(/img/x.png) -->'
+            '<svg><use href="/img/x.png#i"></use></svg>')
+    out, _meta, req = rewrite(html)
+    # the style attribute AND the <use> — the two real refs, found either side
+    # of the protected regions (this is where an off-by-one in the offsets
+    # between chunks would show up as a silently unrewritten ref).
+    ok('style="background:url(/img/x.png)"' not in out, "the attr after a script: %r" % out)
+    ok('<use href="/img/x.png#i">' not in out, "the <use> after a comment: %r" % out)
+    ok('url(/img/x.png)' in out, "the commented-out ref must be left alone: %r" % out)
+
+
+def test_a_long_replacement_does_not_corrupt_a_later_one():
+    # A data: URI is much longer than the URL it replaces. Splicing has to run
+    # from the end backwards or every later offset lands inside the previous
+    # replacement.
+    routes = dict(ROUTES)
+    routes["https://site.example/f/late.woff2"] = (FONT, "font/woff2")
+    html = ('<div style="background:url(/img/x.png)"></div>'
+            '<style>@font-face{src:url(/f/late.woff2)}</style>'
+            '<div style="background:url(/img/x.png)"></div>')
+    out, _meta, req = rewrite(html, routes)
+    ok(out.count("data:image/png") == 2, "both backgrounds: %r" % out)
+    ok("data:font/woff2" in out, "the later font: %r" % out)
+    ok("/f/late.woff2" not in out and "/img/x.png" not in out, "a site ref survived: %r" % out)
+    # the document must still be intact around the splices
+    ok(out.count("<div") == 2, "the markup around a splice was damaged: %r" % out)
+
+
+def test_the_same_ref_twice_is_rewritten_twice():
+    html = ('<div style="background:url(/img/x.png)"></div>'
+            '<div style="background:url(/img/x.png)"></div>')
+    out, _meta, req = rewrite(html)
+    ok(out.count("data:image/png") == 2, "a repeated ref was rewritten once: %r" % out)
+    ok("https://site.example/img/x.png" in req, "not fetched at all")
+
+
+def test_one_ref_in_css_and_as_an_attribute():
+    html = ('<div style="background:url(/img/x.png)"><img src="/img/x.png"></div>')
+    out, _meta, req = rewrite(html)
+    ok("data:image/png" in out, out)
+    ok("/img/x.png" not in out, "one of the two uses survived: %r" % out)
+
+
+def test_overlapping_matches_are_applied_once():
+    # A style attribute whose own value happens to look like CSS the collector
+    # also matches as a block must not be rewritten twice (a data: URI inside
+    # a data: URI would corrupt the attribute).
+    html = '<div style="background:url(/img/x.png)">x</div>'
+    out, _meta, _req = rewrite(html)
+    ok(out.count("data:image/png") == 1, "applied more than once: %r" % out)
+
+
+# ---------------------------------------------------------------------------
 # 6b. The unchanged-skip must never be the reason a change is lost
 # ---------------------------------------------------------------------------
 def test_unchanged_skip_needs_something_else_carrying_the_change():

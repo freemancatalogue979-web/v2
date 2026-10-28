@@ -1468,6 +1468,34 @@ stylesheet's inner refs (sprites, fonts, nested `@import`) are fetched together:
   `font.eot?#iefix` are keyed without it (so twelve icons are one download)
   and the fragment is re-attached on the way out.
 
+#### What this costs
+
+Measured with `python3 tests/bench_asset_rewrite.py` (it serves a page's real
+assets from a local HTTP server, so the numbers are the pipeline, not an
+uplink). `--module-dir` runs the same benchmark against another copy of
+`dom_capture.py`, which is how the figures below were taken against the
+version before this change:
+
+| | before | after |
+|---|---|---|
+| cold capture, 139 KB mixed page (`--runs 7`) | 177 ms · 50 requests | 264 ms · 86 requests |
+| warm recapture, same page | 0.87 ms | 3.1 ms |
+| warm recapture, 1 MB document that uses inline CSS | 1.1 ms | 12.9 ms |
+| warm recapture, 1 MB document with **no** inline CSS | 3.3 ms | 5.5 ms |
+
+Read it as: **the extra fetches are the price, and they are paid once.** The 36
+extra requests on the cold capture are the fonts, backgrounds and sprites that
+were previously never downloaded at all (the mirror's browser tried, from its
+own origin, and was refused). After the first capture they are in the
+fetch-once memo like everything else, and a recapture costs no requests.
+
+The CPU cost is one extra scan of the document — ~11 µs/KB — because the refs
+are collected once and spliced by character range. The first version of this
+re-ran five substitution regexes over the whole document instead (23 ms per
+capture on a 1 MB page) and spliced the string once per ref (62 refs = 62
+copies of the document); both are gone. A document with no inline CSS at all
+pays a single set of substring checks (~2 ms/MB) and nothing else.
+
 A **recapture is skipped when the DOM fingerprint is unchanged** — but only
 when something else is carrying the change. With the live delta observer
 installed, every patchable mutation already streamed as an op, so a
@@ -1477,6 +1505,8 @@ and the fingerprint — elements : text length : scroll height — cannot see an
 attribute-only change: a class swap that recolours or hides a block leaves all
 three numbers identical. The skip is now gated on the observer, so a rollback
 to `LIVE_DELTA=0` cannot go permanently stale.
+
+Benchmark: `python3 tests/bench_asset_rewrite.py` (above).
 
 Tests: `node tests/capture_serializer_harness.cjs` (21 checks — the serializer
 runs in a `vm` against a hand-built DOM), `python tests/test_capture_pipeline.py`
