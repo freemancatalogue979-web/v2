@@ -249,6 +249,16 @@ async function waitFor(fn, ms) {
     };
     eq(css('.main-app', 'display'), 'none',
        'the pre-login gate broke: the app shell is visible before sign-in');
+    /* Signing in flips the same class the panel always used; the new layout
+       has to appear on that class and nowhere else. */
+    doc.body.classList.add('authenticated');
+    eq(css('.main-app', 'display'), 'grid',
+       'the authenticated shell does not lay out as a grid');
+    ok(/264px|--shf-nav-w/.test(win.getComputedStyle(doc.querySelector('.main-app'))
+        .getPropertyValue('grid-template-columns') || '') ||
+       win.getComputedStyle(doc.querySelector('.main-app')).gridTemplateColumns.split(' ').length === 3,
+       'the authenticated shell is not three columns (rail | workspace | context)');
+    doc.body.classList.remove('authenticated');
     eq(css('.top-tabs', 'display'), 'none',
        'the old horizontal tab strip is still on screen');
     eq(css('.shf-nav .top-tab', 'display'), 'flex',
