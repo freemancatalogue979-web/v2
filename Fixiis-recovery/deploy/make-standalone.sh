@@ -83,17 +83,6 @@ PYINJECT
     printf '  ok    %-18s %8s  -> %s\n' "$label" "$(stat -c %s "$dst" | awk '{printf "%.0f KB", $1/1024}')" "$dst"
 }
 
-# The admin panel is compiled: admin/*.css and admin/*.js are inlined into
-# Admin.html by deploy/build-admin.py. Refuse to ship a folder built from
-# sources that have not been compiled — a stale artifact is worse than none.
-if command -v python3 >/dev/null 2>&1 \
-   && [[ -f "$here/deploy/build-admin.py" ]] && [[ -f "$here/Admin.html" ]]; then
-    if ! python3 "$here/deploy/build-admin.py" --check >/dev/null 2>&1; then
-        echo "Admin.html is stale: run python3 deploy/build-admin.py first" >&2
-        exit 1
-    fi
-fi
-
 echo "Baking server: ${SERVER:-<none — resolved at runtime>}"
 echo "Output:        $OUTDIR"
 echo

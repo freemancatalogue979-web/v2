@@ -10,6 +10,9 @@ into ``Admin.html`` between sentinel comments.
     python3 deploy/build-admin.py            # write Admin.html
     python3 deploy/build-admin.py --check    # fail if Admin.html is stale
 
+If Admin.html carries no sentinels (the panel ships as hand-written markup),
+the tool reports that and exits 0 — it owns only the regions it created.
+
 Sources
     admin/design-system.css   tokens + primitives
     admin/admin-shell.css     application frame
@@ -69,6 +72,11 @@ def _read_source(rel: str) -> str:
     return body
 
 
+def is_compiled(html: str) -> bool:
+    """True when Admin.html carries the sentinels for the compiled sources."""
+    return _begin("SHF:DS:CSS") in html
+
+
 def build(html: str) -> str:
     out = html
     for key, rel in REGIONS.items():
@@ -93,8 +101,15 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
 
     original = ADMIN.read_text(encoding="utf-8")
-    if GENERATED_NOTE not in original:
-        raise SystemExit("build-admin: Admin.html has no generated regions")
+
+    # The panel currently ships un-compiled (the redesign that used these
+    # sources was reverted). The scripts under admin/ are parked, and this
+    # tool must not break a build for a file it no longer owns: doing nothing
+    # is the correct answer here, loudly, and success.
+    if not is_compiled(original):
+        print("admin build: Admin.html is not compiled — the admin/*.css and "
+              "admin/*.js sources are parked. Nothing to do.")
+        return 0
 
     built = build(original)
 

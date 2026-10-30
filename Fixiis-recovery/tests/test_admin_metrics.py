@@ -1,8 +1,7 @@
-"""The Command Centre may only show numbers the server actually has.
+"""The metrics payload may only carry numbers the server actually has.
 
-The dashboard redesign put uptime and GPU status on screen next to CPU and
-memory. Both arrived in the metrics payload with this change, and both have to
-be honest:
+``/api/server/metrics`` (and the ``system_stats`` WebSocket message built from
+the same payload) gained uptime and GPU status. Both have to be honest:
 
 * ``uptime_s`` is the process's own age — not the host's, not a guess, and it
   must increase between two calls;
@@ -110,25 +109,12 @@ def main() -> int:
     except TypeError as exc:
         raise AssertionError(f"the metrics payload is not JSON-serialisable: {exc}")
 
-    # --- the dashboard refuses to invent the numbers it cannot get ---------
+    # --- the payload keeps the shape the shipped panel reads ----------------
     admin = (ROOT / "Admin.html").read_text(encoding="utf-8", errors="replace")
-    dash = (ROOT / "admin" / "dashboard.js").read_text(encoding="utf-8")
-    ok("uptime_s" in dash, "the dashboard never reads uptime_s")
-    ok("gpu" in dash, "the dashboard never reads the GPU field")
-    ok("—" in dash or "N/A" in dash,
-       "the dashboard has no placeholder for a metric the server does not report")
-    ok("serverFetch" in dash or "SERVER_API_BASE" in dash,
-       "the dashboard does not go through the panel's own authenticated fetch")
-    ok("/api/server/metrics" in dash, "the dashboard is not reading the real endpoint")
-
-    # --- the design system is actually in the file the browser loads --------
-    ok("shf-design-system" in admin, "Admin.html has no design-system stylesheet")
-    ok(admin.count("/* SHF:DS:CSS:BEGIN */") == 1 and
-       admin.count("/* SHF:DS:CSS:END */") == 1,
-       "the design-system region markers are not exactly one pair")
-    ok("--shf-accent" in admin or "39C9FF" in admin.upper(),
-       "the accent token is missing from the built file")
-    ok("prefers-reduced-motion" in admin, "no reduced-motion handling in the built file")
+    ok("/api/server/metrics" in admin,
+       "the panel no longer reads the metrics endpoint this payload feeds")
+    for key in ("cpu_percent", "memory_percent", "active_sessions"):
+        ok(key in admin, f"the panel reads {key!r}, which the payload must keep")
 
     print(f"PASS  admin metrics: {CHECKS} checks")
     return 0

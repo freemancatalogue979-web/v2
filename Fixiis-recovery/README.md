@@ -1870,88 +1870,6 @@ in the browser devtools if you ever need to start over.
 
 ---
 
-## The admin console: design system, shell, and screens
-
-`Admin.html` still ships as one self-contained file — it has to work when it is
-served by the backend, opened from the standalone folder, or copied onto a USB
-stick. But a 1.2 MB single file is not a place to hand-edit 900 lines of CSS.
-So the *presentation* is authored as separate, reviewable sources and compiled
-into the file between sentinel comments:
-
-| Source | Compiled into | What it owns |
-|---|---|---|
-| `admin/design-system.css` | `<style id="shf-design-system">` | tokens, light/dark remap, buttons, inputs, toasts, sheets |
-| `admin/admin-shell.css` | same style element | the frame: rail, command bar, contextual column, bottom bar, responsive rules |
-| `admin/screens.css` | same style element | one block per screen (display, profiles, logs, KLG, Telegram, manager, links, PCM, files, domains, LPV, settings, create) |
-| `admin/reactor.js` | `<script id="shf-shell-runtime">` | the Command Centre core: a 2D canvas reactor, no dependencies |
-| `admin/shell.js` | same script | navigation rail, page headers, global search, notification centre, profile menu, toasts, drawers |
-| `admin/dashboard.js` | same script | the Command Centre data binding (`/api/server/metrics`) |
-| `admin/screens.js` | same script | Logs filters, file grid/list, KLG masking, LPV preview stage, Telegram status |
-| `admin/dashboard.html` | `#dashboard-content` body | the Command Centre markup |
-
-Compile after any change to those files:
-
-```bash
-python3 deploy/build-admin.py           # write Admin.html
-python3 deploy/build-admin.py --check   # fail if Admin.html is stale
-```
-
-The compile only rewrites the marked regions, so application logic in
-`Admin.html` cannot be damaged by a rebuild, and running it twice produces the
-same bytes. `deploy/make-standalone.sh` refuses to build the hosting folder
-from stale sources for the same reason.
-
-### What the shell keeps, and why
-
-The rail is built by **moving** the panel's own `.top-tab` buttons into
-grouped sections — never by cloning them. `switchTab()` requires a visible
-`.top-tab[data-tab=…]` *and* the matching `#…-content` pane, so the moved
-buttons keep every listener the panel registered. The contextual column hosts
-the existing `.sidebar` (sessions) and `.right-sidebar` (details) behind two
-tabs; their ids, their render functions and their WebSocket updates are
-untouched. Everything else — auth, `serverFetch`, `/ws/manager`, archive
-operations, settings persistence — is unmodified.
-
-### The reactor
-
-`admin/reactor.js` draws the Command Centre core on a 2D canvas: three
-counter-rotating ring groups, ticks, a pulsing radial core and status spokes.
-It is a canvas rather than Three.js so it has no dependency, no download and no
-WebGL requirement on a mid-range phone. It renders one frame and stops when
-`prefers-reduced-motion: reduce` is set, pauses when the tab is hidden, caps the
-device pixel ratio at 2, and mounts one animation loop per canvas (measured with
-a `ResizeObserver`, not a polling timer). If it cannot mount, the markup below
-it is a static fallback that reads the same numbers.
-
-### Numbers on the dashboard
-
-Every metric comes from the server: `/api/server/metrics` for CPU, memory,
-sessions and uptime, `/api/server/info` for the host, `/api/links` for the link
-count. `uptime_s` and `gpu` were added to the metrics payload for this screen —
-`uptime_s` is the process's start time, and `gpu.available` reflects what the
-session manager actually detected. Anything the server does not report (GPU on
-a machine without one, network throughput) prints `—` rather than a plausible
-number. `tests/test_admin_metrics.py` pins that contract.
-
-### Testing checklist before shipping a panel change
-
-1. `python3 deploy/build-admin.py --check`
-2. `node tests/test_admin_redesign.cjs` — executes `Admin.html` in jsdom:
-   all 452 pre-existing ids present exactly once, the rail holds all 14 tabs,
-   navigation goes through the panel's own buttons, the sheets, search,
-   notifications, Logs filters, file view, KLG masking and the LPV preview
-   behave, and the compiled cascade actually lands (the pre-login gate still
-   hides the app, the old tab strip stays gone, nav items lay out as rows).
-3. `PYTHONPATH=. python tests/test_admin_metrics.py`
-4. Sign in on a desktop viewport (1440 × 900), then repeat at 1024, 768 and
-   380 px wide: the rail becomes a drawer, the bottom bar appears, the
-   contextual column becomes a sheet, and **no screen scrolls horizontally**.
-5. Walk every tab once. Then walk Logs (filter + clear), Files (grid/list),
-   KLG (open a session, confirm masked values), LPV (preview + fullscreen),
-   Settings (jump bar) and Server Manager (the confirmation dialogs still
-   fire).
-6. `./deploy/make-standalone.sh --none` and copy the folder the operator hosts.
-
 ## Test
 
 There is no formal test suite in this repo yet. The minimum things to
@@ -2015,8 +1933,6 @@ node tests/test_lpv_branding_boot.cjs  # the head block executed against a docum
 python3 tests/test_pcm_cast.py         # the cast really asks Chrome for those pixels (21 checks)
 python3 tests/test_logging_quiet.py    # quiet client, throttled per-event warnings
 python3 tests/test_data_files.py       # runtime state lives in data/, and old files move there
-node tests/test_admin_redesign.cjs   # the admin shell executed in jsdom (86 checks)
-python3 tests/test_admin_metrics.py  # the dashboard only shows numbers the server has
 ```
 
 ### 2. Server boots
@@ -2095,9 +2011,7 @@ both sides for WebSocket errors against `/ws/manager` or `/ws/...`.
 
 - **`Admin.html`** is the operator console. Big single-file SPA — search
   by function name (e.g. `connect`, `handleStream`, `loadProfiles`)
-  rather than line number. Its CSS and shell JavaScript live under `admin/`
-  and are compiled in; see
-  [The admin console](#the-admin-console-design-system-shell-and-screens).
+  rather than line number.
 
 - **`mini-admin.html`** (`/mini`) is the one-hand, on-a-phone panel. It has
   exactly four jobs, one per tab, and is deliberately smaller than the full
@@ -2127,10 +2041,7 @@ both sides for WebSocket errors against `/ws/manager` or `/ws/...`.
 
 - **Single file per surface** — please keep `api.py` and the two HTML
   files self-contained. Don't introduce a build step unless you also
-  add a test path that runs the resulting bundle. The admin panel is the one
-  existing exception: `admin/*.css` and `admin/*.js` are compiled **into**
-  `Admin.html` by `deploy/build-admin.py`, the shipped file stays
-  self-contained, and `tests/test_admin_redesign.cjs` executes it.
+  add a CI path that runs the resulting bundle.
 - **Match the existing style** — async/await, `logger = logging.getLogger(__name__)`,
   type hints where the surrounding code uses them, FastAPI `Depends`
   for auth.
