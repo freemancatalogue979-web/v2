@@ -56,7 +56,14 @@ FETCH_LOG = []
 
 class FakeResponse:
     def __init__(self, url):
-        body, ctype = ROUTES.get(url, (b"", "text/plain"))
+        if url in ROUTES:
+            body, ctype = ROUTES[url]
+        elif url.endswith(".woff2"):
+            body, ctype = FONT, "font/woff2"          # a heavy page's own fonts
+        elif url.endswith(".png"):
+            body, ctype = PNG, "image/png"
+        else:
+            body, ctype = b"", "text/plain"
         self.url = url
         self.status_code = 200 if body else 404
         self.content = body
@@ -387,6 +394,240 @@ def test_a_failed_upgrade_leaves_a_working_page():
        "with no assets resolved the page keeps its authored URLs (they still "
        "load through <base href>)")
     ok(session._assets_pending is False, "the flag must not stay stuck")
+
+
+# ---------------------------------------------------------------------------
+# 6b. The FIRST WAVE: what the visitor can see, one round trip
+# ---------------------------------------------------------------------------
+def heavy_page(n_fonts=12, n_images=12, stylesheet=False):
+    """A page whose asset count is well past one fetch pool."""
+    fonts = "".join(
+        '@font-face{font-family:H%d;src:url("/f/h%d.woff2")}' % (i, i)
+        for i in range(n_fonts))
+    imgs = "".join('<img src="/img/h%d.png">' % i for i in range(n_images))
+    link = '<link rel="stylesheet" href="/css/site.css">' if stylesheet else ""
+    return ('<!DOCTYPE html><html><head>' + link + '<style>' + fonts
+            + '</style></head><body>' + imgs + '</body></html>')
+
+
+def heavy_session(ws, wave=None, html=None):
+    """A session whose page is heavy, at a latency where rounds are countable."""
+    html = html or heavy_page()
+
+    class HeavyPage(FakePage):
+        """Same page interface; only the URL and the capture matter here."""
+
+    session = make_session(ws)
+    session.page = HeavyPage()
+
+    async def _capture(settle=None):
+        return html
+
+    session.capture_page = _capture
+    if wave is not None:
+        dom_capture.ASSET_FIRST_WAVE = wave
+    return session
+
+
+def test_visual_priority_order():
+    p = dom_capture._asset_priority
+    ok(p("https://x/f/a.woff2", "img") == 0, "a font declared in CSS is a font")
+    ok(p("https://x/f/a.woff2?v=2", "other") == 0, "a query string does not hide a font")
+    ok(p("https://x/f/a.ttf", "other") == 0 and p("https://x/a.otf", "other") == 0,
+       "ttf/otf are fonts too")
+    ok(p("https://x/css/site.css", "css") == 1, "a stylesheet comes after fonts")
+    ok(p("https://x/css/site.css?h=1", "other") == 1,
+       "the extension decides, not the tag it arrived on")
+    ok(p("https://x/img/a.png", "img") == 2, "images after stylesheets")
+    ok(p("https://x/v.mp4", "other") == 3, "media and the rest come last")
+    ok(p("https://x/f/a.woff2", "css") == 0, "the extension wins over the kind")
+
+
+def test_the_first_wave_is_the_visible_half():
+    """Fonts (and the top of the page) are upgraded a round trip early."""
+    old_wave = dom_capture.ASSET_FIRST_WAVE
+    old_latency = FakeClient.latency
+    FakeClient.latency = 0.05          # 24 refs = 3 rounds at pool size 10
+    FETCH_LOG.clear()
+    try:
+        ws = FakeWebSocket()
+        session = heavy_session(ws, wave=10)
+        run(session._send_full(URL, reason="navigation"))
+    finally:
+        FakeClient.latency = old_latency
+        dom_capture.ASSET_FIRST_WAVE = old_wave
+
+    maps = [m for _t, m in ws.sent if m["type"] == "asset_map"]
+    ok(len(maps) == 2,
+       "a 24-ref page should upgrade in two waves (visible half, then the rest), "
+       "got %d map(s)" % len(maps))
+    first, rest = maps
+    ok(len(first["swap"]) == 10, "the first wave must be exactly one pool wide: %r"
+       % [s["from"] for s in first["swap"]])
+    ok(all(s["from"].endswith(".woff2") for s in first["swap"]),
+       "the first wave must be the FONTS, got %r" % [s["from"] for s in first["swap"]])
+    ok(len(rest["swap"]) == 14, "everything else follows in one message: %d" % len(rest["swap"]))
+
+    # One round trip, not three: the whole point.
+    t_first = [t for t, m in ws.sent if m["type"] == "asset_map"][0]
+    t_doc = [t for t, m in ws.sent if m["type"] == "full_document"][0]
+    ok(t_first - t_doc < 0.10,
+       "the first upgrade took %.0f ms — it must cost one round trip (50 ms), "
+       "not the whole page" % ((t_first - t_doc) * 1000))
+
+
+def test_the_split_costs_no_extra_download():
+    """Two waves, but every ref is still fetched exactly once."""
+    old_wave = dom_capture.ASSET_FIRST_WAVE
+    FETCH_LOG.clear()
+    try:
+        ws = FakeWebSocket()
+        session = heavy_session(ws, wave=5)
+        run(session._send_full(URL, reason="navigation"))
+    finally:
+        dom_capture.ASSET_FIRST_WAVE = old_wave
+    ok(len(FETCH_LOG) == 24, "expected 24 downloads, got %d" % len(FETCH_LOG))
+    ok(len(set(FETCH_LOG)) == len(FETCH_LOG),
+       "an asset was downloaded twice: %r"
+       % [u for u in set(FETCH_LOG) if FETCH_LOG.count(u) > 1])
+
+
+def test_both_waves_replay_to_the_one_piece_document():
+    old_wave = dom_capture.ASSET_FIRST_WAVE
+    try:
+        # Baseline: the pre-progressive path, one complete document.
+        old_ws = FakeWebSocket()
+        old_session = heavy_session(old_ws)
+        dom_capture.PROGRESSIVE_ASSETS = False
+        run(old_session._send_full(URL, reason="navigation"))
+        dom_capture.PROGRESSIVE_ASSETS = True
+        complete = old_ws.first("full_document")["html"]
+        ok(old_ws.types() == ["full_document"], "the baseline must be one message")
+
+        ws = FakeWebSocket()
+        session = heavy_session(ws, wave=10)
+        run(session._send_full(URL, reason="navigation"))
+        html = ws.first("full_document")["html"]
+        for _t, m in ws.sent:
+            if m["type"] == "asset_map":
+                html = replay(html, m["swap"])
+    finally:
+        dom_capture.ASSET_FIRST_WAVE = old_wave
+    ok(html == complete,
+       "the staged delivery is not byte-identical to the one-piece document\n"
+       "one piece: %r\nstaged:    %r" % (complete[:300], html[:300]))
+
+
+def test_a_stylesheet_in_the_first_wave_brings_its_own_refs():
+    """Most real pages put their @font-face inside an external sheet.
+
+    The sheet is what the first wave can see, so the sheet goes first — and
+    it drags its own fonts and backgrounds with it (a <style> full of
+    unresolved url() would be a different bug, not a faster one).
+    """
+    old_wave = dom_capture.ASSET_FIRST_WAVE
+    FETCH_LOG.clear()
+    try:
+        ws = FakeWebSocket()
+        session = heavy_session(ws, wave=4,
+                                html=heavy_page(1, 20, stylesheet=True))
+        run(session._send_full(URL, reason="navigation"))
+    finally:
+        dom_capture.ASSET_FIRST_WAVE = old_wave
+
+    maps = [m for _t, m in ws.sent if m["type"] == "asset_map"]
+    ok(len(maps) == 2, "expected two waves, got %d" % len(maps))
+    first = [s["from"] for s in maps[0]["swap"]]
+    ok("/css/site.css" in first, "the stylesheet must be in the first wave: %r" % first)
+    ok("/f/h0.woff2" in first,
+       "the sheet's own font must be resolved WITH it (it is in the sheet, not "
+       "in the page): %r" % first)
+    ok(any(s.get("tag") for s in maps[0]["swap"]),
+       "the sheet must arrive as the <link> -> <style> tag swap")
+    # ...and the sheet's inner background came along too: the <style> that
+    # replaced the <link> carries the resolved url(), not the site's.
+    tag_swap = next(s for s in maps[0]["swap"] if s.get("tag"))
+    ok("background:url(data:" in tag_swap["to"],
+       "the sheet was inlined with its background still pointing at the site: %r"
+       % tag_swap["to"][:200])
+    ok("/img/x.png" not in tag_swap["to"],
+       "an unresolved inner ref rode along inside the inlined sheet")
+
+
+def test_a_page_with_a_stylesheet_still_replays_exactly():
+    old_wave = dom_capture.ASSET_FIRST_WAVE
+    page = heavy_page(1, 6, stylesheet=True)
+    try:
+        old_ws = FakeWebSocket()
+        old_session = heavy_session(old_ws, html=page)
+        dom_capture.PROGRESSIVE_ASSETS = False
+        run(old_session._send_full(URL, reason="navigation"))
+        dom_capture.PROGRESSIVE_ASSETS = True
+        complete = old_ws.first("full_document")["html"]
+
+        ws = FakeWebSocket()
+        session = heavy_session(ws, wave=3, html=page)
+        run(session._send_full(URL, reason="navigation"))
+        html = ws.first("full_document")["html"]
+        for _t, m in ws.sent:
+            if m["type"] == "asset_map":
+                html = replay(html, m["swap"])
+    finally:
+        dom_capture.ASSET_FIRST_WAVE = old_wave
+    ok("<link rel=\"stylesheet\" href=\"/css/site.css\">" in ws.first("full_document")["html"],
+       "the first document must still carry the <link> (it loads while we fetch)")
+    ok(html == complete,
+       "a page with an external stylesheet did not replay byte-for-byte\n"
+       "one piece: %r\nstaged:    %r" % (complete[:300], html[:300]))
+
+
+def test_wave_zero_keeps_the_whole_upgrade_in_one_message():
+    """ASSET_FIRST_WAVE=0 is the fallback: one map, no staging."""
+    old_wave = dom_capture.ASSET_FIRST_WAVE
+    try:
+        ws = FakeWebSocket()
+        session = heavy_session(ws, wave=0)
+        run(session._send_full(URL, reason="navigation"))
+    finally:
+        dom_capture.ASSET_FIRST_WAVE = old_wave
+    ok(ws.types() == ["full_document", "asset_map"],
+       "wave=0 must produce exactly one map, got %r" % (ws.types(),))
+    ok(len(ws.first("asset_map")["swap"]) == 24,
+       "the single map must still carry every edit")
+
+
+def test_a_small_page_is_never_split():
+    """Below one wave there is nothing to gain: the map goes out whole."""
+    ws = FakeWebSocket()
+    session = make_session(ws)          # the 4-ref PAGE_HTML, wave default 10
+    run(session._send_full(URL, reason="navigation"))
+    ok(ws.types() == ["full_document", "asset_map"],
+       "a page that fits one wave must stay two messages, got %r" % (ws.types(),))
+
+
+def test_max_fetch_caps_the_downloads_and_keeps_the_order():
+    dom_capture._GLOBAL_ASSET_MANAGER = dom_capture.AssetManager()
+    FETCH_LOG.clear()
+    report = {}
+    run(dom_capture._rewrite_assets_to_cache(
+        heavy_page(6, 6), URL, None, owner_id="t", report=report, max_fetch=3))
+    ok(len(FETCH_LOG) == 3, "max_fetch=3 downloaded %d" % len(FETCH_LOG))
+    ok(all(u.endswith(".woff2") for u in FETCH_LOG),
+       "the cap must be spent on fonts first, got %r" % (FETCH_LOG,))
+    ok(len(report["swap"]) == 3, "only the resolved refs may be swapped: %r"
+       % [s["from"] for s in report["swap"]])
+
+
+def test_pending_refs_are_reported_in_priority_order():
+    dom_capture._GLOBAL_ASSET_MANAGER = dom_capture.AssetManager()
+    report = {}
+    run(dom_capture._rewrite_assets_to_cache(
+        heavy_page(4, 4), URL, None, owner_id="t", allow_fetch=False, report=report))
+    missing = report["missing"]
+    ok(len(missing) == 8, "expected 8 pending refs, got %r" % (missing,))
+    prio = [dom_capture._asset_priority(u) for u in missing]
+    ok(prio == sorted(prio), "the deferred refs are not in visual order: %r" % (missing,))
+    ok(missing[0].endswith(".woff2"), "fonts must lead the list: %r" % (missing[:2],))
 
 
 # ---------------------------------------------------------------------------

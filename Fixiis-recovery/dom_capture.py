@@ -1593,6 +1593,44 @@ _REWRITE_GLOBAL_BUDGET_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_TOTAL_
 # bounded pool, so the limit applies to real concurrent sockets.
 ASSET_FETCH_CONCURRENCY: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_CONCURRENCY", "10")))
 
+# How many refs the FIRST wave of a progressive upgrade may download before the
+# client is told about them, instead of waiting for the whole page's assets.
+#
+# The number matters more than it looks: the fetch pool is
+# ASSET_FETCH_CONCURRENCY wide, so a first wave of exactly that size costs one
+# round trip and overlaps NOTHING — the second pass then finds those bytes in
+# the memo and starts its own wave immediately.  Any larger and the first wave
+# would queue behind itself and the page would finish later than it does
+# today; any smaller and the wave is not full.  Default: one full pool.
+ASSET_FIRST_WAVE: int = max(0, int(os.environ.get(
+    "DOM_CAPTURE_ASSET_FIRST_WAVE", str(ASSET_FETCH_CONCURRENCY))))
+
+# Visual priority of one ref.  Fonts first: a wrong face moves every glyph on
+# the screen at once.  Then stylesheets, because until they land the page has
+# no layout to speak of.  Then images, in document order (the ones the capture
+# met first are overwhelmingly the ones above the fold).  Everything else —
+# media, iframes, downloadables — last.
+_FONT_EXT_RE = re.compile(r"\.(?:woff2?|ttf|otf|eot|ttc)(?:$|[?#])", re.IGNORECASE)
+_CSS_EXT_RE = re.compile(r"\.css(?:$|[?#])", re.IGNORECASE)
+
+
+def _asset_priority(abs_url: str, kind: str = "other") -> int:
+    """0 = font, 1 = stylesheet, 2 = image, 3 = everything else.
+
+    The kind alone cannot answer this: a font declared in an inline
+    ``@font-face`` arrives through the CSS collector and is tagged ``img``
+    (it is a url() like any other), so the extension decides fonts and
+    stylesheets and the kind only separates images from the rest.
+    """
+    low = (abs_url or "").split("#", 1)[0]
+    if _FONT_EXT_RE.search(low):
+        return 0
+    if kind == "css" or _CSS_EXT_RE.search(low):
+        return 1
+    if kind in ("img", "icon", "svg"):
+        return 2
+    return 3
+
 # Per-page timing of the asset phase, for the capture log ("why was this page
 # slow?").  Pure instrumentation: nothing reads it for control flow.
 _LAST_REWRITE_STATS: Dict[str, Any] = {}
@@ -1751,7 +1789,8 @@ def _strip_script_tags(html: str) -> str:
 async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                                   owner_id: Optional[str] = None, *,
                                   allow_fetch: bool = True,
-                                  report: Optional[Dict[str, Any]] = None
+                                  report: Optional[Dict[str, Any]] = None,
+                                  max_fetch: Optional[int] = None
                                   ) -> Tuple[str, List[Dict[str, Any]]]:
     """Resolve external asset refs in captured HTML: small images/icons are
     data-URI EMBEDDED (see EMBED_MAX_BYTES), small stylesheets become inline
@@ -1776,8 +1815,14 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                    that turn the ORIGINAL html into the rewritten one. A
                    client that already rendered the original can apply these
                    in place instead of re-rendering.
-      ``missing``  absolute URLs that would need a network fetch.
+      ``missing``  absolute URLs that would need a network fetch, in visual
+                   priority order (fonts, stylesheets, images, the rest).
       ``applied``  how many refs the swap covers.
+
+    ``max_fetch`` caps how many refs this pass may DOWNLOAD (memo hits and
+    everything else still resolve).  It is how a progressive upgrade asks
+    "resolve the first wave only": the refs are ordered by
+    :func:`_asset_priority`, so the cap is spent on what the visitor can see.
     """
     manager = get_global_asset_manager()
     _t_start = time.monotonic()
@@ -1856,6 +1901,8 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         # document is sent so the common recapture (every asset known) still
         # goes out complete and in one piece.
         missing = [u for u in candidates if manager.get_by_url(u, owner_id=owner_id) is None]
+        # Priority order: the caller's first wave is taken from the head.
+        missing.sort(key=lambda u: _asset_priority(u, kind_by_url.get(u, "other")))
         if report is not None:
             report["missing"] = missing
         if missing:
@@ -1871,6 +1918,15 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
             hits[u] = (ent.data, ent.content_type)
         else:
             fetch_list.append(u)
+
+    # Fetch what the visitor can SEE first.  The pool starts tasks in list
+    # order, so this is what decides whether the first wave is the page's
+    # fonts or four analytics beacons and a favicon.  Order inside a tier is
+    # document order (list.sort is stable), i.e. top of the page first.
+    if fetch_list:
+        fetch_list.sort(key=lambda u: _asset_priority(u, kind_by_url.get(u, "other")))
+        if max_fetch is not None and max_fetch >= 0:
+            fetch_list = fetch_list[:max_fetch]
 
     # -- 3. Fetch what the memo missed (bounded parallelism + budget) ------
     import httpx  # NOTE: ImportError must propagate (caller kill-switch)
@@ -4641,41 +4697,31 @@ class DOMCaptureSession:
                 # Recompute URL/task state inside the follow-up.
                 asyncio.create_task(self._send_full(None, reason=f"coalesce:{pending}"))
 
-    async def _send_asset_upgrade(self, deferred: Dict[str, Any],
-                                  url: Optional[str]) -> None:
-        """Resolve the assets left out of a progressive document, then send
-        only the EDITS as an ``asset_map``.
+    async def _emit_asset_map(self, swap: List[Dict[str, Any]],
+                              assets_meta: Optional[List[Dict[str, Any]]],
+                              page_url: Optional[str]) -> bool:
+        """Send the edits the client has not been told about yet.
 
-        The client applies these to the document it is already showing, so
-        the result is the same HTML the non-progressive path would have sent
-        (``tests/test_asset_upgrade.py`` asserts that equality on the wire)
-        without re-rendering the frame, losing scroll, or repainting.
+        Returns True when a frame went out.  Dedupe lives here so a staged
+        upgrade and its final pass cannot send the same edit twice.
         """
-        raw_html = deferred["html"]
-        report: Dict[str, Any] = {}
-        t0 = time.perf_counter()
-        html_data, assets_meta = await _rewrite_assets_to_cache(
-            raw_html, deferred["url"] or url or "", self.page,
-            owner_id=self.client_id, report=report,
-        )
-        swap = [s for s in (report.get("swap") or [])
-                if self._sent_asset_swaps.get(s["from"]) != s["to"]]
-        if not swap and not assets_meta:
-            logger.debug("dc progressive: nothing resolved to upgrade")
-            return
-        for s in swap:
-            self._sent_asset_swaps[s["from"]] = s["to"]
+        swap = [s for s in (swap or [])
+                if isinstance(s, dict) and self._sent_asset_swaps.get(s.get("from")) != s.get("to")]
         new_assets = [
-            meta for meta in assets_meta
+            meta for meta in (assets_meta or [])
             if isinstance(meta, dict) and meta.get("hash") not in self._sent_asset_digests
         ]
+        if not swap and not new_assets:
+            return False
+        for s in swap:
+            self._sent_asset_swaps[s["from"]] = s["to"]
         for meta in new_assets:
             if meta.get("hash"):
                 self._sent_asset_digests.add(meta["hash"])
         msg: Dict[str, Any] = {
             "type": "asset_map",
             "gen": self._gen,
-            "url": deferred["url"] or url,
+            "url": page_url,
             "swap": swap,
         }
         if new_assets:
@@ -4686,16 +4732,71 @@ class DOMCaptureSession:
                 await self.websocket.send_text(frame)
         except Exception as exc:
             logger.debug("asset_map send failed: %s", exc)
-            return
+            return False
+        logger.debug("dc asset_map swaps=%d assets=%d bytes=%d gen=%d",
+                     len(swap), len(new_assets), len(frame), self._gen)
+        return True
+
+    async def _send_asset_upgrade(self, deferred: Dict[str, Any],
+                                  url: Optional[str]) -> None:
+        """Resolve the assets left out of a progressive document, then send
+        only the EDITS as an ``asset_map``.
+
+        The client applies these to the document it is already showing, so
+        the result is the same HTML the non-progressive path would have sent
+        (``tests/test_asset_upgrade.py`` asserts that equality on the wire)
+        without re-rendering the frame, losing scroll, or repainting.
+
+        The downloads happen in two waves.  The FIRST is exactly one fetch
+        pool wide and holds the refs in visual priority order (fonts,
+        stylesheets, then images in document order), and it is sent the
+        moment it resolves — so the face, the layout and the top of the page
+        are right after one round trip instead of after the slowest asset on
+        the page.  The second pass then memo-hits that wave and starts the
+        next one immediately, so nothing is fetched twice and the page still
+        completes at the same time it would have without the split.
+        """
+        raw_html = deferred["html"]
+        page_url = deferred["url"] or url
+        t0 = time.perf_counter()
+
+        first_wave = ASSET_FIRST_WAVE
+        missing = deferred.get("missing") or []
+        if first_wave and len(missing) > first_wave:
+            try:
+                head: Dict[str, Any] = {}
+                _part, head_meta = await _rewrite_assets_to_cache(
+                    raw_html, page_url or "", self.page,
+                    owner_id=self.client_id, report=head, max_fetch=first_wave,
+                )
+                head_swap = head.get("swap") or []
+                if await self._emit_asset_map(head_swap, head_meta, page_url):
+                    logger.debug(
+                        "dc asset_map(first wave) swaps=%d of %d pending t=%.0fms",
+                        len(head_swap), len(missing), (time.perf_counter() - t0) * 1000.0,
+                    )
+            except Exception as exc:
+                # Any failure here is just the old behaviour: one map later.
+                logger.debug("dc progressive first wave failed: %s", exc)
+
+        report: Dict[str, Any] = {}
+        html_data, assets_meta = await _rewrite_assets_to_cache(
+            raw_html, page_url or "", self.page,
+            owner_id=self.client_id, report=report,
+        )
+        all_swap = report.get("swap") or []
+        if not await self._emit_asset_map(all_swap, assets_meta, page_url):
+            logger.debug("dc progressive: nothing new to upgrade")
         # From here on the document the CLIENT is showing is the fully
         # rewritten one, so the identical-snapshot skip has to compare
         # against that rather than the raw HTML that went over the wire.
-        self.last_sent_html = html_data
-        logger.debug(
-            "dc asset_map swaps=%d assets=%d bytes=%d total_ms=%.0f gen=%d",
-            len(swap), len(new_assets), len(frame), (time.perf_counter() - t0) * 1000.0,
-            self._gen,
-        )
+        # Only when every recorded edit really was delivered: a dropped
+        # conflict or a failed send leaves the client behind, and pretending
+        # otherwise would make the next identical snapshot look stale.
+        if all(self._sent_asset_swaps.get(s["from"]) == s["to"] for s in all_swap):
+            self.last_sent_html = html_data
+        logger.debug("dc asset_map done swaps=%d total_ms=%.0f gen=%d",
+                     len(all_swap), (time.perf_counter() - t0) * 1000.0, self._gen)
 
     # ------------------------------------------------------------------
     # Event handlers

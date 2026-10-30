@@ -9,10 +9,13 @@ timelines on the same stub, so the difference is the feature:
     python3 tests/bench_time_to_first_paint.py --latency-ms 120 --assets 40
 
   first_paint  when the full_document reached the socket
-  complete     when the last asset edit (asset_map) reached the socket
+  first_assets when the FIRST asset edit (asset_map) reached the socket — the
+               point at which the face/layout/top of the page is correct
+  complete     when the LAST asset edit reached the socket
 
 With progressive assets on, first_paint is the capture+serialize time only;
-with `--no-progressive` (the old behaviour) it is complete.
+with `--no-progressive` (the old behaviour) it is complete.  `requests` and
+`duplicate_requests` are there to prove the split did not cost a re-download.
 """
 from __future__ import annotations
 
@@ -42,6 +45,8 @@ def main() -> None:
     ap.add_argument("--assets", type=int, default=30)
     ap.add_argument("--no-progressive", action="store_true",
                     help="measure the pre-progressive behaviour")
+    ap.add_argument("--wave", type=int, default=None,
+                    help="override DOM_CAPTURE_ASSET_FIRST_WAVE (0 = no staging)")
     args = ap.parse_args()
 
     # In a running server `api` is already loaded (it imports this module), so
@@ -67,6 +72,8 @@ def main() -> None:
             else:
                 self.content, self.headers = b"\x89PNG\r\n\x1a\n" + b"0" * 200, {"content-type": "image/png"}
 
+    requests: list = []
+
     class Client:
         def __init__(self, *a, **k):
             pass
@@ -78,6 +85,7 @@ def main() -> None:
             return False
 
         async def get(self, url, timeout=None):
+            requests.append(url)
             await asyncio.sleep(latency)
             return Resp(url)
 
@@ -103,13 +111,15 @@ def main() -> None:
             msg = json.loads(text)
             self.events.append((asyncio.get_event_loop().time() - self.t0, msg["type"]))
 
-        def at(self, kind):
-            for t, k in self.events:
-                if k == kind:
-                    return t
-            return None
+        def at(self, kind, last=False):
+            hits = [t for t, k in self.events if k == kind]
+            if not hits:
+                return None
+            return hits[-1] if last else hits[0]
 
     dom_capture.PROGRESSIVE_ASSETS = not args.no_progressive
+    if args.wave is not None:
+        dom_capture.ASSET_FIRST_WAVE = args.wave
     dom_capture._GLOBAL_ASSET_MANAGER = dom_capture.AssetManager()
     ws = WS()
     session = dom_capture.DOMCaptureSession(Page(), websocket=ws, client_id="bench")
@@ -127,17 +137,23 @@ def main() -> None:
 
     asyncio.new_event_loop().run_until_complete(go())
     first = ws.at("full_document")
-    complete = ws.at("asset_map") or first
+    first_assets = ws.at("asset_map")
+    complete = ws.at("asset_map", last=True) or first
     out = {
         "progressive": dom_capture.PROGRESSIVE_ASSETS,
+        "first_wave": dom_capture.ASSET_FIRST_WAVE,
         "assets": args.assets,
         "latency_ms": args.latency_ms,
         "first_paint_ms": round((first or 0) * 1000.0),
+        "first_assets_ms": round((first_assets or 0) * 1000.0) if first_assets else None,
         "complete_ms": round((complete or 0) * 1000.0),
+        "requests": len(requests),
+        "duplicate_requests": len(requests) - len(set(requests)),
         "messages": [k for _t, k in ws.events],
     }
     if args.no_progressive:
         out["first_paint_ms"] = out["complete_ms"]
+        out["first_assets_ms"] = out["complete_ms"]
     print(json.dumps(out, indent=2))
 
 

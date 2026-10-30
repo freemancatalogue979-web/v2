@@ -1453,6 +1453,10 @@ Now there is one client and one bounded pool for the whole phase, so every
 stylesheet's inner refs (sprites, fonts, nested `@import`) are fetched together:
 
 * `DOM_CAPTURE_ASSET_CONCURRENCY` (default **10**) caps concurrent downloads.
+* `DOM_CAPTURE_ASSET_FIRST_WAVE` (default: that same width) is how many refs the
+  visible half of a progressive upgrade may download before it is sent. It is
+  the number that makes the first stage cost exactly one round trip — see
+  "…and the visible half of it first" below.
 * The global budget (`DOM_CAPTURE_ASSET_TOTAL_TIMEOUT_S`, default 10 s) still
   holds: whatever finished is kept, the rest keeps its authored URL — the same
   degradation as any other failed asset, never an error.
@@ -1556,6 +1560,45 @@ First paint no longer depends on the asset count at all — it is capture, rewri
 and one socket write. The tail is unchanged, which is the point: the same bytes
 still arrive, they just stop being a prerequisite for seeing the page.
 
+#### …and the visible half of it first
+
+A page that is on screen with the wrong face is not the same as a page that is
+on screen. With everything in one map, the 12th font and a footer sprite land
+in the same instant, which is the worst possible order: the thing you are
+reading finishes last.
+
+The upgrade is therefore **staged by what the visitor can see**, and the first
+stage is exactly one fetch pool wide:
+
+| tier | what | why |
+|---|---|---|
+| 0 | fonts (`.woff2`/`.woff`/`.ttf`/`.otf`/`.eot`) | one wrong face moves every glyph on the screen |
+| 1 | stylesheets | until they land there is no layout to speak of |
+| 2 | images, in document order | the capture met the above-the-fold ones first |
+| 3 | everything else (media, iframes, downloads) | mostly invisible or below the fold |
+
+The first tier(s) up to `DOM_CAPTURE_ASSET_FIRST_WAVE` (default: the fetch pool
+width, 10) go out as their own `asset_map` the moment they resolve — **one
+round trip**, not the whole page. The second pass then memo-hits that wave and
+starts the next one immediately, so nothing is downloaded twice and the page
+still completes at exactly the time it did before the split. Zero is a valid
+value: it puts everything back into a single map.
+
+| assets × 120 ms | first paint | visible half correct | page complete | requests |
+|---|---|---|---|---|
+| 10 | 6 ms | 127 ms | 127 ms | 10 |
+| 30 | 6 ms | **128 ms** | 370 ms (was 368) | 30, no repeats |
+| 60 | 7 ms | **129 ms** | 736 ms (was 731) | 60, no repeats |
+
+So the wait for a *correct-looking* page became one round trip, independent of
+how heavy the page is, and the tail paid nothing for it.
+
+A stylesheet in the first wave brings its own inner refs (fonts and
+backgrounds declared inside CSS) along, because inlining a sheet whose `url()`s
+are still unresolved would only move the same problem one layer down — that
+wave can therefore cost two round trips, and it is worth it: it is what makes
+the layout and the face correct together.
+
 Benchmark: `python3 tests/bench_asset_rewrite.py` (above).
 
 Tests: `node tests/capture_serializer_harness.cjs` (21 checks — the serializer
@@ -1566,11 +1609,13 @@ CSS/SVG indirection refs, the unchanged-skip guard, and the client-side
 absolutising that makes `/assets/...` loadable from a `blob:` document),
 `python tests/test_capture_live_assets.py` (17 checks — the same rewrite over a
 real HTTP server and the real httpx client, so the MIME types and URL joins are
-not just agreed with by a stub), `python tests/test_asset_upgrade.py` (43 checks
+not just agreed with by a stub), `python tests/test_asset_upgrade.py` (77 checks
 — the progressive split: order, the replay-equals-one-piece equality, the delta
-channel staying open, no duplicate swaps, a new page, the kill switch) and
-`node tests/test_asset_upgrade_client.cjs` (23 checks — the same swaps applied
-to a live document in jsdom, per-URL caches included).
+channel staying open, no duplicate swaps, a new page, the kill switch, the
+visual priority order, the first wave landing in one round trip, a stylesheet in
+the first wave dragging its own fonts with it, no re-download across waves) and `node tests/test_asset_upgrade_client.cjs` (31 checks — the
+same swaps applied to a live document in jsdom, two waves layered onto the same
+document, per-URL caches included).
 
 ### Still known to be missing (next, not done)
 

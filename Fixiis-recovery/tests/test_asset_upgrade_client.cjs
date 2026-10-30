@@ -206,6 +206,44 @@ eq(applyAssetSwapsToHtml(RAW, 'https://site.example/page'), REWRITTEN,
      'junk must not rewrite anything');
 }
 
+/* --------------------- 6. two waves land on the same document */
+/* The server upgrades in stages now: the fonts and stylesheets first (one
+   round trip), everything else after.  Each stage is its own asset_map for
+   the same generation, so the second must layer onto the first without
+   undoing it or rebuilding anything. */
+{
+  const dom = new JSDOM(RAW, { url: 'https://site.example/page' });
+  const doc = dom.window.document;
+  const imgBefore = doc.querySelector('img');
+  const bodyBefore = doc.body;
+  frame = { contentDocument: doc };
+  state._docGen = 11;
+
+  const wave1 = SWAP.filter((e) => e.tag || e.from.endsWith('.woff2'));
+  const wave2 = SWAP.filter((e) => !wave1.includes(e));
+  handleAssetMap({ type: 'asset_map', gen: 11, url: 'https://site.example/page', swap: wave1 });
+
+  /* after the first wave the face and the layout are already right... */
+  const fontNow = [...doc.querySelectorAll('style')].find((s) => s.textContent.indexOf('@font-face') !== -1);
+  ok(fontNow && fontNow.textContent.indexOf(FONT) !== -1,
+     'wave 1 (fonts) was not applied: ' + (fontNow && fontNow.textContent.slice(0, 50)));
+  ok(!doc.querySelector('link[rel="stylesheet"]'), 'wave 1 did not inline the stylesheet');
+  /* ...and the images simply have not been touched yet. */
+  eq(doc.querySelector('img').getAttribute('src'), '/img/hero.png',
+     'wave 1 must not touch the images it does not carry');
+
+  handleAssetMap({ type: 'asset_map', gen: 11, url: 'https://site.example/page', swap: wave2 });
+  eq(doc.querySelector('img').getAttribute('src'), HERO, 'wave 2 did not apply the images');
+  eq(doc.querySelector('use').getAttribute('href'), '/assets/abc.svg#i',
+     'wave 2 did not apply the sprite');
+  ok(doc.querySelector('img') === imgBefore && doc.body === bodyBefore,
+     'the second wave rebuilt the document');
+  ok([...doc.querySelectorAll('style')].some((s) => s.textContent.indexOf(FONT) !== -1),
+     'the second wave undid the first (the font is gone)');
+  ok(state._assetMaps.get('https://site.example/page').size === SWAP.length,
+     'the two waves were not merged into one cached map');
+}
+
 /* --------------------------- 6. the wiring exists in the page itself */
 ok(/case 'asset_map':/.test(CLIENT), 'client.html has no asset_map case');
 ok(/state\._docGen = state\._deltaGen;/.test(CLIENT),
