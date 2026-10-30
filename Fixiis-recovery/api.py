@@ -175,6 +175,11 @@ try:
 except ImportError:
     PSUTIL_AVAILABLE = False
 
+# When this process started. The dashboard shows an uptime reading, and the
+# only honest source for it is the moment the process came up — not the first
+# time somebody asked for metrics.
+_PROCESS_BOOT_TIME = time.time()
+
 
 # ==============================
 # Server-Side Client Profile Storage
@@ -5414,8 +5419,38 @@ async def refresh_session(session_id: str):
         return JSONResponse({"error": "Session not found"}, status_code=404)
 
 
+def _gpu_availability(gpu_status: Any) -> Dict[str, Any]:
+    """What the machine actually has, not what the manager can do.
+
+    ``gpu_manager.get_status()`` reports ``available: True`` whenever the
+    manager itself is running — on a CPU-only box that means "the PNG
+    screencast path works", not "there is a GPU". The dashboard says "GPU
+    available" only when a device type other than ``none`` is detected.
+    """
+    if not isinstance(gpu_status, dict):
+        return {"available": False, "name": None}
+    device = gpu_status.get("type") or gpu_status.get("device") or gpu_status.get("name")
+    if isinstance(device, str):
+        device = device.strip()
+    if not device or (isinstance(device, str) and device.lower() == "none"):
+        return {"available": False, "name": None}
+    return {"available": True, "name": str(device)}
+
+
 def _build_system_metrics_payload() -> Dict[str, Any]:
-    """Shared metrics payload used by the admin dashboard and system monitor."""
+    """Shared metrics payload used by the admin dashboard and system monitor.
+
+    ``uptime_s`` and ``gpu`` were added for the Command Centre redesign: the
+    dashboard shows them as real readouts, so they come from here rather than
+    being guessed at in the browser. Both are additive — existing consumers
+    ignore them.
+    """
+    _boot = globals().get("_PROCESS_BOOT_TIME")
+    if _boot is None:
+        _boot = time.time()
+        globals()["_PROCESS_BOOT_TIME"] = _boot
+    _uptime = max(0.0, time.time() - _boot)
+
     if not session_manager:
         return {
             "cpu": {"percent": 0.0},
@@ -5426,6 +5461,8 @@ def _build_system_metrics_payload() -> Dict[str, Any]:
             "cpu_percent": 0.0,
             "memory_percent": 0.0,
             "active_sessions_count": 0,
+            "uptime_s": round(_uptime, 1),
+            "gpu": {"available": False, "name": None},
             "timestamp": time.time(),
         }
 
@@ -5470,6 +5507,8 @@ def _build_system_metrics_payload() -> Dict[str, Any]:
         "cpu_percent": cpu_percent,
         "memory_percent": mem_percent,
         "active_sessions_count": session_manager.stats.active_sessions,
+        "uptime_s": round(_uptime, 1),
+        "gpu": _gpu_availability(gpu_status),
         "timestamp": time.time(),
     }
     return payload

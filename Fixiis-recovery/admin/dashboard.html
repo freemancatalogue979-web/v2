@@ -1,0 +1,195 @@
+<!-- COMMAND CENTRE ---------------------------------------------------------
+     The dashboard's own markup, injected into #dashboard-content by
+     deploy/build-admin.py. Kept as a fragment so it can be edited like the
+     rest of the shell instead of inside a 22k-line file.
+
+     Rules for this screen:
+       * every number is bound to a real endpoint (admin/dashboard.js);
+       * the legacy ids the panel's own code still writes to
+         (#stat-active-clients, #stat-generated-links, #stat-gpu) are kept and
+         ARE the visible values, so the two systems can never disagree;
+       * the reactor is a status indicator: its colour follows the metrics.
+-->
+<div class="shf-dash">
+
+    <section class="shf-hero" aria-label="System core">
+        <div class="shf-reactor-host" id="shfReactorHost">
+            <canvas id="shfReactor" aria-hidden="true"></canvas>
+            <div class="shf-reactor-fallback" aria-hidden="true"></div>
+        </div>
+
+        <div class="shf-hero-copy">
+            <div class="shf-hero-eyebrow">Command centre</div>
+            <h2 class="shf-hero-title">Good to see you, <b>Admin</b>.</h2>
+            <p class="shf-hero-sub">
+                Every session, page and operation on this server, in one place.
+                The core changes colour with load: cyan is nominal, amber is
+                elevated, red means something is being pushed hard.
+            </p>
+            <div class="shf-hero-meta">
+                <span class="shf-badge" id="shfDashStatus">Connecting…</span>
+                <span id="shfDashClock">—</span>
+                <span id="shfDashSession">no session selected</span>
+            </div>
+        </div>
+
+        <div class="shf-core">
+            <div class="shf-core-head">
+                <span>System core</span>
+                <span class="shf-dot shf-dot--ok" id="shfCoreDot"></span>
+            </div>
+            <div class="shf-core-row"><span>Uptime</span><b id="shfCoreUptime">—</b></div>
+            <div class="shf-core-row"><span>CPU</span><b id="shfCoreCpu">—</b></div>
+            <div class="shf-core-row"><span>Memory</span><b id="shfCoreMem">—</b></div>
+            <div class="shf-core-row"><span>Sessions</span><b id="shfCoreSessions">—</b></div>
+            <div class="shf-core-row"><span>GPU</span><b id="stat-gpu">—</b></div>
+            <div class="shf-core-row"><span>Storage</span><b id="shfCoreStorage">—</b></div>
+        </div>
+    </section>
+
+    <div class="shf-metrics">
+        <article class="shf-metric">
+            <div class="shf-metric-top">
+                <span class="shf-metric-label">Active sessions</span>
+                <span class="shf-metric-icon"><svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg></span>
+            </div>
+            <div class="shf-metric-value" id="stat-active-clients">0</div>
+            <div class="shf-metric-foot" id="shfM1Foot">Live connections</div>
+            <div class="shf-metric-spark"><canvas id="shfSparkSessions" aria-hidden="true"></canvas></div>
+        </article>
+
+        <article class="shf-metric shf-metric--ok">
+            <div class="shf-metric-top">
+                <span class="shf-metric-label">Capacity</span>
+                <span class="shf-metric-icon"><svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg></span>
+            </div>
+            <div class="shf-metric-value" id="shfM2Value">—</div>
+            <div class="shf-metric-foot" id="shfM2Foot">Configured maximum</div>
+        </article>
+
+        <article class="shf-metric shf-metric--rose">
+            <div class="shf-metric-top">
+                <span class="shf-metric-label">Generated links</span>
+                <span class="shf-metric-icon"><svg viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg></span>
+            </div>
+            <div class="shf-metric-value" id="stat-generated-links">0</div>
+            <div class="shf-metric-foot">In the link library</div>
+        </article>
+
+        <article class="shf-metric shf-metric--warn">
+            <div class="shf-metric-top">
+                <span class="shf-metric-label">Server uptime</span>
+                <span class="shf-metric-icon"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm.5-13H11v6l5.2 3.1.8-1.3-4.5-2.7z"/></svg></span>
+            </div>
+            <div class="shf-metric-value" id="shfM4Value">—</div>
+            <div class="shf-metric-foot">Since last restart</div>
+        </article>
+    </div>
+
+    <div class="shf-quick" id="shfQuickActions">
+        <button class="shf-quick-btn" data-go="lpv" type="button">
+            <span class="shf-quick-icon"><svg viewBox="0 0 24 24"><path d="M9 2v6h6V2h-6zm8 0v6h5V2h-5zM2 2v6h6V2H2zm7 8v6h6v-6H9zm8 0v6h5v-6h-5zM2 10v6h6v-6H2z"/></svg></span>
+            <span class="shf-quick-label"><b>Push a page</b><span>Live pages</span></span>
+        </button>
+        <button class="shf-quick-btn" data-go="create" type="button">
+            <span class="shf-quick-icon"><svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg></span>
+            <span class="shf-quick-label"><b>New link</b><span>Create URL</span></span>
+        </button>
+        <button class="shf-quick-btn" data-go="display" type="button">
+            <span class="shf-quick-icon"><svg viewBox="0 0 24 24"><path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM9 8l7 4-7 4z"/></svg></span>
+            <span class="shf-quick-label"><b>Live display</b><span>Watch a session</span></span>
+        </button>
+        <button class="shf-quick-btn" data-go="logs" type="button">
+            <span class="shf-quick-icon"><svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14H6v-2h6v2zm4-4H6v-2h10v2z"/></svg></span>
+            <span class="shf-quick-label"><b>Event log</b><span>Investigate</span></span>
+        </button>
+        <button class="shf-quick-btn" data-go="tgbot" type="button">
+            <span class="shf-quick-icon"><svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg></span>
+            <span class="shf-quick-label"><b>Telegram</b><span>Test the bot</span></span>
+        </button>
+        <button class="shf-quick-btn" data-go="settings" type="button">
+            <span class="shf-quick-icon"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54A.48.48 0 0014 2h-4a.48.48 0 00-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.64 8.97a.49.49 0 00.12.61l2.03 1.58c-.05.31-.07.63-.07.94s.02.63.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.31.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.25.41.48.41h4c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.09.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.6 3.6 0 0112 15.6z"/></svg></span>
+            <span class="shf-quick-label"><b>Settings</b><span>Runtime knobs</span></span>
+        </button>
+    </div>
+
+    <div class="shf-grid-2">
+        <section class="shf-card shf-card--lit">
+            <div class="shf-card-head">
+                <div class="shf-card-title">
+                    <svg viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                    System health
+                </div>
+                <button class="shf-btn shf-btn--ghost shf-btn--sm" data-go="manager" type="button">Details</button>
+            </div>
+            <div class="shf-card-body">
+                <div class="shf-bar">
+                    <div class="shf-bar-top"><span>CPU</span><b id="shfBarCpuVal">—</b></div>
+                    <div class="shf-bar-track"><div class="shf-bar-fill" id="shfBarCpu"></div></div>
+                    <div class="shf-hint" id="shfBarCpuSub"></div>
+                </div>
+                <div class="shf-bar">
+                    <div class="shf-bar-top"><span>Memory</span><b id="shfBarMemVal">—</b></div>
+                    <div class="shf-bar-track"><div class="shf-bar-fill" id="shfBarMem"></div></div>
+                    <div class="shf-hint" id="shfBarMemSub"></div>
+                </div>
+                <div class="shf-bar">
+                    <div class="shf-bar-top"><span>Disk</span><b id="shfBarDiskVal">—</b></div>
+                    <div class="shf-bar-track"><div class="shf-bar-fill" id="shfBarDisk"></div></div>
+                    <div class="shf-hint" id="shfBarDiskSub"></div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px">
+                    <div>
+                        <div class="shf-eyebrow" style="margin-bottom:6px">CPU trend</div>
+                        <div class="shf-metric-spark"><canvas id="shfSparkCpu" aria-hidden="true"></canvas></div>
+                    </div>
+                    <div>
+                        <div class="shf-eyebrow" style="margin-bottom:6px">Memory trend</div>
+                        <div class="shf-metric-spark"><canvas id="shfSparkMem" aria-hidden="true"></canvas></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="shf-card">
+            <div class="shf-card-head">
+                <div class="shf-card-title">
+                    <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                    Recent activity
+                </div>
+                <button class="shf-btn shf-btn--ghost shf-btn--sm" data-go="logs" type="button">All events</button>
+            </div>
+            <div class="shf-card-body shf-card-body--flush" style="padding:6px 18px 14px">
+                <div class="shf-feed" id="shfFeed"></div>
+            </div>
+        </section>
+    </div>
+
+    <section class="shf-card">
+        <div class="shf-card-head">
+            <div class="shf-card-title">
+                <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+                Session statistics
+            </div>
+            <span class="shf-badge" id="shfSessionStatBadge">live</span>
+        </div>
+        <div class="shf-card-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px">
+            <div>
+                <div class="shf-eyebrow">Connected now</div>
+                <div class="shf-metric-value" id="shfSessionNow" style="font-size:20px">—</div>
+            </div>
+            <div>
+                <div class="shf-eyebrow">Peak this session</div>
+                <div class="shf-metric-value" id="shfSessionPeak" style="font-size:20px">—</div>
+            </div>
+            <div>
+                <div class="shf-eyebrow">Total events</div>
+                <div class="shf-metric-value" id="shfSessionEvents" style="font-size:20px">—</div>
+            </div>
+            <div>
+                <div class="shf-eyebrow">Last update</div>
+                <div class="shf-metric-value" id="shfSessionUpdated" style="font-size:20px">—</div>
+            </div>
+        </div>
+    </section>
+</div>
