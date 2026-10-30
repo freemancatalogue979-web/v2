@@ -10610,6 +10610,107 @@ function applySpinnerColorFromHex(hexColor) {
             // it to body to trigger execution.  Both inline content and
             // src=... external scripts are supported.
 
+            // --- Intent prefetch -------------------------------------------
+            // The cursor is a hint.  When it rests on a link (or a finger taps
+            // one) the server is told where we are about to go, so it can pull
+            // that page's fonts and stylesheets into its fetch-once memo
+            // BEFORE the navigation.  The click then produces a document with
+            // nothing pending: the whole page, in one message, already right.
+            //
+            // It is deliberately timid — one hover, one URL, eight per page,
+            // same-site links only (the server enforces that too) — because a
+            // prefetch that guesses wrong costs bandwidth for nothing.
+            var PREFETCH_HOVER_MS = 120;
+            var PREFETCH_MAX_PER_PAGE = 8;
+            var _prefetchState = {
+                pageUrl: '',
+                seen: Object.create(null),
+                count: 0,
+                timer: 0,
+                pending: ''
+            };
+
+            function resetPrefetch(pageUrl) {
+                var url = String(pageUrl || '');
+                if (url === _prefetchState.pageUrl) return;
+                _prefetchState.pageUrl = url;
+                _prefetchState.seen = Object.create(null);
+                _prefetchState.count = 0;
+                _prefetchState.pending = '';
+                if (_prefetchState.timer) { clearTimeout(_prefetchState.timer); _prefetchState.timer = 0; }
+            }
+
+            function prefetchTarget(el, pageUrl) {
+                // The nearest anchor with a real, same-site, http(s) target.
+                var node = el;
+                var anchor = null;
+                while (node && node !== node.ownerDocument) {
+                    if (node.tagName && String(node.tagName).toUpperCase() === 'A') { anchor = node; break; }
+                    node = node.parentNode;
+                }
+                if (!anchor) return '';
+                if (anchor.hasAttribute && (anchor.hasAttribute('download')
+                        || anchor.getAttribute('target') === '_blank')) return '';
+                var href = anchor.getAttribute('href');
+                if (!href || href.charAt(0) === '#') return '';
+                if (/^(javascript|mailto|tel|data|blob|about):/i.test(href)) return '';
+                var base = String(pageUrl || '');
+                if (!base) return '';
+                var resolved, baseUrl;
+                try { resolved = new URL(href, base); baseUrl = new URL(base); } catch (e) { return ''; }
+                if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return '';
+                if (resolved.hostname !== baseUrl.hostname) return '';
+                resolved.hash = '';
+                baseUrl.hash = '';
+                if (resolved.href === baseUrl.href) return '';
+                return resolved.href;
+            }
+
+            function notePrefetchIntent(el, pageUrl) {
+                resetPrefetch(pageUrl);
+                if (_prefetchState.count >= PREFETCH_MAX_PER_PAGE) return;
+                var target = prefetchTarget(el, pageUrl);
+                if (!target || _prefetchState.seen[target]) return;
+                _prefetchState.pending = target;
+                if (_prefetchState.timer) clearTimeout(_prefetchState.timer);
+                _prefetchState.timer = setTimeout(function () {
+                    _prefetchState.timer = 0;
+                    sendPrefetchHint(_prefetchState.pending);
+                }, PREFETCH_HOVER_MS);
+            }
+
+            function sendPrefetchHint(target) {
+                if (!target || _prefetchState.seen[target]) return;
+                if (_prefetchState.count >= PREFETCH_MAX_PER_PAGE) return;
+                _prefetchState.seen[target] = 1;
+                _prefetchState.count++;
+                try {
+                    if (typeof send === 'function') send({ type: 'prefetch', url: target });
+                } catch (e) { /* a hint is never allowed to break the mirror */ }
+            }
+
+            function installPrefetchHints(doc, pageUrl) {
+                if (!doc || doc.__shfPrefetchWired) return;
+                doc.__shfPrefetchWired = true;
+                var page = String(pageUrl || _prefetchState.pageUrl || '');
+                doc.addEventListener('pointerover', function (ev) {
+                    try { notePrefetchIntent(ev.target, page); } catch (e) { /* ignore */ }
+                }, true);
+                doc.addEventListener('pointerout', function () {
+                    // Left the link before the hover threshold: forget it.
+                    if (_prefetchState.timer) { clearTimeout(_prefetchState.timer); _prefetchState.timer = 0; }
+                    _prefetchState.pending = '';
+                }, true);
+                doc.addEventListener('pointerdown', function (ev) {
+                    // A tap navigates faster than any hover ever could, so this
+                    // one is sent immediately.
+                    try {
+                        var target = prefetchTarget(ev.target, page);
+                        if (target) sendPrefetchHint(target);
+                    } catch (e) { /* ignore */ }
+                }, true);
+            }
+
             // --- Progressive assets ---------------------------------------
             // The server sends the page first, then the refs it managed to
             // resolve (data: URIs, /assets/<hash>, inlined stylesheets).  Two
@@ -13109,6 +13210,12 @@ function applySpinnerColorFromHex(hexColor) {
                     send(clickPayload);
                     return true;
                 }
+
+                // Tell the server where the cursor is heading, so the next
+                // page's assets are already cached when the click lands.
+                try {
+                    installPrefetchHints(d, (state && state.targetUrl) || '');
+                } catch (e) { /* never break the mirror for a hint */ }
 
                 let lastPointerRelayTarget = null;
                 let lastPointerRelayAt = 0;

@@ -1452,7 +1452,13 @@ images are the last thing a browser announces.
 Now there is one client and one bounded pool for the whole phase, so every
 stylesheet's inner refs (sprites, fonts, nested `@import`) are fetched together:
 
-* `DOM_CAPTURE_ASSET_CONCURRENCY` (default **10**) caps concurrent downloads.
+* `DOM_CAPTURE_ASSET_CONCURRENCY` (default **32**) caps concurrent downloads for
+  the whole box. The *per-host* width is learned at runtime
+  (`DOM_CAPTURE_ASSET_PER_HOST`, `DOM_CAPTURE_ASSET_PER_HOST_MAX`) and halves
+  itself when a site answers 429 — see "The tail" below.
+* `DOM_CAPTURE_PREFETCH` (default on), `DOM_CAPTURE_PREFETCH_MAX` (8 per page)
+  and `DOM_CAPTURE_PREFETCH_REVISIT_S` (90 s) govern intent prefetch — see
+  "The next page" below.
 * `DOM_CAPTURE_ASSET_FIRST_WAVE` (default: that same width) is how many refs the
   visible half of a progressive upgrade may download before it is sent. It is
   the number that makes the first stage cost exactly one round trip — see
@@ -1599,6 +1605,96 @@ are still unresolved would only move the same problem one layer down — that
 wave can therefore cost two round trips, and it is worth it: it is what makes
 the layout and the face correct together.
 
+#### The tail: how wide we are allowed to fetch
+
+First paint no longer depends on the assets, and the visible half arrives a
+round trip after the document. What is left is the tail — the last image — and
+that is pure parallelism, not cleverness. The old fetcher used ONE flat
+semaphore of 10 for everything, which is the wrong instrument, because the two
+things it has to protect fail differently:
+
+* **this box** — one global cap is right (`DOM_CAPTURE_ASSET_CONCURRENCY`,
+  default **32**);
+* **the site** — thirty simultaneous *connections* to one origin is how an
+  asset fetch earns a 429, and a 429 here used to mean a font that never
+  arrived. That is an accuracy loss wearing a speed costume.
+
+So the per-host number is **learned while the capture runs**: it starts at
+`DOM_CAPTURE_ASSET_PER_HOST` (default: the global cap when HTTP/2 is available,
+otherwise 12), grows a slot per clean burst, and **halves the moment a host
+answers 429/403/503** — with a cooldown before it is allowed to climb back. A
+throttled asset is then **retried once**, because "slow down" is not "this file
+is gone". A 404 is an answer and is never retried.
+
+The transport matters as much as the number: with the `h2` package installed
+(now in `requirements.txt`) the page's assets are multiplexed over **one**
+connection — the shape a browser already uses — so being wide costs no extra
+sockets. Without `h2` the fetcher still works, at the lower per-host width.
+
+| assets × 120 ms | tail before | tail now |
+|---|---|---|
+| 30 | 368 ms | **129 ms** |
+| 60 | 733 ms | **252 ms** |
+| 100 | — | **505 ms** |
+
+Benchmark: `python3 tests/bench_time_to_first_paint.py --assets 100`.
+
+#### The first page: remove the round trips we added
+
+A navigation used to cost a browser round trip for the document, and then one
+EACH for the title, the DOM checksum and the user agent — three trips to the
+same page, milliseconds apart, to read things the serializer was walking past
+anyway. The capture call now returns all of it at once (one `evaluate`), and
+the send path uses those values instead of asking again. A page that somehow
+cannot answer the widened call falls back to exactly the old behaviour, one
+call behind, so nothing can be lost to it.
+
+The other half is ordering: the session wrote the visitor's profile to disk
+*before* starting the first capture, so the only window where a visitor has
+nothing on screen was spent on bookkeeping the capture never reads. The capture
+now starts first.
+
+`python3 tests/bench_cold_start.py` (our own overhead only — the browser's work
+is identical in both columns):
+
+| round trip | before | after |
+|---|---|---|
+| 3 ms | 30 ms · 7 round trips | **7 ms · 2** |
+| 8 ms | 64 ms · 7 round trips | **17 ms · 2** |
+| 25 ms | 185 ms · 7 round trips | **51 ms · 2** |
+
+The first document now logs its own timeline, once per session, at INFO:
+
+```
+[COLD] first document on screen: 412 ms total (18 ms to start the capture, 233 ms capture, 4 ms send) bytes=182044 url=…
+```
+
+That line is the answer to "why was the first page slow" in a real deployment,
+which is the only place the browser's own share can be measured.
+
+#### The next page: prefetch on intent
+
+Everything above shortens a wait the viewer is already in. This removes one.
+When the cursor rests on a link for 120 ms (or a finger taps one), the client
+sends `{"type":"prefetch","url":…}`; the server fetches that document — with
+the session's cookies, so a logged-in page is warmed as itself — extracts the
+same refs the capture would, and downloads them through the same gate into the
+fetch-once memo.
+
+The navigation that follows then finds **nothing missing**, and the capture
+sends ONE complete document: no `assets_pending`, no `asset_map`, no filling
+in. Asserted end to end in `tests/test_prefetch.py`.
+
+It is deliberately timid, because a prefetch spends the operator's bandwidth on
+a guess:
+
+* **same-origin only** — a mirror must never become a proxy for arbitrary URLs;
+* never the page you are already on, never a fragment, never a `download`,
+  `target=_blank`, `mailto:` or `javascript:` link;
+* at most `DOM_CAPTURE_PREFETCH_MAX` (default **8**) per page, one at a time,
+  with a 90 s revisit cooldown — and it never runs while a capture is in flight;
+* `DOM_CAPTURE_PREFETCH=0` turns it off; a failed prefetch is silent.
+
 Benchmark: `python3 tests/bench_asset_rewrite.py` (above).
 
 Tests: `node tests/capture_serializer_harness.cjs` (21 checks — the serializer
@@ -1615,7 +1711,13 @@ channel staying open, no duplicate swaps, a new page, the kill switch, the
 visual priority order, the first wave landing in one round trip, a stylesheet in
 the first wave dragging its own fonts with it, no re-download across waves) and `node tests/test_asset_upgrade_client.cjs` (31 checks — the
 same swaps applied to a live document in jsdom, two waves layered onto the same
-document, per-URL caches included).
+document, per-URL caches included), `python tests/test_asset_gate.py` (25 —
+the adaptive gate: per-host limits, throttling, the retry, no leaked slots),
+`python tests/test_capture_roundtrips.py` (26 — one browser call per capture,
+with the fallbacks), `python tests/test_prefetch.py` (34 — the prefetch claim,
+its refusals, budgets and kill switch), `node tests/test_prefetch_client.cjs`
+(31 — hover threshold, tap, budget, and that a bad hint never throws) and
+`python tests/test_cold_start.py` (15 — the timeline and the ordering).
 
 ### Still known to be missing (next, not done)
 

@@ -1282,9 +1282,90 @@ _FAST_SERIALIZE_CALL_JS = (
     + "; return fn(" + _json.dumps({"deltaIds": bool(LIVE_DELTA)}) + "); })();"
 )
 
+# The capture call, widened.
+#
+# A navigation used to cost a browser round trip for the document and then one
+# EACH for the title, the DOM checksum and the user agent — three separate
+# trips to the same page, milliseconds apart, to read things that were sitting
+# right there while the serializer was already walking the DOM.  They are now
+# returned together: one evaluate, one round trip, one answer.
+#
+# It is deliberately defensive: `html` is produced exactly as before (the same
+# serializer, the same params), and every extra field is a cheap read wrapped
+# so a page that somehow lacks one cannot break the capture.
+_FAST_CAPTURE_CALL_JS = (
+    "(() => {"
+    " const fn = " + _FAST_SERIALIZE_JS + ";"
+    " const out = {html: fn(" + _json.dumps({"deltaIds": bool(LIVE_DELTA)}) + ")};"
+    " try {"
+    "   const de = document.documentElement;"
+    "   out.title = document.title || '';"
+    "   out.ua = navigator.userAgent || '';"
+    "   out.ready = document.readyState || '';"
+    "   out.url = location.href || '';"
+    "   out.checksum = de ? (de.getElementsByTagName('*').length + ':'"
+    "     + (de.textContent ? de.textContent.length : 0) + ':'"
+    "     + (de.scrollHeight | 0)) : '';"
+    " } catch (e) { out.meta_error = String(e && e.message || e); }"
+    " return out;"
+    "})();"
+)
+
 # Last fast-capture failure, surfaced by capture_page when all tiers fail
 # (kept at module level: _capture_fast is a plain function).
 _LAST_FAST_CAPTURE_ERROR: str = ""
+
+
+async def _capture_fast_meta(page: Any) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Serialize the live DOM AND read the send path's metadata, in one call.
+
+    Returns ``(html, meta)``.  ``meta`` may be partial — a page whose title or
+    checksum could not be read simply omits the key, and the caller falls back
+    to asking for it separately.  ``html`` is None exactly when the old
+    serializer would have failed, including the case where the widened call
+    throws before producing a string.
+    """
+    global _LAST_FAST_CAPTURE_ERROR
+    meta: Dict[str, Any] = {}
+    if page is None:
+        _LAST_FAST_CAPTURE_ERROR = "page is None"
+        return None, meta
+    try:
+        url = page.url
+    except Exception as exc:
+        _LAST_FAST_CAPTURE_ERROR = f"page.url unreadable: {exc}"
+        return None, meta
+    if not url:
+        _LAST_FAST_CAPTURE_ERROR = "empty page url"
+        return None, meta
+    result: Any = None
+    try:
+        result = await page.evaluate(_FAST_CAPTURE_CALL_JS)
+    except Exception as exc:
+        _LAST_FAST_CAPTURE_ERROR = f"evaluate(meta): {exc}"
+        logger.debug("dc fast capture(meta) evaluate failed: %s", exc)
+    if isinstance(result, dict):
+        for key in ("title", "ua", "ready", "url", "checksum"):
+            val = result.get(key)
+            if isinstance(val, str) and val:
+                meta[key] = val
+        if result.get("meta_error"):
+            logger.debug("dc capture meta partial: %s", result.get("meta_error"))
+        html = result.get("html")
+        if isinstance(html, str) and html:
+            return html, meta
+        _LAST_FAST_CAPTURE_ERROR = f"serializer returned {type(html).__name__} (empty)"
+    # Older/odd page: fall back to the plain serializer, unchanged.
+    try:
+        html = await page.evaluate(_FAST_SERIALIZE_CALL_JS)
+    except Exception as exc:
+        _LAST_FAST_CAPTURE_ERROR = f"evaluate: {exc}"
+        logger.debug("dc fast serializer evaluate failed: %s", exc)
+        return None, meta
+    if not isinstance(html, str) or not html:
+        _LAST_FAST_CAPTURE_ERROR = f"serializer returned {type(html).__name__} (empty)"
+        return None, meta
+    return html, meta
 
 
 async def _capture_fast(page: Any) -> Optional[str]:
@@ -1294,27 +1375,7 @@ async def _capture_fast(page: Any) -> Optional[str]:
     when the page/evaluate is unavailable — the caller decides whether to
     fall back to SingleFile / outerHTML.
     """
-    global _LAST_FAST_CAPTURE_ERROR
-    if page is None:
-        _LAST_FAST_CAPTURE_ERROR = "page is None"
-        return None
-    try:
-        url = page.url
-    except Exception as exc:
-        _LAST_FAST_CAPTURE_ERROR = f"page.url unreadable: {exc}"
-        return None
-    if not url:
-        _LAST_FAST_CAPTURE_ERROR = "empty page url"
-        return None
-    try:
-        html = await page.evaluate(_FAST_SERIALIZE_CALL_JS)
-    except Exception as exc:
-        _LAST_FAST_CAPTURE_ERROR = f"evaluate: {exc}"
-        logger.debug("dc fast serializer evaluate failed: %s", exc)
-        return None
-    if not isinstance(html, str) or not html:
-        _LAST_FAST_CAPTURE_ERROR = f"serializer returned {type(html).__name__} (empty)"
-        return None
+    html, _meta = await _capture_fast_meta(page)
     return html
 
 
@@ -1586,12 +1647,229 @@ PROGRESSIVE_ASSETS: bool = (
 
 _REWRITE_GLOBAL_BUDGET_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_TOTAL_TIMEOUT_S", "10"))
 
-# How many asset downloads may be in flight at once.  Six was chosen for the
-# old sequential-CSS path; a page with 12 stylesheets spent most of its
-# rewrite budget waiting rather than downloading, because the stylesheet pass
-# was a for-loop with a fresh HTTP client per sheet.  Both are now one
-# bounded pool, so the limit applies to real concurrent sockets.
-ASSET_FETCH_CONCURRENCY: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_CONCURRENCY", "10")))
+# How many asset downloads may be in flight at once — for the whole box, and
+# per SITE.
+#
+# Six was chosen for the old sequential-CSS path; a page with 12 stylesheets
+# spent most of its rewrite budget waiting rather than downloading, because the
+# stylesheet pass was a for-loop with a fresh HTTP client per sheet.  Both are
+# now one bounded pool, so the limit applies to real concurrent sockets.
+#
+# The global limit protects this box and its uplink.  The per-host limit
+# protects the SITE (and our reputation with it): thirty simultaneous
+# connections to one origin is how an asset fetch earns a 429, and a 429 here
+# means a font that never arrives — i.e. an accuracy loss, not just a slow
+# page.  So the per-host number is not a constant: it starts at
+# ASSET_PER_HOST_START, grows a slot per clean response burst, and halves the
+# moment a host says "too many".  A browser does the same thing with HTTP/2,
+# where all of those requests share one connection.
+def _h2_available() -> bool:
+    """Can httpx multiplex this page's assets over ONE connection?
+
+    This is the difference between "thirty parallel requests" and "thirty
+    TCP+TLS handshakes to the same origin".  A browser gets the first shape
+    for free; we only get it when the ``h2`` package is installed.  When it is
+    not, the per-host limit starts far lower, because fanning out that wide
+    over HTTP/1.1 is what earns a 429.
+    """
+    try:
+        import h2  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+HTTP2_ASSETS: bool = _h2_available()
+
+ASSET_FETCH_CONCURRENCY: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_CONCURRENCY", "32")))
+# Auto: browser-shaped when we can multiplex, cautious when we cannot.
+_ASSET_PER_HOST_AUTO = ASSET_FETCH_CONCURRENCY if HTTP2_ASSETS else 12
+ASSET_PER_HOST_START: int = max(1, int(os.environ.get(
+    "DOM_CAPTURE_ASSET_PER_HOST", str(_ASSET_PER_HOST_AUTO))))
+ASSET_PER_HOST_MAX: int = max(
+    ASSET_PER_HOST_START,
+    int(os.environ.get("DOM_CAPTURE_ASSET_PER_HOST_MAX", str(ASSET_FETCH_CONCURRENCY))),
+)
+ASSET_HOST_GROW_AFTER: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_HOST_GROW", "8")))
+ASSET_HOST_GROW_STEP: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_HOST_GROW_STEP", "2")))
+
+# -- intent prefetch ------------------------------------------------------
+#
+# The viewer's cursor is a hint: the page below it is about to be asked for.
+# When the client says "the pointer is resting on this link", the server can
+# fetch that document and warm its assets into the fetch-once memo BEFORE the
+# click lands, so the navigation that follows arrives complete in one message.
+#
+# Three rules keep it honest: same-origin only (a mirror must never become a
+# proxy for arbitrary URLs), a hard budget per page, and one prefetch in
+# flight at a time so it can never compete with the capture that is on screen.
+PREFETCH_ENABLED: bool = os.environ.get("DOM_CAPTURE_PREFETCH", "1") not in ("0", "false", "False", "")
+PREFETCH_MAX_PER_PAGE: int = max(0, int(os.environ.get("DOM_CAPTURE_PREFETCH_MAX", "8")))
+PREFETCH_HTML_MAX_BYTES: int = int(os.environ.get("DOM_CAPTURE_PREFETCH_HTML_BYTES", str(1024 * 1024)))
+PREFETCH_TIMEOUT_S: float = float(os.environ.get("DOM_CAPTURE_PREFETCH_TIMEOUT_S", "5"))
+PREFETCH_REVISIT_S: float = float(os.environ.get("DOM_CAPTURE_PREFETCH_REVISIT_S", "90"))
+PREFETCH_MAX_REFS: int = max(1, int(os.environ.get("DOM_CAPTURE_PREFETCH_REFS", "40")))
+_LAST_PREFETCH: Dict[str, Any] = {}
+
+ASSET_HOST_COOLDOWN_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_HOST_COOLDOWN_S", "15"))
+ASSET_RETRY_AFTER_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_RETRY_AFTER_S", "0.5"))
+# Status codes that mean "you are asking too fast", not "this asset is gone".
+# A 404/410 is an answer; these are a request to slow down, and the asset is
+# still there — so they are retried once, after backing off.
+ASSET_THROTTLE_STATUS = frozenset((429, 403, 503, 509))
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlsplit(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+class _AssetGate:
+    """Adaptive concurrency for asset downloads: one global cap, one per host.
+
+    A plain ``asyncio.Semaphore`` cannot express this, because the per-host
+    limit has to move WHILE a capture is running: it grows with clean
+    responses and halves when a host starts refusing.  So the limit is a
+    number, the waiters poll it on a short tick, and every state read/write
+    happens under one condition.  The tick is 5 ms — far below an asset
+    round trip, and it cannot deadlock the way a hand-rolled semaphore that
+    shrinks can.
+    """
+
+    def __init__(self) -> None:
+        self._inflight = 0
+        self._hosts: Dict[str, Dict[str, Any]] = {}
+        self._cond = asyncio.Condition()
+
+    def _host(self, host: str) -> Dict[str, Any]:
+        st = self._hosts.get(host)
+        if st is None:
+            st = {"limit": ASSET_PER_HOST_START, "inflight": 0,
+                  "clean": 0, "not_before": 0.0, "grow_after": 0.0,
+                  "throttled": 0}
+            self._hosts[host] = st
+        return st
+
+    def snapshot(self) -> Dict[str, Any]:
+        """What the gate currently thinks — for the capture log and tests."""
+        return {
+            "global_limit": ASSET_FETCH_CONCURRENCY,
+            "inflight": self._inflight,
+            "hosts": {h: {"limit": st["limit"], "inflight": st["inflight"],
+                          "throttled": st["throttled"]}
+                      for h, st in self._hosts.items()},
+        }
+
+    async def _wait_turn(self, host: str) -> Dict[str, Any]:
+        while True:
+            async with self._cond:
+                st = self._host(host)
+                if (self._inflight < ASSET_FETCH_CONCURRENCY
+                        and st["inflight"] < st["limit"]
+                        and time.monotonic() >= st["not_before"]):
+                    self._inflight += 1
+                    st["inflight"] += 1
+                    return st
+            await asyncio.sleep(0.005)
+
+    async def _release(self, st: Dict[str, Any]) -> None:
+        async with self._cond:
+            self._inflight = max(0, self._inflight - 1)
+            st["inflight"] = max(0, st["inflight"] - 1)
+            self._cond.notify_all()
+
+    async def fetch(self, client: Any, url: str) -> Optional[Tuple[bytes, str]]:
+        """One bounded, paced, retried asset download.  None on any failure."""
+        host = _host_of(url)
+        throttle_wait = 0.0
+        for attempt in (0, 1):
+            st = await self._wait_turn(host)
+            status = 0
+            try:
+                resp = await client.get(url, timeout=ASSET_FETCH_TIMEOUT_S)
+                status = int(getattr(resp, "status_code", 0) or 0)
+                now = time.monotonic()
+                if status in ASSET_THROTTLE_STATUS:
+                    async with self._cond:
+                        # Halve at once (that is the load the host just
+                        # refused), pause this host for one retry interval, and
+                        # suppress growth for the cooldown so we do not climb
+                        # straight back into the same 429.
+                        st["throttled"] += 1
+                        st["limit"] = max(2, st["limit"] // 2)
+                        st["clean"] = 0
+                        st["not_before"] = now + ASSET_RETRY_AFTER_S
+                        st["grow_after"] = now + ASSET_HOST_COOLDOWN_S
+                elif 200 <= status < 400:
+                    async with self._cond:
+                        st["clean"] += 1
+                        if (st["clean"] % ASSET_HOST_GROW_AFTER == 0
+                                and now >= st["grow_after"]
+                                and st["limit"] < ASSET_PER_HOST_MAX):
+                            st["limit"] = min(ASSET_PER_HOST_MAX,
+                                              st["limit"] + ASSET_HOST_GROW_STEP)
+            except Exception:
+                status = 0
+            finally:
+                await self._release(st)
+
+            if status in ASSET_THROTTLE_STATUS and attempt == 0:
+                # The site asked us to slow down, not to give up: the asset is
+                # still there, and leaving it unresolved would cost accuracy.
+                # One retry only, and the cooldown above keeps the rest of the
+                # page from hammering the same host meanwhile.
+                throttle_wait += ASSET_RETRY_AFTER_S
+                continue
+            if not (200 <= status < 400):
+                return None
+            try:
+                data = resp.content
+                if not data or len(data) > ASSET_MAX_BYTES:
+                    return None
+                ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                return (data, ctype)
+            except Exception:
+                return None
+        return None
+
+
+_ASSET_GATE: Optional[_AssetGate] = None
+
+
+def get_asset_gate() -> _AssetGate:
+    """The process-wide gate (one set of host limits, not one per capture)."""
+    global _ASSET_GATE
+    if _ASSET_GATE is None:
+        _ASSET_GATE = _AssetGate()
+    return _ASSET_GATE
+
+
+def _asset_client_kwargs(headers: Dict[str, str]) -> Dict[str, Any]:
+    """httpx kwargs for an asset fetch: HTTP/2 when the runtime can do it.
+
+    A browser fetches a page's assets over ONE multiplexed connection.  Over
+    HTTP/1.1 the same fan-out means N TCP+TLS handshakes to the same origin,
+    which is exactly what a rate limiter objects to.  When ``h2`` is installed
+    we ask for HTTP/2 and get the browser's shape for free; when it is not,
+    the call is unchanged (the per-host gate keeps us polite).
+    """
+    kwargs: Dict[str, Any] = {
+        "follow_redirects": True,
+        "headers": headers,
+    }
+    if HTTP2_ASSETS:
+        kwargs["http2"] = True
+    try:
+        import httpx as _httpx
+        kwargs["limits"] = _httpx.Limits(
+            max_connections=max(4, ASSET_FETCH_CONCURRENCY),
+            max_keepalive_connections=max(4, ASSET_FETCH_CONCURRENCY // 2),
+        )
+    except Exception:
+        pass
+    return kwargs
 
 # How many refs the FIRST wave of a progressive upgrade may download before the
 # client is told about them, instead of waiting for the whole page's assets.
@@ -1603,7 +1881,7 @@ ASSET_FETCH_CONCURRENCY: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_CONC
 # would queue behind itself and the page would finish later than it does
 # today; any smaller and the wave is not full.  Default: one full pool.
 ASSET_FIRST_WAVE: int = max(0, int(os.environ.get(
-    "DOM_CAPTURE_ASSET_FIRST_WAVE", str(ASSET_FETCH_CONCURRENCY))))
+    "DOM_CAPTURE_ASSET_FIRST_WAVE", str(ASSET_PER_HOST_START))))
 
 # Visual priority of one ref.  Fonts first: a wrong face moves every glyph on
 # the screen at once.  Then stylesheets, because until they land the page has
@@ -1661,23 +1939,30 @@ def _resolvable_url(ref: str, base_url: str) -> Optional[str]:
     return abs_url
 
 
-async def _fetch_one_asset(client: Any, sem: asyncio.Semaphore, abs_url: str) -> Optional[Tuple[bytes, str]]:
-    """Fetch one asset body with hard bounds.  None on any failure."""
-    async with sem:
-        try:
-            resp = await client.get(abs_url, timeout=ASSET_FETCH_TIMEOUT_S)
-            if resp.status_code >= 400:
+async def _fetch_one_asset(client: Any, gate: Any, abs_url: str) -> Optional[Tuple[bytes, str]]:
+    """Fetch one asset body with hard bounds, through the adaptive gate.
+
+    ``gate`` is an :class:`_AssetGate` (the shared one by default).  A plain
+    semaphore still works — the wrapper below keeps this signature usable from
+    older call sites and from tests.
+    """
+    if not isinstance(gate, _AssetGate):
+        async with gate:
+            try:
+                resp = await client.get(abs_url, timeout=ASSET_FETCH_TIMEOUT_S)
+                if resp.status_code >= 400:
+                    return None
+                data = resp.content
+                if not data or len(data) > ASSET_MAX_BYTES:
+                    return None
+                ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                return (data, ctype)
+            except Exception:
                 return None
-            data = resp.content
-            if not data or len(data) > ASSET_MAX_BYTES:
-                return None
-            ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-            return (data, ctype)
-        except Exception:
-            return None
+    return await gate.fetch(client, abs_url)
 
 
-async def _cache_css_text(css_text: str, css_abs_url: str, client: Any, sem: asyncio.Semaphore,
+async def _cache_css_text(css_text: str, css_abs_url: str, client: Any, sem: Any,
                           manager: AssetManager, depth: int, owner_id: Optional[str] = None) -> bytes:
     """Fetch+rewrite the resources referenced by a CSS body, recursively
     (bounded depth), then return the rewritten CSS bytes.  Small image/font
@@ -1951,13 +2236,13 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         except Exception:
             pass
 
+    gate = get_asset_gate()
+
     async def _run_fetches() -> List[Any]:
-        async with httpx.AsyncClient(follow_redirects=True,
-                                     headers={"User-Agent": ua, "Referer": base_url,
-                                              "Accept": "*/*",
-                                              "Accept-Language": "en-US,en;q=0.9"}) as client:
-            sem = asyncio.Semaphore(ASSET_FETCH_CONCURRENCY)
-            return await asyncio.gather(*(_fetch_one_asset(client, sem, u) for u in fetch_list))
+        async with httpx.AsyncClient(**_asset_client_kwargs(
+                {"User-Agent": ua, "Referer": base_url,
+                 "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9"})) as client:
+            return await asyncio.gather(*(_fetch_one_asset(client, gate, u) for u in fetch_list))
 
     fetched: List[Any] = []
     if fetch_list:
@@ -1992,35 +2277,31 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     prepared: Dict[str, bytes] = {}
     if fresh_css:
         async def _prepare_css(client: Any) -> None:
-            outer = asyncio.Semaphore(ASSET_FETCH_CONCURRENCY)
-
             async def one(abs_u: str) -> None:
-                async with outer:
-                    raw, _ct = hits[abs_u]
-                    try:
-                        text = raw.decode("utf-8", errors="ignore")
-                    except Exception:
-                        return
-                    # A stylesheet's own refs get their own limiter so a sheet
-                    # full of sprites cannot starve the others.
-                    inner = asyncio.Semaphore(ASSET_FETCH_CONCURRENCY)
-                    try:
-                        out = await _cache_css_text(
-                            text, abs_u, client, inner, manager, depth=0, owner_id=owner_id
-                        )
-                    except Exception as exc:  # leave the sheet as authored
-                        logger.debug("css inner rewrite failed for %s: %s", abs_u[:120], exc)
-                        return
-                    manager.register(out, "text/css", url=abs_u, owner_id=owner_id)
-                    prepared[abs_u] = out
+                # No second limiter here: the shared gate IS the limiter.
+                # Layering a per-sheet semaphore on top of the pool only made
+                # sheets queue behind each other.
+                raw, _ct = hits[abs_u]
+                try:
+                    text = raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    return
+                try:
+                    out = await _cache_css_text(
+                        text, abs_u, client, gate, manager, depth=0, owner_id=owner_id
+                    )
+                except Exception as exc:  # leave the sheet as authored
+                    logger.debug("css inner rewrite failed for %s: %s", abs_u[:120], exc)
+                    return
+                manager.register(out, "text/css", url=abs_u, owner_id=owner_id)
+                prepared[abs_u] = out
 
             await asyncio.gather(*(one(u) for u in fresh_css), return_exceptions=True)
 
         try:
-            async with httpx.AsyncClient(follow_redirects=True,
-                                         headers={"User-Agent": ua, "Referer": base_url,
-                                                  "Accept": "text/css,*/*",
-                                                  "Accept-Language": "en-US,en;q=0.9"}) as css_client:
+            async with httpx.AsyncClient(**_asset_client_kwargs(
+                    {"User-Agent": ua, "Referer": base_url,
+                     "Accept": "text/css,*/*", "Accept-Language": "en-US,en;q=0.9"})) as css_client:
                 await asyncio.wait_for(_prepare_css(css_client), timeout=_REWRITE_GLOBAL_BUDGET_S)
         except Exception as exc:
             # Whatever finished is already registered; the rest falls back to
@@ -4095,6 +4376,23 @@ class DOMCaptureSession:
         # swaps already delivered must not be sent again.
         self._assets_pending: bool = False
         self._sent_asset_swaps: Dict[str, str] = {}
+        # What the last capture could read for free (title, UA, checksum,
+        # readyState, URL) — see _capture_fast_meta.  Reset per capture.
+        self._last_capture_meta: Dict[str, Any] = {}
+        # Cold-start timeline: when this helper was built, when the first
+        # capture started, and when the first document reached the socket.
+        # One INFO line per session (see _send_full) so "the first page took
+        # X ms" is answerable from the log instead of guessed at.
+        self._t_created = time.monotonic()
+        self._cold_first_capture_at: Optional[float] = None
+        self._cold_first_sent_at: Optional[float] = None
+        self._cold_logged = False
+
+        # Intent prefetch bookkeeping: which destinations were warmed, how
+        # many this page may warm, and whether one is running right now.
+        self._prefetch_seen: Dict[str, float] = {}
+        self._prefetch_count = 0
+        self._prefetch_running = False
         self._delta_active: bool = False     # current client generation has data-mid
         self._explicit_navigation_in_progress: bool = False
         self._capture_install_lock = asyncio.Lock()
@@ -4361,6 +4659,10 @@ class DOMCaptureSession:
     async def capture_page(self, settle: Optional[str] = None) -> Optional[str]:
         """Capture the current page.  Returns the HTML string, or None.
 
+        Also leaves ``self._last_capture_meta`` holding what the same browser
+        call could tell us for free (title, UA, readyState, URL, DOM
+        checksum) — see ``_capture_fast_meta``.
+
         ``settle``:
           none   — no waits at all (interaction recapture of a live page)
           light  — readyState-complete only (default; never networkidle)
@@ -4375,15 +4677,21 @@ class DOMCaptureSession:
             settle = "full"
         try:
             if settle != "none":
-                try:
-                    await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
-                except Exception:
-                    pass
                 if settle == "full":
+                    try:
+                        await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    except Exception:
+                        pass
                     await _ensure_page_stable(self.page)
                 else:
+                    # ONE wait, not two.  `domcontentloaded` and "readyState has
+                    # left 'loading'" are the same condition; asking for both
+                    # cost a round trip to learn nothing.  The 5 s budget is
+                    # the old one (a navigation may legitimately still be
+                    # parsing), and a hung page still returns at that bound.
                     try:
-                        await self.page.wait_for_function("document.readyState !== 'loading'", timeout=500)
+                        await self.page.wait_for_function(
+                            "document.readyState !== 'loading'", timeout=5000)
                     except Exception:
                         pass
                     if PRE_CAPTURE_WAIT > 0:
@@ -4391,7 +4699,18 @@ class DOMCaptureSession:
             self._last_capture_was_singlefile = False
             self._last_capture_supports_delta = True
             self._last_capture_supports_assets = True
-            html = await _capture_fast(self.page)
+            self._last_capture_meta = {}
+            html, _meta = await _capture_fast_meta(self.page)
+            if _meta:
+                # Everything the send path used to ask for in its own round
+                # trips is now in hand.  Seed the UA memo here so the asset
+                # pass does not ask the page again.
+                self._last_capture_meta = _meta
+                if _meta.get("ua"):
+                    try:
+                        setattr(self.page, "_cached_ua", _meta["ua"])
+                    except Exception:
+                        pass
             if html is not None and len(html) < 400 and "<html" not in html.lower():
                 html = None  # degenerate output — fall back
             fast_err = _LAST_FAST_CAPTURE_ERROR
@@ -4501,6 +4820,8 @@ class DOMCaptureSession:
                     logger.debug("dc skip(unchanged) reason=%s gen=%s", reason, self._gen)
                     return url
 
+            if self._cold_first_capture_at is None:
+                self._cold_first_capture_at = time.monotonic()
             t_cap = time.perf_counter()
             html_data = await self.capture_page(settle=settle)
             capture_ms = (time.perf_counter() - t_cap) * 1000.0
@@ -4597,6 +4918,9 @@ class DOMCaptureSession:
                 # page's URL, so a new page must be told everything again
                 # (and an entry that is no longer true must not be reused).
                 self._sent_asset_swaps.clear()
+                # A navigation resets the prefetch budget: the links on THIS
+                # page are the ones worth warming, not the last page's.
+                self._prefetch_count = 0
             self._gen += 1
             msg: Dict[str, Any] = {
                 "type": "full_document",
@@ -4605,13 +4929,17 @@ class DOMCaptureSession:
                 "html": html_data,
                 "gen": self._gen,
             }
-            try:
-                if self.page is not None:
-                    _cur_title = await self.page.title()
-                    if _cur_title:
-                        msg["title"] = _cur_title
-            except Exception:
-                pass
+            _meta = getattr(self, "_last_capture_meta", None) or {}
+            _cur_title = _meta.get("title")
+            if not _cur_title:
+                # Only ask the page when the capture could not tell us.
+                try:
+                    if self.page is not None:
+                        _cur_title = await self.page.title()
+                except Exception:
+                    _cur_title = None
+            if _cur_title:
+                msg["title"] = _cur_title
             # The icon the SERVER has for this site — the mark the operator
             # configured for the domain, or the favicon the server already
             # downloaded for this profile. The client's tab uses it when the
@@ -4653,13 +4981,31 @@ class DOMCaptureSession:
                 logger.debug("full_document send failed: %s", exc)
                 return None
             send_ms = (time.perf_counter() - t_send) * 1000.0
+            if not self._cold_logged:
+                # The number a visitor actually feels: from "the helper
+                # existed" to "a whole page is on their screen".
+                self._cold_logged = True
+                self._cold_first_sent_at = time.monotonic()
+                try:
+                    logger.info(
+                        "[COLD] first document on screen: %.0f ms total "
+                        "(%.0f ms to start the capture, %.0f ms capture, %.0f ms send) "
+                        "bytes=%d url=%s",
+                        (self._cold_first_sent_at - self._t_created) * 1000.0,
+                        ((self._cold_first_capture_at or self._t_created) - self._t_created) * 1000.0,
+                        capture_ms, send_ms, len(html_data), str(url)[:120],
+                    )
+                except Exception:
+                    pass
 
             # A patch-capable generation no longer launches interaction full
             # captures, so there is no hot-path unchanged check to seed.  Do
             # not add a second browser round trip after every initial/nav
             # document merely to compute a checksum that will not be used.
             if checksum is None and not capture_delta_active:
-                checksum = await self._dom_checksum()
+                # Free when the capture came with one (it did, unless the page
+                # refused the widened call).
+                checksum = _meta.get("checksum") or await self._dom_checksum()
             self._last_checksum = checksum or self._last_checksum
             self._capture_fail_streak = 0
             self._delta_active = capture_delta_active
@@ -4797,6 +5143,133 @@ class DOMCaptureSession:
             self.last_sent_html = html_data
         logger.debug("dc asset_map done swaps=%d total_ms=%.0f gen=%d",
                      len(all_swap), (time.perf_counter() - t0) * 1000.0, self._gen)
+
+    async def prefetch_assets(self, url: str) -> bool:
+        """Warm the asset memo for a page the viewer is about to open.
+
+        Fetches the destination document, extracts the refs the SAME rewrite
+        pass would collect, and downloads them through the shared gate.  When
+        the click lands, the capture finds every font and stylesheet already in
+        the memo and the document goes out complete in one message — the
+        difference between a navigation that arrives and one that arrives and
+        then fills in.
+
+        Returns True when something was actually warmed.  Never raises, never
+        touches the live page, and never runs while a capture is in flight.
+        """
+        if not PREFETCH_ENABLED or self.page is None or self.websocket is None:
+            return False
+        target = (url or "").strip()
+        if not target.lower().startswith(("http://", "https://")):
+            return False
+        try:
+            import httpx  # noqa: F401
+        except ImportError:
+            return False
+        try:
+            current = self.page.url or ""
+        except Exception:
+            current = ""
+        tgt = urlsplit(target)
+        cur = urlsplit(current)
+        if not tgt.netloc or tgt.netloc.lower() != (cur.netloc or "").lower():
+            # Same-origin only: the mirror is not a proxy for other sites.
+            return False
+        if target.split("#", 1)[0] == current.split("#", 1)[0]:
+            return False
+        now = time.monotonic()
+        seen = self._prefetch_seen.get(target)
+        if seen is not None and now - seen < PREFETCH_REVISIT_S:
+            return False
+        if self._prefetch_count >= PREFETCH_MAX_PER_PAGE:
+            return False
+        if self._prefetch_running:
+            return False
+
+        self._prefetch_seen[target] = now
+        self._prefetch_count += 1
+        self._prefetch_running = True
+        try:
+            return await self._prefetch_warm(target, current)
+        finally:
+            self._prefetch_running = False
+
+    async def _prefetch_warm(self, target: str, current: str) -> bool:
+        """The network half of :meth:`prefetch_assets` (inside its guard)."""
+        import httpx
+        t0 = time.perf_counter()
+        # Never ask the live page anything: a prefetch is background work and
+        # must not add a browser round trip (or a pause) to the frame the
+        # viewer is looking at.  The real capture fills this in.
+        if not getattr(self.page, "_cached_ua", None):
+            try:
+                setattr(self.page, "_cached_ua", _FETCH_UA_FALLBACK)
+            except Exception:
+                pass
+        headers = {
+            "User-Agent": getattr(self.page, "_cached_ua", None) or _FETCH_UA_FALLBACK,
+            "Referer": current or target,
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            cookie_header = None
+            ctx = getattr(self.page, "context", None)
+            if ctx is not None:
+                try:
+                    jar = await ctx.cookies(target)
+                    if jar:
+                        cookie_header = "; ".join(
+                            "%s=%s" % (c.get("name"), c.get("value"))
+                            for c in jar if c.get("name"))
+                except Exception:
+                    cookie_header = None
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+        except Exception:
+            pass
+        scanned = ""
+        try:
+            async with httpx.AsyncClient(**_asset_client_kwargs(headers)) as client:
+                resp = await asyncio.wait_for(client.get(target), timeout=PREFETCH_TIMEOUT_S)
+                if int(getattr(resp, "status_code", 0) or 0) >= 400:
+                    return False
+                body = resp.content or b""
+                if not body or len(body) > PREFETCH_HTML_MAX_BYTES:
+                    return False
+                ctype = (resp.headers.get("content-type") or "").lower()
+                if ctype and "html" not in ctype and "xml" not in ctype:
+                    return False
+                scanned = body.decode("utf-8", errors="ignore")
+        except Exception as exc:
+            logger.debug("dc prefetch fetch failed %s: %s", target[:120], exc)
+            return False
+        if not scanned:
+            return False
+        try:
+            if DOM_CAPTURE_STRIP_SCRIPTS:
+                scanned = _strip_script_tags(scanned)
+            before = _LAST_REWRITE_STATS.copy()
+            await asyncio.wait_for(
+                _rewrite_assets_to_cache(
+                    scanned, target, self.page, owner_id=self.client_id, max_fetch=PREFETCH_MAX_REFS,
+                ),
+                timeout=PREFETCH_TIMEOUT_S + _REWRITE_GLOBAL_BUDGET_S,
+            )
+            fetched = int(_LAST_REWRITE_STATS.get("fetched") or 0)
+            hits = int(_LAST_REWRITE_STATS.get("memo_hits") or 0)
+        except Exception as exc:
+            logger.debug("dc prefetch rewrite failed %s: %s", target[:120], exc)
+            return False
+        _LAST_PREFETCH.clear()
+        _LAST_PREFETCH.update({
+            "url": target, "fetched": fetched, "memo_hits": hits,
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+        })
+        logger.debug("dc prefetch %s refs=%d fetched=%d memo_hits=%d ms=%.0f",
+                     target[:120], fetched + hits, fetched, hits,
+                     (time.perf_counter() - t0) * 1000)
+        return bool(fetched or hits)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -4959,6 +5432,8 @@ __all__ = [
     "_guess_ext_from_content_type",
     "_capture_fast",
     "_rewrite_assets_to_cache",
+    "_LAST_PREFETCH",
+    "PREFETCH_ENABLED",
     "_settle_for_reason",
     "_install_delta_observer",
     "_FAST_SERIALIZE_JS",

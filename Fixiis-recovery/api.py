@@ -11825,6 +11825,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     mid = message.get('mid')
                     await session.handle_click(selector=selector, mid=mid)
 
+                elif msg_type == 'prefetch':
+                    # The viewer's cursor is resting on a link.  Warm that
+                    # page's assets in the background so the navigation that
+                    # follows arrives complete — never awaited here, because
+                    # the next click must not queue behind it.
+                    _pf_url = str(message.get('url') or '')
+                    if _pf_url and hasattr(session, 'handle_prefetch'):
+                        try:
+                            asyncio.create_task(session.handle_prefetch(_pf_url))
+                        except Exception:
+                            pass
+
                 elif msg_type == 'navigate':
                     url_value = message.get('url', '')
                     if url_value:

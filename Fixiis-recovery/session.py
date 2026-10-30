@@ -804,24 +804,28 @@ class NeoStreamingSession:
                 f"(no surface scaling)"
             )
             
-            # Save initial profile info
-            await self._save_profile_info()
-            
-            # Start heartbeat monitoring (Part 3)
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
-            
             # Start DOM capture path (replace legacy streaming loop)
             self._streaming_shutdown_event.clear()
-            # Send initial DOM snapshot (force) and start URL watch to push updates
+            # THE FIRST CAPTURE GOES FIRST.  Everything below this line is
+            # bookkeeping — a profile write to disk, a heartbeat timer — and it
+            # used to be awaited BEFORE the capture even started, so a visitor
+            # paid for our housekeeping in the only window where they have
+            # nothing on screen.  The capture does not read any of it.
             try:
                 # Force an immediate capture on initial connect so the client
-                # receives the first full SingleFile snapshot even if the
-                # page-side observer hasn't been installed yet.
+                # receives the first full snapshot even if the page-side
+                # observer hasn't been installed yet.
                 asyncio.create_task(self.capture_remote_page(reason="initial_connect", force=True))
                 if self.dom_capture and not getattr(self.dom_capture, 'url_watch_task', None):
                     self.dom_capture.url_watch_task = asyncio.create_task(self.dom_capture.watch_url())
             except Exception as e:
                 logger.warning(f"[STARTUP] DOM capture init failed: {e}")
+
+            # Save initial profile info (now concurrent with the first capture)
+            await self._save_profile_info()
+            
+            # Start heartbeat monitoring (Part 3)
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
 
             await self._send_metadata()
 
@@ -2564,6 +2568,20 @@ class NeoStreamingSession:
         if self.dom_capture:
             self._apply_snapshot_preference(url)
             await self.dom_capture.handle_navigation(url)
+
+    async def handle_prefetch(self, url: str):
+        """Warm the next page's assets before the click lands.
+
+        Fire-and-forget from the websocket loop: a prefetch is an optimisation,
+        never something the viewer waits on, and it must not delay the next
+        click or keystroke by a single frame.
+        """
+        if not self.dom_capture:
+            return
+        try:
+            await self.dom_capture.prefetch_assets(url)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[PREFETCH] %s failed: %s", str(url)[:120], exc)
 
     def _apply_snapshot_preference(self, url: str) -> None:
         """Choose the per-site full-document fidelity cadence.

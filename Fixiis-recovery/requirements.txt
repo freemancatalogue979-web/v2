@@ -13,6 +13,12 @@ PyJWT==2.8.0
 # HTTP Client
 httpx==0.26.0
 
+# HTTP/2 for the asset fetcher.  With it, a page's assets are multiplexed over
+# ONE connection to the site — the shape a browser uses — so the fetch can run
+# as wide as the page needs without opening that many sockets.  Without it the
+# fetcher still works, just at a lower per-host concurrency.
+h2>=4.1.0
+
 # Browser Automation - UPDATED to latest for Chrome 147+ compatibility
 playwright==1.50.0
 playwright-stealth==2.0.3  # Latest version - fixes deprecated pkg_resources
