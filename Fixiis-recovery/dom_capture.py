@@ -91,6 +91,19 @@ SNAPSHOT_CAPTURE_MIN_INTERVAL_S: float = float(
 # so UI animations and transitions stream smoothly to the client.
 DELTA_FLUSH_MS: int = max(0, int(os.environ.get("DOM_DELTA_FLUSH_MS", "16")))
 
+# How much patched DOM state may wait in the OUTBOX (already serialized,
+# waiting for the socket) before the oldest frames are sacrificed.  The page
+# hands us a batch and moves on: a slow client link must never be able to
+# stall the page's own CDP channel, which is what made typing feel laggy.
+DELTA_OUTBOX_BYTES: int = max(64 * 1024, int(
+    os.environ.get("DOM_DELTA_OUTBOX_BYTES", str(4 * 1024 * 1024))))
+
+# How much patched DOM state may wait behind a full document (held, not
+# dropped).  Anything over this means the client cannot keep up at all, so one
+# full recovery capture is cheaper than replaying megabytes of patches.
+DELTA_HOLD_BYTES: int = max(256 * 1024, int(
+    os.environ.get("DOM_DELTA_HOLD_BYTES", str(8 * 1024 * 1024))))
+
 # URL polling is local (page.url is cached on the adapters), so 100 ms catches
 # a navigation much sooner than the old 500 ms loop without a CDP round-trip.
 URL_WATCH_INTERVAL_S: float = max(
@@ -4154,9 +4167,14 @@ _DELTA_OBSERVER_JS = r"""
     const batch = ops.splice(0, ops.length);
     coalesced.clear();
     overflowed = false;
+    // The batch number lets the server decide what a full document already
+    // contains: everything up to the sequence it read when the capture ran is
+    // in that snapshot, everything after it happened while the document was
+    // being sent and would otherwise be lost.
+    try { window.__domDeltaSeq = (window.__domDeltaSeq | 0) + 1; } catch (e) {}
     try {
       if (typeof window.__domDelta === 'function') {
-        window.__domDelta(JSON.stringify(batch), DOC_TOKEN);
+        window.__domDelta(JSON.stringify(batch), DOC_TOKEN, window.__domDeltaSeq | 0);
       }
     } catch (e) { /* binding not wired yet */ }
   };
@@ -4590,7 +4608,7 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
     if not LIVE_DELTA or page is None or session is None:
         return False
 
-    async def _on_delta(payload: Any, doc_token: Any = None) -> None:
+    async def _on_delta(payload: Any, doc_token: Any = None, seq: Any = None) -> None:
         try:
             if session.page is not page:
                 return
@@ -4625,26 +4643,13 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                 return
             if payload_text == "[[]]":
                 return
-            if not session._delta_active:
-                return  # current full-capture tier cannot carry safe mids
-            if session._send_inflight and not session._assets_pending:
-                # A full snapshot supersedes queued patches — unless the only
-                # thing still in flight is the asset fetch for a document the
-                # client is ALREADY showing.  Holding patches shut for that
-                # window is what made a navigation feel frozen.
-                return
-
-            # The browser already paid for JSON.stringify(batch).  Wrap that
-            # exact JSON text instead of parsing and serializing the operation
-            # list a second time.  Recheck inflight state under the send lock
-            # so a full recovery cannot be followed by an old-generation patch.
-            async with session._ws_send_lock:
-                if session._send_inflight:
-                    return
-                gen = int(session._gen)
-                doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
-                frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + payload_text + '}'
-                await session.websocket.send_text(frame)
+            # Hand the batch over and return.  Routing never awaits the
+            # socket: the page is acknowledged immediately and a single writer
+            # task owns delivery, so a slow client uplink can no longer stall
+            # the page's own CDP channel.  Nothing is silently discarded any
+            # more either — a batch that arrives while a full document is in
+            # flight is HELD and replayed once that document is on screen.
+            session._delta_route(payload_text, doc_token, seq)
         except Exception as exc:
             logger.debug("delta relay failed: %s", exc)
 
@@ -4863,6 +4868,31 @@ class DOMCaptureSession:
         # websocket.  Without this, an already-validated patch task can yield
         # just as a recovery capture starts and arrive after its newer gen.
         self._ws_send_lock = asyncio.Lock()
+        # ---- delta delivery (never block the page) ----
+        # The observer runs IN the page.  A binding handler that awaits the
+        # websocket keeps the page's CDP channel busy for as long as the
+        # client's uplink takes, so on a slow phone every keystroke and every
+        # frame waited behind a stale patch — the page felt frozen while the
+        # updates arrived late.  Batches are now queued and a single writer
+        # task owns the socket, so the page is acknowledged immediately.
+        self._delta_outbox: "asyncio.Queue" = asyncio.Queue()
+        self._delta_outbox_bytes: int = 0
+        self._delta_writer_task: Optional[asyncio.Task] = None
+        # A patch that arrives while a FULL document is being captured and sent
+        # describes the page AFTER that snapshot was taken.  Dropping it (what
+        # this did before) left the mirror permanently behind: the visitor saw
+        # the page stop updating until something else forced a resync.  Batches
+        # are held here instead and replayed once the document is on the wire.
+        self._delta_hold: List[tuple] = []
+        self._delta_hold_bytes: int = 0
+        # Highest batch number the page has ever handed us.
+        self._delta_seq_seen: int = 0
+        # The page's batch number at the moment the last capture started: every
+        # op at or below it is already inside that snapshot.
+        self._capture_pre_seq: Optional[int] = None
+        # Set when patches were sacrificed (outbox/hold overflow): the client
+        # is then missing state, so exactly one recovery capture is queued.
+        self._delta_needs_resync: bool = False
         # Navigation controls and the URL watcher can observe the same change
         # (especially on SB/history.pushState). Serialize their recovery send
         # so the mirror never races two full documents for one URL.
@@ -4973,6 +5003,17 @@ class DOMCaptureSession:
     async def shutdown(self) -> None:
         """Mark the session stopped and cancel the URL watcher if any."""
         self._stopped = True
+        # Stop the delta writer: a patch that lands after the session is gone
+        # must not keep a task (or the websocket) alive.
+        writer = self._delta_writer_task
+        self._delta_writer_task = None
+        if writer is not None and not writer.done():
+            try:
+                self._delta_outbox.put_nowait((None, ""))
+            except Exception:
+                writer.cancel()
+        self._delta_hold = []
+        self._delta_hold_bytes = 0
         if self.url_watch_task and not self.url_watch_task.done():
             self.url_watch_task.cancel()
             try:
@@ -5243,6 +5284,154 @@ class DOMCaptureSession:
     # Senders
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Delta delivery
+    # ------------------------------------------------------------------
+    def _delta_frame(self, ops_text: str, doc_token: Any) -> "tuple":
+        """Wrap one batch exactly as it will go out, stamped with the gen."""
+        gen = int(self._gen)
+        doc_json = (_json.dumps(str(doc_token)[:256], ensure_ascii=False)
+                    if doc_token is not None else "null")
+        frame = ('{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json
+                 + ',"ops":' + ops_text + '}')
+        return gen, frame
+
+    def _delta_enqueue(self, ops_text: str, doc_token: Any) -> None:
+        """Queue a batch for the writer task.  Never awaits, never blocks."""
+        gen, frame = self._delta_frame(ops_text, doc_token)
+        size = len(frame)
+        if self._delta_outbox_bytes + size > DELTA_OUTBOX_BYTES:
+            # The client cannot keep up.  Sacrifice the oldest frames (they are
+            # superseded by whatever is newer) and ask for one recovery
+            # capture, which is cheaper than replaying a huge backlog.
+            dropped = 0
+            while self._delta_outbox_bytes + size > DELTA_OUTBOX_BYTES:
+                try:
+                    _old_gen, old = self._delta_outbox.get_nowait()
+                except Exception:
+                    break
+                self._delta_outbox_bytes -= len(old)
+                dropped += 1
+            if dropped:
+                self._delta_needs_resync = True
+                logger.debug(
+                    "dc delta outbox over budget: dropped %d frame(s) (client %s)",
+                    dropped, self.client_id,
+                )
+        self._delta_outbox.put_nowait((gen, frame))
+        self._delta_outbox_bytes += size
+        self._ensure_delta_writer()
+
+    def _ensure_delta_writer(self) -> None:
+        task = self._delta_writer_task
+        if task is not None and not task.done():
+            return
+        try:
+            self._delta_writer_task = asyncio.create_task(self._delta_writer())
+        except RuntimeError:
+            # No running loop (unit harness without asyncio.run): the caller is
+            # synchronous and will send directly.
+            self._delta_writer_task = None
+
+    async def _delta_writer(self) -> None:
+        """One sender for every patch frame, in order, off the page's back."""
+        try:
+            while True:
+                gen, frame = await self._delta_outbox.get()
+                if gen is None:
+                    return                      # shutdown sentinel
+                self._delta_outbox_bytes -= len(frame)
+                if self._stopped or self.websocket is None:
+                    continue
+                # A full document sent since this frame was built supersedes it;
+                # applying it to the newer document would resurrect deleted
+                # nodes.  The generation check is what keeps a replayed backlog
+                # honest.
+                if gen != self._gen:
+                    continue
+                try:
+                    async with self._ws_send_lock:
+                        if gen != self._gen:
+                            continue
+                        await self.websocket.send_text(frame)
+                except Exception as exc:
+                    logger.debug("delta writer send failed: %s", exc)
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("delta writer stopped: %s", exc)
+
+    def _delta_route(self, ops_text: str, doc_token: Any, seq: Any) -> str:
+        """Decide what happens to one batch: 'send', 'hold' or 'drop'.
+
+        Ordered by what the client already knows:
+          * nothing yet / a full document is in flight -> HOLD it, because the
+            snapshot being sent was taken before these mutations;
+          * healthy delta generation -> SEND it now;
+          * a tier that cannot carry mids (SingleFile fallback) -> DROP, since
+            the ops would name nodes the mirror never had.
+        """
+        try:
+            seq_i = int(seq) if seq is not None else 0
+        except (TypeError, ValueError):
+            seq_i = 0
+        if seq_i > self._delta_seq_seen:
+            self._delta_seq_seen = seq_i
+
+        if self._send_inflight or not self.has_initial_capture:
+            size = len(ops_text)
+            if self._delta_hold_bytes + size > DELTA_HOLD_BYTES:
+                self._delta_needs_resync = True
+                return "drop"
+            self._delta_hold.append((seq_i, doc_token, ops_text))
+            self._delta_hold_bytes += size
+            return "hold"
+        if not self._delta_active:
+            return "drop"
+        self._delta_enqueue(ops_text, doc_token)
+        return "send"
+
+    def _delta_drain(self) -> int:
+        """Replay the batches held during the last full capture.
+
+        Returns how many were queued.  Batches the snapshot already contains
+        are dropped by number, not by guesswork: anything at or below the
+        sequence read when the capture ran is already on the client's screen.
+        """
+        if not self._delta_hold:
+            return 0
+        held, self._delta_hold = self._delta_hold, []
+        self._delta_hold_bytes = 0
+        pre = self._capture_pre_seq
+        queued = 0
+        for seq, doc_token, ops_text in held:
+            if pre is not None and seq and seq <= pre:
+                continue
+            self._delta_enqueue(ops_text, doc_token)
+            queued += 1
+        if queued:
+            logger.debug("dc delta replay: %d batch(es) held during the capture "
+                         "(client %s)", queued, self.client_id)
+        if self._delta_needs_resync:
+            self._delta_needs_resync = False
+            if not self._stopped:
+                try:
+                    asyncio.create_task(self.send_page(reason="delta_overflow"))
+                except Exception:
+                    pass
+        return queued
+
+    async def _read_delta_seq(self) -> Optional[int]:
+        """The page's batch counter, read just before a full capture."""
+        if not (LIVE_DELTA and self._delta_installed) or self.page is None:
+            return None
+        try:
+            value = await self.page.evaluate("(window.__domDeltaSeq|0)")
+            return int(value)
+        except Exception:
+            return None
+
     async def _send_full(self, url: Optional[str], *, reason: str = "desync") -> Optional[str]:
         """Capture and send the page.
 
@@ -5281,6 +5470,11 @@ class DOMCaptureSession:
 
             if self._cold_first_capture_at is None:
                 self._cold_first_capture_at = time.monotonic()
+            # Everything the page has already produced up to this number is
+            # inside the snapshot we are about to take.  What it produces after
+            # it is NOT — those batches are held and replayed, instead of being
+            # thrown away as they were before.
+            self._capture_pre_seq = await self._read_delta_seq()
             t_cap = time.perf_counter()
             html_data = await self.capture_page(settle=settle)
             capture_ms = (time.perf_counter() - t_cap) * 1000.0
@@ -5496,6 +5690,14 @@ class DOMCaptureSession:
             return url
         finally:
             self._send_inflight = False
+            # The document is on the wire: whatever the page changed while it
+            # was being captured and sent is still valid state the client has
+            # never seen.  Replay it now (the snapshot's own content is skipped
+            # by batch number).
+            try:
+                self._delta_drain()
+            except Exception as exc:
+                logger.debug("dc delta replay failed: %s", exc)
             pending = self._pending_reason
             self._pending_reason = None
             if SEND_COALESCE and pending and not self._stopped:

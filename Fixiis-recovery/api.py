@@ -2005,8 +2005,58 @@ GEO_CACHE_TTL = 6 * 3600
 # whatever is known after this budget; a slow provider no longer delays the
 # page. Providers answer in ~150 ms when they answer at all, and the result is
 # cached per IP for six hours, so repeat visitors pay nothing.
-GEO_BOOT_BUDGET = 0.6
+GEO_BOOT_BUDGET = 4.0
+# How long the BROWSER LAUNCH may wait for that lookup.  The browser is the
+# only thing between a visitor and their page, so it does not wait for
+# enrichment at all: whatever is known after a cache hit (instant) or this
+# sliver is used for the launch, and the real answer is attached to the live
+# session moments later.  Nothing a visitor can see depends on it.
+GEO_LAUNCH_WAIT = 0.15
 _geo_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def start_geo_lookup(client_ip: str) -> Optional["asyncio.Task"]:
+    """Begin resolving the visitor's IP without blocking anything.
+
+    Returns a task (or None for a private/unknown address, which needs no
+    lookup).  Callers may await it with a tiny budget; when it is not ready
+    they carry on and attach the result later.  A cache hit resolves on the
+    first scheduling turn, so repeat visitors and the common case cost
+    nothing.
+    """
+    try:
+        if not client_ip or client_ip in ("Unknown", "localhost"):
+            return None
+        if not _is_public_ip(client_ip):
+            return None
+        hit = _geo_cache.get(client_ip)
+        if hit and (time.time() - float(hit.get("ts", 0))) < GEO_CACHE_TTL:
+            async def _cached() -> Optional[Dict[str, Any]]:
+                return hit.get("data")
+            return asyncio.ensure_future(_cached())
+        async def _lookup() -> Optional[Dict[str, Any]]:
+            try:
+                return await asyncio.wait_for(
+                    server_geolocate(client_ip), timeout=GEO_BOOT_BUDGET)
+            except Exception:
+                return None
+        return asyncio.ensure_future(_lookup())
+    except Exception:
+        return None
+
+
+async def geo_within(task: Optional["asyncio.Task"], budget: float) -> Optional[Dict[str, Any]]:
+    """Wait for a geo lookup, but never longer than ``budget``.
+
+    The task keeps running when the budget expires (it is shielded), so the
+    caller can attach the result to a session that is already serving a page.
+    """
+    if task is None:
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=budget)
+    except Exception:
+        return None
 
 
 def _is_public_ip(ip: str) -> bool:
@@ -2042,6 +2092,44 @@ def _normalize_geo(ip: str, raw: Dict[str, Any], source: str) -> Dict[str, Any]:
         "isp": raw.get("isp") or raw.get("org") or "",
         "geo_source": source,
     }
+
+
+async def _attach_late_geo(session: Any, geo_task: "asyncio.Task") -> None:
+    """Give a running session the location answer that arrived after launch.
+
+    The browser is already showing a page; this only fills in the record
+    (About.txt, the admin client list, the Telegram line).  Every step is
+    best-effort and off the critical path.
+    """
+    try:
+        geo = await geo_within(geo_task, GEO_BOOT_BUDGET + 1.0)
+        if geo:
+            try:
+                session.country = geo.get("country") or getattr(session, "country", "-")
+                session.state = geo.get("state") or getattr(session, "state", "-")
+                session.city = geo.get("city") or getattr(session, "city", "-")
+                session.zip_code = geo.get("zip") or getattr(session, "zip_code", "-")
+                session.geo = geo
+            except Exception:
+                pass
+            logger.debug(
+                "[GEO] late attach %s -> %s %s, %s",
+                getattr(session, "client_ip", "?"),
+                geo.get("flag"), geo.get("country"), geo.get("city"),
+            )
+    except Exception:
+        pass
+    finally:
+        # Release the connect notification whether or not the lookup answered.
+        try:
+            session._geo_event.set()
+        except Exception:
+            pass
+    # Persist the verified location into the visitor's profile.
+    try:
+        await session._save_profile_info()
+    except Exception:
+        pass
 
 
 async def server_geolocate(ip: str) -> Optional[Dict[str, Any]]:
@@ -11436,6 +11524,12 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         pass
 
+    # Start the IP lookup NOW, in the background: it is enrichment (Telegram,
+    # the admin profile, the proxy's zip), never a gate in front of the
+    # visitor's page.  Whatever it has produced by the time the browser needs a
+    # zip code is used; the rest is attached to the session afterwards.
+    geo_task = start_geo_lookup(client_ip)
+
     session = None
     session_id = None  # V7 FIX: Initialize session_id before use
     connection_generation = None
@@ -11454,11 +11548,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # sees verified geo.  Falls back to whatever the client sent (or
         # just the IP) when the lookup fails / the IP is private.
         # ---------------------------------------------------------------
-        geo = None
-        try:
-            geo = await asyncio.wait_for(server_geolocate(client_ip), timeout=GEO_BOOT_BUDGET)
-        except Exception:
-            geo = None
+        geo = await geo_within(geo_task, GEO_LAUNCH_WAIT)
         if geo:
             init_data["location"] = geo
             logger.debug(
@@ -11652,7 +11742,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     country=country,
                     state=state,
                     city=city,
-                    zip_code=zip_code
+                    zip_code=zip_code,
+                    # The browser never waits for the IP lookup.  Say so, so the
+                    # "client connected" notification can wait a moment for the
+                    # real location instead of reporting "Unknown".
+                    geo_pending=bool(geo is None and geo_task is not None),
+                    geo_future=(geo_task if geo is None else None),
                 )
 
         if not is_hidden:
@@ -11686,6 +11781,18 @@ async def websocket_endpoint(websocket: WebSocket):
             else:
                 await websocket.send_json({"type": "error", "message": "Session creation failed"})
             return
+
+        # The IP lookup was not ready when the browser launched (that is the
+        # point: the visitor's page never waits for it).  Attach it to the
+        # session that is already running, and refresh the profile's About.txt
+        # with the verified location.  Nothing here is on the boot path.
+        if geo is None and geo_task is not None:
+            asyncio.create_task(_attach_late_geo(session, geo_task))
+        else:
+            try:
+                session._geo_event.set()
+            except Exception:
+                pass
 
         # Capture the generation that owns this endpoint. A reconnect swaps
         # the Session websocket and increments this value before closing the

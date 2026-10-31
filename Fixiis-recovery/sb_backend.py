@@ -911,7 +911,17 @@ class SBPage:
     async def _wait_ready(self, wait_until: str, timeout: float) -> None:
         """readyState poll matching domcontentloaded/load; networkidle is a
         documented approximation (complete + 400ms settle) — the live-mirror
-        fast pipeline never blocks on it anyway."""
+        fast pipeline never blocks on it anyway.
+
+        ``commit`` returns as soon as Page.navigate has swapped documents: the
+        caller (the live mirror's first-paint path) captures what exists and
+        lets the delta channel carry the rest, instead of holding the visitor on
+        a loading screen until every blocking script has run."""
+        if wait_until == "commit":
+            # One cheap turn of the loop so the new document is the one the
+            # next evaluate() sees, then hand control back immediately.
+            await asyncio.sleep(0)
+            return
         timeout_s = max(1.0, timeout / 1000.0)
         deadline = time.monotonic() + timeout_s
         wanted = "complete" if wait_until in ("load", "networkidle") else None

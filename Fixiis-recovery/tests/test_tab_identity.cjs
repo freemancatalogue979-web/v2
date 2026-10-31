@@ -736,9 +736,14 @@ function makeSandbox(outer, mirror, extras = {}) {
   ok(/sentMeta = m0\[0\]/.test(obs), 'the first batch is not a redundant meta op');
   ok(/lastIndexOf/.test('') === false, 'noop');
 
-  // The relay keeps the batch byte-exact, so the op flows through untouched.
+  // The batch stays byte-exact all the way out: the binding hands the text to
+  // the router unchanged, and the frame builder wraps that exact JSON.  (The
+  // frame is no longer built inside the binding — the binding must never await
+  // the socket, or the page's own CDP channel ends up waiting on the uplink.)
   const onDelta = py.slice(py.indexOf('async def _on_delta'), py.indexOf('async def _on_delta') + 4000);
-  ok(/"ops":' \+ payload_text/.test(onDelta), 'the relay forwards the ops JSON verbatim');
+  ok(/session\._delta_route\(payload_text, doc_token, seq\)/.test(onDelta),
+    'the relay hands the batch over verbatim');
+  ok(/"ops":' \+ ops_text/.test(py), 'the frame builder wraps the ops JSON verbatim');
   ok(!/\[\['meta'/.test(onDelta), 'the server does not need to understand the op');
 }
 

@@ -342,6 +342,52 @@ class PerformanceMonitor:
         }
 
 
+# ---------------------------------------------------------------------------
+# Navigation: first paint before completeness
+# ---------------------------------------------------------------------------
+# `wait_until='domcontentloaded'` keeps a visitor on a loading screen until every
+# blocking script on the site has run — seconds on an ad- or JS-heavy page, and
+# unbounded on one whose DOMContentLoaded never fires.  The mirror does not need
+# the finished page: it needs a document, and the delta channel carries the rest.
+# So: commit the navigation (milliseconds), wait only for the body to exist, and
+# let the caller capture.  A follow-up capture at `load` completes the page.
+FIRST_CONTENT_PROBE = (
+    "() => !!(document.body && (document.body.childElementCount > 0"
+    " || (document.body.textContent || '').trim().length > 0))"
+)
+
+
+async def goto_first_paint(page: Any, url: str, content_wait_ms: int = 700,
+                           timeout_ms: int = 30000) -> bool:
+    """Navigate and return as soon as there is something to mirror.
+
+    Returns True when the navigation was committed early, which is the signal
+    that a completion capture at `load` is worth scheduling.  An adapter that
+    does not support the early wait still gets a working navigation (the old,
+    slower one) and simply reports False.
+    """
+    early = False
+    try:
+        await page.goto(url, wait_until='commit', timeout=timeout_ms)
+        early = True
+    except Exception as exc:
+        # `commit` is the newest wait state; a backend that does not know it
+        # rejects the argument rather than failing the navigation.
+        logger.debug("[NAVIGATION] commit-wait unavailable (%s); using domcontentloaded", exc)
+        await page.goto(url, wait_until='domcontentloaded', timeout=timeout_ms)
+    if not early:
+        return False
+    # A committed navigation can be an empty document for a moment.  Wait for
+    # CONTENT, not for the network: whichever comes first, the capture is worth
+    # taking, and the page will keep filling in through the delta channel.
+    try:
+        await page.wait_for_function(FIRST_CONTENT_PROBE, timeout=content_wait_ms)
+    except Exception:
+        logger.debug("[NAVIGATION] no body content within %sms; capturing what exists",
+                     content_wait_ms)
+    return True
+
+
 class NeoStreamingSession:
     """
     Production-ready streaming session with pure CDP screencast.
@@ -504,6 +550,10 @@ class NeoStreamingSession:
         self.inactivity_threshold = 30  # seconds
         self._inactivity_task = None
 
+        # The IP lookup that runs beside the browser (set by the session
+        # manager once a lookup is actually in flight).
+        self._geo_future = None
+
         # Heartbeat tracking (Part 3)
         self._last_client_pong_time = time.time()
         self._heartbeat_task = None
@@ -537,6 +587,12 @@ class NeoStreamingSession:
             
             # Fetch proxy from Decodo if proxy is enabled - SIMPLE approach
             if getattr(self.config, 'proxy_enabled', False):
+                # Only a <client_zip> proxy needs the visitor's location to
+                # launch at all.  Wait for the lookup that is already running
+                # (never start one) and only when the template actually asks.
+                zip_template = getattr(self.config, 'proxy_username', '') or ''
+                if '<client_zip>' in zip_template:
+                    await self._wait_for_geo_zip()
                 try:
                     proxy_server = getattr(self.config, 'proxy_server', '')
                     proxy_username_template = getattr(self.config, 'proxy_username', '')
@@ -745,7 +801,8 @@ class NeoStreamingSession:
             
             # Load cookies from storage only for ephemeral profiles (chrome_profile loads natively)
             _profile_dir = getattr(self.browser, "profile_dir", None)
-            if not _profile_dir or "chrome_profile" not in str(_profile_dir):
+            self._native_profile = bool(_profile_dir and "chrome_profile" in str(_profile_dir))
+            if not self._native_profile:
                 if self.browser_manager.profile_exists(self.user_id):
                     try:
                         cookies = await self.browser_manager.load_cookies(self.user_id)
@@ -753,14 +810,35 @@ class NeoStreamingSession:
                             await self.context.add_cookies(cookies)
                     except Exception:
                         pass
+                    # ...and the visitor's saved local/session storage, so a
+                    # returning visitor lands signed in instead of on an empty
+                    # page.  Seeded by an init script, which is the only way to
+                    # write storage before the page's own scripts read it.
+                    try:
+                        await self._restore_profile_storage()
+                    except Exception as exc:
+                        logger.debug(f"[PROFILE] storage restore skipped: {exc}")
 
+            # ------------------------------------------------------------------
+            # Navigation: get a document on screen, not a loading state
+            # ------------------------------------------------------------------
+            # `wait_until='domcontentloaded'` meant the visitor saw nothing at
+            # all until every blocking script on the site had run — seconds on
+            # an ad-heavy or JS-heavy page, and forever on one whose
+            # domcontentloaded never fires.  The mirror does not need the
+            # finished page: it needs a document to mirror and then streams the
+            # changes.  So we commit the navigation (milliseconds), wait only
+            # for the body to appear, and take the first capture from whatever
+            # IS there.  A second capture at `load` completes the page, and the
+            # delta channel carries everything in between.
+            self._first_paint_nav = False
             try:
                 # Ensure URL has https:// prefix
                 if not target_url.startswith('http://') and not target_url.startswith('https://'):
                     target_url = 'https://' + target_url
-                
+
                 logger.debug(f"[NAVIGATION] Attempting to navigate to: {target_url}")
-                await self.get_active_page().goto(target_url, wait_until='domcontentloaded', timeout=30000)
+                self._first_paint_nav = await self._goto_first_paint(target_url)
                 self.current_domain = self._extract_domain(target_url)
                 self._apply_snapshot_preference(target_url)
                 logger.debug(f"[NAVIGATION] Successfully navigated to: {self.current_domain}")
@@ -774,7 +852,7 @@ class NeoStreamingSession:
                     # Try default URL as fallback
                     try:
                         logger.debug(f"[NAVIGATION] Falling back to default URL: {self.config.default_url}")
-                        await self.get_active_page().goto(self.config.default_url, wait_until='domcontentloaded', timeout=30000)
+                        self._first_paint_nav = await self._goto_first_paint(self.config.default_url)
                         self.current_domain = self._extract_domain(self.config.default_url)
                     except Exception:
                         logger.error(f"[NAVIGATION] Also failed to navigate to default URL")
@@ -818,11 +896,23 @@ class NeoStreamingSession:
                 asyncio.create_task(self.capture_remote_page(reason="initial_connect", force=True))
                 if self.dom_capture and not getattr(self.dom_capture, 'url_watch_task', None):
                     self.dom_capture.url_watch_task = asyncio.create_task(self.dom_capture.watch_url())
+                # ...and complete it when the page finishes loading.
+                self._schedule_load_settle_capture()
+                # Collect the profile while the visitor is already browsing.
+                if not getattr(self, '_native_profile', False):
+                    try:
+                        self._profile_collector_task = asyncio.create_task(
+                            self._profile_collector())
+                    except Exception:
+                        self._profile_collector_task = None
             except Exception as e:
                 logger.warning(f"[STARTUP] DOM capture init failed: {e}")
 
-            # Save initial profile info (now concurrent with the first capture)
-            await self._save_profile_info()
+            # Profile bookkeeping is NOT part of the visitor's wait.  It writes
+            # About.txt/meta.json to disk; the page is already being captured
+            # and sent above, so it runs beside that instead of holding the
+            # session's start() open.
+            asyncio.create_task(self._save_profile_info())
             
             # Start heartbeat monitoring (Part 3)
             self._heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
@@ -834,6 +924,216 @@ class NeoStreamingSession:
         except Exception as e:
             log_error(f"Session start failed: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # First paint: navigate, mirror, complete
+    # ------------------------------------------------------------------
+    # How long the first capture may wait for a body to appear after the
+    # navigation commits, and how long the completion capture waits for `load`.
+    FIRST_CONTENT_WAIT_MS = 700
+    LOAD_SETTLE_TIMEOUT_MS = 15000
+    # How long a ZIP-targeted proxy may wait for the IP lookup that runs
+    # beside the browser.  This is the one case where the answer changes
+    # what the visitor IS, not what we record about them: an LA proxy for a
+    # Lagos visitor is a wrong site, not a late line in About.txt.  Every
+    # other session never touches this.
+    GEO_ZIP_WAIT = 2.5
+
+    async def _wait_for_geo_zip(self) -> bool:
+        """Let a ZIP-targeted proxy see the real location, briefly.
+
+        The IP lookup starts with the WebSocket, so by the time the browser is
+        being built it has usually answered already: this is normally a
+        completed future and costs nothing.  It is capped so a slow provider
+        can still never hold the page.
+        """
+        future = getattr(self, '_geo_future', None)
+        if future is None:
+            return False
+        try:
+            geo = await asyncio.wait_for(asyncio.shield(future), timeout=self.GEO_ZIP_WAIT)
+        except Exception:
+            return False
+        if not isinstance(geo, dict):
+            return False
+        try:
+            country = geo.get('country') or ''
+            zip_code = geo.get('zip') or ''
+            if country and (self.country or '-') in ('', '-'):
+                self.country = country
+            if zip_code and (self.zip_code or '-') in ('', '-'):
+                self.zip_code = zip_code
+            # City/state are used by the record, not the proxy: take them if
+            # they are free, so the late attach has less to do.
+            for attr, key in (('state', 'state'), ('city', 'city')):
+                if geo.get(key) and (getattr(self, attr, '-') or '-') == '-':
+                    setattr(self, attr, geo[key])
+            logger.debug(
+                "[GEO] proxy ZIP resolved before launch: %s %s, %s",
+                geo.get('flag'), country, zip_code,
+            )
+        except Exception:
+            return False
+        return True
+
+    async def _goto_first_paint(self, url: str) -> bool:
+        """Navigate with the shortest wait that still yields a mirrorable page."""
+        page = self.get_active_page()
+        if page is None:
+            return False
+        return await goto_first_paint(page, url, self.FIRST_CONTENT_WAIT_MS)
+
+    def _schedule_load_settle_capture(self) -> None:
+        """One follow-up capture when the page finishes loading.
+
+        The early capture mirrors a page that is still filling in, so the
+        document the visitor sees is complete only once `load` fires.  That is
+        exactly one extra full document per navigation — cheap next to the
+        seconds the old wait cost before showing anything at all.
+        """
+        if not getattr(self, '_first_paint_nav', False) or self.dom_capture is None:
+            return
+        page = self.get_active_page()
+        if page is None:
+            return
+
+        async def _wait_and_capture():
+            try:
+                await page.wait_for_load_state('load', timeout=self.LOAD_SETTLE_TIMEOUT_MS)
+            except Exception:
+                logger.debug("[NAVIGATION] load did not settle; completing from the current DOM")
+            try:
+                if self.dom_capture is not None and not getattr(self.dom_capture, '_stopped', False):
+                    await self.capture_remote_page(reason='load_settle')
+            except Exception as exc:
+                logger.debug(f"[NAVIGATION] completion capture failed: {exc}")
+
+        try:
+            self._load_settle_task = asyncio.create_task(_wait_and_capture())
+        except Exception:
+            self._load_settle_task = None
+
+    # ------------------------------------------------------------------
+    # Profile state: collected WHILE the visitor is browsing
+    # ------------------------------------------------------------------
+    # A profile is only worth having if it is written while the visit is
+    # happening.  Before this, cookies/storage were read at start and never
+    # saved again, so everything a visitor did in a session was lost when it
+    # ended.  The collector below runs beside the live page — never in front of
+    # it — and writes what the visit produced.
+    PROFILE_SAVE_INTERVAL_S = 15.0
+    # Never capture more than this much storage for one origin (a runaway
+    # IndexedDB-sized localStorage would be written on every tick).
+    PROFILE_STORAGE_MAX_BYTES = 512 * 1024
+
+    async def _restore_profile_storage(self) -> bool:
+        """Seed localStorage/sessionStorage from the profile before navigation.
+
+        Only keys the page does not already have are written, so a returning
+        visitor's saved state wins where the page is blank and never overwrites
+        what the page itself just set.
+        """
+        if self._native_profile or self.browser_manager is None:
+            return False
+        data = await self.browser_manager.profile_manager.load_local_storage(self.user_id)
+        if not data:
+            return False
+        try:
+            payload = json.dumps({
+                str(origin): {str(k): str(v) for k, v in (vals or {}).items()}
+                for origin, vals in data.items() if isinstance(vals, dict)
+            }, ensure_ascii=False)
+        except Exception:
+            return False
+        if payload in ("{}", "null"):
+            return False
+        script = (
+            "(() => { try { const all = " + payload + ";"
+            " const d = all[location.origin]; if (!d) return;"
+            " for (const k in d) { try { if (localStorage.getItem(k) === null)"
+            " localStorage.setItem(k, d[k]); } catch (e) {} } } catch (e) {} })();"
+        )
+        try:
+            await self.context.add_init_script(script=script)
+            logger.debug("[PROFILE] restored storage for %d origin(s)", len(data))
+            return True
+        except Exception as exc:
+            logger.debug("[PROFILE] add_init_script failed: %s", exc)
+            return False
+
+    async def _harvest_profile_state(self) -> bool:
+        """Read the live page's cookies + storage and persist them."""
+        if self._native_profile or self.browser_manager is None:
+            return False
+        page = self.get_active_page()
+        if page is None:
+            return False
+        try:
+            url = str(getattr(page, "url", "") or "")
+        except Exception:
+            return False
+        if not url.startswith(("http://", "https://")):
+            return False
+        origin = url.split("#", 1)[0].split("?", 1)[0]
+        parts = origin.split("/")
+        origin = "/".join(parts[:3]) if len(parts) >= 3 else origin
+        saved = False
+        # ---- cookies ----
+        try:
+            cookies = await self.context.cookies([url])
+            if cookies:
+                await self.browser_manager.profile_manager.save_cookies(self.user_id, cookies)
+                saved = True
+        except Exception as exc:
+            logger.debug("[PROFILE] cookie harvest failed: %s", exc)
+        # ---- localStorage / sessionStorage for this origin ----
+        try:
+            dump = await page.evaluate(
+                "(() => { const o = {}; const grab = (s) => { const r = {};"
+                " try { for (let i = 0; i < s.length; i++) { const k = s.key(i);"
+                " r[k] = s.getItem(k); } } catch (e) {} return r; };"
+                " o.local = grab(window.localStorage);"
+                " o.session = grab(window.sessionStorage); return o; })()"
+            )
+            if isinstance(dump, dict) and (dump.get("local") or dump.get("session")):
+                blob = {
+                    "local": dump.get("local") or {},
+                    "session": dump.get("session") or {},
+                }
+                try:
+                    size = len(json.dumps(blob, ensure_ascii=False))
+                except Exception:
+                    size = 0
+                if 0 < size <= self.PROFILE_STORAGE_MAX_BYTES:
+                    await self.browser_manager.profile_manager.save_local_storage(
+                        self.user_id, origin, blob)
+                    saved = True
+        except Exception as exc:
+            logger.debug("[PROFILE] storage harvest failed: %s", exc)
+        return saved
+
+    async def _profile_collector(self) -> None:
+        """Persist profile state on a slow cadence for the whole visit."""
+        try:
+            while not self._streaming_shutdown_event.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._streaming_shutdown_event.wait(),
+                        timeout=self.PROFILE_SAVE_INTERVAL_S,
+                    )
+                    return                      # shutting down: handler saves
+                except asyncio.TimeoutError:
+                    pass
+                except asyncio.CancelledError:
+                    return
+                try:
+                    await self._harvest_profile_state()
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.debug("[PROFILE] collector stopped: %s", exc)
 
     async def _setup_input_focus_detection(self):
         """
@@ -3166,6 +3466,22 @@ class NeoStreamingSession:
         
         # PERFORMANCE: Signal streaming to shutdown
         self._streaming_shutdown_event.set()
+
+        # Last harvest BEFORE the browser goes away: whatever the visitor did in
+        # the final stretch of the visit belongs in the profile.  Bounded, so a
+        # wedged page can never hold teardown.
+        try:
+            harvest = getattr(self, '_harvest_profile_state', None)
+            if harvest is not None and not getattr(self, '_native_profile', False):
+                await asyncio.wait_for(harvest(), timeout=3.0)
+        except Exception:
+            pass
+        try:
+            collector = getattr(self, '_profile_collector_task', None)
+            if collector and not collector.done():
+                collector.cancel()
+        except Exception:
+            pass
         
         for task_name, task in tasks_to_cancel:
             if task:

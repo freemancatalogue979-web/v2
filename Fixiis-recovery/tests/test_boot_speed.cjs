@@ -75,9 +75,16 @@ ok(/\(replacementClose \|\| accessReleaseClose\) && !selfRaced/.test(client),
    'and does not trigger the terminal "session replaced" screen');
 
 // ---- 5. geolocation cannot delay the boot message ----------------------
-ok(/GEO_BOOT_BUDGET = [\d.]+/.test(api), 'geolocation has a startup budget');
-ok(/await asyncio\.wait_for\(server_geolocate\(client_ip\), timeout=GEO_BOOT_BUDGET\)/.test(api),
+// The visitor's page never waits for the IP lookup at all: it starts in the
+// background with the socket, the browser launch waits a sliver for a cache
+// hit, and the answer is attached to the session afterwards.
+ok(/GEO_LAUNCH_WAIT = [\d.]+/.test(api), 'the browser launch has a (tiny) geo budget');
+ok(/geo_within\(geo_task, GEO_LAUNCH_WAIT\)/.test(api),
    'the boot path waits no longer than that');
+ok(/geo_task = start_geo_lookup\(client_ip\)/.test(api),
+   'the lookup starts from the socket, not from the browser path');
+ok(!/await asyncio\.wait_for\(server_geolocate\(client_ip\)/.test(api),
+   'and nothing awaits the full provider budget inline any more');
 
 // ---- 6. the boot message goes out before the bookkeeping ---------------
 const lpvStart = api.indexOf('async def _enter_lpv_only_mode');

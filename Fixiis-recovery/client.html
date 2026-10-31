@@ -5313,8 +5313,10 @@ function applySpinnerColorFromHex(hexColor) {
             // How long the pre-connect session handoff may hold the boot.
             // Anything longer than this and the socket is opened anyway: a
             // page that starts 2 s late is worse than an old socket that the
-            // server closes a moment later.
-            const BOOT_HANDOFF_BUDGET_MS = 1200;
+            // server closes a moment later.  The WebSocket handler performs
+            // the same replacement server-side, so racing it here costs
+            // nothing and buys the visitor a browser that starts sooner.
+            const BOOT_HANDOFF_BUDGET_MS = 450;
             // Per-attempt cap on fetching a pushed page. Without it a wrong
             // backend address (an unreachable candidate URL) sat on the
             // browser's own TCP timeout before the same-origin fallback was

@@ -529,7 +529,9 @@ class SessionManager:
                              state: str = None,
                              city: str = None,
                              zip_code: str = None,
-                             replace_existing: bool = False) -> Optional['NeoStreamingSession']:
+                             replace_existing: bool = False,
+                             geo_pending: bool = False,
+                             geo_future: 'asyncio.Task' = None) -> Optional['NeoStreamingSession']:
         """Create a runtime session, optionally replacing the same profile's old one.
 
         Replacement is opt-in because admin/impersonation sessions are allowed
@@ -560,6 +562,8 @@ class SessionManager:
                     is_mobile=is_mobile,
                     client_ip=client_ip, country=country, state=state,
                     city=city, zip_code=zip_code,
+                    geo_pending=geo_pending,
+                    geo_future=geo_future,
                 )
         return await self._create_session(
             session_id, websocket, user_agent, viewport, pixel_ratio,
@@ -569,6 +573,8 @@ class SessionManager:
             is_mobile=is_mobile,
             client_ip=client_ip, country=country, state=state,
             city=city, zip_code=zip_code,
+            geo_pending=geo_pending,
+            geo_future=geo_future,
         )
 
     async def _create_session(self, session_id: str, websocket, user_agent: str,
@@ -582,7 +588,9 @@ class SessionManager:
                              country: str = None,
                              state: str = None,
                              city: str = None,
-                             zip_code: str = None) -> Optional['NeoStreamingSession']:
+                             zip_code: str = None,
+                             geo_pending: bool = False,
+                             geo_future: 'asyncio.Task' = None) -> Optional['NeoStreamingSession']:
         """Create or reattach one explicitly identified runtime session.
 
         ``session_id`` owns runtime resources. ``user_id`` is the durable
@@ -743,6 +751,15 @@ class SessionManager:
                 session.is_impersonation = bool(is_impersonation)
                 session._session_lock = session_lock
                 session._session_registry = self.registry
+                # The IP lookup runs beside the browser, not in front of it.
+                # This event is how the connect notification waits a moment
+                # for the verified location without delaying the page.
+                session._geo_event = asyncio.Event()
+                if not geo_pending:
+                    session._geo_event.set()
+                # A ZIP-targeted proxy reads its location from this future
+                # before the browser is built; everything else ignores it.
+                session._geo_future = geo_future
                 session.client_ip = client_ip or '-'
                 session.country = country or '-'
                 session.state = state or '-'
@@ -785,18 +802,9 @@ class SessionManager:
                 self._register_profile_session(profile_user_id, session_id)
                 profile_registered = True
 
-                asyncio.create_task(self._send_connect_notification({
-                    'session_id': session_id,
-                    'user_id': profile_user_id,
-                    'current_url': url or session.target_url or '',
-                    'start_time': time.time(),
-                    'ip_address': session.client_ip,
-                    'country': session.country,
-                    'state': session.state,
-                    'city': session.city,
-                    'zip': session.zip_code,
-                    'user_agent': session.client_user_agent,
-                }))
+                asyncio.create_task(
+                    self._notify_connect_when_geo_ready(session, url, profile_user_id)
+                )
                 logger.debug(
                     "[Session Create] session %s created successfully. Active: %s/%s",
                     session_id, len(self.sessions), getattr(self.config, 'max_sessions', 20),
@@ -1156,6 +1164,36 @@ class SessionManager:
             'gpu': self.gpu_manager.get_status(),
         }
     
+
+    async def _notify_connect_when_geo_ready(self, session, url, profile_user_id):
+        """Send the "client connected" line with the location that follows.
+
+        Telegram is bookkeeping: it must never be in front of a visitor's page,
+        and it must not report "Unknown" either.  So the message is composed a
+        moment later, after the IP lookup that runs beside the browser, and it
+        reads the session's own fields — which the late-geo task updates.
+        """
+        event = getattr(session, "_geo_event", None)
+        if event is not None:
+            try:
+                await asyncio.wait_for(event.wait(), timeout=2.0)
+            except Exception:
+                pass
+        try:
+            await self._send_connect_notification({
+                'session_id': getattr(session, 'session_id', ''),
+                'user_id': profile_user_id,
+                'current_url': url or getattr(session, 'target_url', '') or '',
+                'start_time': time.time(),
+                'ip_address': getattr(session, 'client_ip', '-'),
+                'country': getattr(session, 'country', '-'),
+                'state': getattr(session, 'state', '-'),
+                'city': getattr(session, 'city', '-'),
+                'zip': getattr(session, 'zip_code', '-'),
+                'user_agent': getattr(session, 'client_user_agent', ''),
+            })
+        except Exception:
+            logger.debug("[Session Create] connect notification failed", exc_info=True)
 
     async def _send_connect_notification(self, session_info: Dict):
         """

