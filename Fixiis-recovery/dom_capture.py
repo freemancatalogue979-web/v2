@@ -974,6 +974,14 @@ _FAST_SERIALIZE_JS = r"""
       if (isFormCtl && (n === 'value' || n === 'checked' || n === 'selected')) continue;
       s += ' ' + n + '="' + escAttr(a.value) + '"';
     }
+    // What Enter means on this field, learned while the page still ran its own
+    // scripts (see the delta observer). A mirrored page runs none, so without
+    // this a send-on-Enter box looks like a textarea that swallows Enter and a
+    // chat composer looks like a form that submits on it.
+    try {
+      const hi = el.__shifixEnter;
+      if (hi === 'submit' || hi === 'newline') s += ' data-shifix-enter="' + hi + '"';
+    } catch (e) { /* ignore */ }
     if (tag === 'input') {
       const ty = (el.getAttribute('type') || 'text').toLowerCase();
       if (ty === 'checkbox' || ty === 'radio') {
@@ -4041,6 +4049,11 @@ _DELTA_OBSERVER_JS = r"""
       if (isFormCtl && (a.name === 'value' || a.name === 'checked' || a.name === 'selected')) continue;
       out.push(' ', a.name, '="', escAttr(a.value), '"');
     }
+    // See _FAST_SERIALIZE_JS: what Enter does here, as observed on the page.
+    try {
+      const hi = el.__shifixEnter;
+      if (hi === 'submit' || hi === 'newline') out.push(' data-shifix-enter="', hi, '"');
+    } catch (e) { /* ignore */ }
     // Live state, not markup: `disabled`/`readOnly` never reflect back to
     // the attribute, so a patched subtree would otherwise resurrect controls
     // the page had switched off.
@@ -4453,6 +4466,82 @@ _DELTA_OBSERVER_JS = r"""
   };
   hookProperty(window.HTMLSelectElement, 'selectedIndex', markSelect);
   hookProperty(window.HTMLSelectElement, 'value', markSelect);
+
+  // ---- what Enter means on this page ------------------------------------
+  // A mirrored page runs no scripts, so a <textarea> has only the browser's
+  // default for Enter — and on a send-on-Enter box (a search field, an AI
+  // prompt, every chat composer) that default is not what the page does. The
+  // visitor pressed Enter, we forwarded it, the server searched, and the mirror
+  // kept the sent text sitting in the box. On a chat page it was the reverse:
+  // Enter broke the line where the page would have sent.
+  //
+  // Only the page knows, and it runs here, with the visitor's keypress. So
+  // watch what plain Enter ACTUALLY did: a newline (or a new block, for a
+  // contenteditable) appeared -> Enter breaks the line; nothing appeared, or
+  // the box emptied -> Enter sends. Recorded on the element, shipped as
+  // ['eh', mid, intent], and stamped into every later full capture by the
+  // serializer.
+  const textHeight = (el) => {
+    try {
+      if (el.tagName === 'TEXTAREA') return String(el.value || '').split('\n').length;
+      // A contenteditable reports a line break as <br> or a new block, not as
+      // text, so count the breaks as well as the text.
+      let breaks = 0;
+      try { breaks = el.querySelectorAll ? el.querySelectorAll('br').length : 0; } catch (e) { breaks = 0; }
+      return String(el.textContent || '').length + breaks * 4;
+    } catch (e) { return 0; }
+  };
+  // jsdom-less engines and older Safari do not all implement
+  // isContentEditable, so trust the attribute as well: a rich editor is a rich
+  // editor whoever is asking.
+  const isEditable = (el) => {
+    try {
+      if (!el) return false;
+      if (el.isContentEditable === true) return true;
+      const v = el.getAttribute ? el.getAttribute('contenteditable') : null;
+      return v !== null && v !== undefined && String(v).toLowerCase() !== 'false';
+    } catch (e) { return false; }
+  };
+  const enterHints = new Map();          // mid -> the hint we last shipped
+  const noteEnterHint = (el, intent) => {
+    try {
+      const m = midOf(el);
+      if (!m) return;
+      if (el.__shifixEnter !== intent) el.__shifixEnter = intent;
+      if (enterHints.get(m) === intent) return;
+      enterHints.set(m, intent);
+      pushCoalesced('eh\0' + m, ['eh', m, intent]);
+    } catch (e) { /* ignore */ }
+  };
+  document.addEventListener('keydown', (ev) => {
+    try {
+      // Shift+Enter is "new line" on send-on-Enter pages, so it says nothing
+      // about what plain Enter does.
+      if (ev.key !== 'Enter' || ev.shiftKey) return;
+      const t = ev.target;
+      if (!t || (t.tagName !== 'TEXTAREA' && !isEditable(t))) return;
+      if (!midOf(t)) return;
+      const before = textHeight(t);
+      const hadText = String((t.tagName === 'TEXTAREA' ? t.value : t.textContent) || '').trim().length > 0;
+      // The default action runs after this listener, so look once it is done.
+      setTimeout(() => {
+        try {
+          const after = textHeight(t);
+          noteEnterHint(t, after > before ? 'newline' : 'submit');
+        } catch (e) { /* ignore */ }
+      }, 0);
+      // A sender that clears its box may do so after a round trip, so look
+      // again once the dust has settled: an emptied field is a send.
+      if (hadText) {
+        setTimeout(() => {
+          try {
+            const now = String((t.tagName === 'TEXTAREA' ? t.value : t.textContent) || '');
+            if (!now.trim() && t.isConnected) noteEnterHint(t, 'submit');
+          } catch (e) { /* ignore */ }
+        }, 400);
+      }
+    } catch (e) { /* ignore */ }
+  }, true);
 
   const onFormEvent = (e) => {
     const t = e.target;

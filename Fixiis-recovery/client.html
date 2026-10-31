@@ -11917,6 +11917,18 @@ function stripDeadMirrorNodes(root) {
                                 }
                                 if (op[3] !== null && op[3] !== undefined) { try { el.checked = !!op[3]; } catch (e) {} }
                                 applied++;
+                            } else if (kind === 'eh') {
+                                // What plain Enter does in this field, as the
+                                // page itself did it. Stored on the element so
+                                // enterIntentFor() sees it immediately; the
+                                // attribute keeps it through a re-parse.
+                                const el = map.get(op[1]);
+                                if (!el) { missing++; continue; }
+                                try {
+                                    el.setAttribute('data-shifix-enter', op[2]);
+                                    el.__shifixEnter = op[2];
+                                } catch (e) { /* ignore */ }
+                                applied++;
                             } else if (kind === 'overflow') {
                                 requestResync(state._deltaGen, 'delta_overflow');
                                 return false;
@@ -12755,6 +12767,54 @@ function stripDeadMirrorNodes(root) {
                 processTree(doc.body || doc.documentElement);
             }
 
+            // ---- what Enter means in a mirrored field -------------------
+            // The mirror runs none of the page's scripts, so a send-on-Enter
+            // box cannot tell us anything by itself: the browser default for a
+            // textarea is a newline, and a page that sends on Enter usually
+            // suppresses that default. Result: the visitor pressed Enter, the
+            // key went to the server, the search happened — and the mirror sat
+            // there with the text still in the box, looking unsubmitted.
+            //
+            // Three sources, strongest first:
+            //   1. data-shifix-enter — what plain Enter actually did while the
+            //      page ran with its own scripts. Set on the server, carried by
+            //      every capture and every patch, so it survives a resync.
+            //   2. combobox semantics — a textarea declaring role=combobox (or
+            //      aria-autocomplete) commits its value on Enter by definition.
+            //   3. the element — <input> submits, a plain textarea and a
+            //      contenteditable break the line.
+            // Returns 'submit' (send the key, keep the box) or 'newline' (let
+            // the browser insert the break).
+            function isEditableHost(el) {
+                if (!el) return false;
+                try {
+                    if (el.isContentEditable === true) return true;
+                    // Not every engine implements isContentEditable; the
+                    // attribute is the same fact.
+                    const v = el.getAttribute && el.getAttribute('contenteditable');
+                    return v !== null && v !== undefined && String(v).toLowerCase() !== 'false';
+                } catch (e) { return false; }
+            }
+
+            function enterIntentFor(el) {
+                if (!el) return 'submit';
+                try {
+                    const hint = (el.getAttribute && el.getAttribute('data-shifix-enter')) || '';
+                    if (hint === 'submit' || hint === 'newline') return hint;
+                } catch (e) { /* ignore */ }
+                const tag = el.tagName;
+                if (tag === 'TEXTAREA') {
+                    try {
+                        const role = (el.getAttribute('role') || '').toLowerCase();
+                        if (role === 'combobox' || el.hasAttribute('aria-autocomplete')) return 'submit';
+                    } catch (e) { /* ignore */ }
+                    return 'newline';
+                }
+                if (tag === 'INPUT') return 'submit';
+                if (isEditableHost(el)) return 'newline';
+                return 'submit';
+            }
+
             function setupIframeEventListeners(d) {
                 setupFloatingLabelOverlay(d);
 
@@ -12918,7 +12978,40 @@ function stripDeadMirrorNodes(root) {
                         try { mirrorClick(target); } catch (e) { /* ignore */ }
                         return;
                     }
-                    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+                    // Enter is not one key with one meaning. In a send-on-Enter
+                    // box it must suppress the browser's newline (otherwise the
+                    // mirror grows a line the page never had) and let the page's
+                    // answer be authoritative; in a multiline composer the
+                    // newline IS the answer and the browser should insert it.
+                    if (ev.key === 'Enter' && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || isEditableHost(target))) {
+                        const intent = enterIntentFor(target);
+                        // Shift+Enter means "new line" on every send-on-Enter
+                        // composer. On an <input> it must not fall through to
+                        // implicit submission, which would navigate the mirror.
+                        const breaksLine = intent === 'newline' || (ev.shiftKey && target.tagName !== 'INPUT');
+                        if (!breaksLine) {
+                            try { ev.preventDefault(); } catch (e) { /* ignore */ }
+                            // The page must have the text before it acts on it.
+                            try { flushInputSync(target); } catch (e) { /* ignore */ }
+                            // A sender usually clears its box next. Its value
+                            // op has to win over the keystroke protection, or
+                            // the mirror keeps the text the visitor already
+                            // sent and the page looks stuck.
+                            try { clearTyped(target); target._lastValue = getInputValue(target); } catch (e) { /* ignore */ }
+                            send({
+                                type: 'keypress',
+                                key: 'Enter',
+                                mid: getMid(target),
+                                selector: getSelector(target),
+                                ctrl: ev.ctrlKey,
+                                shift: ev.shiftKey,
+                                alt: ev.altKey,
+                                meta: ev.metaKey,
+                            });
+                            return;
+                        }
+                    }
+                    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || isEditableHost(target)) {
                         const specialKeys = ['Enter', 'Backspace', 'Delete', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
                         if (specialKeys.includes(ev.key)) {
                             // CRITICAL: do NOT call ev.preventDefault() here.
@@ -12949,17 +13042,9 @@ function stripDeadMirrorNodes(root) {
                             // Escape, Arrows) the input event never fires
                             // on its own, so we still forward them here.
                             const charModifyingKeys = ['Backspace', 'Delete'];
-                            // Enter in a text INPUT: suppress implicit form
-                            // submission locally.  Otherwise the browser fires
-                            // implicit submission, which (a) navigates the
-                            // iframe off the blob: page and (b) ALSO activates
-                            // the form's submit button -> our click handler
-                            // sends a click AND the server gets Enter = double
-                            // submit = the "Enter resets the page" report.
-                            // The server-side Enter reproduces the real submit.
-                            if (ev.key === 'Enter' && target.tagName === 'INPUT') {
-                                try { ev.preventDefault(); } catch (e) { /* ignore */ }
-                            }
+                            // (Enter is settled above: implicit submission for
+                            // an <input> is suppressed there, so the browser
+                            // never navigates the mirror or double-submits.)
                             if (!charModifyingKeys.includes(ev.key)) {
                                 try { flushInputSync(target); } catch (e) { /* ignore */ }
                                 send({
