@@ -722,7 +722,11 @@ function makeSandbox(outer, mirror, extras = {}) {
 // ---------------------------------------------------------------------------
 {
   ok(/_DELTA_OBSERVER_JS = r"""/.test(py), 'the delta observer is in dom_capture.py');
-  const obs = py.slice(py.indexOf('_DELTA_OBSERVER_JS = r"""'), py.indexOf('_DELTA_OBSERVER_JS = r"""') + 16000);
+  // The whole literal, not a fixed byte window: the observer grows, and a
+  // window silently stops looking at the code it is meant to check.
+  const obsStart = py.indexOf('_DELTA_OBSERVER_JS = r"""');
+  const obsBody = py.indexOf('"""', obsStart) + 3;
+  const obs = py.slice(obsStart, py.indexOf('"""', obsBody));
   ok(/const tabMetaNow = \(\) =>/.test(obs), 'the capture page computes the tab identity');
   ok(/\['meta', meta\[0\], meta\[1\]\]/.test(obs), 'and ships it as a meta op');
   ok(/if \(!overflowed\) \{[\s\S]{0,200}pendingMeta\(\)/.test(obs),

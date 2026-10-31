@@ -1439,6 +1439,29 @@ are exactly what "some content is missing" looks like.
 | lazy-loads images (`loading="lazy"`) | native lazy loading defers them again in the mirror's frame | forced eager — the capture is a photograph of a loaded page |
 | declares a **font, background image or sprite icon inside the page** — `@font-face` in its own `<style>`, `style="background-image:url(…)"`, `<use href="/sprite.svg#icon">`, `<video poster>` | the rewrite only saw URLs that are attributes of `<img>`/`<script>`/`<link>`. Everything reached through CSS or SVG stayed pointed at the site: a **webfont is fetched in CORS mode**, the site sends no `Access-Control-Allow-Origin` for its own fonts, so every inline-declared font was blocked and the whole page rendered in the fallback face (silently); `<use>` of a **cross-origin** file is refused outright, so sprite icons vanished; backgrounds were re-fetched from the site and broke under hotlink protection | the same collection pass now reads `<style>` bodies, `style=""` attributes, `<video poster>` and SVG `<use>`/`<image>` hrefs. Small ones are embedded as `data:` URIs (fonts included — nothing left to block), larger ones go to `/assets/<hash>`, and a sprite keeps its `#fragment`. Refs inside `<script>` bodies and comments are never touched |
 | styles a component with `insertRule()` — Fluent UI/Griffel, Emotion, styled-components | the rules live in the CSSOM of an `<style>` element that already exists: no DOM text, no MutationObserver record. A component rendered **after** the first capture reached the mirror with its classes (`fui-Input__input r12stul0`) and none of their declarations — on a sign-in step that is six one-time-code boxes drawn as full-width default inputs, in the wrong place | every `<style>` is serialized from `sheet.cssRules`, never from stale text; a cheap **rule-count signature** notices growth (even with no DOM change at all) and the changed stylesheets are re-shipped as `s` ops on the delta channel, with a 1.2 s check for rules inserted just after a mount. `tests/test_cssom_styles.cjs` runs the real observer against a Fluent-shaped page and asserts the six cells arrive with `width:44px; border-radius:6px` |
+| **rebuilds a list from a cached row** — `seed.cloneNode(true)`, a virtualised table recycling rows, any keyed list that reuses a template (Google's autocomplete suggestions, agenda grids) | `cloneNode()` copies attributes, `data-mid` included, so every clone arrived carrying its source's id: several live siblings shared one `data-mid`. The mirror's `querySelector('[data-mid="7"]')` always found the first of them, so a patch for row 3 repainted row 1, and the client's insert handler evicted whatever already held the incoming id — **rows vanished instead of updating** | an id belongs to one live element. A `data-mid` found in an attribute is adopted only when no other element owns it (owner map, then a query of the live tree); otherwise the clone is stamped fresh, and fresh ids are lifted above every id already in the document so the two can never meet. Removal ops refuse to name an id a live element still owns. `tests/test_duplicate_mids.cjs` runs the real observer over an autocomplete-shaped list and replays its ops into a miniature mirror: four rows in, four rows out, the right one repainted |
+| **updates a label with `textContent = 'x'`** / `innerText`, or swaps text for markup via `innerHTML` | that does not edit a text node, it deletes the children and inserts new ones — a childList record the delta channel only half-carried: the removal was dropped (text nodes were skipped) and the new text shipped as an insert, which **appended** beside the old one. The mirror read `AI ModeAI Mode`, `hihi`, every doubled label | text-node churn is described by index (`t` ops for the target's text nodes after the mutation) instead of as an insert, and a replacement ships no insert op. When more text was removed than added the leftover is blanked, so nothing the page deleted stays on screen |
+
+### Node identity: one id, one element
+
+Every element in a delta-enabled capture carries `data-mid`, stamped from a
+page-lifetime `WeakMap` that the delta observer and the full serializer share.
+That identity is the whole channel: a patch, a click, a removal is a number.
+It only works while the invariant holds, so the invariant is enforced where the
+ids are minted rather than hoped for downstream:
+
+* **an id in an attribute is a claim, not a fact.** It is adopted only when no
+  other live element owns it — checked against an owner map, then against the
+  live tree, because a clone can appear before its source was ever serialized.
+  A clone that loses the claim is re-stamped and its attribute rewritten;
+* **a fresh id clears every id already in the document** (one scan, at the
+  first allocation). A counter that starts at 1 on a page already holding ids
+  up to 8 will hand out 5 again, and the mirror will have two of everything;
+* **an id never drifts.** The same element keeps its mid across any number of
+  captures, which is what makes a later patch land on it at all.
+
+`tests/test_duplicate_mids.cjs` holds all three, plus the text-node rule above,
+by running the real observer and replaying its ops into a miniature mirror.
 
 ### Speed: where the wall clock went
 
@@ -1907,6 +1930,7 @@ python3 tests/test_timezone.py            # the clock alerts are written in: set
 node tests/test_clock_panel.cjs           # panels print in that same clock (32 checks)
 node tests/test_tab_identity.cjs          # the tab is the page: title + icon, live
 node tests/test_cssom_styles.cjs          # insertRule() CSS reaches the mirror (needs jsdom)
+node tests/test_duplicate_mids.cjs        # one data-mid per element; textContent() is a patch, not an append
 node tests/test_pc_only_gate.cjs          # the CDP cast screens refuse a phone
 node tests/test_pcm_view_size.cjs         # the PCM pane maths, executed (16 checks)
 node tests/test_domain_tab_ui.cjs         # the Domains tab (uploaded spinner + provider logo)

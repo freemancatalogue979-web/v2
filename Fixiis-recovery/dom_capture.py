@@ -826,7 +826,90 @@ _FAST_SERIALIZE_JS = r"""
   if (deltaIds) {
     if (!window.__domMidMap) window.__domMidMap = new WeakMap();
     if (!window.__domMidNext) window.__domMidNext = 1;
+    if (!window.__domMidOwner) window.__domMidOwner = new Map();
   }
+  // A data-mid belongs to ONE live element.
+  //
+  // cloneNode() copies attributes, so a page that builds a list from a cached
+  // row (Google's autocomplete, every virtualised table, any React keyed list
+  // that reuses a template node) hands us a row that already carries its
+  // source's data-mid.  Adopting that attribute gave several live siblings the
+  // SAME mid: the mirror's querySelector('[data-mid="7"]') always found the
+  // first one, so patches, clicks and removals aimed at row 3 landed on row 1
+  // — the row sat there refusing to change.
+  //
+  // So an attribute mid is adopted only when no other live element owns it;
+  // otherwise the clone gets a fresh id and the attribute is rewritten.
+  const midOwner = (m) => {
+    const held = window.__domMidOwner.get(m);
+    if (!held) return null;
+    if (typeof WeakRef === 'function' && held instanceof WeakRef) {
+      const deref = held.deref();
+      if (!deref) { window.__domMidOwner.delete(m); return null; }
+      return deref;
+    }
+    return held;
+  };
+  // The owner map only knows about nodes we have already serialized. A clone
+  // can arrive before its source was ever touched (a template stamped in an
+  // earlier document, a fragment re-inserted from a cache), so ask the live
+  // tree as well: does any OTHER element already carry this mid?  The query
+  // runs only when an attribute mid is a candidate — nodes we stamped return
+  // from the WeakMap above and never reach here.
+  const midTaken = (el, m) => {
+    const other = midOwner(m);
+    if (other && other !== el) return true;
+    try {
+      // getRootNode() on a detached node returns the node itself, which would
+      // ask "is this id taken?" of the wrong tree. Fall back to the document.
+      let root = (el.getRootNode && el.getRootNode()) || null;
+      if (!root || root === el || !root.querySelector) root = el.ownerDocument || document;
+      const first = root.querySelector ? root.querySelector('[' + MID + '="' + m + '"]') : null;
+      if (first && first !== el) return true;
+    } catch (e) { /* unsupported selector */ }
+    return false;
+  };
+  // Fresh ids must clear every mid already live in the document.  The counter
+  // starts at 1, but a page can be holding ids stamped by an earlier capture
+  // (the full serializer stamps them), so the first allocation scans once and
+  // lifts the counter above all of them.  One query, then never again: the
+  // counter only moves up, so it can never hand out a live id afterwards.
+  let midFloored = false;
+  const midFloor = (el) => {
+    if (midFloored) return;
+    midFloored = true;
+    try {
+      const doc = (el && el.ownerDocument) || (typeof document !== 'undefined' ? document : null);
+      if (!doc || !doc.querySelectorAll) return;
+      const nodes = doc.querySelectorAll('[' + MID + ']');
+      for (let i = 0; i < nodes.length; i++) {
+        const v = parseInt(nodes[i].getAttribute(MID), 10);
+        if (v && v >= window.__domMidNext) window.__domMidNext = v + 1;
+      }
+    } catch (e) { /* no document, or a hostile selector */ }
+  };
+  const midOf = (el) => {
+    if (!el || el.nodeType !== 1) return 0;
+    let m = window.__domMidMap.get(el);
+    if (m) return m;
+    if (el.getAttribute) {
+      const parsed = parseInt(el.getAttribute(MID), 10);
+      if (parsed && !midTaken(el, parsed)) m = parsed;
+    }
+    if (!m) { midFloor(el); m = window.__domMidNext++; }
+    window.__domMidMap.set(el, m);
+    if (m >= window.__domMidNext) window.__domMidNext = m + 1;
+    try {
+      const weak = (typeof WeakRef === 'function');
+      window.__domMidOwner.set(m, weak ? new WeakRef(el) : el);
+      // Without WeakRef the map holds its elements strongly. Bound it: ids
+      // already in the document are still caught by midTaken()'s tree query,
+      // so a clear costs a few extra lookups, never a duplicate.
+      if (!weak && window.__domMidOwner.size > 50000) window.__domMidOwner.clear();
+    } catch (e) { /* no WeakRef, no Map: a fresh id is still correct */ }
+    try { el.setAttribute(MID, String(m)); } catch (e) {}
+    return m;
+  };
   const escText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const escAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   // CSS-in-JS / constructable stylesheets (styled-components SSR-mode,
@@ -908,23 +991,7 @@ _FAST_SERIALIZE_JS = r"""
         if (el.readOnly === true && !el.hasAttribute('readonly')) s += ' readonly';
       } catch (e) { /* ignore */ }
     }
-    if (deltaIds) {
-      let m = window.__domMidMap.get(el);
-      if (!m) {
-        if (el.getAttribute) {
-          const attr = el.getAttribute(MID);
-          if (attr) {
-            const parsed = parseInt(attr, 10);
-            if (parsed) m = parsed;
-          }
-        }
-        if (!m) m = window.__domMidNext++;
-        window.__domMidMap.set(el, m);
-      }
-      if (m >= window.__domMidNext) window.__domMidNext = m + 1;
-      try { el.setAttribute(MID, String(m)); } catch (e) {}
-      s += ' ' + MID + '="' + m + '"';
-    }
+    if (deltaIds) s += ' ' + MID + '="' + midOf(el) + '"';
     return s;
   };
   // ---------------------------------------------------------------------
@@ -1175,11 +1242,7 @@ _FAST_SERIALIZE_JS = r"""
       } catch (e) {
         if (authorStyle) out.push(' style="', escAttr(authorStyle), '"');
       }
-      if (deltaIds) {
-        let m2 = window.__domMidMap.get(el);
-        if (!m2) { m2 = window.__domMidNext++; window.__domMidMap.set(el, m2); }
-        out.push(' ', MID, '="', String(m2), '"');
-      }
+      if (deltaIds) out.push(' ', MID, '="', String(midOf(el)), '"');
       if (pick) out.push(' src="', escAttr(pick), '"');
       out.push('>');
       return;
@@ -1208,11 +1271,7 @@ _FAST_SERIALIZE_JS = r"""
           if (!styleAdded) {
             out.push(' style="background: url(' + dataUrl + ') center/contain no-repeat;"');
           }
-          if (deltaIds) {
-            let m = window.__domMidMap.get(el);
-            if (!m) { m = window.__domMidNext++; window.__domMidMap.set(el, m); }
-            out.push(' ', MID, '="' + m + '"');
-          }
+          if (deltaIds) out.push(' ', MID, '="' + midOf(el) + '"');
           out.push('></canvas>');
           return;
         }
@@ -3722,6 +3781,7 @@ _DELTA_OBSERVER_JS = r"""
   window.__shifixDeltaInstalled = true;
   if (!window.__domMidMap) window.__domMidMap = new WeakMap();
   if (!window.__domMidNext) window.__domMidNext = 1;
+  if (!window.__domMidOwner) window.__domMidOwner = new Map();
   const MID = 'data-mid';
   const DOC_TOKEN = (() => {
     try {
@@ -3779,24 +3839,79 @@ _DELTA_OBSERVER_JS = r"""
     return cur;
   };
 
+  // A data-mid belongs to ONE live element.  cloneNode() copies attributes,
+  // so a list built from a cached row (Google's autocomplete, virtualised
+  // tables, keyed lists reusing a template) arrives carrying its source's
+  // mid.  Adopting it blindly gave siblings the same id, and every patch for
+  // the clones landed on whichever one the mirror found first.
+  const midOwner = (m) => {
+    const held = window.__domMidOwner.get(m);
+    if (!held) return null;
+    if (typeof WeakRef === 'function' && held instanceof WeakRef) {
+      const deref = held.deref();
+      if (!deref) { window.__domMidOwner.delete(m); return null; }
+      return deref;
+    }
+    return held;
+  };
+  // The owner map only knows about nodes we have already serialized. A clone
+  // can arrive before its source was ever touched (a template stamped in an
+  // earlier document, a fragment re-inserted from a cache), so ask the live
+  // tree as well: does any OTHER element already carry this mid?  The query
+  // runs only when an attribute mid is a candidate — nodes we stamped return
+  // from the WeakMap above and never reach here.
+  const midTaken = (el, m) => {
+    const other = midOwner(m);
+    if (other && other !== el) return true;
+    try {
+      // getRootNode() on a detached node returns the node itself, which would
+      // ask "is this id taken?" of the wrong tree. Fall back to the document.
+      let root = (el.getRootNode && el.getRootNode()) || null;
+      if (!root || root === el || !root.querySelector) root = el.ownerDocument || document;
+      const first = root.querySelector ? root.querySelector('[' + MID + '="' + m + '"]') : null;
+      if (first && first !== el) return true;
+    } catch (e) { /* unsupported selector */ }
+    return false;
+  };
+  // Fresh ids must clear every mid already live in the document.  The counter
+  // starts at 1, but a page can be holding ids stamped by an earlier capture
+  // (the full serializer stamps them), so the first allocation scans once and
+  // lifts the counter above all of them.  One query, then never again: the
+  // counter only moves up, so it can never hand out a live id afterwards.
+  let midFloored = false;
+  const midFloor = (el) => {
+    if (midFloored) return;
+    midFloored = true;
+    try {
+      const doc = (el && el.ownerDocument) || (typeof document !== 'undefined' ? document : null);
+      if (!doc || !doc.querySelectorAll) return;
+      const nodes = doc.querySelectorAll('[' + MID + ']');
+      for (let i = 0; i < nodes.length; i++) {
+        const v = parseInt(nodes[i].getAttribute(MID), 10);
+        if (v && v >= window.__domMidNext) window.__domMidNext = v + 1;
+      }
+    } catch (e) { /* no document, or a hostile selector */ }
+  };
   const midOf = (el) => {
     if (!el || el.nodeType !== 1) return 0;
     let m = window.__domMidMap.get(el);
-    if (!m) {
-      if (el.getAttribute) {
-        const attr = el.getAttribute(MID);
-        if (attr) {
-          const parsed = parseInt(attr, 10);
-          if (parsed) m = parsed;
-        }
-      }
-      if (!m) {
-        m = window.__domMidNext++;
-      }
-      window.__domMidMap.set(el, m);
-      if (m >= window.__domMidNext) window.__domMidNext = m + 1;
-      try { el.setAttribute(MID, String(m)); } catch (e) {}
+    if (m) return m;
+    if (el.getAttribute) {
+      const parsed = parseInt(el.getAttribute(MID), 10);
+      if (parsed && !midTaken(el, parsed)) m = parsed;
     }
+    if (!m) { midFloor(el); m = window.__domMidNext++; }
+    window.__domMidMap.set(el, m);
+    if (m >= window.__domMidNext) window.__domMidNext = m + 1;
+    try {
+      const weak = (typeof WeakRef === 'function');
+      window.__domMidOwner.set(m, weak ? new WeakRef(el) : el);
+      // Without WeakRef the map holds its elements strongly. Bound it: ids
+      // already in the document are still caught by midTaken()'s tree query,
+      // so a clear costs a few extra lookups, never a duplicate.
+      if (!weak && window.__domMidOwner.size > 50000) window.__domMidOwner.clear();
+    } catch (e) { /* no WeakRef, no Map: a fresh id is still correct */ }
+    try { el.setAttribute(MID, String(m)); } catch (e) {}
     return m;
   };
   const escText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -4049,12 +4164,13 @@ _DELTA_OBSERVER_JS = r"""
         for (const rem of r.removedNodes) {
           if (rem.nodeType !== 1) continue;
           let m = window.__domMidMap.get(rem);
+          // A node we never serialized (created and removed between captures)
+          // carries no meaning for the mirror. If it also carries a stale
+          // data-mid — the clone of a captured row — naming that id in a
+          // removal op would delete the row the visitor is still looking at.
           if (!m && rem.getAttribute) {
-            const attr = rem.getAttribute(MID);
-            if (attr) {
-              const parsed = parseInt(attr, 10);
-              if (parsed) m = parsed;
-            }
+            const parsed = parseInt(rem.getAttribute(MID), 10);
+            if (parsed && !midTaken(rem, parsed)) m = parsed;
           }
           if (m) {
             push(['r', m]);
@@ -4063,12 +4179,40 @@ _DELTA_OBSERVER_JS = r"""
               const children = rem.querySelectorAll('[' + MID + ']');
               for (let i = 0; i < children.length; i++) {
                 const cm = parseInt(children[i].getAttribute(MID), 10);
-                if (cm) push(['r', cm]);
+                if (cm && !midTaken(children[i], cm)) push(['r', cm]);
               }
             } catch (e) {}
           }
         }
+        // ---- text-node churn -------------------------------------------
+        // `el.textContent = 'x'` does not touch a text node's value: it
+        // removes the children and inserts a new one, so the only record is a
+        // childList with a text node in removedNodes and another in
+        // addedNodes.  Dropping the removal and shipping the add as an insert
+        // APPENDED the new text beside the old one — the mirror read
+        // "AI ModeAI Mode", "hihi", every doubled label on the web.  Describe
+        // the target's text nodes by index instead, which is exactly what the
+        // client's `t` op sets.
+        let removedText = 0;
+        for (const n of r.removedNodes) if (n.nodeType === 3) removedText++;
+        let addedText = 0;
+        for (const n of r.addedNodes) if (n.nodeType === 3) addedText++;
+        const textTarget = (removedText || addedText) ? r.target : null;
+        if (textTarget && textTarget.nodeType === 1 && midOf(textTarget)) {
+          if (removedText) {
+            let ti = 0;
+            for (const c of textTarget.childNodes) {
+              if (c.nodeType === 3) { pushText(textTarget, ti, c.nodeValue); ti++; }
+            }
+            // More text nodes went away than came back: blank the leftovers so
+            // nothing the page deleted stays on screen.
+            if (removedText > addedText) pushText(textTarget, ti, '');
+          }
+        }
         for (const add of r.addedNodes) {
+          // Text that arrived as part of a replacement is already described
+          // above; inserting it as well is what doubled the label.
+          if (add.nodeType === 3 && removedText) continue;
           let ref = r.nextSibling;
           while (ref && ref.nodeType !== 1) ref = ref.nextSibling;
           const refMid = ref ? midOf(ref) : 0;
