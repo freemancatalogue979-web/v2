@@ -49,8 +49,18 @@ ok(deltaSrc.includes("pushCoalesced('s|' + id, ['s', id, css])"),
   'a changed <style> is re-sent from the CSSOM as an `s` op');
 ok(deltaSrc.includes("pushCoalesced('s|0', ['s', 0, adopted])"),
   'adopted stylesheets ride the same op (id 0)');
-ok(/const flush = \(\) => \{\s*scheduled = false;\s*\/\/[\s\S]{0,200}?flushStyleOps\(\)/.test(deltaSrc),
-  'every batch looks at the CSSOM first');
+// Structural, not whitespace-sensitive: the CSSOM check must run inside the
+// flush, before the ops are taken off the queue.
+{
+  const flushStart = deltaSrc.indexOf('const flush = () => {');
+  const flushEnd = deltaSrc.indexOf('const push = (op)', flushStart);
+  const body = flushStart >= 0 && flushEnd > flushStart
+    ? deltaSrc.slice(flushStart, flushEnd) : '';
+  const cssomAt = body.indexOf('flushStyleOps()');
+  const sendAt = body.indexOf('ops.splice');
+  ok(cssomAt > 0 && (sendAt < 0 || cssomAt < sendAt),
+    'every batch looks at the CSSOM first');
+}
 ok(deltaSrc.includes('setInterval(') && deltaSrc.indexOf('setInterval(') > deltaSrc.indexOf('window.__shifixDeltaFlush = flush;'),
   'and a slow timer catches growth that never coincides with a DOM change');
 ok(deltaSrc.includes("(liveSheetCss(el.sheet) || el.textContent || '')"),

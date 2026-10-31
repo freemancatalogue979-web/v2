@@ -10207,7 +10207,57 @@ function applySpinnerColorFromHex(hexColor) {
             // filtered server-side; run the same guard on every delta fragment
             // and legacy outerHTML patch so an error island can never re-enter
             // the mirror after the initial snapshot.
-            function stripDeadMirrorNodes(root) {
+            // Walk elements AND their open shadow roots, yielding [node, mid] for every
+// stamped node. querySelectorAll() stops at a shadow boundary, so without this
+// a patch aimed at a web component's internals had no element to land on and
+// was counted as missing — the component's text simply never changed.
+function eachMidDeep(root, fn, depth) {
+    if (!root || (depth || 0) > 8) return 0;
+    let seen = 0;
+    let stamped = [];
+    try { stamped = root.querySelectorAll('[data-mid]'); } catch (e) { return 0; }
+    for (const el of stamped) {
+        const id = parseInt(el.getAttribute('data-mid'), 10);
+        if (isNaN(id)) continue;
+        seen++;
+        try { fn(el, id); } catch (e) { /* one bad node must not stop the walk */ }
+    }
+    // Hosts may carry no mid of their own; descend into whatever they host.
+    let all = [];
+    try { all = root.querySelectorAll('*'); } catch (e) { return seen; }
+    for (const el of all) {
+        if (el.shadowRoot) seen += eachMidDeep(el.shadowRoot, fn, (depth || 0) + 1);
+    }
+    return seen;
+}
+
+// Declarative shadow DOM, for content that arrives through the delta channel.
+// The document itself is parsed by the browser (blob: iframe), so a full
+// capture's <template shadowrootmode> attaches natively; an inserted subtree is
+// built with innerHTML, which does not. Without this, a web component that
+// mounted between two captures showed up in the mirror as an empty box.
+function attachShadowRoots(root) {
+    if (!root || !root.querySelectorAll) return 0;
+    let attached = 0;
+    const templates = root.querySelectorAll('template[shadowrootmode]');
+    for (const tpl of templates) {
+        const host = tpl.parentNode;
+        if (!host || host.shadowRoot) continue;
+        try {
+            const mode = (tpl.getAttribute('shadowrootmode') || 'open') === 'closed' ? 'closed' : 'open';
+            const sr = host.attachShadow({ mode });
+            // The template's content is inert markup; move it in as nodes so
+            // the nodes keep their identity (and their data-mid) instead of
+            // being re-parsed.
+            sr.appendChild(tpl.content.cloneNode(true));
+            tpl.remove();
+            attached++;
+        } catch (e) { /* already hosted, or a mode the engine refuses */ }
+    }
+    return attached;
+}
+
+function stripDeadMirrorNodes(root) {
                 if (!root) return;
                 const deadSelector = '#sub-frame-error, #main-frame-error';
                 try {
@@ -11508,10 +11558,7 @@ function applySpinnerColorFromHex(hexColor) {
                 try {
                     const d = frame && frame.contentDocument;
                     if (!d) return;
-                    d.querySelectorAll('[data-mid]').forEach((n) => {
-                        const id = parseInt(n.getAttribute('data-mid'), 10);
-                        if (!isNaN(id)) state._midmap.set(id, n);
-                    });
+                    eachMidDeep(d, (n, id) => state._midmap.set(id, n));
                 } catch (e) {}
                 // Flush patches that arrived while the new blob document was
                 // still parsing (mid map empty at the time) — without this a
@@ -11655,6 +11702,15 @@ function applySpinnerColorFromHex(hexColor) {
                                 if (!el) { missing++; continue; }
                                 if (op[3] === null || op[3] === undefined) el.removeAttribute(op[2]);
                                 else el.setAttribute(op[2], op[3]);
+                                // An <option>'s selectedness follows a
+                                // property, not the attribute: a page that picks
+                                // an option in script must land in the mirror as
+                                // the chosen one, or the select shows the wrong
+                                // choice.
+                                if (op[2] === 'selected' && el.tagName === 'OPTION') {
+                                    try { el.selected = (op[3] !== null && op[3] !== undefined); }
+                                    catch (e) { /* ignore */ }
+                                }
                                 applied++;
                             } else if (kind === 's') {
                                 // Stylesheet refresh. insertRule() renderers
@@ -11705,7 +11761,11 @@ function applySpinnerColorFromHex(hexColor) {
                                 // several progressively-wider matches and
                                 // only treat the op as a resync trigger when
                                 // none of them resolve.
-                                const el = map.get(op[1]);
+                                // op[4] === 's': the page mutated the
+                                // element's shadow root, not its light DOM.
+                                // Same index rule, different container.
+                                let el = map.get(op[1]);
+                                if (el && op[4] === 's') el = el.shadowRoot || el;
                                 if (!el) { missing++; continue; }
                                 const idx = op[2];
                                 const newValue = op[3];
@@ -11770,21 +11830,32 @@ function applySpinnerColorFromHex(hexColor) {
                                 }
                             } else if (kind === 'i') {
                                 needsInputIntegrity = true;
-                                const parent = map.get(op[1]);
+                                // op[4] === 's': land inside the host's
+                                // shadow root. A component appending to its
+                                // own root ships this, and appending to the
+                                // host's light DOM instead put the content
+                                // outside the component — invisible.
+                                let parent = map.get(op[1]);
+                                if (parent && op[4] === 's') parent = parent.shadowRoot || parent;
                                 if (!parent) { missing++; continue; }
                                 const tpl = doc.createElement('template');
                                 tpl.innerHTML = op[3];
+                                // A subtree that carries an open shadow root
+                                // ships as <template shadowrootmode="open">.
+                                // The HTML *parser* turns that into a shadow
+                                // root; innerHTML does not, so a component
+                                // inserted between captures would arrive as an
+                                // invisible template and the element would look
+                                // empty. Attach it here.
+                                try { attachShadowRoots(tpl.content); } catch (e) { /* ignore */ }
                                 const frag = tpl.content;
                                 stripDeadMirrorNodes(frag);
-                                frag.querySelectorAll('[data-mid]').forEach((n) => {
-                                    const id = parseInt(n.getAttribute('data-mid'), 10);
-                                    if (!isNaN(id)) {
-                                        const existing = map.get(id);
-                                        if (existing && existing.parentNode && existing !== n) {
-                                            existing.remove();
-                                        }
-                                        map.set(id, n);
+                                eachMidDeep(frag, (n, id) => {
+                                    const existing = map.get(id);
+                                    if (existing && existing.parentNode && existing !== n) {
+                                        existing.remove();
                                     }
+                                    map.set(id, n);
                                 });
                                 // Seed the keystroke-diff baseline on inserted fields so
                                 // the user's next keystroke sends a diff, not the value.
@@ -11820,9 +11891,8 @@ function applySpinnerColorFromHex(hexColor) {
                                         };
                                     }
                                 } catch (e) { /* ignore */ }
-                                el.querySelectorAll('[data-mid]').forEach((n) => {
-                                    const id = parseInt(n.getAttribute('data-mid'), 10);
-                                    if (!isNaN(id) && map.get(id) === n) map.delete(id);
+                                eachMidDeep(el, (n, id) => {
+                                    if (map.get(id) === n) map.delete(id);
                                 });
                                 if (map.get(op[1]) === el) map.delete(op[1]);
                                 el.remove();

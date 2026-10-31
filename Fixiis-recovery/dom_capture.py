@@ -827,6 +827,10 @@ _FAST_SERIALIZE_JS = r"""
     if (!window.__domMidMap) window.__domMidMap = new WeakMap();
     if (!window.__domMidNext) window.__domMidNext = 1;
     if (!window.__domMidOwner) window.__domMidOwner = new Map();
+    // Text-node counts per element, shared with the delta observer: when a
+    // page replaces three text nodes with one, the observer has to know how
+    // many the mirror is holding before it can blank the leftovers.
+    if (!window.__domTextCounts) window.__domTextCounts = new Map();
   }
   // A data-mid belongs to ONE live element.
   //
@@ -1307,6 +1311,11 @@ _FAST_SERIALIZE_JS = r"""
       } else {
         out.push('<!--shifix:closed-shadow-->');
       }
+    }
+    if (deltaIds && window.__domTextCounts) {
+      let n = 0;
+      for (const c of el.childNodes) if (c.nodeType === 3) n++;
+      if (n) window.__domTextCounts.set(midOf(el), n);
     }
     for (const c of el.childNodes) serialize(c, out);
     if (pseudoMap.size) out.push(pseudoSpan(el, 'after'));
@@ -3999,6 +4008,22 @@ _DELTA_OBSERVER_JS = r"""
     return true;
   };
 
+  // The full serializer has these; the delta serializer needs them too now
+  // that it can carry a shadow root. Local copies keep the two scripts
+  // independent (they run in the same page, but not in the same closure).
+  const adoptedCss = (root) => {
+    try {
+      const sheets = root.adoptedStyleSheets || [];
+      let css = '';
+      for (const sh of sheets) {
+        try { for (const r of sh.cssRules) css += r.cssText + '\n'; } catch (e) { /* cross-origin */ }
+      }
+      return css;
+    } catch (e) { return ''; }
+  };
+  const adoptedStyleTag = (css) => css
+    ? '<style data-shf-adopted="1">' + css.replace(/<\//g, '<\\/') + '</style>'
+    : '';
   const serSubtree = (node, out) => {
     const t = node.nodeType;
     if (t === 3) { out.push(escText(node.nodeValue)); return; }
@@ -4053,6 +4078,21 @@ _DELTA_OBSERVER_JS = r"""
       out.push(raw, '</', tag, '>');
       return;
     }
+    // A subtree inserted between captures can carry an open shadow root — a
+    // web component, a custom element defined just now, a Lit/Stencil widget.
+    // The full serializer emits it as declarative shadow DOM; the delta
+    // serializer used to emit only light-DOM children, so the element arrived
+    // in the mirror as an empty box with none of its content.
+    const sr = el.shadowRoot;
+    if (sr && sr.mode === 'open') {
+      out.push('<template shadowrootmode="open">');
+      const srCss = adoptedCss(sr);
+      if (srCss) out.push(adoptedStyleTag(srCss));
+      for (const c of sr.childNodes) serSubtree(c, out);
+      out.push('</template>');
+    } else if (sr) {
+      out.push('<!--shifix:closed-shadow-->');
+    }
     for (const c of el.childNodes) serSubtree(c, out);
     out.push('</', tag, '>');
   };
@@ -4079,9 +4119,15 @@ _DELTA_OBSERVER_JS = r"""
   };
   const flush = () => {
     scheduled = false;
+    // The set below only describes the batch being shipped; a later batch must
+    // be free to patch those same nodes again.
+    try { insertedSubtrees.clear(); } catch (e) { /* ignore */ }
     // A stylesheet can grow with no DOM mutation at all (insertRule), so the
     // batch is also the moment to look at the CSSOM.
     try { flushStyleOps(); } catch (e) { /* ignore */ }
+    // Silent form state (property writes with no event) lands here, after the
+    // mutation records that created those nodes.
+    try { flushSilentState(); } catch (e) { /* ignore */ }
     // A renamed tab or a new icon is a change with no patchable DOM target in
     // the mirror, so it rides at the head of the batch. Never while overflowed:
     // that control frame must stay byte-exact.
@@ -4119,15 +4165,56 @@ _DELTA_OBSERVER_JS = r"""
     }
     schedule();
   };
+  // Mids whose whole subtree was serialized into an insert during this batch.
+  // A batch is serialized AFTER all of its mutations have landed, so inserting
+  // an ancestor already carries every descendant that exists by then; the
+  // descendants' own insert records are then redundant, and replaying them
+  // duplicates the content. `div > div > … > text` built in one tick arrived
+  // with the text twice for exactly this reason.
+  const insertedSubtrees = new Set();
+  // How many text children each element had the last time the mirror was told
+  // about it. A shrink (three text nodes became one) would otherwise leave the
+  // leftovers on screen: nothing addresses them, so nothing clears them.
+  const textCounts = window.__domTextCounts || (window.__domTextCounts = new Map());
+  const insideInserted = (node) => {
+    let n = node;
+    for (let guard = 0; n && guard < 200; guard++) {
+      if (n.nodeType === 1) {
+        const m = window.__domMidMap.get(n);
+        if (m && insertedSubtrees.has(m)) return true;
+      }
+      n = n.parentNode || (n.nodeType === 11 ? n.host : null);
+    }
+    return false;
+  };
   const pushAttr = (el, name) => {
     const id = midOf(el);
     if (!id) return;
     pushCoalesced('a\\0' + id + '\\0' + name, ['a', id, name, el.getAttribute(name)]);
   };
+  // A mutation can target a ShadowRoot, which is a container like an element
+  // but has no mid of its own. Its content belongs to the host, so the host's
+  // id addresses it and a marker says WHICH of the host's two trees the op is
+  // about. Before this, every mutation landing directly on a shadow root —
+  // the common case for a component that appends a row or rewrites its own
+  // label — was dropped for want of a mid, and the component sat frozen.
+  const containerOf = (node) => {
+    if (!node) return null;
+    if (node.nodeType === 1) {
+      const m = midOf(node);
+      return m ? { id: m, key: m, shadow: false } : null;
+    }
+    if (node.nodeType === 11 && node.host) {
+      const m = midOf(node.host);
+      return m ? { id: m, key: m + 's', shadow: true } : null;
+    }
+    return null;
+  };
   const pushText = (parent, index, value) => {
-    const id = midOf(parent);
-    if (!id) return;
-    pushCoalesced('t\\0' + id + '\\0' + index, ['t', id, index, value]);
+    const c = containerOf(parent);
+    if (!c) return;
+    pushCoalesced('t\\0' + c.key + '\\0' + index,
+      c.shadow ? ['t', c.id, index, value, 's'] : ['t', c.id, index, value]);
   };
   const pushVal = (el) => {
     const id = midOf(el);
@@ -4152,15 +4239,19 @@ _DELTA_OBSERVER_JS = r"""
         pushAttr(el, r.attributeName);
       } else if (r.type === 'characterData') {
         const p = r.target.parentNode;
-        if (!p || p.nodeType !== 1) continue;
+        if (!p || (p.nodeType !== 1 && p.nodeType !== 11)) continue;
         let idx = -1, i = 0;
         for (const c of p.childNodes) {
           if (c.nodeType === 3) { if (c === r.target) { idx = i; break; } i++; }
         }
         if (idx >= 0) pushText(p, idx, r.target.nodeValue);
       } else if (r.type === 'childList') {
-        const pm = midOf(r.target);
-        if (!pm) continue;
+        const box = containerOf(r.target);
+        if (!box) continue;
+        const pm = box.id;
+        // Nothing inside a subtree we just inserted needs its own ops: the
+        // insert already carried it, as it was at serialization time.
+        if (insideInserted(r.target)) continue;
         for (const rem of r.removedNodes) {
           if (rem.nodeType !== 1) continue;
           let m = window.__domMidMap.get(rem);
@@ -4184,50 +4275,185 @@ _DELTA_OBSERVER_JS = r"""
             } catch (e) {}
           }
         }
-        // ---- text-node churn -------------------------------------------
-        // `el.textContent = 'x'` does not touch a text node's value: it
-        // removes the children and inserts a new one, so the only record is a
-        // childList with a text node in removedNodes and another in
-        // addedNodes.  Dropping the removal and shipping the add as an insert
-        // APPENDED the new text beside the old one — the mirror read
-        // "AI ModeAI Mode", "hihi", every doubled label on the web.  Describe
-        // the target's text nodes by index instead, which is exactly what the
-        // client's `t` op sets.
-        let removedText = 0;
-        for (const n of r.removedNodes) if (n.nodeType === 3) removedText++;
-        let addedText = 0;
-        for (const n of r.addedNodes) if (n.nodeType === 3) addedText++;
-        const textTarget = (removedText || addedText) ? r.target : null;
-        if (textTarget && textTarget.nodeType === 1 && midOf(textTarget)) {
-          if (removedText) {
-            let ti = 0;
-            for (const c of textTarget.childNodes) {
-              if (c.nodeType === 3) { pushText(textTarget, ti, c.nodeValue); ti++; }
-            }
-            // More text nodes went away than came back: blank the leftovers so
-            // nothing the page deleted stays on screen.
-            if (removedText > addedText) pushText(textTarget, ti, '');
+        // ---- what the parent looks like now, in document order ----------
+        // `innerHTML = 'bold <b>word</b> here'` arrives as ONE childList: old
+        // text removed, [text, <b>, text] added. Emitting the text ops first
+        // and the inserts afterwards put every element at the END of the
+        // parent, so the mirror read "bold here <b>word</b>". Walking the
+        // parent's children in order — text as a text op, added elements as
+        // inserts — reproduces the page: an insert against a ref sibling
+        // lands in the right place, and a text index the mirror does not have
+        // yet appends at that point in the sequence, which is exactly where
+        // it belongs.
+        const added = [];
+        for (const a of r.addedNodes) if (a.nodeType === 1) added.push(a);
+        let textIndex = 0;
+        let touchedText = false;
+        for (const c of r.target.childNodes) {
+          if (c.nodeType === 3) {
+            if (!touchedText && insideInserted(r.target)) break;
+            pushText(r.target, textIndex, c.nodeValue);
+            touchedText = true;
+            textIndex++;
+            continue;
           }
-        }
-        for (const add of r.addedNodes) {
-          // Text that arrived as part of a replacement is already described
-          // above; inserting it as well is what doubled the label.
-          if (add.nodeType === 3 && removedText) continue;
-          let ref = r.nextSibling;
+          if (c.nodeType !== 1) continue;
+          if (added.indexOf(c) < 0) continue;          // already mirrored
+          let ref = c.nextSibling;
           while (ref && ref.nodeType !== 1) ref = ref.nextSibling;
           const refMid = ref ? midOf(ref) : 0;
           const buf = [];
-          serSubtree(add, buf);
+          serSubtree(c, buf);
           if (!buf.length) continue;
-          push(['i', pm, refMid, buf.join('')]);
+          const mid = midOf(c);
+          push(box.shadow ? ['i', pm, refMid, buf.join(''), 's'] : ['i', pm, refMid, buf.join('')]);
+          if (mid) insertedSubtrees.add(mid);
+          // A component that mounts between captures brings its own shadow
+          // root; start watching it, or everything it renders from now on is
+          // invisible to the mirror.
+          try { watchShadowRoots(c, 0); } catch (e) { /* ignore */ }
+        }
+        // Text that went away without a replacement of the same length leaves
+        // a stale text node on screen; blank the tail.
+        if (touchedText) {
+          let live = 0;
+          for (const c of r.target.childNodes) if (c.nodeType === 3) live++;
+          const known = textCounts.get(box.key);
+          if (known !== undefined && known > live) {
+            for (let i = live; i < known; i++) pushText(r.target, i, '');
+          }
+          textCounts.set(box.key, live);
         }
       }
     }
   });
-  mo.observe(document, {
+  const OBSERVE_CFG = {
     subtree: true, childList: true, attributes: true, characterData: true,
     attributeOldValue: false, characterDataOldValue: false,
-  });
+  };
+  mo.observe(document, OBSERVE_CFG);
+  // A shadow root is NOT part of the document subtree, so nothing inside a web
+  // component was ever observed: the host rendered once at capture time and
+  // then froze, while the visitor's page kept updating. Every open root we can
+  // see gets the same observer; mids work inside them unchanged (the id map is
+  // per element, and getRootNode() resolves to the root).
+  const watchedRoots = (typeof WeakSet === 'function') ? new WeakSet() : null;
+  const watchOneHost = (el, depth) => {
+    const sr = el && el.shadowRoot;
+    if (!sr || sr.mode !== 'open') return 0;
+    if (watchedRoots) {
+      if (watchedRoots.has(sr)) return 0;
+      watchedRoots.add(sr);
+    }
+    let count = 0;
+    try { mo.observe(sr, OBSERVE_CFG); count = 1; } catch (e) { return 0; }
+    return count + watchShadowRoots(sr, depth + 1);
+  };
+  const watchShadowRoots = (node, depth) => {
+    if (!node || (depth || 0) > 8) return 0;
+    let count = 0;
+    // The node itself can be the host — a component inserted between captures
+    // carries its root on the element that was just appended, not on a
+    // descendant, and missing that case left the component frozen.
+    if (node.nodeType === 1) count += watchOneHost(node, depth || 0);
+    try {
+      const all = (node.querySelectorAll ? node.querySelectorAll('*') : []);
+      for (let i = 0; i < all.length; i++) count += watchOneHost(all[i], depth || 0);
+    } catch (e) { /* a hostile getter in a framework */ }
+    return count;
+  };
+  try { watchShadowRoots(document, 0); } catch (e) { /* ignore */ }
+  // ---- silent form state ------------------------------------------------
+  // `el.value = 'x'` and `el.checked = true` are PROPERTIES: they change what
+  // the visitor sees and fire no event at all, so a page that prefills, clears
+  // or rewrites a field between two captures left the mirror showing the old
+  // text. The setters are the only place that can see it. Everything here is
+  // wrapped: a page whose prototype refuses to be redefined keeps working, it
+  // just falls back to the event path.
+  // Writes are COLLECTED, not sent where they happen. A field can be set
+  // before its own insert reaches the mirror (`input.value` on an element
+  // appended in the same tick), and a value op that arrives ahead of the node
+  // it describes is a missing mid on the client — which triggers a full
+  // resync. Deferring to flush means every insert of this batch is already
+  // queued, the last write wins, and the value is read once.
+  const dirtyControls = new Set();
+  const dirtyOptions = new Set();
+  const markControl = (el) => {
+    try {
+      if (!el || el.isConnected === false) return;
+      dirtyControls.add(el);
+      schedule();
+    } catch (e) { /* ignore */ }
+  };
+  const markOption = (el) => {
+    try {
+      if (!el || el.isConnected === false) return;
+      dirtyOptions.add(el);
+      schedule();
+    } catch (e) { /* ignore */ }
+  };
+  // At flush: only send state for nodes the mirror can address. An element
+  // inside a closed shadow root never reaches the mirror, so naming it would
+  // buy nothing but a resync.
+  const flushSilentState = () => {
+    if (!dirtyControls.size && !dirtyOptions.size) return;
+    const controls = Array.from(dirtyControls);
+    const options = Array.from(dirtyOptions);
+    dirtyControls.clear();
+    dirtyOptions.clear();
+    for (const el of controls) {
+      try {
+        if (!el.isConnected || !window.__domMidMap.has(el)) continue;
+        pushVal(el);
+      } catch (e) { /* ignore */ }
+    }
+    for (const el of options) {
+      try {
+        if (!el.isConnected || !window.__domMidMap.has(el)) continue;
+        const id = midOf(el);
+        if (!id) continue;
+        // Setting .selected does NOT write the attribute, so reading that back
+        // would ship `null` and deselect the option. Send the attribute form
+        // the full capture writes.
+        pushCoalesced('a\\0' + id + '\\0selected',
+          ['a', id, 'selected', el.selected ? '' : null]);
+      } catch (e) { /* ignore */ }
+    }
+  };
+  const hookProperty = (Ctor, prop, after) => {
+    try {
+      if (!Ctor || !Ctor.prototype) return;
+      const desc = Object.getOwnPropertyDescriptor(Ctor.prototype, prop);
+      if (!desc || !desc.get || !desc.set) return;
+      if (desc.set.__shifixHooked) return;
+      const wrapped = function (value) {
+        const before = desc.get.call(this);
+        desc.set.call(this, value);
+        if (before === value) return;
+        try { after(this); } catch (e) { /* ignore */ }
+      };
+      wrapped.__shifixHooked = true;
+      Object.defineProperty(Ctor.prototype, prop, {
+        configurable: true, enumerable: desc.enumerable, get: desc.get, set: wrapped,
+      });
+    } catch (e) { /* frozen prototype: the event path still works */ }
+  };
+  hookProperty(window.HTMLInputElement, 'value', markControl);
+  hookProperty(window.HTMLInputElement, 'checked', markControl);
+  hookProperty(window.HTMLTextAreaElement, 'value', markControl);
+  hookProperty(window.HTMLOptionElement, 'selected', markOption);
+  // `select.selectedIndex = 1` and `select.value = 'b'` move the selection
+  // through the select's own algorithm: the <option> setter never runs, so the
+  // option hook above sees nothing and the mirror kept the old choice.
+  const markSelect = (sel) => {
+    try {
+      if (!sel || sel.isConnected === false || !sel.options) return;
+      for (let i = 0; i < sel.options.length; i++) markOption(sel.options[i]);
+    } catch (e) { /* ignore */ }
+  };
+  hookProperty(window.HTMLSelectElement, 'selectedIndex', markSelect);
+  hookProperty(window.HTMLSelectElement, 'value', markSelect);
+
   const onFormEvent = (e) => {
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) pushVal(t);
