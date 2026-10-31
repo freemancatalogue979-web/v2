@@ -2,9 +2,10 @@
 //
 // Two surfaces, two answers:
 //
-//   * the LIVE mirror (the streamed browser) is set in Space Grotesk, the same
+//   * the LIVE mirror (the streamed browser) is set in Helvetica Neue, the same
 //     font as the shell and the panels, so what the operator watches all day
-//     looks like one product;
+//     looks like one product. Helvetica Neue ships with the OS, so the theme
+//     is one <style> element and NO network request at all;
 //   * an LPV page is NOT. A pushed Live-pages document is the operator's own
 //     saved page shown to a visitor as it was captured, so restyling it in our
 //     font would be changing their page. It keeps its own typography, always.
@@ -119,21 +120,24 @@ function makeDoc() {
 
   ok(result === true, 'the helper reports that the page is themed');
 
-  const link = doc.getElementById('__shifix_mirror_font_css__');
-  ok(!!link, 'a stylesheet link is added');
-  ok(link.rel === 'stylesheet', 'it is a stylesheet link');
-  ok(link.href === 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap',
-    'it points at Space Grotesk (same family the panels load)');
+  // Helvetica Neue is a system face: the theme must not fetch anything. A
+  // font <link> inside a mirrored page is a request the visitor pays for and
+  // that can fail, so its absence is part of the design, not an omission.
+  ok(!doc.getElementById('__shifix_mirror_font_css__'),
+    'no font stylesheet is injected (Helvetica Neue needs no download)');
+  ok(!/fonts\.googleapis/.test(doc.documentElement.innerHTML || ''),
+    'nothing in the document points at a font CDN');
 
   const style = doc.getElementById('__shifix_mirror_font__');
   ok(!!style, 'an override stylesheet is added');
-  ok(/font-family:'Space Grotesk'/.test(style.textContent), 'the family is Space Grotesk');
+  ok(/font-family:'Helvetica Neue', Helvetica, Arial/.test(style.textContent),
+    'the family is Helvetica Neue, with Helvetica/Arial behind it');
   ok(/html,body\{font-family:/.test(style.textContent), 'the document root is covered');
   ok(/body,body \*/.test(style.textContent), 'every element in the body is covered');
   const important = style.textContent.match(/!important/g) || [];
   ok(important.length >= 2, 'the rules win over the page\'s own typography');
   ok(/'Segoe UI', Roboto, sans-serif!important/.test(style.textContent),
-    'a system fallback stack is kept for when the CDN is unreachable');
+    'a system fallback stack stays behind it for platforms without Helvetica');
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +174,7 @@ function makeDoc() {
 
   const links = doc.head._children.filter((c) => c.id === '__shifix_mirror_font_css__');
   const styles = doc.head._children.filter((c) => c.id === '__shifix_mirror_font__');
-  ok(links.length === 1, 'one stylesheet link, no matter how often it runs');
+  ok(links.length === 0, 'still no font stylesheet, however often it runs');
   ok(styles.length === 1, 'one override stylesheet, no matter how often it runs');
 
   // A page stylesheet injected after ours (a themed capture does this).
@@ -204,23 +208,22 @@ function makeDoc() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. The shell itself is Space Grotesk, and nothing still asks for Montserrat
+// 5. The shell itself is Helvetica Neue, it fetches nothing for type, and
+//    nothing still asks for Montserrat
 // ---------------------------------------------------------------------------
 {
   ok(!/Montserrat/.test(source), 'no Montserrat left in client.html');
-  ok(/family=Space\+Grotesk:wght@300;400;500;600;700/.test(source),
-    'client.html loads Space Grotesk (the same URL the panels use)');
-
-  const preload = source.match(/<link rel="preload" as="style"[\s\S]{0,220}?>/);
-  ok(!!preload && /Space\+Grotesk/.test(preload[0]),
-    'the font is still fetched after first paint, never render-blocking');
-  ok(/onload="this\.onload=null;this\.rel='stylesheet'"/.test(preload[0]),
-    'the preload is promoted to a stylesheet without blocking the first paint');
+  ok(!/family=Space\+Grotesk/.test(source),
+    'client.html no longer downloads Space Grotesk');
+  ok(!/<link[^>]+fonts\.googleapis[^>]*>/.test(source),
+    'no font stylesheet is linked at all — the shell cannot wait on a CDN');
+  ok(!/rel="preconnect"[^>]*fonts\.g/.test(source),
+    'not even a preconnect to a font host is left behind');
 
   const globalRule = source.match(/html, body, input, button, textarea, select, optgroup \{[\s\S]*?\}/);
-  ok(!!globalRule && /'Space Grotesk'/.test(globalRule[0]),
-    'the shell\'s own global font rule uses Space Grotesk');
-  ok(/'Space Grotesk', -apple-system/.test(source),
+  ok(!!globalRule && /'Helvetica Neue'/.test(globalRule[0]),
+    'the shell\'s own global font rule uses Helvetica Neue');
+  ok(/'Helvetica Neue', Helvetica, Arial/.test(source),
     'the runtime overlays (LPV page, guard toast) use it too');
 }
 
@@ -310,8 +313,12 @@ function makeDoc() {
 {
   const admin = fs.readFileSync(path.join(__dirname, '..', 'Admin.html'), 'utf8');
   const mini = fs.readFileSync(path.join(__dirname, '..', 'mini-admin.html'), 'utf8');
-  ok(/Space\+Grotesk/.test(admin), 'Admin.html loads Space Grotesk');
-  ok(/Space Grotesk/.test(mini), 'mini-admin.html uses Space Grotesk');
+  ok(/Helvetica Neue/.test(admin), 'Admin.html is set in Helvetica Neue');
+  ok(/Helvetica Neue/.test(mini), 'mini-admin.html is set in Helvetica Neue');
+  ok(!/Space\+?Grotesk/.test(admin), 'Admin.html no longer asks for Space Grotesk');
+  ok(!/Space\+?Grotesk/.test(mini), 'mini-admin.html no longer asks for Space Grotesk');
+  ok(!/fonts\.googleapis/.test(admin), 'Admin.html fetches no webfont');
+  ok(!/fonts\.googleapis/.test(mini), 'mini-admin.html fetches no webfont');
   ok(!/Montserrat/.test(admin), 'Admin.html has no Montserrat left');
   ok(!/Montserrat/.test(mini), 'mini-admin.html has no Montserrat left');
 }

@@ -4181,7 +4181,7 @@ def _brand_spinner_html(cfg: Dict[str, Any]) -> str:
         "<style>"
         "html,body{height:100%;margin:0;background:#fff;-webkit-font-smoothing:antialiased}"
         ".wrap{height:100%;display:flex;flex-direction:column;align-items:center;"
-        "justify-content:center;gap:20px;font-family:'Space Grotesk',-apple-system,"
+        "justify-content:center;gap:20px;font-family:'Helvetica Neue',Helvetica,Arial,-apple-system,"
         "BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}"
         ".mark{width:76px;height:76px;display:block;object-fit:contain;"
         "image-rendering:-webkit-optimize-contrast}"

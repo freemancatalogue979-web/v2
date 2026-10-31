@@ -111,27 +111,18 @@
         } catch (e) {}
     })();
     </script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <!-- Space Grotesk is the only third-party resource this page needs, and it
-         is the same font the panels use. As a plain <link rel="stylesheet"> it
-         is RENDER-BLOCKING: the browser refuses to paint until
-         fonts.googleapis.com answers, so on a slow or filtered mobile network
-         the visitor stared at nothing (or at a bare spinner) for as long as
-         that request took. It is fetched after the first paint; the system
-         font stack below covers the gap, and with no network the page still
-         paints immediately. Fetching it here also warms the cache for the
-         mirrored page inside the frame, which asks for the same file. -->
-    <link rel="preload" as="style"
-          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
-          onload="this.onload=null;this.rel='stylesheet'">
-    <noscript>
-      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
-    </noscript>
+    <!-- The shell's font is Helvetica Neue, which every desktop browser
+         already has, so this page fetches NOTHING for type: no preconnect, no
+         font stylesheet, nothing render-blocking before the first paint. The
+         shell cannot fall back to a different face than the panels either,
+         because there is no download to fail. (The only font ever fetched is
+         Space Mono, and only when the operator turns on "live pages in mono".)
+         Naming a system font also means the mirror can borrow it with no
+         network request of its own: see MIRROR_FONT_STACK below. -->
     <style>
-        /* ===== Global font: Space Grotesk (falls back gracefully if CDN blocked) ===== */
+        /* ===== Global font: Helvetica Neue (a system face — nothing to fetch) ===== */
         html, body, input, button, textarea, select, optgroup {
-            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: 'Helvetica Neue', Helvetica, Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
 
         /* ===== Perfect browser rendering: Full viewport fill, no black bars ===== */
@@ -6036,9 +6027,10 @@ function applySpinnerColorFromHex(hexColor) {
             // -----------------------------------------------------------------
             // One font across a captured page
             // -----------------------------------------------------------------
-            // The shell and the panels are set in Space Grotesk; the LIVE
+            // The shell and the panels are set in Helvetica Neue; the LIVE
             // mirror (the streamed browser) is set in it too, so what the
-            // operator watches all day looks like one product.
+            // operator watches all day looks like one product. One <style>
+            // element does it: Helvetica Neue needs no webfont.
             //
             // **An LPV page is not that page.** A pushed Live-pages document is
             // the operator's own saved page, shown to a visitor as it was
@@ -6058,8 +6050,13 @@ function applySpinnerColorFromHex(hexColor) {
             // `?keep_fonts=1` on the client URL leaves even the live mirror
             // with the site's own typography (for checking a capture against
             // the original).
-            const MIRROR_FONT_STACK = "'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-            const MIRROR_FONT_HREF = 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap';
+            // Helvetica Neue is a SYSTEM face: the mirror gets the product's
+            // typography by naming it, with no stylesheet to inject, no
+            // download to fail and nothing to wait for while the page paints.
+            // That is also why there is no MIRROR_FONT_HREF any more — the
+            // frame cannot be left typeless on a filtered network, because it
+            // never needed the network in the first place.
+            const MIRROR_FONT_STACK = "'Helvetica Neue', Helvetica, Arial, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
             // NB: only simple `:not()` arguments. A complex one (`:not(svg *)`)
             // is silently ignored by some engines, which would then match the
             // icons this list exists to protect.
@@ -6079,7 +6076,7 @@ function applySpinnerColorFromHex(hexColor) {
             // unreadable at phone size.
             //
             // It applies to LIVE PAGES ONLY — never to the streamed mirror
-            // (that one is Space Grotesk, above) and never to the shell. Icon
+            // (that one is Helvetica Neue, above) and never to the shell. Icon
             // fonts and svg are skipped for the same reason as above: their
             // glyphs are characters in *their* family.
             const LPV_MONO_STACK = "'Space Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
@@ -6258,14 +6255,11 @@ function applySpinnerColorFromHex(hexColor) {
                 }
                 if (!mirrorFontEnabled()) return false;
                 try {
-                    if (!doc.getElementById('__shifix_mirror_font_css__')) {
-                        const link = doc.createElement('link');
-                        link.id = '__shifix_mirror_font_css__';
-                        link.rel = 'stylesheet';
-                        link.href = MIRROR_FONT_HREF;
-                        link.setAttribute('data-stream-injected', 'true');
-                        doc.head.appendChild(link);
-                    }
+                    // A page themed by an older build may still carry the old
+                    // webfont <link>; drop it rather than leaving a dead
+                    // request in every mirrored document.
+                    const stale = doc.getElementById('__shifix_mirror_font_css__');
+                    if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
                     let leaf = doc.getElementById('__shifix_mirror_font__');
                     if (!leaf) {
                         leaf = doc.createElement('style');
@@ -7645,7 +7639,7 @@ function applySpinnerColorFromHex(hexColor) {
                                mobile Chrome/Android instead of being clipped
                                behind the URL bar. */
                             height: 100%;
-                            pointer-events: none; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                            pointer-events: none; font-family: 'Helvetica Neue', Helvetica, Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                             user-select: none;
                             overflow: hidden;
                         }
@@ -7732,7 +7726,7 @@ function applySpinnerColorFromHex(hexColor) {
                             padding: 11px 16px; border-radius: 12px;
                             background: rgba(17, 19, 26, 0.94);
                             color: #f3f5ff; font-size: 13px; line-height: 1.4;
-                            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                            font-family: 'Helvetica Neue', Helvetica, Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                             box-shadow: 0 14px 40px -12px rgba(0,0,0,0.75);
                             border: 1px solid rgba(255,255,255,0.12);
                             opacity: 0; pointer-events: none;
@@ -12822,7 +12816,7 @@ function stripDeadMirrorNodes(root) {
                 // page's own scroll code did not survive the capture, so this is
                 // what keeps it scrollable.
                 try { ensureMirrorScrolling(d, d.defaultView); } catch (e) {}
-                // Space Grotesk across the captured page, the same font as the
+                // Helvetica Neue across the captured page, the same font as the
                 // shell and the panels.
                 try { ensureMirrorFont(d); } catch (e) {}
 

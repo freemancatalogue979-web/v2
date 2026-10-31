@@ -1082,17 +1082,27 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 
 ---
 
-## The font: Space Grotesk in the shell and the live mirror — never an LPV page
+## The font: Helvetica Neue in the shell and the live mirror — never an LPV page
 
-`client.html` and both panels are set in **Space Grotesk**, and so is the
+`client.html` and both panels are set in **Helvetica Neue**, and so is the
 **live mirror** (the streamed browser): what the operator watches all day should
-look like one product. That captured document gets two things injected into its
-`<head>`:
+look like one product.
 
-| Injected | What it does |
+Helvetica Neue is a **system face** — every desktop browser already has it — so
+nothing about the product's type is downloaded:
+
+| Surface | How it gets the font |
 |---|---|
-| `<link rel="stylesheet">` for Space Grotesk | the page can actually render the font; the shell already fetched the same file, so it comes from cache |
-| `<style id="__shifix_mirror_font__">` | `html`, `body` and every element in the page get the family with `!important`, so the site's own `font-family` cannot win |
+| `client.html`, `Admin.html`, `mini-admin.html` | a `font-family` rule: `'Helvetica Neue', Helvetica, Arial, …` |
+| the live mirror | one `<style id="__shifix_mirror_font__">` injected into the captured `<head>`: `html`, `body` and every element get the family with `!important`, so the site's own `font-family` cannot win |
+
+That means **no font stylesheet, no preconnect and nothing render-blocking** in
+any panel or in the shell: the first paint cannot wait on a CDN, a filtered
+network cannot leave the shell in a different face from the panels, and the
+mirror injects no request into a visitor's page. The stack keeps `Helvetica`,
+`Arial` and then the platform faces (`-apple-system`, Segoe UI, Roboto) behind
+it, so Windows, Android and Linux render an equivalent sans rather than a serif
+default.
 
 **An LPV page keeps its own typography by default.** A pushed Live-pages document
 is the operator's own saved page, shown to a visitor exactly as it was captured:
@@ -1103,7 +1113,7 @@ their page. It is enforced in three places, so no call site can re-introduce it:
 |---|---|
 | `isLpvPageDocument(doc)` | an LPV pushed document is recognised by its own `data-lpv-page="1"` marker, its window flag, or the `data-lpv-frame` / `lpv-page-frame` frame it is rendered in |
 | `ensureMirrorFont(doc)` | returns `false` for such a document and never injects anything |
-| `stripMirrorFont(doc)` | **removes** the two injected nodes again, for a frame that was themed before it became an LPV page (a re-push into the same frame) |
+| `stripMirrorFont(doc)` | **removes** the injected style again, for a frame that was themed before it became an LPV page (a re-push into the same frame) |
 
 The LPV frame marks the document the moment it has `contentDocument`, before any
 other code touches it, so the guard is in place for the first paint.
@@ -1120,9 +1130,9 @@ Details that still apply to the live mirror:
 * **`?keep_fonts=1`** on the client URL (`/client.html?url=…&keep_fonts=1`)
   leaves even the live mirror with the site's real typography, for checking a
   capture against the original. It cannot turn the font *on* for an LPV page.
-* The font is still fetched **after the first paint** in the shell (preload →
-  `onload`), so a slow or filtered network never delays the page; the system
-  stack (`-apple-system`, Segoe UI, Roboto) covers the gap.
+* The mirror theme no longer injects a `<link>` at all. A page themed by an
+  older build may still carry one (`__shifix_mirror_font_css__`); it is removed
+  on sight rather than left as a dead request in a visitor's document.
 
 ### The one exception: "Set live pages in Space Mono"
 
@@ -1136,7 +1146,7 @@ face. It exists for the two cases where a page's own fonts let an operator down:
 
 What it does and does not touch:
 
-| | Space Grotesk (shell/mirror) | Space Mono (this switch) |
+| | Helvetica Neue (shell/mirror) | Space Mono (this switch) |
 |---|---|---|
 | the panels and the shell | yes | no |
 | the streamed mirror | yes | no |
@@ -1146,6 +1156,8 @@ What it does and does not touch:
   the mirror theme — their glyphs are characters in their own family.
 * Italics are normalised (`font-style: normal`), because Space Mono has no
   italic and a synthesised slant reads worse than upright text.
+* It is the **only** thing in the client that fetches a font file, which is why
+  `fonts.googleapis.com` appears exactly once in `client.html`.
 * It applies **live** to a visitor already reading a page (the same
   `lpv_branding` message that carries the tab title), and switching it back off
   removes both injected nodes instead of leaving them behind.
@@ -1923,7 +1935,7 @@ node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; 
 node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
-node tests/test_mirror_font.cjs           # Space Grotesk in the live mirror, never an LPV page
+node tests/test_mirror_font.cjs           # Helvetica Neue in the live mirror, never an LPV page
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages
 python3 tests/test_lpv_font_switch.py     # the switch end to end: setting, boot flag, live push, panel
 python3 tests/test_timezone.py            # the clock alerts are written in: setting, apply, live save, panel

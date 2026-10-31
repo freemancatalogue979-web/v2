@@ -284,7 +284,8 @@ const MONO_HREF = 'https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;
   ok(boot > 0, 'a static copy reads the switch from /api/public/boot');
   ok(/setLpvMonoFont\(fonts\.mono\)/.test(source), 'and applies it');
 
-  ok(source.indexOf('Space+Grotesk') !== -1, 'the shell/mirror font is still Space Grotesk');
+  ok(!/family=Space\+Grotesk/.test(source),
+    'the shell/mirror font is Helvetica Neue and needs no webfont request');
   ok(source.indexOf('Space+Mono') !== -1, 'Space Mono is only requested by this switch');
   ok(!/Montserrat/.test(source), 'no stray font family');
 }

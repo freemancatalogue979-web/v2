@@ -45,15 +45,16 @@ const adminRoute = api.slice(api.indexOf('async def admin_page'), api.indexOf('a
 ok(/_client_html_response\(request, _client_file_html\(admin_path\)\)/.test(adminRoute),
    'the admin panel does too (it is ~1 MB)');
 
-// ---- 3. no render-blocking third-party stylesheet ------------------------
+// ---- 3. no third-party font request in the head at all -------------------
+// The shell face is Helvetica Neue, which the OS already has. That beats even
+// the async `<link rel="preload">` it replaced: there is no request to defer,
+// so the first paint cannot wait on a font CDN, and a filtered network cannot
+// leave the shell in a different face from the panels.
 const head = client.slice(0, client.toLowerCase().indexOf('</head>'));
-const headNoFallback = head.replace(/<noscript>[\s\S]*?<\/noscript>/gi, '');
-ok(!/<link[^>]+rel="stylesheet"[^>]+fonts\.googleapis/.test(headNoFallback),
-   'the font stylesheet is not render-blocking any more');
-ok(/rel="preload" as="style"[\s\S]{0,400}?onload="this\.onload=null;this\.rel='stylesheet'"/.test(head),
-   'it is fetched after first paint');
-ok(/<noscript>\s*<link rel="stylesheet"[^>]+fonts\.googleapis/.test(head),
-   'and still loads with JavaScript disabled');
+ok(!/fonts\.googleapis/.test(head), 'the shell head never reaches a font CDN');
+ok(!/fonts\.gstatic\.com/.test(head), 'and does not preconnect to one either');
+ok(!/rel="preload" as="style"[^>]*fonts/.test(head), 'nothing about type is preloaded');
+ok(/'Helvetica Neue'/.test(client), 'the shell is set in Helvetica Neue');
 
 // ---- 4. the socket is not held hostage by the pre-connect handoff -------
 ok(/BOOT_HANDOFF_BUDGET_MS = \d+/.test(client), 'the handoff has a budget');

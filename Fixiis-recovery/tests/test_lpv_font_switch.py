@@ -207,6 +207,9 @@ class ViewerTest(unittest.TestCase):
         at = CLIENT_HTML.index("const LPV_MONO_HREF")
         self.assertIn("Space+Mono", CLIENT_HTML[at:at + 200])
         self.assertNotIn("Space+Grotesk", CLIENT_HTML[at:at + 200])
+        # The shell face is a system font now, so this switch is the ONLY
+        # thing in the client that ever asks a font CDN for a file.
+        self.assertEqual(CLIENT_HTML.count("fonts.googleapis.com"), 1)
 
     def test_it_is_never_applied_to_the_shell(self):
         # The only selectors it writes are html/body/body * inside the pushed

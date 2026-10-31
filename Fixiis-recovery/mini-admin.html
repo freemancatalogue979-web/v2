@@ -8,12 +8,12 @@
      visitor's page (the phone panel is about the operator's own work, and a
      tab that changes as you scan a list is noise). -->
 <link rel="icon" href="https://cdn.brandfetch.io/idaZJ2tIZc/theme/light/logo.svg?c=1dxbfHSJFAPEGdCLU4o5B" type="image/svg+xml" id="shf-panel-favicon">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
+<!-- The panel font is Helvetica Neue, which every desktop browser already
+     has: no webfont request, no render-blocking stylesheet, and the panel
+     still looks right offline or behind a filter. -->
 <style>
 /* ============================================================
-   Mini Admin — Space Grotesk, dark aurora glass
+   Mini Admin — Helvetica Neue (system), dark aurora glass
    Talks to the Neo Browser Stream API:
      POST /api/auth/login
      WS    /admin            (clients, lpv_ack, lpv_event)
@@ -57,7 +57,7 @@
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overscroll-behavior:none}
 body{
-  font-family:'Space Grotesk',system-ui,-apple-system,sans-serif;
+  font-family:'Helvetica Neue',Helvetica,Arial,system-ui,-apple-system,sans-serif;
   background:var(--bg); color:var(--txt);
   font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
   overflow:hidden;
