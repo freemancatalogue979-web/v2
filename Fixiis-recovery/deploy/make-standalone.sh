@@ -131,7 +131,7 @@ cat > "$OUTDIR/index.html" <<EOF
   :root { color-scheme: dark; }
   body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
          background: #0c0e14; color: #e8ecf7;
-         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+         font-family: "Helvetica Neue", Helvetica, Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   main { width: min(560px, 100%); padding: 24px; box-sizing: border-box; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   p  { color: #9aa4bd; font-size: 13px; line-height: 1.5; margin: 0 0 18px; }
