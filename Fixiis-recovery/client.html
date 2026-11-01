@@ -6074,16 +6074,76 @@ function applySpinnerColorFromHex(hexColor) {
             // killed this page before (tests/test_inline_scripts_parse.cjs).
             const MIRROR_FONT_STACK = "Roboto Slab, Georgia, 'Times New Roman', serif";
 
-            function mirrorFontFaceCss() {
-                const el = document.getElementById('shf-font-face');
-                return el ? (el.textContent || '') : '';
-            }
             // NB: only simple `:not()` arguments. A complex one (`:not(svg *)`)
             // is silently ignored by some engines, which would then match the
             // icons this list exists to protect.
             const MIRROR_FONT_SKIP = ':not(svg):not(i):not([class*="icon"])'
                 + ':not([class*="fa-"]):not([class*="fa "]):not([class*="glyphicon"])'
                 + ':not([class*="material-icons"]):not([class*="mdi"])';
+
+            function mirrorFontFaceCss() {
+                const el = document.getElementById('shf-font-face');
+                return el ? (el.textContent || '') : '';
+            }
+
+            const MIRROR_FONT_TAG_ID = '__shifix_mirror_font__';
+
+            // The whole theme as CSS text. One builder, because it is applied
+            // through two different doors (see injectMirrorFontIntoHtml and
+            // ensureMirrorFont) and the two must never drift apart.
+            //
+            // `:root, html` too, not just `body`: a captured fragment can have
+            // elements sitting outside <body> (an error page, a half-serialised
+            // document), and `body *` would never reach them. `html > *:not(head)`
+            // catches those; the icon/svg exclusions still apply.
+            function mirrorFontCssText() {
+                return mirrorFontFaceCss() +
+                    ':root,html,body{font-family:' + MIRROR_FONT_STACK + '!important;}' +
+                    'body,body *,html>body,html>*:not(head)' + MIRROR_FONT_SKIP +
+                    '{font-family:' + MIRROR_FONT_STACK + '!important;}';
+            }
+
+            function mirrorFontStyleHtml() {
+                return '<style id="' + MIRROR_FONT_TAG_ID + '" data-stream-injected="true">'
+                    + mirrorFontCssText() + '</style>';
+            }
+
+            // -----------------------------------------------------------------
+            // The theme is part of the DOCUMENT, not something done to it later
+            // -----------------------------------------------------------------
+            // Applying the font from the iframe's `load` handler looked
+            // sufficient and is not: that handler is one code path among
+            // several, it can return early (an error interstitial), it needs a
+            // parsed <body>, and it runs *after* the first paint — so a page
+            // like a 403 error screen showed in its own Arial until something
+            // else happened to re-render it.
+            //
+            // Putting the same <style> into the HTML before it becomes the
+            // blob removes all of that: the face is present at parse time, so
+            // the very first paint is already in the product font, whether or
+            // not any handler runs.
+            function injectMirrorFontIntoHtml(html) {
+                if (typeof html !== 'string' || !html) return html;
+                if (!mirrorFontEnabled()) return html;
+                if (html.indexOf(MIRROR_FONT_TAG_ID) !== -1) return html;
+                const tag = mirrorFontStyleHtml();
+                // Last inside <head>: after the page's own styles, so an
+                // equal-specificity `!important` tie goes to us.
+                if (/<\/head\s*>/i.test(html)) {
+                    return html.replace(/<\/head\s*>/i, tag + '</head>');
+                }
+                if (/<head(\s[^>]*)?>/i.test(html)) {
+                    // An unclosed <head>: put it as early as we safely can.
+                    return html.replace(/<head(\s[^>]*)?>/i, (m) => m + tag);
+                }
+                // No <head> at all - an error page, or a bare fragment. Append
+                // instead of prepending: a <style> anywhere in the document
+                // applies to the whole document, and LAST in source order wins
+                // the cascade ties this rule exists to win. (A <head> we
+                // synthesised at the front would be beaten by the page's own
+                // styles that follow it.)
+                return html + tag;
+            }
 
             // -----------------------------------------------------------------
             // Space Mono on a live page (an operator's switch, off by default)
@@ -6267,7 +6327,7 @@ function applySpinnerColorFromHex(hexColor) {
             }
 
             function ensureMirrorFont(doc) {
-                if (!doc || !doc.head) return false;
+                if (!doc || !doc.documentElement) return false;
                 // An LPV page is shown exactly as it was captured: never themed,
                 // and cleaned up if something themed it before it became one.
                 if (isLpvPageDocument(doc)) {
@@ -6281,20 +6341,30 @@ function applySpinnerColorFromHex(hexColor) {
                     // request in every mirrored document.
                     const stale = doc.getElementById('__shifix_mirror_font_css__');
                     if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+                    // A document with no <head> is not a reason to leave it in
+                    // the page's own type: make one. (An XML/SVG-ish or
+                    // half-built document can genuinely have none.)
+                    if (!doc.head) {
+                        const head = doc.createElement('head');
+                        doc.documentElement.insertBefore(head, doc.documentElement.firstChild);
+                    }
+                    const css = mirrorFontCssText();
                     let leaf = doc.getElementById('__shifix_mirror_font__');
                     if (!leaf) {
                         leaf = doc.createElement('style');
-                        leaf.id = '__shifix_mirror_font__';
+                        leaf.id = MIRROR_FONT_TAG_ID;
                         leaf.setAttribute('data-stream-injected', 'true');
                         // @font-face first: without it the family below is
                         // just a name the frame cannot resolve, and the page
                         // would silently keep its own type.
-                        leaf.textContent =
-                            mirrorFontFaceCss() +
-                            'html,body{font-family:' + MIRROR_FONT_STACK + '!important;}' +
-                            'body,body *' + MIRROR_FONT_SKIP +
-                            '{font-family:' + MIRROR_FONT_STACK + '!important;}';
+                        leaf.textContent = css;
                         doc.head.appendChild(leaf);
+                    } else if (leaf.textContent !== css) {
+                        // A tag that came from an older build (or from a page
+                        // that was itself captured from a mirror) is rewritten
+                        // rather than trusted: a stale face is worse than none.
+                        leaf.textContent = css;
+                        if (leaf.nextElementSibling) doc.head.appendChild(leaf);
                     } else if (leaf.nextElementSibling) {
                         // Keep it last: a page rule injected after ours would
                         // otherwise win back its own font on a tie.
@@ -11023,6 +11093,12 @@ function stripDeadMirrorNodes(root) {
                 // fully rendered; their JS must not re-execute in the blob
                 // (it builds URLs against the viewer origin -> glued host).
                 try { html = html.replace(/<script\b[^>]*(?:\/>|>[\s\S]*?<\/script\s*>)/gi, ''); } catch (e) {}
+                // The product font goes in HERE, into the document itself, so
+                // it is applied by the very first paint. Doing it from the
+                // iframe's load handler alone left pages that never got
+                // themed (an error screen is the obvious one: the handler
+                // does not even run for every document).
+                try { html = injectMirrorFontIntoHtml(html); } catch (e) { /* never block a page on type */ }
                 // Phones need an explicit viewport or the page renders desktop-wide
                 // and taps go through zoom handling (clicks feel "broken").
                 if ((state.isMobile || state.isTouch) && !/name=["']viewport["']/i.test(html)) {
@@ -11361,6 +11437,11 @@ function stripDeadMirrorNodes(root) {
                     try {
                         const d = frame.contentDocument;
                         if (d) {
+                            // Belt: the document usually arrives themed (see
+                            // injectMirrorFontIntoHtml), but a frame that was
+                            // filled by another route must not keep its own
+                            // type. Cheap - it finds the tag and moves on.
+                            try { ensureMirrorFont(d); } catch (e) { /* cosmetic */ }
                             // Inject a permissive meta CSP into the streaming
                             // page's iframe doc. Same belt-and-braces idea as
                             // the LPV iframe: if Chrome does not inherit the

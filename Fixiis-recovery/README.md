@@ -1122,12 +1122,43 @@ The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 | Surface | How it gets the font |
 |---|---|
 | `client.html`, `Admin.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
-| the live mirror | one `<style id="__shifix_mirror_font__">` injected into the captured `<head>`: the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) followed by rules that give `html`, `body` and every element the family with `!important`, so the site's own `font-family` cannot win |
+| the live mirror | the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) plus rules that give the document root, `body` and every element the family with `!important` — written **into the captured document's own HTML** before it is rendered, and re-asserted on the frame's `load` |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in
 any panel or in the shell: the first paint cannot wait on a CDN, a filtered
 network cannot leave the shell in a different face from the panels, and the
 mirror injects no request into a visitor's page.
+
+### The mirror's theme is part of the document, not something done to it later
+
+The theme used to be applied from the iframe's `load` handler, which looked
+sufficient and was not. That handler:
+
+* runs **after** the first paint, so the visitor saw the page in its own
+  type until the handler got there;
+* needs a parsed `<body>`, and returns early for a document it classifies as an
+  error interstitial;
+* is one code path among several — a frame filled any other way kept the
+  site's own fonts.
+
+An error screen is where this surfaced (a blocked visit landing on a 403 page,
+rendered in the page's own Arial), but the hole was general. So
+`renderPageSnapshot()` now writes the theme **into the HTML** — the last rule in
+`<head>`, or the end of the document when a page has no `<head>` at all, which
+is exactly the shape those error pages come in — and only then builds the
+`blob:`. The first paint is already in the product font, and no handler has to
+run for it to be true.
+
+Rules that keep it honest:
+
+* **`:root`, `html`, `body` and every element**, not just `body *`: a captured
+  fragment can have content outside a body, and `body *` would never reach it.
+* **One description of the theme** (`mirrorFontCssText()`) is used by both
+  doors, so the document copy and the runtime copy cannot drift; a tag left by
+  an older build is **rewritten**, never trusted.
+* **`load` still themes**, and now for *every* document (a frame that arrived by
+  another route, e.g. `about:blank` + a body swap), and a document with no
+  `<head>` gets one rather than being skipped.
 
 **Why embedded rather than a `system` face or a URL?** Two reasons, both
 practical:
@@ -2021,6 +2052,7 @@ node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets,
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Roboto Slab in the live mirror, never an LPV page
+node tests/test_mirror_font_apply.cjs     # the theme lands in the document itself (jsdom; a real 403 page)
 node tests/test_slab_font.cjs             # the embedded face: one payload, three pages, no fetch
 python tests/test_boot_priority.py         # page first, patches never dropped
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages
