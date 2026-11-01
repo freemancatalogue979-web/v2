@@ -44,6 +44,26 @@ else
     SERVER="${SERVER%/}"
 fi
 
+# The embedded font lives in the pages themselves, so a copy needs no sibling
+# file - but a stale block would ship the wrong type, and nothing downstream
+# would notice. Refuse to build from a drifted checkout. (Skipped in a partial
+# tree that has no generator, so the script stays usable on its own.)
+if [[ -f "$here/deploy/embed_font.py" ]] && ! python3 "$here/deploy/embed_font.py" --check; then
+    echo "font blocks are stale - run: python3 deploy/embed_font.py" >&2
+    exit 1
+fi
+
+# Same face for the folder menu, embedded from the same file. base64 is
+# decoded by the browser; wrap-free is what we need inside one line.
+SLAB_FONT="$here/assets/fonts/roboto-slab-latin-wght-normal.woff2"
+SLAB_FACE=''
+SLAB_STACK='"Helvetica Neue", Helvetica, Arial, sans-serif'
+if [[ -f "$SLAB_FONT" ]]; then
+    SLAB_B64="$(base64 < "$SLAB_FONT" | tr -d '\n')"
+    SLAB_FACE="@font-face{font-family:Roboto Slab;font-style:normal;font-weight:100 900;font-display:swap;src:url(data:font/woff2;base64,$SLAB_B64) format('woff2');}"
+    SLAB_STACK="Roboto Slab, Georgia, 'Times New Roman', serif"
+fi
+
 mkdir -p "$OUTDIR"
 
 # Inject the address, then PROVE the copy is still the same page. A silently
@@ -119,7 +139,9 @@ printf '  ok    %-18s %8s  -> %s\n' "BUILD.txt" \
     "$(( ($(stat -c %s "$OUTDIR/BUILD.txt") + 512) / 1024 )) KB" "$OUTDIR/BUILD.txt"
 
 # A dropdown of the folder: opening the hosted directory shows a menu instead
-# of a 403. No scripts, no fonts, no network - it must work on any host.
+# of a 403. No scripts, no network, no extra file - the face is embedded (a
+# data: URI) exactly as the panels embed it, so the menu still works on any
+# host and from file://.
 cat > "$OUTDIR/index.html" <<EOF
 <!DOCTYPE html>
 <html lang="en">
@@ -128,10 +150,11 @@ cat > "$OUTDIR/index.html" <<EOF
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Panels</title>
 <style>
+  ${SLAB_FACE}
   :root { color-scheme: dark; }
   body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
          background: #0c0e14; color: #e8ecf7;
-         font-family: "Helvetica Neue", Helvetica, Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+         font-family: ${SLAB_STACK}; }
   main { width: min(560px, 100%); padding: 24px; box-sizing: border-box; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   p  { color: #9aa4bd; font-size: 13px; line-height: 1.5; margin: 0 0 18px; }

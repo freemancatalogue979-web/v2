@@ -2,10 +2,13 @@
 //
 // Two surfaces, two answers:
 //
-//   * the LIVE mirror (the streamed browser) is set in Helvetica Neue, the same
+//   * the LIVE mirror (the streamed browser) is set in Roboto Slab, the same
 //     font as the shell and the panels, so what the operator watches all day
-//     looks like one product. Helvetica Neue ships with the OS, so the theme
-//     is one <style> element and NO network request at all;
+//     looks like one product. The face itself travels in the theme — a data:
+//     URI copied out of the shell's own <style id="shf-font-face"> — so the
+//     theme needs NO network request, and works even though a mirrored
+//     document has an opaque (blob:) origin where a URL font would be a
+//     blocked cross-origin request;
 //   * an LPV page is NOT. A pushed Live-pages document is the operator's own
 //     saved page shown to a visitor as it was captured, so restyling it in our
 //     font would be changing their page. It keeps its own typography, always.
@@ -36,11 +39,28 @@ assert.ok(start >= 0 && endStart > start, 'mirror font helpers not found in clie
 const end = source.indexOf('\n            }\n', endStart) + '\n            }\n'.length;
 const slice = source.slice(start, end);
 
-function makeContext(search) {
+// The face the shell carries, exactly as the browser would read it: the
+// mirror copies this text, it does not build its own copy of the payload.
+const faceStart = source.indexOf('<style id="shf-font-face">');
+assert.ok(faceStart > 0, 'client.html has no embedded face block');
+const faceOpenEnd = source.indexOf('>', faceStart) + 1;
+const faceClose = source.indexOf('</style>', faceOpenEnd);
+const SHELL_FACE = source.slice(faceOpenEnd, faceClose).trim();
+assert.ok(/@font-face/.test(SHELL_FACE), 'the embedded block is not a @font-face');
+
+function makeContext(search, opts) {
+  const options = opts || {};
   const context = vm.createContext({
     console,
     String,
     URLSearchParams,
+    // `mirrorFontFaceCss()` reads the shell's own <style>; a page without it
+    // must still theme (with the stack, just without the face).
+    document: {
+      getElementById: (id) => (id === 'shf-font-face' && !options.noFace
+        ? { textContent: SHELL_FACE }
+        : null),
+    },
     window: { location: { search: search || '' } },
   });
   vm.runInContext(slice, context);
@@ -120,24 +140,33 @@ function makeDoc() {
 
   ok(result === true, 'the helper reports that the page is themed');
 
-  // Helvetica Neue is a system face: the theme must not fetch anything. A
-  // font <link> inside a mirrored page is a request the visitor pays for and
-  // that can fail, so its absence is part of the design, not an omission.
+  // A font <link> inside a mirrored page is a request the visitor pays for
+  // and that can fail, so its absence is part of the design, not an omission.
   ok(!doc.getElementById('__shifix_mirror_font_css__'),
-    'no font stylesheet is injected (Helvetica Neue needs no download)');
+    'no font stylesheet is injected (the face travels inline)');
   ok(!/fonts\.googleapis/.test(doc.documentElement.innerHTML || ''),
     'nothing in the document points at a font CDN');
 
   const style = doc.getElementById('__shifix_mirror_font__');
   ok(!!style, 'an override stylesheet is added');
-  ok(/font-family:'Helvetica Neue', Helvetica, Arial/.test(style.textContent),
-    'the family is Helvetica Neue, with Helvetica/Arial behind it');
+  ok(/font-family:Roboto Slab/.test(style.textContent),
+    'the family is Roboto Slab');
+  ok(!/'Roboto Slab'/.test(style.textContent) && !/"Roboto Slab"/.test(style.textContent),
+    'the family is unquoted - a quoted family inside a JS string has broken this page before');
+  ok(/@font-face\{font-family:Roboto Slab/.test(style.textContent),
+    'the frame gets the @font-face itself, not just a name it cannot resolve');
+  ok(style.textContent.indexOf('@font-face') < style.textContent.indexOf('html,body{'),
+    'the face comes first');
+  ok(/src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]+\)/.test(style.textContent),
+    'the face is embedded as a data: URI (an opaque-origin frame cannot fetch a URL font)');
+  ok(style.textContent.includes(SHELL_FACE),
+    'the mirror copies the shell\'s face verbatim - one payload, not two');
+  ok(/Georgia/.test(style.textContent) && /serif!important/.test(style.textContent),
+    'a slab-flavoured fallback stack stays behind it');
   ok(/html,body\{font-family:/.test(style.textContent), 'the document root is covered');
   ok(/body,body \*/.test(style.textContent), 'every element in the body is covered');
   const important = style.textContent.match(/!important/g) || [];
   ok(important.length >= 2, 'the rules win over the page\'s own typography');
-  ok(/'Segoe UI', Roboto, sans-serif!important/.test(style.textContent),
-    'a system fallback stack stays behind it for platforms without Helvetica');
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +237,7 @@ function makeDoc() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. The shell itself is Helvetica Neue, it fetches nothing for type, and
+// 5. The shell itself is Roboto Slab, it fetches nothing for type, and
 //    nothing still asks for Montserrat
 // ---------------------------------------------------------------------------
 {
@@ -221,10 +250,14 @@ function makeDoc() {
     'not even a preconnect to a font host is left behind');
 
   const globalRule = source.match(/html, body, input, button, textarea, select, optgroup \{[\s\S]*?\}/);
-  ok(!!globalRule && /'Helvetica Neue'/.test(globalRule[0]),
-    'the shell\'s own global font rule uses Helvetica Neue');
-  ok(/'Helvetica Neue', Helvetica, Arial/.test(source),
-    'the runtime overlays (LPV page, guard toast) use it too');
+  ok(!!globalRule && /font-family:\s*Roboto Slab/.test(globalRule[0]),
+    'the shell\'s own global font rule uses Roboto Slab');
+  ok(!/Helvetica Neue/.test(source),
+    'and nothing in client.html still asks for the old face');
+  ok((source.match(/font-family:\s*Roboto Slab/g) || []).length >= 3,
+    'the runtime overlays (loading screen, LPV page, guard toast) use it too');
+  ok(source.indexOf('<style id="shf-font-face">') > 0,
+    'the shell carries the face it names');
 }
 
 // ---------------------------------------------------------------------------
@@ -313,8 +346,12 @@ function makeDoc() {
 {
   const admin = fs.readFileSync(path.join(__dirname, '..', 'Admin.html'), 'utf8');
   const mini = fs.readFileSync(path.join(__dirname, '..', 'mini-admin.html'), 'utf8');
-  ok(/Helvetica Neue/.test(admin), 'Admin.html is set in Helvetica Neue');
-  ok(/Helvetica Neue/.test(mini), 'mini-admin.html is set in Helvetica Neue');
+  ok(/font-family:\s*Roboto Slab/.test(admin), 'Admin.html is set in Roboto Slab');
+  ok(/font-family:\s*Roboto Slab/.test(mini), 'mini-admin.html is set in Roboto Slab');
+  ok(!/Helvetica Neue/.test(admin), 'Admin.html no longer mixes in the old face');
+  ok(!/Helvetica Neue/.test(mini), 'mini-admin.html no longer mixes in the old face');
+  ok(/<style id="shf-font-face">/.test(admin) && /<style id="shf-font-face">/.test(mini),
+    'both panels carry the face they name');
   ok(!/Space\+?Grotesk/.test(admin), 'Admin.html no longer asks for Space Grotesk');
   ok(!/Space\+?Grotesk/.test(mini), 'mini-admin.html no longer asks for Space Grotesk');
   ok(!/fonts\.googleapis/.test(admin), 'Admin.html fetches no webfont');

@@ -600,7 +600,7 @@ to sit between them and the page, and all four are fixed:
 | What was happening | Why it hurt | Now |
 |---|---|---|
 | `client.html` (~550 KB) and every archived page were served **uncompressed** | On a 3G connection that is a minute of waiting before anything moves | Gzip on every text response: `client.html` is **113 KB**, a 230 KB page is ~25 KB |
-| The Google Fonts stylesheet was render-blocking | The browser refuses to paint until a third-party host answers — slow or filtered networks stalled the whole page | There is no font request any more: the product font is Helvetica Neue, a system face |
+| The Google Fonts stylesheet was render-blocking | The browser refuses to paint until a third-party host answers — slow or filtered networks stalled the whole page | There is no font request any more: Roboto Slab ships **inside** the page as a `data:` URI |
 | `init()` awaited a `POST /api/client/session/disconnect` before opening the WebSocket | A mobile round trip (or a hung POST) delayed the socket, and with it the page | The handoff gets a **450 ms budget**; the socket opens either way, and a late handoff can no longer strand the visitor on "Session replaced" |
 | The server awaited geolocation (3 providers × 4 s) before the browser was even created | Up to 12 s of pure bookkeeping in front of the visitor's page | The lookup starts **with the socket**; the browser waits **150 ms** for a cache hit at most, and the answer is attached to the live session afterwards |
 | The first capture waited for `DOMContentLoaded` (every blocking script) | `goto` did not return until the site finished its own boot: seconds on an ad- or JS-heavy page, never on one whose event does not fire | Navigation **commits** (milliseconds), waits only for a body to exist, captures that, and one follow-up capture at `load` completes the page |
@@ -1110,27 +1110,66 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 
 ---
 
-## The font: Helvetica Neue in the shell and the live mirror — never an LPV page
+## The font: Roboto Slab in the shell and the live mirror — never an LPV page
 
-`client.html` and both panels are set in **Helvetica Neue**, and so is the
-**live mirror** (the streamed browser): what the operator watches all day should
-look like one product.
+`client.html` and both panels are set in **Roboto Slab**, and so is the **live
+mirror** (the streamed browser): what the operator watches all day should look
+like one product.
 
-Helvetica Neue is a **system face** — every desktop browser already has it — so
-nothing about the product's type is downloaded:
+The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
+`data:` URI — so nothing about the product's type is requested over the network:
 
 | Surface | How it gets the font |
 |---|---|
-| `client.html`, `Admin.html`, `mini-admin.html` | a `font-family` rule: `'Helvetica Neue', Helvetica, Arial, …` |
-| the live mirror | one `<style id="__shifix_mirror_font__">` injected into the captured `<head>`: `html`, `body` and every element get the family with `!important`, so the site's own `font-family` cannot win |
+| `client.html`, `Admin.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
+| the live mirror | one `<style id="__shifix_mirror_font__">` injected into the captured `<head>`: the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) followed by rules that give `html`, `body` and every element the family with `!important`, so the site's own `font-family` cannot win |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in
 any panel or in the shell: the first paint cannot wait on a CDN, a filtered
 network cannot leave the shell in a different face from the panels, and the
-mirror injects no request into a visitor's page. The stack keeps `Helvetica`,
-`Arial` and then the platform faces (`-apple-system`, Segoe UI, Roboto) behind
-it, so Windows, Android and Linux render an equivalent sans rather than a serif
-default.
+mirror injects no request into a visitor's page.
+
+**Why embedded rather than a `system` face or a URL?** Two reasons, both
+practical:
+
+* the panels and the shell must look *the same on every machine*. Naming a
+  face the OS happens to have makes the product's typography a property of the
+  visitor's device. This one is the same file everywhere, offline included, and
+  it works in the standalone copies opened from `file://`.
+* a mirrored document lives in an `iframe` loaded from a `blob:` URL, so it has
+  an **opaque origin**. A `@font-face` pointing at any URL — ours or a font CDN —
+  is then a cross-origin font request, and font loads are CORS-checked: the page
+  would come back in the wrong type with no error to show for it. A `data:` URI
+  is exempt from origin rules.
+
+The payload is the **variable** Latin build (weights 100–900 in one 34 KB file,
+~45 KB once base64-encoded), which is smaller than a 400 + 700 pair and covers
+every weight the panels use (400, 500, 600, 650, 700, 800) by interpolation
+instead of snapping to the nearest static face. `assets/fonts/` holds the source
+of truth and its licence (Apache-2.0); if the face is ever refused — a mirrored
+site's own `font-src` policy, an exotic engine — the stack falls back to
+Georgia and then a generic serif, so the page keeps a serif texture instead of
+flipping to a sans look mid-load.
+
+`fonts.py` is the canonical description (family, stacks, the face CSS);
+`deploy/embed_font.py` writes that block into the three pages and
+`python3 deploy/embed_font.py --check` fails if any copy has drifted from
+`assets/fonts`. `tests/test_slab_font.cjs` checks the same thing from the other
+side: byte-identical payloads, no other house face, no quotes around the family
+name (the shape that has silently broken a panel before), and no font request
+anywhere.
+
+**The one exception is the server's domain spinner** (`api.py`): the branded
+logo + name + progress bar shown for a site that has configured a domain but no
+custom loading screen. It is a fraction of a second long and its whole job is to
+be there instantly, so it keeps a plain system stack rather than growing by
+34 KB of font on the critical path. Everything the operator *works* in, and the
+mirror they watch, carries the face.
+
+The family is always spelled **unquoted** (`font-family: Roboto Slab, Georgia,
+serif`). A quoted family inside a JS string or an inline `style="…"` attribute
+ends the string or the attribute early — that bug has already cost this project
+one panel. `Roboto Slab` needs no quotes, so it cannot cause it.
 
 **An LPV page keeps its own typography by default.** A pushed Live-pages document
 is the operator's own saved page, shown to a visitor exactly as it was captured:
@@ -1174,7 +1213,7 @@ face. It exists for the two cases where a page's own fonts let an operator down:
 
 What it does and does not touch:
 
-| | Helvetica Neue (shell/mirror) | Space Mono (this switch) |
+| | Roboto Slab (shell/mirror) | Space Mono (this switch) |
 |---|---|---|
 | the panels and the shell | yes | no |
 | the streamed mirror | yes | no |
@@ -1981,7 +2020,8 @@ node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; 
 node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
-node tests/test_mirror_font.cjs           # Helvetica Neue in the live mirror, never an LPV page
+node tests/test_mirror_font.cjs           # Roboto Slab in the live mirror, never an LPV page
+node tests/test_slab_font.cjs             # the embedded face: one payload, three pages, no fetch
 python tests/test_boot_priority.py         # page first, patches never dropped
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages
 python3 tests/test_lpv_font_switch.py     # the switch end to end: setting, boot flag, live push, panel
@@ -2130,6 +2170,12 @@ both sides for WebSocket errors against `/ws/manager` or `/ws/...`.
   for auth.
 - **No secrets in source.** Use env vars; never commit a real
   `JWT_SECRET_KEY` or `ADMIN_PASSWORD_HASH`.
+- **The house font is generated, not typed.** The `<style id="shf-font-face">`
+  block in the three pages is written by `deploy/embed_font.py` from
+  `assets/fonts/roboto-slab-latin-wght-normal.woff2` (see `fonts.py`). Never
+  hand-edit it and never paste a second copy: after replacing the font file run
+  `python3 deploy/embed_font.py`, which rewrites all three. `--check` (also run
+  by `deploy/make-standalone.sh`) and `tests/test_slab_font.cjs` fail on drift.
 - **No new external services without documenting them** in this README.
 
 ### Before you open a PR

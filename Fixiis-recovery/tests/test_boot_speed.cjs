@@ -46,15 +46,17 @@ ok(/_client_html_response\(request, _client_file_html\(admin_path\)\)/.test(admi
    'the admin panel does too (it is ~1 MB)');
 
 // ---- 3. no third-party font request in the head at all -------------------
-// The shell face is Helvetica Neue, which the OS already has. That beats even
-// the async `<link rel="preload">` it replaced: there is no request to defer,
-// so the first paint cannot wait on a font CDN, and a filtered network cannot
-// leave the shell in a different face from the panels.
+// The shell face is Roboto Slab, and the glyphs are embedded in the page. That
+// beats even the async `<link rel="preload">` it replaced: there is no request
+// to defer, so the first paint cannot wait on a font CDN, and a filtered
+// network cannot leave the shell in a different face from the panels.
 const head = client.slice(0, client.toLowerCase().indexOf('</head>'));
 ok(!/fonts\.googleapis/.test(head), 'the shell head never reaches a font CDN');
 ok(!/fonts\.gstatic\.com/.test(head), 'and does not preconnect to one either');
 ok(!/rel="preload" as="style"[^>]*fonts/.test(head), 'nothing about type is preloaded');
-ok(/'Helvetica Neue'/.test(client), 'the shell is set in Helvetica Neue');
+ok(/font-family:\s*Roboto Slab/.test(client), 'the shell is set in Roboto Slab');
+ok(!/fonts\.gstatic\.com/.test(client.slice(0, client.indexOf('</head>'))),
+   'and the embedded face means the head never preconnects to a font host');
 
 // ---- 4. the socket is not held hostage by the pre-connect handoff -------
 ok(/BOOT_HANDOFF_BUDGET_MS = \d+/.test(client), 'the handoff has a budget');

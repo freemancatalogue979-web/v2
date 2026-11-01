@@ -75,7 +75,7 @@ for (const page of PAGES) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. The font itself: Helvetica Neue, and no webfont request anywhere
+// 3. The font itself: Roboto Slab (embedded), and no webfont request anywhere
 // ---------------------------------------------------------------------------
 {
   const client = fs.readFileSync(path.join(root, 'client.html'), 'utf8');
@@ -83,7 +83,10 @@ for (const page of PAGES) {
   const mini = fs.readFileSync(path.join(root, 'mini-admin.html'), 'utf8');
 
   for (const [name, src] of [['client.html', client], ['Admin.html', admin], ['mini-admin.html', mini]]) {
-    ok(/Helvetica Neue/.test(src), name + ' is set in Helvetica Neue');
+    ok(/font-family:\s*Roboto Slab/.test(src), name + ' is set in Roboto Slab');
+    ok(!/Helvetica Neue/.test(src), name + ' asks for no other house face');
+    ok(/@font-face\{font-family:Roboto Slab/.test(src),
+       name + ' carries the face itself, so a quoted family is never needed');
     ok(!/Space\+Grotesk/.test(src) && !/Space Grotesk/.test(src),
        name + ' asks for Space Grotesk nowhere');
   }

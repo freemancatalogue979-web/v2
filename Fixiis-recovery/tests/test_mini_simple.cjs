@@ -94,8 +94,14 @@ ok(tabs.length === 4, 'still four jobs');
 // ~150 KB is what it weighed BEFORE the chat console was removed, so staying
 // under it means the simplification still holds even though the panel has
 // gained a site switch, richer client cards and page-name resolution since.
-const kb = mini.length / 1024;
-ok(kb < 150, `the file did not grow back to its old weight (${kb.toFixed(1)} KB)`);
+// The embedded font (a ~45 KB data: URI) is payload, not a job, so it is
+// subtracted before weighing the panel: without that, adding a face would look
+// like a feature and the cap would drift with every font change.
+const faceStart = mini.indexOf('<style id="shf-font-face">');
+const faceEnd = faceStart < 0 ? -1 : mini.indexOf('</style>', faceStart) + 8;
+const fontBytes = faceStart < 0 ? 0 : faceEnd - faceStart;
+const kb = (mini.length - fontBytes) / 1024;
+ok(kb < 150, `the file did not grow back to its old weight (${kb.toFixed(1)} KB of code)`);
 ok(tabs.length === 4 && !/data-view="chat"/.test(mini), 'no chat console came back');
 
 console.log('mini-admin simplicity checks passed');
