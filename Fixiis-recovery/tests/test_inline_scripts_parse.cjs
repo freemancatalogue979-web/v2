@@ -94,7 +94,7 @@ for (const page of PAGES) {
     ok(!/Space\+Grotesk/.test(src) && !/Space Grotesk/.test(src),
        name + ' asks for Space Grotesk nowhere');
   }
-  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html body is set in Helvetica');
+  ok(/--mc-font:\s*Corptic,/.test(admin), 'Admin.html names the embedded Corptic for every text');
   ok(!/Roboto Slab/.test(admin), 'Admin.html asks for no other house face');
   // One embedded face is allowed - Corptic, as a data: URI, nothing remote.
   ok((admin.match(/@font-face\s*\{/g) || []).length === 1,

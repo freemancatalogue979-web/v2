@@ -110,8 +110,7 @@ const PAGES = ['client.html', 'mini-admin.html'];
     'the embedded Corptic is byte-identical to assets/fonts/corptic-demo-regular.woff2');
   ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')),
     'the licence travels with the font');
-  ok(/font-family:\s*Helvetica Neue/.test(admin), 'the body is still set in Helvetica');
-  ok(/--mc-display:\s*Corptic/.test(admin), 'and the display stack names Corptic first');
+  ok(/--mc-font:\s*Corptic,/.test(admin), 'every text leads with the embedded Corptic');
   ok(!/Roboto Slab/.test(admin), 'and asks for no other house face');
 }
 

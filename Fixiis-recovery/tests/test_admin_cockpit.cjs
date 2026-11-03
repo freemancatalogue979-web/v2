@@ -1,21 +1,22 @@
 // No dependencies (jsdom optional): node tests/test_admin_cockpit.cjs
 //
-// Admin.html is drawn as a mission-control console: a near-black ops room
-// with a hairline grid and scanlines, amber-lit console keys, ice-cyan
-// instruments, a tab rail where every nav entry is a slanted key, every modal
-// a corner-bracketed console dialog, a radar scope behind the live view, and
-// Helvetica (oblique) across the chrome. None of that is allowed to cost
-// anybody the panel they already had, so this file guards three things:
+// Admin.html is drawn as a black & white ops console: the dark theme is white
+// on black, the light theme (the default) is black on white — no accent hue
+// anywhere. Every shape is round: pill tabs and keys, rounded panels and
+// dialogs, no clip-path cuts, no corner brackets. Every text is Corptic
+// (embedded once as a data: URI), oblique across the chrome, upright only in
+// machine output. The skin is one named block, last in <head>. None of that
+// may cost the panel its scripts, so this file guards:
 //
 //   1. THE CONTRACT. Every id and class the panel's own scripts reach for is
 //      still in the markup, and every tab still exists. Captured before the
 //      reskin (tests/fixtures/admin_shell_contract.json); a rename is a bug,
 //      not a redesign.
-//   2. THE DESIGN. The skin is present, last in the cascade, and built from
-//      the console's palette and shapes - not "roughly dark".
+//   2. THE DESIGN. The skin is present, last in the cascade, monochrome,
+//      rounded, Corptic throughout — not "roughly dark" and not angular.
 //   3. THE RULES IT MUST NOT BREAK. No network fetch of any kind for the look,
-//      machine output stays upright and monospace, the art is decoration only
-//      (aria-hidden, no pointer events), and motion is respectful.
+//      machine output stays upright, the art is decoration only (aria-hidden,
+//      no pointer events), and motion is respectful.
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
@@ -66,12 +67,9 @@ const skin = admin.slice(skinStart, cssEnd);
 }
 
 // ---------------------------------------------------------------------------
-// 2. It is the console's design, not an approximation of "dark"
+// 2. The skin is one block, last in the head, after the panel's own styles
 // ---------------------------------------------------------------------------
 {
-  // Last thing in the head, so it wins the cascade: that is what makes this a
-  // reskin rather than a suggestion. (The panel's scripts carry their own
-  // '</head>' strings, so the invariant is checked from the skin forward.)
   const headEnd = admin.indexOf('</head>', cssEnd);
   ok(headEnd > cssEnd, 'the head closes after the skin');
   const between = admin.slice(cssEnd + '</style>'.length, headEnd);
@@ -79,125 +77,95 @@ const skin = admin.slice(skinStart, cssEnd);
     'nothing follows the skin but the end of the head (found: ' + JSON.stringify(between.trim().slice(0, 60)) + ')');
   const stylesBefore = Array.from(admin.slice(0, skinStart).matchAll(/<style\b/g)).length;
   ok(stylesBefore > 0, 'and it comes after the panel\'s own stylesheets (' + stylesBefore + ')');
-
-  // Palette: amber console light, ice instruments, live green - in dark and
-  // in light.
-  for (const token of ['--mc-void', '--mc-amber', '--mc-ice', '--mc-green', '--mc-text']) {
-    ok(css.includes(token + ':'), 'the palette declares ' + token);
-  }
-  ok(/:root\s*\{[\s\S]*?--mc-amber:\s*#ffb02e/.test(css), 'the lit key is the console amber');
-  ok(/:root\s*\{[\s\S]*?--mc-ice:\s*#59dcff/.test(css), 'the instrument accent is ice cyan');
-  ok(/\[data-theme="light"\]\s*\{[\s\S]*?--mc-amber:/.test(css),
-    'the light theme is a real theme, not a broken dark one');
-  ok(!/--mc-amber:\s*#ffb02e/.test(css.slice(css.indexOf('[data-theme="light"]'))),
-    'and it does not reuse the dark amber');
-  ok(/<html lang="en" data-theme="light">/.test(admin),
-    'the panel opens in the light theme by default');
-  ok(/localStorage\.getItem\('admin-theme'\)\s*\|\|\s*'light'/.test(admin),
-    'and the JS fallback agrees (a saved choice still wins)');
-  ok(/\[data-theme="light"\]\s*\{[\s\S]*?--mc-void:\s*#ffffff/.test(css) &&
-     /\[data-theme="light"\]\s*\{[\s\S]*?--mc-text:\s*#000000/.test(css),
-    'the light theme is literal: white ground, black text');
-  ok(/:root\s*\{[\s\S]*?--mc-void:\s*#020608/.test(css),
-    'and the black theme stays one toggle away');
-
-  // Bevel-cut panels and slanted tab keys: the console's two strongest shapes.
-  ok(/--mc-cut:\s*polygon\(/.test(css), 'a bevel cut is defined once as a token');
-  ok(css.includes('var(--mc-cut)'), 'and the dialogs use it');
-  ok(/--mc-tab-cut:\s*polygon\(/.test(css), 'a slanted tab key is defined once as a token');
-  ok(/\.top-tab\s*\{[\s\S]{0,1200}clip-path:\s*var\(--mc-tab-cut\)/.test(css), 'and every nav tab is cut with it');
-
-  // The tab rail: uppercase oblique keys, the active one lit amber.
-  ok(/\.top-tab\s*\{[\s\S]{0,1200}text-transform:\s*uppercase/.test(css), 'tabs are labelled like console keys');
-  ok(/\.top-tab\.active\s*\{[\s\S]{0,1200}#e08f00/.test(css), 'the active tab is the lit amber key');
-  ok(/\.top-tab\.active\s*\{[\s\S]{0,1200}box-shadow/.test(css), 'and it glows');
-  ok(/\.display-subtab\.active[\s\S]{0,800}--mc-amber/.test(css), 'the segmented sub-tabs light up too');
-
-  // Every modal is a console dialog: bevel cut, corner brackets, header lamp,
-  // lit primary key.
-  ok(/\.lpv-vals-modal\s*\{[\s\S]{0,1200}clip-path:\s*var\(--mc-cut\)/.test(css) && css.includes('.pcm-modal,'), 'the capture dialog is bevel cut');
-  ok(/\.pcm-modal::before[\s\S]{0,1200}border-top:\s*1px solid var\(--mc-amber\)/.test(css), 'dialogs carry corner brackets');
-  ok(/\.pcm-modal-title::before[\s\S]{0,800}animation:\s*mc-blink/.test(css), 'the dialog header lamp blinks');
-  ok(/\.pcm-modal-btn\.primary[\s\S]{0,800}#e08f00/.test(css), 'the primary action is the lit amber key');
-  for (const sel of ['.login-modal', '.klg-modal', '.lpv-modal', '.lpv-bind-modal', '.profile-modal']) {
-    ok(css.includes(sel + ','), 'the dialog language covers ' + sel);
-  }
-
-  // The sign-in airlock: a round glass card with a porthole reticle, pill
-  // fields and one pill key - deliberately none of the angular cuts.
-  ok(/\.login-modal\s*\{[\s\S]{0,1200}border-radius:\s*30px/.test(css), 'the airlock card is round');
-  ok(/\.login-modal\s*\{[\s\S]{0,1200}clip-path:\s*none/.test(css), 'and drops the angular cut');
-  ok(/\.login-modal::before,\s*\.login-modal::after\s*\{\s*content:\s*none/.test(css),
-    'and the corner brackets are gone from it');
-  ok(/\.login-modal \.logo-icon\s*\{[\s\S]{0,1200}border-radius:\s*50%/.test(css), 'the porthole is a circle');
-  ok(/\.login-modal \.logo-icon::before[\s\S]{0,300}border:\s*1px dashed/.test(css),
-    'with a dashed ring that turns');
-  ok(/\.login-overlay\s*\{[\s\S]{0,1200}repeating-radial-gradient/.test(css),
-    'the airlock floats on concentric rings');
-  ok(/\.login-btn\s*\{[\s\S]{0,1200}border-radius:\s*999px/.test(css), 'the sign-in key is a pill');
-  ok(/\.login-btn\s*\{[\s\S]{0,1200}clip-path:\s*none/.test(css), 'not an angular key');
-  ok(/\.login-modal \.form-input[\s\S]{0,1200}border-radius:\s*999px/.test(css), 'the fields are pills too');
-  ok(/\.login-overlay[\s\S]{0,1200}backdrop-filter/.test(css), 'overlays are scrimmed and blurred');
-
-  // The instruments the console shows.
-  ok(/\.logo-icon[\s\S]{0,1200}border-radius:\s*50%/.test(css), 'the header mark is a round reticle');
-  ok(/\.placeholder-icon[\s\S]{0,1200}border-radius:\s*50%/.test(css), 'the empty state is an instrument ring');
-  ok(/\.placeholder-icon::before[\s\S]{0,700}border:\s*1px dashed/.test(css), 'with a dashed inner ring');
-  ok(/#screenshot-status[\s\S]{0,800}border-radius:\s*999px/.test(css),
-    'the stream status is the reference pill');
-  ok(/\.screenshot-panel::before[\s\S]{0,1200}border:/.test(css), 'the stage has corner brackets');
-  ok(/\.screenshot-meta[\s\S]{0,1200}clip-path:\s*polygon/.test(css),
-    'the readout strip is bevel cut like the reference');
-  ok(/@keyframes mc-spin/.test(css) && /@keyframes mc-blink/.test(css) && /@keyframes mc-sweep/.test(css),
-    'the rings turn, the lamps blink and the radar sweeps');
-
-  // The stage: dot field, scanlines, and an inline radar scope.
-  ok(/\.lx-stage[\s\S]{0,1200}radial-gradient\(rgba\(89, 220, 255/.test(css),
-    'the stage carries the dot field');
-  ok(/\.lx-stage::before[\s\S]{0,800}repeating-linear-gradient\(0deg, rgba\(255, 176, 46/.test(css),
-    'and the scanlines');
-  ok(/class="mc-radar"/.test(admin) && /viewBox="0 0 600 600"/.test(admin),
-    'the radar scope is drawn inline');
-  ok(/preserveAspectRatio="xMidYMid slice"/.test(admin), 'and it fills the stage');
-  ok(/\.mc-radar \.mc-sweep[\s\S]{0,700}animation:\s*mc-sweep/.test(css), 'the sweep is animated in CSS');
-  const radar = admin.slice(admin.indexOf('<svg class="mc-radar"'),
-                            admin.indexOf('</svg>', admin.indexOf('<svg class="mc-radar"')) + 6);
-  const radarShapes = (radar.match(/<(?:circle|path)\b/g) || []).length;
-  ok(radarShapes >= 15, 'the scope is real artwork (' + radarShapes + ' shapes)');
-  const grads = (radar.match(/<(?:linear|radial)Gradient\b/g) || []).length;
-  ok(grads >= 2, 'with a glow and a sweep gradient (' + grads + ')');
 }
 
 // ---------------------------------------------------------------------------
-// 3. Helvetica, oblique - and where it must not be
+// 3. Black & white only: no hue in the palette, both themes real
 // ---------------------------------------------------------------------------
 {
-  ok(/font-style:\s*italic/.test(css), 'the chrome is set oblique');
-  ok(!/'Helvetica Neue'|"Helvetica Neue"/.test(css.slice(0, css.indexOf('font-style'))),
-    'the family is spelled unquoted (a quoted family in a JS string has broken this panel before)');
-  ok(/font-family:\s*var\(--mc-font\)/.test(css), 'one family token');
+  for (const token of ['--mc-void', '--mc-accent', '--mc-text', '--mc-line']) {
+    ok(css.includes(token + ':'), 'the palette declares ' + token);
+  }
+  ok(/:root\s*\{[\s\S]*?--mc-void:\s*#000000/.test(css), 'the dark theme is black');
+  ok(/:root\s*\{[\s\S]*?--mc-accent:\s*#ffffff/.test(css), 'its accent is white');
+  ok(/:root\s*\{[\s\S]*?--mc-text:\s*#ffffff/.test(css), 'and its text is white');
+  ok(/\[data-theme="light"\]\s*\{[\s\S]*?--mc-void:\s*#ffffff/.test(css), 'the light theme is white');
+  ok(/\[data-theme="light"\]\s*\{[\s\S]*?--mc-accent:\s*#000000/.test(css), 'its accent is black');
+  ok(/\[data-theme="light"\]\s*\{[\s\S]*?--mc-text:\s*#000000/.test(css), 'and its text is black');
 
-  // Machine output: upright, monospace, and it has to out-specify the panel's
-  // own `* { font-family: … !important }` reset.
-  ok(/textarea, pre, code[\s\S]{0,1200}font-family:\s*var\(--mc-mono\) !important/.test(css),
-    'the terminal, the logs and typed prose stay monospace');
-  ok(/font-style:\s*normal !important/.test(css), 'and upright');
+  // No orange (or any other hue) anywhere in the skin: every hex colour it
+  // declares is a shade of gray.
+  const hexes = Array.from(css.matchAll(/#([0-9a-fA-F]{3,8})\b/g)).map((m) => m[1].toLowerCase());
+  const grey = (h) => {
+    const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h.slice(0, 6);
+    return full.length === 6 && full[0] === full[2] && full[2] === full[4] && full[1] === full[3] && full[3] === full[5];
+  };
+  const hues = hexes.filter((h) => !grey(h));
+  ok(hues.length === 0, 'the skin declares no hue, only gray (found: #' + hues.slice(0, 4).join(', #') + ')');
+  ok(!/--mc-amber|--mc-ice|--mc-hot|--mc-green/.test(css), 'no leftover accent tokens');
+  ok(!/orange|amber/i.test(css.replace(/no accent hue|no hue/g, '')), 'no orange by name either');
 
-  ok(!/Roboto Slab/.test(admin), 'the panel asks for no other house face');
+  // The radar scope is monochrome too (it inherits currentColor per theme).
+  const radar = admin.slice(admin.indexOf('<svg class="mc-radar"'),
+                            admin.indexOf('</svg>', admin.indexOf('<svg class="mc-radar"')) + 6);
+  const radarHexes = Array.from(radar.matchAll(/#([0-9a-fA-F]{3,8})\b/g)).map((m) => m[1].toLowerCase());
+  ok(radarHexes.length === 0, 'the radar art uses currentColor, no fixed hex (' + radarHexes.slice(0, 3).join(',') + ')');
+  ok((radar.match(/currentColor/g) || []).length >= 6, 'rings, ticks, sweep and blips all follow the theme');
 
-  // The display face is embedded exactly once, as a data: URI - the page
-  // still fetches nothing for its type. (Corptic DEMO ships letters only, so
-  // digits and punctuation fall back to Helvetica per glyph via the stack.)
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
-    'Admin.html carries exactly one embedded face');
+  // The panel opens in the light theme; the black theme stays one toggle away.
+  ok(/<html lang="en" data-theme="light">/.test(admin), 'the panel opens in the light theme by default');
+  ok(/localStorage\.getItem\('admin-theme'\)\s*\|\|\s*'light'/.test(admin),
+    'and the JS fallback agrees (a saved choice still wins)');
+  ok(/function toggleTheme\(\)/.test(admin), 'the black theme is still one toggle away');
+}
+
+// ---------------------------------------------------------------------------
+// 4. Not angular: round everything, no clip-path cuts, no corner brackets
+// ---------------------------------------------------------------------------
+{
+  ok(!/clip-path\s*:/.test(css), 'the skin declares no clip-path at all');
+  ok(!/polygon\s*\(/.test(css), 'no polygon cuts');
+  ok(!/--mc-[a-z-]*cut/.test(css), 'no cut tokens');
+
+  ok(/\.top-tab\s*\{[\s\S]{0,1200}border-radius:\s*var\(--mc-pill\)|border-radius:\s*999px/.test(css),
+    'nav tabs are pills');
+  ok(/\.top-tab\.active\s*\{[\s\S]{0,1200}var\(--mc-accent\)/.test(css), 'the active tab is the inverted accent pill');
+  ok(/\.pcm-modal-btn[\s\S]{0,900}border-radius:\s*var\(--mc-pill\)|border-radius:\s*999px/.test(css),
+    'dialog keys are pills');
+  ok(/\.btn\s*\{[\s\S]{0,1200}border-radius:/.test(css), 'buttons are rounded');
+  ok(/\.lpv-vals-modal\s*\{[\s\S]{0,1200}border-radius:\s*18px/.test(css) && css.includes('.pcm-modal,'),
+    'every dialog is a rounded panel');
+  ok(!/\.screenshot-panel::before/.test(css) && !/\.screenshot-panel::after/.test(css),
+    'the stage has no corner brackets');
+  ok(!/\.pcm-modal::before/.test(css) && !/\.pcm-modal::after/.test(css),
+    'the dialogs have no corner brackets');
+  ok(/\.screenshot-panel\s*\{[\s\S]{0,1200}border-radius:\s*var\(--mc-r\)|border-radius:\s*16px/.test(css),
+    'the stage is rounded');
+  ok(/\.client-card\s*\{[\s\S]{0,1200}border-radius:\s*12px/.test(css), 'session rows are rounded');
+
+  // Tabs still look like a console rail.
+  ok(/\.top-tab\s*\{[\s\S]{0,1200}text-transform:\s*uppercase/.test(css), 'tabs are labelled like console keys');
+  ok(/\.display-subtab\.active[\s\S]{0,1200}var\(--mc-accent\)/.test(css), 'segmented sub-tabs light up in the accent');
+}
+
+// ---------------------------------------------------------------------------
+// 5. Corptic for every text — embedded once, nothing fetched
+// ---------------------------------------------------------------------------
+{
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 1, 'Admin.html carries exactly one embedded face');
   ok(/<style id="shf-corptic-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*Corptic;/.test(admin),
     'the embedded face is Corptic (Pandeka Foundry), in its own block');
   ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin), 'and it ships as a data: URI');
   const faceRule = (admin.match(/@font-face\s*\{[\s\S]*?\}/) || [''])[0];
   ok(!/https?:\/\//.test(faceRule), 'the face rule has no remote URL');
-  ok(/--mc-display:\s*Corptic,/.test(css), 'the skin leads its display stack with Corptic');
-  ok(/font-family:\s*var\(--mc-display\)\s*!important/.test(css),
-    'and the chrome (tabs, keys, titles) uses it, out-specifying the `*` reset');
+  ok(/--mc-font:\s*Corptic,/.test(css), 'the universal font stack leads with Corptic');
+  ok(/font-family:\s*var\(--mc-font\)\s*!important/.test(css),
+    'every text uses it, with !important over the panel\'s `*` reset');
+  ok(/font-style:\s*italic/.test(css), 'the chrome is oblique');
+  ok(/textarea, pre, code[\s\S]{0,1200}font-style:\s*normal/.test(css),
+    'machine output stays upright');
+  ok(/!\s*var\(--mc-mono\)|Roboto Slab/.test(admin) === false, 'no mono lead and no other house face');
+  ok(!/Roboto Slab/.test(admin), 'the panel asks for no other house face');
   ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')) &&
      admin.includes(fs.readFileSync(path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')).toString('base64')),
     'the embedded copy is byte-identical to the asset in assets/fonts');
@@ -206,10 +174,54 @@ const skin = admin.slice(skinStart, cssEnd);
 }
 
 // ---------------------------------------------------------------------------
-// 4. The look costs nothing at runtime
+// 6. The instruments, the modals, the airlock
 // ---------------------------------------------------------------------------
 {
-  // No image, font, or stylesheet fetched for the design.
+  ok(/\.logo-icon[\s\S]{0,1200}border-radius:\s*50%/.test(css), 'the header mark is a round reticle');
+  ok(/\.placeholder-icon[\s\S]{0,1200}border-radius:\s*50%/.test(css), 'the empty state is an instrument ring');
+  ok(/\.placeholder-icon::before[\s\S]{0,300}border:\s*1px dashed/.test(css), 'with a dashed inner ring');
+  ok(/#screenshot-status[\s\S]{0,1200}border-radius:\s*999px|var\(--mc-pill\)/.test(css),
+    'the stream status is a pill');
+  ok(/@keyframes mc-spin/.test(css) && /@keyframes mc-blink/.test(css) && /@keyframes mc-sweep/.test(css),
+    'the rings turn, the lamps blink and the radar sweeps');
+
+  // Every modal speaks the dialog language; the primary key is the accent.
+  ok(/\.pcm-modal-btn\.primary[\s\S]{0,1200}var\(--mc-accent\)/.test(css), 'the primary action is the inverted accent key');
+  ok(/\.pcm-modal-title::before[\s\S]{0,1200}animation:\s*mc-blink/.test(css), 'the dialog header lamp blinks');
+  for (const sel of ['.login-modal', '.klg-modal', '.lpv-modal', '.lpv-bind-modal', '.profile-modal']) {
+    ok(css.includes(sel + ','), 'the dialog language covers ' + sel);
+  }
+  ok(/\.login-overlay[\s\S]{0,1400}backdrop-filter/.test(css), 'overlays are scrimmed and blurred');
+
+  // The stage backdrop: dot field + scanlines + the inline radar.
+  ok(/\.lx-stage[\s\S]{0,1200}radial-gradient\(rgba\(255, 255, 255/.test(css), 'the stage carries the dot field');
+  ok(/\.lx-stage::before[\s\S]{0,1200}repeating-linear-gradient\(0deg, rgba\(255, 255, 255/.test(css), 'and the scanlines');
+  ok(/class="mc-radar"/.test(admin) && /viewBox="0 0 600 600"/.test(admin), 'the radar scope is drawn inline');
+  ok(/\.mc-radar \.mc-sweep[\s\S]{0,300}animation:\s*mc-sweep/.test(css), 'the sweep is animated in CSS');
+  ok(/\.mc-radar\s*\{[\s\S]{0,300}color:\s*#ffffff/.test(css) && /\[data-theme="light"\] \.mc-radar\s*\{\s*color:\s*#000000/.test(css),
+    'the radar follows the theme (white on black, black on white)');
+  const radar = admin.slice(admin.indexOf('<svg class="mc-radar"'),
+                            admin.indexOf('</svg>', admin.indexOf('<svg class="mc-radar"')) + 6);
+  const radarShapes = (radar.match(/<(?:circle|path)\b/g) || []).length;
+  ok(radarShapes >= 15, 'the scope is real artwork (' + radarShapes + ' shapes)');
+  ok((radar.match(/<(?:linear|radial)Gradient\b/g) || []).length >= 2, 'with a glow and a sweep gradient');
+
+  // The sign-in airlock: a round glass card with a porthole reticle, pill
+  // fields and one pill key — deliberately none of the angular cuts.
+  ok(/\.login-modal\s*\{[\s\S]{0,1200}border-radius:\s*var\(--mc-r-lg\)|border-radius:\s*30px/.test(css), 'the airlock card is round');
+  ok(!/\.login-modal\s*\{[\s\S]{0,1200}clip-path/.test(css), 'and has no cut');
+  ok(!/\.login-modal::before/.test(css) && !/\.login-modal::after/.test(css), 'and no corner brackets');
+  ok(/\.login-modal \.logo-icon\s*\{[\s\S]{0,1200}border-radius:\s*50%/.test(css), 'the porthole is a circle');
+  ok(/\.login-modal \.logo-icon::before[\s\S]{0,400}border:\s*1px dashed/.test(css), 'with a dashed ring that turns');
+  ok(/\.login-overlay\s*\{[\s\S]{0,1400}repeating-radial-gradient/.test(css), 'the airlock floats on concentric rings');
+  ok(/\.login-btn\s*\{[\s\S]{0,1200}border-radius:\s*var\(--mc-pill\)|border-radius:\s*999px/.test(css), 'the sign-in key is a pill');
+  ok(/\.login-modal \.form-input[\s\S]{0,1200}border-radius:\s*var\(--mc-pill\)|border-radius:\s*999px/.test(css), 'the fields are pills too');
+}
+
+// ---------------------------------------------------------------------------
+// 7. The look costs nothing at runtime
+// ---------------------------------------------------------------------------
+{
   const urls = Array.from(skin.matchAll(/url\((['"]?)([^)'"]*)\1\)/g)).map((m) => m[2]);
   ok(urls.length === 0, 'the skin fetches nothing (found: ' + urls.slice(0, 3).join(', ') + ')');
   ok(!/https?:\/\//.test(skin), 'no absolute URL anywhere in the skin');
@@ -223,19 +235,15 @@ const skin = admin.slice(skinStart, cssEnd);
 
   // The art's gradient ids live in the same document as 400-odd panel ids, so
   // they are namespaced and unique - a duplicate id silently steals the fill.
-  const artIds = Array.from(radar.matchAll(/id="([^"]+)"/g)).map(m => m[1]);
-  ok(artIds.length > 0, 'the art names its gradients');
-  ok(artIds.every(id => id.startsWith('mc')), 'and namespaces every one of them');
-  ok(new Set(artIds).size === artIds.length, 'none of them repeats');
+  const artIds = Array.from(radar.matchAll(/id="([^"]+)"/g)).map((m) => m[1]);
+  ok(artIds.length > 0 && artIds.every((id) => id.startsWith('mc')), 'the art names and namespaces its gradients');
   const docIds = Array.from(admin.matchAll(/\sid="([^"]+)"/g)).map((m) => m[1]);
-  const stolen = artIds.filter(id => docIds.filter(d => d === id).length > 1);
-  ok(stolen.length === 0, 'no id is defined twice in the page (found: ' + stolen.join(', ') + ')');
+  ok(artIds.every((id) => docIds.filter((d) => d === id).length === 1), 'no id is defined twice in the page');
 
-  // Motion.
+  // Motion is optional.
   ok(/@media \(prefers-reduced-motion: reduce\)/.test(css), 'reduced motion is honoured');
   const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
-  ok(/\.logo-icon/.test(reduced) && /animation:\s*none !important/.test(reduced),
-    'the reticle stops turning');
+  ok(/\.logo-icon/.test(reduced) && /animation:\s*none !important/.test(reduced), 'the reticle stops turning');
   ok(/\.placeholder-icon::after/.test(reduced), 'the instrument ring stops too');
   ok(/\.mc-radar \.mc-sweep/.test(reduced), 'and the radar stops sweeping');
 
@@ -246,19 +254,19 @@ const skin = admin.slice(skinStart, cssEnd);
 }
 
 // ---------------------------------------------------------------------------
-// 5. Paint order: the rails sit below the content, the art below everything
+// 8. Paint order: rails below content, art below everything
 // ---------------------------------------------------------------------------
 {
-  ok(/\.sidebar\s*\{[\s\S]{0,800}z-index:\s*1/.test(css), 'the left rail is a layer below the content');
-  ok(/\.right-sidebar\s*\{[\s\S]{0,800}z-index:\s*1/.test(css), 'and so is the right rail');
+  ok(/\.sidebar\s*\{[\s\S]{0,400}z-index:\s*1/.test(css), 'the left rail is a layer below the content');
+  ok(/\.right-sidebar\s*\{[\s\S]{0,400}z-index:\s*1/.test(css), 'and so is the right rail');
   ok(/\.sidebar \.client-list\s*\{\s*position:\s*relative;\s*z-index:\s*3/.test(css),
     'but the session cards stay readable on top');
-  ok(/\.mc-radar\s*\{[\s\S]{0,800}pointer-events:\s*none/.test(css), 'the scope never intercepts a click');
-  ok(/\.lx-stage\s*\{[\s\S]{0,800}pointer-events:\s*none/.test(css), 'and neither does the backdrop');
+  ok(/\.mc-radar\s*\{[\s\S]{0,400}pointer-events:\s*none/.test(css), 'the scope never intercepts a click');
+  ok(/\.lx-stage\s*\{[\s\S]{0,400}pointer-events:\s*none/.test(css), 'and neither does the backdrop');
 }
 
 // ---------------------------------------------------------------------------
-// 6. The stylesheet actually parses (needs jsdom; skipped otherwise)
+// 9. The stylesheet actually parses (needs jsdom; skipped otherwise)
 // ---------------------------------------------------------------------------
 {
   let JSDOM = null;
@@ -274,17 +282,23 @@ const skin = admin.slice(skinStart, cssEnd);
       'the whole skin parses (' + (sheet ? sheet.cssRules.length : 0) + ' rules)');
     ok(/@media/.test(Array.from(sheet.cssRules).map((r) => r.cssText).join('').slice(0, 40000)),
       'including its media queries');
+    ok(doc.getElementById('shf-corptic-face').sheet.cssRules.length === 1, 'the Corptic face parses as one rule');
 
     const style = (sel, prop) => {
       const el = doc.querySelector(sel);
       return el ? dom.window.getComputedStyle(el)[prop] : null;
     };
+    ok(doc.documentElement.getAttribute('data-theme') === 'light', 'the panel computes as light by default');
     ok(style('body', 'fontStyle') === 'italic', 'the panel computes as oblique');
+    ok(/mc-font/.test(style('body', 'fontFamily') || ''), 'every text computes to the Corptic stack');
+    ok(/mc-font/.test(style('.top-tab', 'fontFamily') || '') && style('.top-tab', 'fontStyle') === 'italic',
+      'the nav is Corptic and oblique');
     ok(style('.logo-text', 'fontStyle') === 'italic', 'the title is oblique');
     ok(style('textarea', 'fontStyle') === 'normal', 'a textarea is upright');
-    ok(style('.top-tab', 'fontStyle') === 'italic', 'the nav is oblique');
-    ok(/Helvetica/.test(style('body', 'fontFamily') || ''), 'the body is still Helvetica');
-    ok(/mc-display/.test(style('.top-tab', 'fontFamily') || ''), 'and the tabs use the Corptic display stack');
+    ok(style('.top-tab', 'borderRadius') === '999px' || style('.top-tab', 'borderRadius') === 'var(--mc-pill)',
+      'a tab computes as a pill');
+    ok(style('.login-modal', 'borderRadius') === '30px' || style('.login-modal', 'borderRadius') === 'var(--mc-r-lg)',
+      'the airlock card computes round');
     ok(!!doc.querySelector('.main-app'), 'the shell is intact');
     ok(!!doc.querySelector('svg.mc-radar'), 'the radar scope is in the stage');
   } else {

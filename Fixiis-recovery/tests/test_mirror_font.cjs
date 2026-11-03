@@ -351,7 +351,7 @@ function makeDoc() {
   ok(/font-family:\s*Roboto Slab/.test(mini), 'mini-admin.html is set in Roboto Slab');
   ok(!/Helvetica Neue/.test(mini), 'mini-admin.html mixes in no other face');
   ok(/<style id="shf-font-face">/.test(mini), 'mini-admin.html carries the face it names');
-  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html body is set in Helvetica');
+  ok(/--mc-font:\s*Corptic,/.test(admin), 'Admin.html names the embedded Corptic for every text');
   ok(!/Roboto Slab/.test(admin), 'Admin.html mixes in no other face');
   ok(/<style id="shf-corptic-face">/.test(admin) && /font-family:\s*Corptic/.test(admin),
     'Admin.html carries the Corptic display face inline');

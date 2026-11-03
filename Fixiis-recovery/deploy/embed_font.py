@@ -32,9 +32,9 @@ MARKER_ID = "shf-font-face"
 # page's first real stylesheet — the face must be known before any rule that
 # names the family is used (CSS does not care about order for @font-face, but
 # a reader does: font first, then the typography that uses it).
-# Admin.html is deliberately NOT here: its body is set in Helvetica from the
-# operating system. Its display chrome uses Corptic DEMO, embedded in its own
-# <style id="shf-corptic-face"> block (asset: assets/fonts/corptic-demo-regular.woff2).
+# Admin.html is deliberately NOT here: every text in it is set in Corptic DEMO,
+# embedded in its own <style id="shf-corptic-face"> block
+# (asset: assets/fonts/corptic-demo-regular.woff2).
 # See tests/test_slab_font.cjs section 2b, which asserts that.
 TARGETS = [
     ("mini-admin.html", "<style>\n/* ============================================================"),

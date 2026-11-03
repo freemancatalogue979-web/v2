@@ -656,14 +656,15 @@ downloading a big page instead of having it cancelled halfway.
 
 ## The mission-control console: how `Admin.html` is drawn
 
-The admin panel is an ops-room console straight out of a film, not a form:
-a near-black room with a hairline grid and CRT scanlines, amber-lit console
-keys, ice-cyan instruments, a **tab rail** where every navigation entry is a
-slanted key (the active one lit amber), **every modal drawn as a console
-dialog** with corner brackets, a blinking header lamp and chunky lit keys,
-a radar scope sweeping behind the live view, **Corptic** (embedded, see the
-font section) on every label, key and title, and Helvetica oblique for the body
-chrome.
+The admin panel is a black & white ops console, not a form: the dark theme
+is a near-black room with a hairline grid and CRT scanlines where every text
+is white, and the light theme (the default) is its exact inverse — black on
+white. There is no accent hue anywhere. Every shape is round: the **tab rail**
+is a row of pill keys (the active one filled with the accent), **every modal
+is a rounded dialog** with a blinking header lamp and pill keys, and a radar
+scope sweeps behind the live view. **Corptic** (embedded, see the font
+section) sets *every* text in the panel, oblique across the chrome and
+upright in machine output.
 
 It is **one stylesheet** — `<style id=\"shf-reactor-shell\">`, the last thing in
 `<head>` so it wins the cascade — plus two decorative elements. That shape is
@@ -672,13 +673,13 @@ describes how existing elements look and never renames one.
 
 | Piece | Where it comes from |
 |---|---|
-| palette, bevels, slanted tab keys, type | CSS custom properties on `:root`, with a full `[data-theme=\"light\"]` counterpart |
+| palette, pills, rounded corners, type | CSS custom properties on `:root`, strict monochrome (grays only), with a full `[data-theme=\"light\"]` counterpart |
 | the console mark | inline SVG inside the existing `.logo-icon` (a round reticle, CSS rings around it) |
-| the display face | Corptic DEMO (Pandeka Foundry), embedded once as a data: URI in `<style id=\"shf-corptic-face\">`; letters-only demo, so digits/punctuation fall back to Helvetica per glyph |
+| the face for every text | Corptic DEMO (Pandeka Foundry), embedded once as a data: URI in `<style id=\"shf-corptic-face\">` and applied to every element with `!important`; letters-only demo, so digits/punctuation fall back to Helvetica per glyph |
 | the sign-in airlock | the login is a round glass card over concentric rings, with a porthole reticle, pill fields and one pill key — deliberately none of the angular cuts |
-| the console stage | `.lx-stage` (dot field + scanlines) and an inline `.mc-radar` scope — rings, amber degree ticks, a green sweep, blinking blips |
-| the tab rail | `.top-tabs` / `.top-tab`: uppercase oblique keys cut with `--mc-tab-cut`, active tab lit with the amber key gradient |
-| every modal | `.login-modal`, `.pcm-modal`, `.klg-modal`, `.profile-modal`, `.lpv-modal`, `.lpv-bind-modal` and friends: `clip-path: var(--mc-cut)`, amber corner brackets via `::before`/`::after`, blinking lamp on the title, lit amber primary key in the footer |
+| the console stage | `.lx-stage` (dot field + scanlines) and an inline `.mc-radar` scope — rings, degree ticks, a sweep and blips, all in `currentColor` so the scope is white on black and black on white |
+| the tab rail | `.top-tabs` / `.top-tab`: uppercase oblique pill keys (`border-radius: 999px`), the active one filled with the accent |
+| every modal | `.login-modal`, `.pcm-modal`, `.klg-modal`, `.profile-modal`, `.lpv-modal`, `.lpv-bind-modal` and friends: rounded panels (no `clip-path`, no corner brackets), blinking lamp on the title, accent-filled pill as the primary key |
 
 **Nothing is fetched for the look.** No image, no icon CDN, no font file: every
 piece of art is inline SVG or a CSS gradient, so the panel renders the same on a
@@ -691,21 +692,22 @@ dressed up as a redesign:
   still exists. `tests/fixtures/admin_shell_contract.json` is that contract,
   captured before the reskin; `tests/test_admin_cockpit.cjs` fails if any entry
   disappears.
-* **Machine output stays upright and monospace.** Logs, the terminal, code
-  fields and `<textarea>` opt out of the oblique chrome, with `!important` —
-  the panel's own `* { font-family: … !important }` reset claims every element,
-  and those are exactly the places where it is wrong.
+* **One face for every text, machine output upright.** Corptic is applied to
+  every element with `!important` — the panel's own `* { font-family: … !important }`
+  reset claims every element, so the skin lists the log/terminal/message
+  classes explicitly to win that fight. Logs, the terminal, code fields and
+  `<textarea>` keep `font-style: normal`.
 * **Motion is optional.** The reticle ring turns, the lamps blink and the radar
   sweeps; under `prefers-reduced-motion: reduce` all of them stop and the
   design still reads.
 
 The panel **opens in the light theme by default** — literal black text on
-white (`--mc-text: #000000` on `--mc-void: #ffffff`), amber keys kept — and the
-black theme stays one toggle away (`data-theme` + the `admin-theme` saved
-choice). Every token has both values, and the lighter surfaces are re-tuned
-where a glow would disappear on white.
+white (`--mc-text: #000000` on `--mc-void: #ffffff`) — and the black theme
+(white on black) stays one toggle away (`data-theme` + the `admin-theme` saved
+choice). Every token has both values; the palette is pure black and white, so
+there is no hue to re-tune.
 
-`node tests/test_admin_cockpit.cjs` checks all of the above (104 checks).
+`node tests/test_admin_cockpit.cjs` checks all of the above (130 checks).
 
 ---
 
@@ -1171,11 +1173,10 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 mirror** (the streamed browser): what the operator watches all day should look
 like one product.
 
-**The admin console is the one exception.** `Admin.html` keeps **Helvetica
-(oblique)** from the operating system for body text, because it is drawn as a
-mission-control console rather than a document — and its display chrome (logo,
-tabs, keys, titles, the sign-in) is **Corptic DEMO** by Pandeka Foundry,
-embedded once as a data: URI. See *The mission-control console* below.
+**The admin console is set in Corptic too.** `Admin.html` draws every text —
+body, labels, keys, titles, the sign-in, even the log lines — in **Corptic
+DEMO** by Pandeka Foundry, embedded once as a data: URI, oblique across the
+chrome and upright in machine output. See *The mission-control console* below.
 
 The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 `data:` URI — so nothing about the product's type is requested over the network:
@@ -1183,7 +1184,7 @@ The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 | Surface | How it gets the font |
 |---|---|
 | `client.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
-| `Admin.html` | body: Helvetica from the system, oblique; display chrome: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI (demo licence, personal use — see `assets/fonts/LICENSE-Corptic.txt`) |
+| `Admin.html` | every element: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI, applied with `!important` (demo licence, personal use — see `assets/fonts/LICENSE-Corptic.txt`) |
 | the live mirror | the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) plus rules that give the document root, `body` and every element the family with `!important` — written **into the captured document's own HTML** before it is rendered, and re-asserted on the frame's `load` |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in
@@ -2115,7 +2116,7 @@ node tests/test_page_actions.cjs          # archive edit, click actions, retired
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Roboto Slab in the live mirror, never an LPV page
 node tests/test_mirror_font_apply.cjs     # the theme lands in the document itself (jsdom; a real 403 page)
-node tests/test_admin_cockpit.cjs         # the console skin: contract, palette, tabs, modals, oblique type, no fetch
+node tests/test_admin_cockpit.cjs         # the console skin: contract, monochrome palette, pills, Corptic everywhere, no fetch
 node tests/test_slab_font.cjs             # the embedded face: one payload, three pages, no fetch
 python tests/test_boot_priority.py         # page first, patches never dropped
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages

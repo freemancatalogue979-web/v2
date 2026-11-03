@@ -1,8 +1,8 @@
 """The product font: Roboto Slab — embedded, never fetched.
 
 Every surface the operator or a visitor looks at (the client shell, the LIVE
-mirror, Mini Admin) is set in **Roboto Slab**; Admin.html keeps Helvetica for
-its body and adds an embedded Corptic DEMO for its console display chrome.
+mirror, Mini Admin) is set in **Roboto Slab**; Admin.html is set entirely in an
+embedded Corptic DEMO (black & white themes, rounded shapes only).
 One decision per surface, no third-party host, no render-blocking stylesheet.
 
 Why the glyphs travel *inside* the document
