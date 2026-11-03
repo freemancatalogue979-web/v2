@@ -2,7 +2,7 @@
 """Put the embedded Roboto Slab face into the HTML surfaces.
 
 The font is shipped *inside* each page (see `fonts.py` for why), which means
-the same 45 KB of base64 has to live in three files. Rather than paste it by
+the same 45 KB of base64 has to live in two files. Rather than paste it by
 hand — where one copy would eventually go stale — this script owns it:
 
     python3 deploy/embed_font.py          # rewrite the blocks
@@ -32,8 +32,10 @@ MARKER_ID = "shf-font-face"
 # page's first real stylesheet — the face must be known before any rule that
 # names the family is used (CSS does not care about order for @font-face, but
 # a reader does: font first, then the typography that uses it).
+# Admin.html is deliberately NOT here: the cockpit panel is set in Helvetica
+# (oblique) from the operating system, so it needs no payload. See
+# tests/test_slab_font.cjs, which asserts that it carries none.
 TARGETS = [
-    ("Admin.html", "    <style>\n        :root {"),
     ("mini-admin.html", "<style>\n/* ============================================================"),
     ("client.html", "    <style>\n        /* ===== Global font:"),
 ]

@@ -654,6 +654,50 @@ downloading a big page instead of having it cancelled halfway.
 
 ---
 
+## The cockpit: how `Admin.html` is drawn
+
+The admin panel is a cockpit, not a form: armour-black plating with a lit red
+edge, bevel-cut panels, cyan instrument accents, a blueprint stage behind the
+live view, and Helvetica oblique across the chrome.
+
+It is **one stylesheet** — `<style id="shf-reactor-shell">`, the last thing in
+`<head>` so it wins the cascade — plus four decorative elements. That shape is
+deliberate: the panel is ~20k lines of working JavaScript, so the reskin
+describes how existing elements look and never renames one.
+
+| Piece | Where it comes from |
+|---|---|
+| palette, bevels, type | CSS custom properties on `:root`, with a full `[data-theme="light"]` counterpart |
+| the arc-reactor mark | inline SVG inside the existing `.logo-icon` |
+| the blueprint stage | `.lx-stage` (dot field + scanlines) and `.lx-map` (a dot pattern masked by inline continent shapes) |
+| the plating figure | `.lx-sentinel`, an original inline SVG, `aria-hidden`, `pointer-events: none` |
+
+**Nothing is fetched for the look.** No image, no icon CDN, no font file: every
+piece of art is inline SVG or a CSS gradient, so the panel renders the same on a
+filtered network and from `file://`.
+
+Three rules the skin obeys, because breaking any of them would be a regression
+dressed up as a redesign:
+
+* **The DOM is a contract.** Every id and class the panel's scripts reach for
+  still exists. `tests/fixtures/admin_shell_contract.json` is that contract,
+  captured before the reskin; `tests/test_admin_cockpit.cjs` fails if any entry
+  disappears.
+* **Machine output stays upright and monospace.** Logs, the terminal, code
+  fields and `<textarea>` opt out of the oblique chrome, with `!important` —
+  the panel's own `* { font-family: … !important }` reset claims every element,
+  and those are exactly the places where it is wrong.
+* **Motion is optional.** The rings turn and the live dot breathes; under
+  `prefers-reduced-motion: reduce` both stop and the design still reads.
+
+The light theme is a **daylight cockpit** (white/graphite with red accents), not
+a dark theme with the colours inverted: every token has a light value, and the
+lighter surfaces are re-tuned where a glow would disappear on white.
+
+`node tests/test_admin_cockpit.cjs` checks all of the above (82 checks).
+
+---
+
 ## The custom loading page is in the page, not fetched afterwards
 
 A workflow can carry its own **custom loading page** (the spinner you upload in
@@ -1112,16 +1156,22 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 
 ## The font: Roboto Slab in the shell and the live mirror — never an LPV page
 
-`client.html` and both panels are set in **Roboto Slab**, and so is the **live
+`client.html` and the phone panel are set in **Roboto Slab**, and so is the **live
 mirror** (the streamed browser): what the operator watches all day should look
 like one product.
+
+**The admin cockpit is the one exception.** `Admin.html` is set in **Helvetica
+(oblique)** from the operating system, because it is drawn as an instrument
+panel rather than a document — see *The cockpit* below. It therefore carries no
+font payload at all.
 
 The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 `data:` URI — so nothing about the product's type is requested over the network:
 
 | Surface | How it gets the font |
 |---|---|
-| `client.html`, `Admin.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
+| `client.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
+| `Admin.html` | no payload: `font-family: Helvetica Neue, Helvetica, Arial` from the system, oblique across the chrome |
 | the live mirror | the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) plus rules that give the document root, `body` and every element the family with `!important` — written **into the captured document's own HTML** before it is rendered, and re-asserted on the frame's `load` |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in
@@ -2053,6 +2103,7 @@ node tests/test_page_actions.cjs          # archive edit, click actions, retired
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # Roboto Slab in the live mirror, never an LPV page
 node tests/test_mirror_font_apply.cjs     # the theme lands in the document itself (jsdom; a real 403 page)
+node tests/test_admin_cockpit.cjs         # the cockpit skin: contract, palette, oblique type, no fetch
 node tests/test_slab_font.cjs             # the embedded face: one payload, three pages, no fetch
 python tests/test_boot_priority.py         # page first, patches never dropped
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages

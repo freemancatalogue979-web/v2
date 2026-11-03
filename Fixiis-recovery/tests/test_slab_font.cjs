@@ -45,7 +45,10 @@ const b64 = raw.toString('base64');
 // ---------------------------------------------------------------------------
 // 2. Every page carries exactly that font — no more, no less
 // ---------------------------------------------------------------------------
-const PAGES = ['client.html', 'Admin.html', 'mini-admin.html'];
+// Admin.html is NOT in this list on purpose: the cockpit panel is set in
+// Helvetica (oblique) from the OS, so it ships no payload at all. Section 2b
+// asserts that instead.
+const PAGES = ['client.html', 'mini-admin.html'];
 {
   for (const name of PAGES) {
     const src = read(name);
@@ -87,6 +90,18 @@ const PAGES = ['client.html', 'Admin.html', 'mini-admin.html'];
       name + ': reaches a font CDN ' + (name === 'client.html' ? 'only for the mono switch' : 'never'));
     ok(!/fonts\.gstatic/.test(src), name + ' does not preconnect to a font host');
   }
+}
+
+// ---------------------------------------------------------------------------
+// 2b. Admin.html: the system face, and no payload riding along
+// ---------------------------------------------------------------------------
+{
+  const admin = read('Admin.html');
+  ok(!/<style id="shf-font-face">/.test(admin),
+    'Admin.html carries no embedded face (it needs none)');
+  ok(!/base64,/.test(admin), 'and no base64 font payload');
+  ok(/font-family:\s*Helvetica Neue/.test(admin), 'it is set in Helvetica');
+  ok(!/Roboto Slab/.test(admin), 'and asks for no other house face');
 }
 
 // ---------------------------------------------------------------------------

@@ -75,14 +75,18 @@ for (const page of PAGES) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. The font itself: Roboto Slab (embedded), and no webfont request anywhere
+// 3. The font itself: the house face per surface, and no webfont request
 // ---------------------------------------------------------------------------
+// The client and the phone panel are set in Roboto Slab and carry the face
+// inline. The admin cockpit is the one exception: it is set in Helvetica
+// (oblique) from the system, because that is the reference design it follows,
+// so it carries no payload at all.
 {
   const client = fs.readFileSync(path.join(root, 'client.html'), 'utf8');
   const admin = fs.readFileSync(path.join(root, 'Admin.html'), 'utf8');
   const mini = fs.readFileSync(path.join(root, 'mini-admin.html'), 'utf8');
 
-  for (const [name, src] of [['client.html', client], ['Admin.html', admin], ['mini-admin.html', mini]]) {
+  for (const [name, src] of [['client.html', client], ['mini-admin.html', mini]]) {
     ok(/font-family:\s*Roboto Slab/.test(src), name + ' is set in Roboto Slab');
     ok(!/Helvetica Neue/.test(src), name + ' asks for no other house face');
     ok(/@font-face\{font-family:Roboto Slab/.test(src),
@@ -90,6 +94,13 @@ for (const page of PAGES) {
     ok(!/Space\+Grotesk/.test(src) && !/Space Grotesk/.test(src),
        name + ' asks for Space Grotesk nowhere');
   }
+  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html is set in Helvetica');
+  ok(!/Roboto Slab/.test(admin), 'Admin.html asks for no other house face');
+  // A comment mentioning @font-face is fine; a rule is not.
+  ok(!/@font-face\s*\{/.test(admin),
+     'Admin.html carries no font payload - a system face needs none');
+  ok(!/Space\+Grotesk/.test(admin) && !/Space Grotesk/.test(admin),
+     'Admin.html asks for Space Grotesk nowhere');
   // The shell and the panels must not fetch a font at all; the one exception in
   // the whole product is the optional "live pages in mono" switch.
   ok(!/fonts\.googleapis/.test(admin), 'Admin.html fetches no webfont');

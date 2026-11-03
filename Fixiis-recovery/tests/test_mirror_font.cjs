@@ -346,12 +346,15 @@ function makeDoc() {
 {
   const admin = fs.readFileSync(path.join(__dirname, '..', 'Admin.html'), 'utf8');
   const mini = fs.readFileSync(path.join(__dirname, '..', 'mini-admin.html'), 'utf8');
-  ok(/font-family:\s*Roboto Slab/.test(admin), 'Admin.html is set in Roboto Slab');
+  // The phone panel is set in the embedded slab face; the admin cockpit is the
+  // documented exception and is set in Helvetica (oblique) from the system.
   ok(/font-family:\s*Roboto Slab/.test(mini), 'mini-admin.html is set in Roboto Slab');
-  ok(!/Helvetica Neue/.test(admin), 'Admin.html no longer mixes in the old face');
-  ok(!/Helvetica Neue/.test(mini), 'mini-admin.html no longer mixes in the old face');
-  ok(/<style id="shf-font-face">/.test(admin) && /<style id="shf-font-face">/.test(mini),
-    'both panels carry the face they name');
+  ok(!/Helvetica Neue/.test(mini), 'mini-admin.html mixes in no other face');
+  ok(/<style id="shf-font-face">/.test(mini), 'mini-admin.html carries the face it names');
+  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html is set in Helvetica');
+  ok(!/Roboto Slab/.test(admin), 'Admin.html mixes in no other face');
+  ok(!/<style id="shf-font-face">/.test(admin),
+    'Admin.html carries no font payload - a system face needs none');
   ok(!/Space\+?Grotesk/.test(admin), 'Admin.html no longer asks for Space Grotesk');
   ok(!/Space\+?Grotesk/.test(mini), 'mini-admin.html no longer asks for Space Grotesk');
   ok(!/fonts\.googleapis/.test(admin), 'Admin.html fetches no webfont');
