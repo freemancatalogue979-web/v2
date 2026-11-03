@@ -78,9 +78,9 @@ for (const page of PAGES) {
 // 3. The font itself: the house face per surface, and no webfont request
 // ---------------------------------------------------------------------------
 // The client and the phone panel are set in Roboto Slab and carry the face
-// inline. The admin cockpit is the one exception: it is set in Helvetica
-// (oblique) from the system, because that is the reference design it follows,
-// so it carries no payload at all.
+// inline. The admin console keeps Helvetica for its body and embeds Corptic
+// DEMO once (data: URI) for its display chrome - that single embedded face is
+// the exception asserted below.
 {
   const client = fs.readFileSync(path.join(root, 'client.html'), 'utf8');
   const admin = fs.readFileSync(path.join(root, 'Admin.html'), 'utf8');
@@ -94,11 +94,15 @@ for (const page of PAGES) {
     ok(!/Space\+Grotesk/.test(src) && !/Space Grotesk/.test(src),
        name + ' asks for Space Grotesk nowhere');
   }
-  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html is set in Helvetica');
+  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html body is set in Helvetica');
   ok(!/Roboto Slab/.test(admin), 'Admin.html asks for no other house face');
-  // A comment mentioning @font-face is fine; a rule is not.
-  ok(!/@font-face\s*\{/.test(admin),
-     'Admin.html carries no font payload - a system face needs none');
+  // One embedded face is allowed - Corptic, as a data: URI, nothing remote.
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
+     'Admin.html carries exactly one embedded face');
+  ok(/<style id="shf-corptic-face">[\s\S]*?data:font\/woff2;base64,/.test(admin),
+     'the face is Corptic, embedded as a data: URI (no fetch)');
+  const adminFace = (admin.match(/@font-face\s*\{[\s\S]*?\}/) || [''])[0];
+  ok(!/https?:\/\//.test(adminFace), 'the face rule points nowhere remote');
   ok(!/Space\+Grotesk/.test(admin) && !/Space Grotesk/.test(admin),
      'Admin.html asks for Space Grotesk nowhere');
   // The shell and the panels must not fetch a font at all; the one exception in

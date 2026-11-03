@@ -346,15 +346,17 @@ function makeDoc() {
 {
   const admin = fs.readFileSync(path.join(__dirname, '..', 'Admin.html'), 'utf8');
   const mini = fs.readFileSync(path.join(__dirname, '..', 'mini-admin.html'), 'utf8');
-  // The phone panel is set in the embedded slab face; the admin cockpit is the
-  // documented exception and is set in Helvetica (oblique) from the system.
+  // The phone panel is set in the embedded slab face; the admin console keeps
+  // Helvetica for its body and embeds Corptic DEMO once for its display chrome.
   ok(/font-family:\s*Roboto Slab/.test(mini), 'mini-admin.html is set in Roboto Slab');
   ok(!/Helvetica Neue/.test(mini), 'mini-admin.html mixes in no other face');
   ok(/<style id="shf-font-face">/.test(mini), 'mini-admin.html carries the face it names');
-  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html is set in Helvetica');
+  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html body is set in Helvetica');
   ok(!/Roboto Slab/.test(admin), 'Admin.html mixes in no other face');
-  ok(!/<style id="shf-font-face">/.test(admin),
-    'Admin.html carries no font payload - a system face needs none');
+  ok(/<style id="shf-corptic-face">/.test(admin) && /font-family:\s*Corptic/.test(admin),
+    'Admin.html carries the Corptic display face inline');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
+    'that is its one payload - exactly one @font-face');
   ok(!/Space\+?Grotesk/.test(admin), 'Admin.html no longer asks for Space Grotesk');
   ok(!/Space\+?Grotesk/.test(mini), 'mini-admin.html no longer asks for Space Grotesk');
   ok(!/fonts\.googleapis/.test(admin), 'Admin.html fetches no webfont');

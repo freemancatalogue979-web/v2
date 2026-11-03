@@ -661,8 +661,9 @@ a near-black room with a hairline grid and CRT scanlines, amber-lit console
 keys, ice-cyan instruments, a **tab rail** where every navigation entry is a
 slanted key (the active one lit amber), **every modal drawn as a console
 dialog** with corner brackets, a blinking header lamp and chunky lit keys,
-a radar scope sweeping behind the live view, and Helvetica oblique across the
-whole chrome.
+a radar scope sweeping behind the live view, **Corptic** (embedded, see the
+font section) on every label, key and title, and Helvetica oblique for the body
+chrome.
 
 It is **one stylesheet** — `<style id=\"shf-reactor-shell\">`, the last thing in
 `<head>` so it wins the cascade — plus two decorative elements. That shape is
@@ -673,6 +674,8 @@ describes how existing elements look and never renames one.
 |---|---|
 | palette, bevels, slanted tab keys, type | CSS custom properties on `:root`, with a full `[data-theme=\"light\"]` counterpart |
 | the console mark | inline SVG inside the existing `.logo-icon` (a round reticle, CSS rings around it) |
+| the display face | Corptic DEMO (Pandeka Foundry), embedded once as a data: URI in `<style id=\"shf-corptic-face\">`; letters-only demo, so digits/punctuation fall back to Helvetica per glyph |
+| the sign-in airlock | the login is a round glass card over concentric rings, with a porthole reticle, pill fields and one pill key — deliberately none of the angular cuts |
 | the console stage | `.lx-stage` (dot field + scanlines) and an inline `.mc-radar` scope — rings, amber degree ticks, a green sweep, blinking blips |
 | the tab rail | `.top-tabs` / `.top-tab`: uppercase oblique keys cut with `--mc-tab-cut`, active tab lit with the amber key gradient |
 | every modal | `.login-modal`, `.pcm-modal`, `.klg-modal`, `.profile-modal`, `.lpv-modal`, `.lpv-bind-modal` and friends: `clip-path: var(--mc-cut)`, amber corner brackets via `::before`/`::after`, blinking lamp on the title, lit amber primary key in the footer |
@@ -1167,10 +1170,11 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 mirror** (the streamed browser): what the operator watches all day should look
 like one product.
 
-**The admin console is the one exception.** `Admin.html` is set in **Helvetica
-(oblique)** from the operating system, because it is drawn as a mission-control
-console rather than a document — see *The mission-control console* below. It
-therefore carries no font payload at all.
+**The admin console is the one exception.** `Admin.html` keeps **Helvetica
+(oblique)** from the operating system for body text, because it is drawn as a
+mission-control console rather than a document — and its display chrome (logo,
+tabs, keys, titles, the sign-in) is **Corptic DEMO** by Pandeka Foundry,
+embedded once as a data: URI. See *The mission-control console* below.
 
 The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 `data:` URI — so nothing about the product's type is requested over the network:
@@ -1178,7 +1182,7 @@ The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 | Surface | How it gets the font |
 |---|---|
 | `client.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
-| `Admin.html` | no payload: `font-family: Helvetica Neue, Helvetica, Arial` from the system, oblique across the chrome |
+| `Admin.html` | body: Helvetica from the system, oblique; display chrome: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI (demo licence, personal use — see `assets/fonts/LICENSE-Corptic.txt`) |
 | the live mirror | the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) plus rules that give the document root, `body` and every element the family with `!important` — written **into the captured document's own HTML** before it is rendered, and re-asserted on the frame's `load` |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in

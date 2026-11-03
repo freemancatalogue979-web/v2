@@ -74,14 +74,26 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     
-    <!-- The panel is set in Helvetica Neue. The glyphs are IN THE FILE (a data:
-         URI in the block below), not fetched: nothing to preconnect to, no
-         render-blocking stylesheet, no third-party host that can be slow or
-         filtered, and the type is identical offline, on a cold cache, and
-         inside the mirrored page's opaque-origin iframe (where a URL-based
-         @font-face would be a blocked cross-origin font request).
-         Regenerate the block with deploy/embed_font.py; never hand-edit it. -->
-    
+    <!-- The console's display face: Corptic DEMO by Pandeka Studio / Pandeka
+         Foundry (https://www.fontspace.com/corptic-font-f147318). DEMO licence:
+         personal use only - source and licence notes live in
+         assets/fonts/LICENSE-Corptic.txt.
+         The glyphs are IN THE FILE as a data: URI (generated from
+         assets/fonts/corptic-demo-regular.woff2), not fetched: nothing to
+         preconnect to, no third-party host, and the type is identical offline,
+         on a cold cache and from file://. The demo build ships letters only
+         (55 glyphs), so digits and punctuation fall back to Helvetica per
+         glyph through the --mc-display stack in the skin below. -->
+    <style id="shf-corptic-face">
+        @font-face {
+            font-family: Corptic;
+            src: url(data:font/woff2;base64,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) format("woff2");
+            font-weight: 400;
+            font-style: normal;
+            font-display: swap;
+        }
+    </style>
+
     <style>
         :root {
             --bg-primary: #000000;
@@ -8057,6 +8069,7 @@
     --mc-key-cut: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
 
     --mc-font: Helvetica Neue, Helvetica, Arial, sans-serif;
+    --mc-display: Corptic, Helvetica Neue, Helvetica, Arial, sans-serif;
     --mc-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
     /* The panel's own theme variables, retuned to the console palette. Every
@@ -8166,6 +8179,24 @@ textarea, pre, code, kbd, samp,
 .log-content, .log-details, .log-time, .log-title, .lpv-code, .mono {
     font-family: var(--mc-mono) !important;
     font-style: normal !important;
+}
+
+/* The display face: Corptic (embedded in the head above) leads on everything
+   that is a label, a key or a title - logo, tabs, buttons, headings, modal
+   titles. The demo ships letters only, so digits and punctuation fall through
+   to Helvetica per glyph via the stack. !important because the panel's own
+   `*` reset forces one family on every element; these are the places where
+   that is wrong. */
+.logo-text, .login-title, .top-tab, .display-subtab, .lpv-subtab,
+.sidebar-title, .panel-title, .lpv-panel-title, .tgbot-section-title,
+.lpv-section-title, .klg-section-title, .logs-title, .graph-title,
+h1, h2, h3,
+.btn, .pcm-modal-btn, .lpv-btn, .logs-btn, .file-toolbar-btn,
+.access-btn, .profile-action-btn, .dm-btn, .login-btn, .keepalive-btn, .logout-btn,
+.form-label, .detail-label,
+.pcm-modal-title, .lpv-modal-title, .lpv-bind-title, .profile-modal-title,
+.placeholder-text, .alert-title {
+    font-family: var(--mc-display) !important;
 }
 
 /* --- 3. The room --------------------------------------------------------- */
@@ -8997,31 +9028,155 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
 .url-input-group { gap: 6px; }
 .form-label { color: var(--mc-muted); text-transform: uppercase; letter-spacing: .08em; font-size: 11px; font-weight: 700; }
 
-/* The sign-in sheet. */
-.login-modal { max-width: 400px; }
-.login-title {
-    color: #ffe9c4;
-    text-shadow: 0 0 18px rgba(255, 176, 46, .5);
+/* --- 7c. The sign-in airlock: round and lit, never angular ------------------
+   The login is the airlock door of the console: a soft rounded glass card
+   floating over concentric rings, with a big porthole reticle whose rings
+   turn, pill-shaped fields and one pill key. No clip-path cuts, no corner
+   brackets - the corners are round on purpose. */
+.login-overlay {
+    background:
+        repeating-radial-gradient(circle at 50% 44%, rgba(255, 176, 46, .055) 0 1px, transparent 1px 84px),
+        radial-gradient(760px 500px at 50% 116%, rgba(255, 176, 46, .17), transparent 62%),
+        radial-gradient(680px 440px at 50% -16%, rgba(89, 220, 255, .11), transparent 60%),
+        radial-gradient(rgba(89, 220, 255, .12) 1px, transparent 1.3px),
+        rgba(2, 6, 8, .88);
+    background-size: auto, auto, auto, 22px 22px, auto;
+    backdrop-filter: blur(10px) saturate(1.2);
+    -webkit-backdrop-filter: blur(10px) saturate(1.2);
 }
+
+.login-modal {
+    width: min(404px, calc(100vw - 32px));
+    max-width: none;
+    padding: 36px 32px 22px;
+    border-radius: 30px;
+    clip-path: none;
+    border: 1px solid rgba(255, 176, 46, .38);
+    background:
+        radial-gradient(130% 80% at 50% -24%, rgba(255, 176, 46, .16), transparent 56%),
+        linear-gradient(180deg, rgba(17, 27, 40, .94), rgba(6, 10, 16, .96));
+    box-shadow:
+        0 0 0 1px rgba(255, 217, 138, .10),
+        0 0 80px -18px rgba(255, 176, 46, .8),
+        0 46px 90px -32px rgba(0, 0, 0, .95),
+        inset 0 1px 0 rgba(255, 255, 255, .08);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    text-align: center;
+    overflow: hidden;
+}
+/* the angular corner brackets do not belong on the airlock */
+.login-modal::before, .login-modal::after { content: none; }
+
+.login-logo {
+    border-bottom: none;
+    background: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 10px;
+}
+
+/* the porthole: a lit reticle with two slow rings */
+.login-modal .logo-icon {
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 50% 50%, #fff7e6 0 14%, var(--mc-amber) 26%, rgba(255, 176, 46, .22) 46%, transparent 62%),
+        conic-gradient(from 0deg, #131c26, #2a3f52, #131c26);
+    box-shadow:
+        0 0 0 1px rgba(255, 217, 138, .65),
+        0 0 26px rgba(255, 176, 46, .75),
+        inset 0 0 14px rgba(255, 255, 255, .3);
+    animation: mc-pulse 4.5s ease-in-out infinite;
+}
+.login-modal .logo-icon::before {
+    inset: -9px;
+    border: 1px dashed rgba(255, 176, 46, .55);
+    border-top-color: rgba(255, 255, 255, .9);
+    animation: mc-spin 18s linear infinite;
+}
+.login-modal .logo-icon::after {
+    content: '';
+    position: absolute;
+    inset: -20px;
+    border-radius: 50%;
+    border: 1px solid rgba(89, 220, 255, .22);
+    animation: mc-spin 36s linear infinite reverse;
+}
+.login-modal .logo-icon svg { width: 42px; height: 42px; fill: #160e02; z-index: 1; }
+
+.login-modal .logo-text {
+    font-size: 30px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: #fff;
+    text-shadow: 0 0 18px rgba(255, 176, 46, .9), 0 0 44px rgba(255, 176, 46, .4);
+}
+.login-title {
+    font-size: 11.5px;
+    letter-spacing: .3em;
+    text-transform: uppercase;
+    color: var(--mc-dim);
+    margin-bottom: 24px;
+    text-shadow: none;
+}
+
+#loginForm { display: flex; flex-direction: column; gap: 14px; text-align: left; }
+.form-group { margin-bottom: 0; display: flex; flex-direction: column; gap: 7px; }
+.login-modal .form-label { font-size: 10.5px; letter-spacing: .2em; color: var(--mc-muted); }
+.login-modal .form-input {
+    height: 47px;
+    border-radius: 999px;
+    padding: 0 18px;
+    background: var(--mc-well);
+    border: 1px solid var(--mc-line);
+    box-shadow: inset 0 0 14px rgba(0, 0, 0, .7);
+    font-size: 14px;
+}
+.login-modal .form-input:focus {
+    border-color: var(--mc-amber);
+    box-shadow: 0 0 0 3px rgba(255, 176, 46, .16), 0 0 20px -4px rgba(255, 176, 46, .8), inset 0 0 14px rgba(0, 0, 0, .7);
+}
+
+/* one pill key, lit */
 .login-btn {
+    margin-top: 6px;
+    height: 48px;
+    border-radius: 999px;
+    clip-path: none;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: .16em;
+    text-transform: uppercase;
     color: #1a1206;
     background: linear-gradient(180deg, #ffc25e 0%, #e08f00 100%);
     border: 1px solid rgba(255, 217, 138, .9);
-    border-radius: 0;
-    clip-path: var(--mc-key-cut);
-    box-shadow: 0 0 26px -8px rgba(255, 176, 46, 1), inset 0 1px 0 rgba(255, 255, 255, .4);
-    font-weight: 800;
-    letter-spacing: .08em;
-    text-transform: uppercase;
+    box-shadow: 0 0 28px -8px rgba(255, 176, 46, 1), inset 0 1px 0 rgba(255, 255, 255, .5);
 }
 .login-btn:hover { filter: brightness(1.1); }
-.login-error { color: var(--mc-hot); text-shadow: 0 0 10px rgba(255, 90, 42, .6); }
-.login-server { color: var(--mc-muted); }
-#loginServerHost {
+.login-btn:active { transform: translateY(1px); }
+
+.login-error { min-height: 17px; margin-top: 10px; font-size: 12px; color: var(--mc-hot); text-shadow: 0 0 10px rgba(255, 90, 42, .55); }
+.login-server {
+    margin-top: 10px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--mc-line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 11.5px;
+    color: var(--mc-muted);
+}
+.login-server button, #loginServerHost {
+    border-radius: 999px;
+    padding: 3px 12px;
     border: 1px solid var(--mc-line);
     background: var(--mc-well);
     color: var(--mc-ice);
-    border-radius: 0;
 }
 
 /* Capacity warning strip and toasts: small console chips. */
@@ -9148,7 +9303,8 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
     .stats-item .status-dot, .stream-status-dot,
     .pcm-modal-title::before, .klg-modal-title-section::before,
     .lpv-modal-title::before, .lpv-bind-title::before, .profile-modal-title::before,
-    .mc-radar .mc-sweep, .mc-radar .mc-blip {
+    .mc-radar .mc-sweep, .mc-radar .mc-blip,
+    .login-modal .logo-icon::before, .login-modal .logo-icon::after {
         animation: none !important;
     }
     .top-tab, .display-subtab, .lpv-subtab, .btn, .client-card,
@@ -9207,6 +9363,31 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
 [data-theme="light"] .modal-content,
 [data-theme="light"] .lpv-modal,
 [data-theme="light"] .lpv-bind-modal { background: linear-gradient(180deg, #ffffff, #f4f7fa); }
+
+/* --- 12b. Light theme: a daylight airlock ---------------------------------- */
+[data-theme="light"] .login-overlay {
+    background:
+        repeating-radial-gradient(circle at 50% 44%, rgba(168, 98, 0, .07) 0 1px, transparent 1px 84px),
+        radial-gradient(760px 500px at 50% 116%, rgba(168, 98, 0, .12), transparent 62%),
+        radial-gradient(680px 440px at 50% -16%, rgba(11, 126, 166, .10), transparent 60%),
+        radial-gradient(rgba(11, 126, 166, .14) 1px, transparent 1.3px),
+        rgba(238, 242, 246, .9);
+    background-size: auto, auto, auto, 22px 22px, auto;
+}
+[data-theme="light"] .login-modal {
+    background:
+        radial-gradient(130% 80% at 50% -24%, rgba(168, 98, 0, .10), transparent 56%),
+        linear-gradient(180deg, rgba(255, 255, 255, .97), rgba(243, 246, 250, .98));
+    border-color: rgba(168, 98, 0, .4);
+    box-shadow:
+        0 0 0 1px rgba(168, 98, 0, .08),
+        0 0 60px -20px rgba(168, 98, 0, .5),
+        0 40px 80px -32px rgba(15, 25, 40, .5),
+        inset 0 1px 0 #ffffff;
+}
+[data-theme="light"] .login-modal .logo-text { color: #0e1620; text-shadow: 0 0 18px rgba(168, 98, 0, .25); }
+[data-theme="light"] .login-modal .form-input { background: #ffffff; color: #0e1620; box-shadow: none; }
+[data-theme="light"] .login-server { border-top-color: rgba(20, 40, 60, .14); }
 
 /* --- 13. Small screens ---------------------------------------------------- */
 @media (max-width: 1100px) {

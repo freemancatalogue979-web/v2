@@ -1,0 +1,12 @@
+Corptic DEMO (CorpticDEMO-Regular)
+===================================
+Designer / foundry : Pandeka Studio / Pandeka Foundry
+Source             : https://www.fontspace.com/corptic-font-f147318
+Files              : corptic-demo-regular.otf (original download),
+                     corptic-demo-regular.woff2 (converted with fonttools+brotli,
+                     embedded into Admin.html as a data: URI)
+Glyphs             : 55 - A-Z, a-z, space (demo build: no digits/punctuation,
+                     which fall back to Helvetica per glyph in the CSS stack)
+Licence            : Freeware, Non-Commercial - personal use only.
+                     Commercial licence: https://creativemarket.com/PandekaStudio/291711485
+Contact            : pandekastudio@gmail.com

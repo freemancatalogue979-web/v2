@@ -113,6 +113,21 @@ const skin = admin.slice(skinStart, cssEnd);
   for (const sel of ['.login-modal', '.klg-modal', '.lpv-modal', '.lpv-bind-modal', '.profile-modal']) {
     ok(css.includes(sel + ','), 'the dialog language covers ' + sel);
   }
+
+  // The sign-in airlock: a round glass card with a porthole reticle, pill
+  // fields and one pill key - deliberately none of the angular cuts.
+  ok(/\.login-modal\s*\{[\s\S]{0,1200}border-radius:\s*30px/.test(css), 'the airlock card is round');
+  ok(/\.login-modal\s*\{[\s\S]{0,1200}clip-path:\s*none/.test(css), 'and drops the angular cut');
+  ok(/\.login-modal::before,\s*\.login-modal::after\s*\{\s*content:\s*none/.test(css),
+    'and the corner brackets are gone from it');
+  ok(/\.login-modal \.logo-icon\s*\{[\s\S]{0,1200}border-radius:\s*50%/.test(css), 'the porthole is a circle');
+  ok(/\.login-modal \.logo-icon::before[\s\S]{0,300}border:\s*1px dashed/.test(css),
+    'with a dashed ring that turns');
+  ok(/\.login-overlay\s*\{[\s\S]{0,1200}repeating-radial-gradient/.test(css),
+    'the airlock floats on concentric rings');
+  ok(/\.login-btn\s*\{[\s\S]{0,1200}border-radius:\s*999px/.test(css), 'the sign-in key is a pill');
+  ok(/\.login-btn\s*\{[\s\S]{0,1200}clip-path:\s*none/.test(css), 'not an angular key');
+  ok(/\.login-modal \.form-input[\s\S]{0,1200}border-radius:\s*999px/.test(css), 'the fields are pills too');
   ok(/\.login-overlay[\s\S]{0,1200}backdrop-filter/.test(css), 'overlays are scrimmed and blurred');
 
   // The instruments the console shows.
@@ -160,7 +175,25 @@ const skin = admin.slice(skinStart, cssEnd);
   ok(/font-style:\s*normal !important/.test(css), 'and upright');
 
   ok(!/Roboto Slab/.test(admin), 'the panel asks for no other house face');
-  ok(!/@font-face\s*\{/.test(admin), 'and carries no embedded font payload');
+
+  // The display face is embedded exactly once, as a data: URI - the page
+  // still fetches nothing for its type. (Corptic DEMO ships letters only, so
+  // digits and punctuation fall back to Helvetica per glyph via the stack.)
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
+    'Admin.html carries exactly one embedded face');
+  ok(/<style id="shf-corptic-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*Corptic;/.test(admin),
+    'the embedded face is Corptic (Pandeka Foundry), in its own block');
+  ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin), 'and it ships as a data: URI');
+  const faceRule = (admin.match(/@font-face\s*\{[\s\S]*?\}/) || [''])[0];
+  ok(!/https?:\/\//.test(faceRule), 'the face rule has no remote URL');
+  ok(/--mc-display:\s*Corptic,/.test(css), 'the skin leads its display stack with Corptic');
+  ok(/font-family:\s*var\(--mc-display\)\s*!important/.test(css),
+    'and the chrome (tabs, keys, titles) uses it, out-specifying the `*` reset');
+  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')) &&
+     admin.includes(fs.readFileSync(path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')).toString('base64')),
+    'the embedded copy is byte-identical to the asset in assets/fonts');
+  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')),
+    'and the licence travels with the font');
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +274,8 @@ const skin = admin.slice(skinStart, cssEnd);
     ok(style('.logo-text', 'fontStyle') === 'italic', 'the title is oblique');
     ok(style('textarea', 'fontStyle') === 'normal', 'a textarea is upright');
     ok(style('.top-tab', 'fontStyle') === 'italic', 'the nav is oblique');
-    ok(/Helvetica/.test(style('body', 'fontFamily') || ''), 'and everything is Helvetica');
+    ok(/Helvetica/.test(style('body', 'fontFamily') || ''), 'the body is still Helvetica');
+    ok(/mc-display/.test(style('.top-tab', 'fontFamily') || ''), 'and the tabs use the Corptic display stack');
     ok(!!doc.querySelector('.main-app'), 'the shell is intact');
     ok(!!doc.querySelector('svg.mc-radar'), 'the radar scope is in the stage');
   } else {

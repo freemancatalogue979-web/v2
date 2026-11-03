@@ -45,9 +45,9 @@ const b64 = raw.toString('base64');
 // ---------------------------------------------------------------------------
 // 2. Every page carries exactly that font — no more, no less
 // ---------------------------------------------------------------------------
-// Admin.html is NOT in this list on purpose: the cockpit panel is set in
-// Helvetica (oblique) from the OS, so it ships no payload at all. Section 2b
-// asserts that instead.
+// Admin.html is NOT in this list on purpose: its body is set in Helvetica
+// from the OS. Its display chrome uses Corptic DEMO, embedded once as a data:
+// URI in its own block - section 2b asserts that instead.
 const PAGES = ['client.html', 'mini-admin.html'];
 {
   for (const name of PAGES) {
@@ -93,14 +93,25 @@ const PAGES = ['client.html', 'mini-admin.html'];
 }
 
 // ---------------------------------------------------------------------------
-// 2b. Admin.html: the system face, and no payload riding along
+// 2b. Admin.html: the Corptic display face, embedded once, nothing remote
 // ---------------------------------------------------------------------------
 {
   const admin = read('Admin.html');
-  ok(!/<style id="shf-font-face">/.test(admin),
-    'Admin.html carries no embedded face (it needs none)');
-  ok(!/base64,/.test(admin), 'and no base64 font payload');
-  ok(/font-family:\s*Helvetica Neue/.test(admin), 'it is set in Helvetica');
+  ok(!/<style id="shf-font-face">/.test(admin), 'Admin.html carries no Roboto Slab block');
+  ok(/<style id="shf-corptic-face">/.test(admin),
+    'Admin.html carries the Corptic face in its own block');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
+    'exactly one @font-face in Admin.html');
+  ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin),
+    'the face ships as a data: URI - nothing is fetched');
+  const corpticB64 = fs.readFileSync(
+    path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')).toString('base64');
+  ok(admin.includes(corpticB64),
+    'the embedded Corptic is byte-identical to assets/fonts/corptic-demo-regular.woff2');
+  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')),
+    'the licence travels with the font');
+  ok(/font-family:\s*Helvetica Neue/.test(admin), 'the body is still set in Helvetica');
+  ok(/--mc-display:\s*Corptic/.test(admin), 'and the display stack names Corptic first');
   ok(!/Roboto Slab/.test(admin), 'and asks for no other house face');
 }
 
