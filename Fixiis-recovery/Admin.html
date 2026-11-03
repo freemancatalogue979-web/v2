@@ -8001,152 +8001,160 @@
          ================================================================ -->
     <style id="shf-reactor-shell">
 /* ============================================================================
-   REACTOR SHELL — the admin cockpit skin
+   MISSION CONTROL SHELL — the admin console skin
    ----------------------------------------------------------------------------
    One self-contained layer, applied last so it wins the cascade, that turns
-   Admin.html into the reference design: black-red armour plating, bevel-cut
-   panels with a lit edge, cyan instrument accents, a blueprint stage behind
-   the live view, and Helvetica (oblique) for the whole chrome.
+   Admin.html into a movie ops-room: a near-black room with a hairline grid
+   and scanlines, amber-lit console keys, ice-cyan instruments, every tab
+   drawn as a slanted key on a tab rail, and every modal drawn as a console
+   dialog with corner brackets and a blinking status lamp. Helvetica,
+   oblique, across the whole chrome.
 
    Rules followed here, because the panel has 20k lines of working JS under it:
 
      * NO renames and NO removals. Every id, class and data-attribute the
-       scripts reach for is untouched; this file only describes how they look.
-     * Nothing here fetches anything: no image, no font file, no icon CDN.
-       The stage art, the sentinel and the arc reactor are drawn inline.
-     * The light theme stays a real theme (a daylight cockpit), not a broken
+       scripts reach for is untouched; this layer only describes how they
+       look. The DOM is the contract (tests/fixtures/admin_shell_contract.json).
+     * Nothing here fetches anything: no image, no font file, no icon CDN,
+       no external reference of any kind. The stage art (radar scope) is
+       drawn inline.
+     * The light theme stays a real theme (a daylight ops room), not a broken
        one: every token has a light value.
-     * prefers-reduced-motion stops the rotation and the pulsing; the design
-       still reads without them.
+     * prefers-reduced-motion stops the sweep, the rings and the lamps; the
+       design still reads without them.
    ========================================================================= */
 
 /* --- 1. Tokens ----------------------------------------------------------- */
 :root {
-    --rx-void:      #05060a;
-    --rx-ink:       #080a10;
-    --rx-panel:     #0b0e16;
-    --rx-panel-2:   #10141f;
-    --rx-well:      #06080e;
+    --mc-void:   #020608;
+    --mc-ink:    #05090e;
+    --mc-panel:  #0a1119;
+    --mc-panel-2:#101a26;
+    --mc-well:   #04070c;
 
-    --rx-red:       #ff2d3f;
-    --rx-red-hot:   #ff5a67;
-    --rx-red-deep:  #a80f1e;
-    --rx-red-line:  rgba(255, 45, 63, .42);
-    --rx-red-faint: rgba(255, 45, 63, .16);
-    --rx-red-glow:  rgba(255, 45, 63, .45);
+    --mc-amber:      #ffb02e;
+    --mc-amber-hot:  #ffd98a;
+    --mc-amber-deep: #7a4d00;
+    --mc-hot:        #ff5a2a;
+    --mc-ice:        #59dcff;
+    --mc-ice-soft:   #9beaff;
+    --mc-green:      #3dffa0;
 
-    --rx-cyan:      #2fc8ff;
-    --rx-cyan-soft: #8be6ff;
-    --rx-cyan-faint:rgba(47, 200, 255, .18);
-    --rx-green:     #29d977;
+    --mc-text:  #e9f4f7;
+    --mc-dim:   #a7bcc9;
+    --mc-muted: #5f7482;
 
-    --rx-text:      #e9efff;
-    --rx-text-dim:  #a7afc6;
-    --rx-muted:     #79819a;
+    --mc-line:       rgba(120, 160, 185, .16);
+    --mc-line-amber: rgba(255, 176, 46, .30);
+    --mc-line-ice:   rgba(89, 220, 255, .28);
 
-    --rx-bevel:     10px;
-    --rx-cut: polygon(
-        var(--rx-bevel) 0, 100% 0,
-        100% calc(100% - var(--rx-bevel)), calc(100% - var(--rx-bevel)) 100%,
-        0 100%, 0 var(--rx-bevel));
+    --mc-bevel: 12px;
+    --mc-cut: polygon(
+        var(--mc-bevel) 0, 100% 0,
+        100% calc(100% - var(--mc-bevel)), calc(100% - var(--mc-bevel)) 100%,
+        0 100%, 0 var(--mc-bevel));
+    --mc-tab-cut: polygon(10px 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
+    --mc-key-cut: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
 
-    --rx-font: Helvetica Neue, Helvetica, Arial, sans-serif;
-    --rx-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --mc-font: Helvetica Neue, Helvetica, Arial, sans-serif;
+    --mc-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-    /* The panel's own theme variables, retuned to the armour palette. Every
-       rule that already says var(--accent) or var(--bg-card) turns red and
-       black with this, without touching 20k lines. */
-    --bg-primary:   #05060a;
-    --bg-secondary: #0a0c13;
-    --bg-card:      #0d1018;
-    --bg-hover:     #161a26;
-    --bg-input:     #0a0d15;
-    --text-primary: #e9efff;
-    --text-secondary: #b9c1d6;
-    --text-muted:   #79819a;
-    --accent:       #ff2d3f;
-    --accent-hover: #ff5a67;
-    --success:      #29d977;
-    --warning:      #ffb020;
-    --danger:       #ff2d3f;
-    --border:       rgba(255, 45, 63, .26);
-    --shadow:       rgba(255, 45, 63, .18);
-    --gradient-start: #ff2d3f;
-    --gradient-end:   #a80f1e;
-    --card-shadow:  0 18px 44px -24px rgba(255, 45, 63, .55);
+    /* The panel's own theme variables, retuned to the console palette. Every
+       base rule that already says var(--accent) or var(--bg-card) turns
+       amber-on-black with this, without touching the base stylesheet. */
+    --bg-primary:   #020608;
+    --bg-secondary: #070c12;
+    --bg-card:      #0a1119;
+    --bg-hover:     #131d29;
+    --bg-input:     #04070c;
+    --text-primary: #e9f4f7;
+    --text-secondary: #b9c9d3;
+    --text-muted:   #5f7482;
+    --accent:       #ffb02e;
+    --accent-hover: #ffd98a;
+    --success:      #3dffa0;
+    --warning:      #ffb02e;
+    --danger:       #ff5a2a;
+    --border:       rgba(255, 176, 46, .22);
+    --shadow:       rgba(255, 176, 46, .16);
+    --gradient-start: #ffb02e;
+    --gradient-end:   #7a4d00;
+    --card-shadow:  0 18px 44px -24px rgba(255, 176, 46, .45);
 }
 
 [data-theme="light"] {
-    --rx-void:      #f2f4f9;
-    --rx-ink:       #ffffff;
-    --rx-panel:     #ffffff;
-    --rx-panel-2:   #f6f8fc;
-    --rx-well:      #eef1f7;
+    --mc-void:   #edf1f5;
+    --mc-ink:    #ffffff;
+    --mc-panel:  #ffffff;
+    --mc-panel-2:#f4f7fa;
+    --mc-well:   #e7edf2;
 
-    --rx-red:       #d4091c;
-    --rx-red-hot:   #b40616;
-    --rx-red-deep:  #8c0714;
-    --rx-red-line:  rgba(212, 9, 28, .34);
-    --rx-red-faint: rgba(212, 9, 28, .10);
-    --rx-red-glow:  rgba(212, 9, 28, .22);
+    --mc-amber:      #a86200;
+    --mc-amber-hot:  #8a5200;
+    --mc-amber-deep: #6e4300;
+    --mc-hot:        #d63c0a;
+    --mc-ice:        #0b7ea6;
+    --mc-ice-soft:   #0a6a8c;
+    --mc-green:      #0c8a52;
 
-    --rx-cyan:      #0b7fb0;
-    --rx-cyan-soft: #0a6a94;
-    --rx-cyan-faint:rgba(11, 127, 176, .14);
-    --rx-green:     #0f9b52;
+    --mc-text:  #0e1620;
+    --mc-dim:   #3d4a58;
+    --mc-muted: #6b7a89;
 
-    --rx-text:      #0f1420;
-    --rx-text-dim:  #414a5f;
-    --rx-muted:     #6b7387;
+    --mc-line:       rgba(20, 40, 60, .14);
+    --mc-line-amber: rgba(168, 98, 0, .35);
+    --mc-line-ice:   rgba(11, 126, 166, .30);
 
-    --bg-primary:   #f2f4f9;
+    --bg-primary:   #edf1f5;
     --bg-secondary: #ffffff;
     --bg-card:      #ffffff;
-    --bg-hover:     #f0f3f9;
-    --bg-input:     #f7f9fc;
-    --text-primary: #0f1420;
-    --text-secondary: #414a5f;
-    --text-muted:   #6b7387;
-    --accent:       #d4091c;
-    --accent-hover: #b40616;
-    --success:      #0f9b52;
-    --warning:      #a86a00;
-    --danger:       #d4091c;
-    --border:       rgba(212, 9, 28, .22);
-    --shadow:       rgba(15, 20, 32, .12);
-    --gradient-start: #d4091c;
-    --gradient-end:   #8c0714;
-    --card-shadow:  0 18px 44px -24px rgba(15, 20, 32, .35);
+    --bg-hover:     #eef3f8;
+    --bg-input:     #fbfcfe;
+    --text-primary: #0e1620;
+    --text-secondary: #3d4a58;
+    --text-muted:   #6b7a89;
+    --accent:       #a86200;
+    --accent-hover: #8a5200;
+    --success:      #0c8a52;
+    --warning:      #a86200;
+    --danger:       #d63c0a;
+    --border:       rgba(168, 98, 0, .25);
+    --shadow:       rgba(15, 25, 40, .12);
+    --gradient-start: #a86200;
+    --gradient-end:   #6e4300;
+    --card-shadow:  0 18px 44px -24px rgba(15, 25, 40, .30);
 }
 
 /* --- 2. Type: Helvetica, oblique ---------------------------------------- */
-/* The whole cockpit is set oblique, which is the reference's character. Long
-   form reading surfaces (logs, terminals, text the operator edits) stay
-   upright: a slanted monospace block is harder to scan, and this panel is
-   where the operator does the reading. */
+/* The whole console is set oblique — that is the house voice. Long form
+   reading surfaces (logs, terminals, text the operator edits) stay upright:
+   a slanted monospace block is harder to scan, and this panel is where the
+   operator does the reading. */
 html, body,
 button, input, select, option, label, span, a, div, h1, h2, h3, h4, h5, h6,
 th, td, li, p, strong, em, small, summary, legend {
-    font-family: var(--rx-font);
+    font-family: var(--mc-font);
 }
 
 body,
 button, input, select, label,
-.top-tab, .display-subtab, .btn, .sidebar-title, .panel-title,
+.top-tab, .display-subtab, .lpv-subtab, .btn, .sidebar-title, .panel-title,
 .detail-label, .detail-value, .logo-text, .placeholder-text,
 .placeholder-subtext, .stats-item, .keepalive-btn, .logout-btn,
 .screenshot-meta, .client-card, .empty-text, .form-label,
-.profiles-stat-label, .profiles-stat-value, .modal-title, .toast {
+.profiles-stat-label, .profiles-stat-value, .modal-title, .toast,
+.pcm-modal-title, .pcm-modal-btn, .klg-modal, .lpv-modal-title, .lpv-btn,
+.login-title, .login-btn, .alert-title, .alert-message {
     font-style: italic;
 }
 
 /* Upright by intent: machine output and anything being typed as prose. */
 textarea, pre, code, kbd, samp,
 .terminal, .terminal *, .timeline-terminal, .timeline-terminal *,
-.term-title, .term-kv, .term-comment, .term-prompt,
+.term-title, .term-kv, .term-kv-inline, .term-comment, .term-prompt,
 .log-content, .log-details, .log-time, .log-title,
 .lpv-code, .mono, [class*="monospace"] {
-    font-family: var(--rx-mono);
+    font-family: var(--mc-mono);
     font-style: normal;
 }
 
@@ -8156,16 +8164,17 @@ textarea, pre, code, kbd, samp,
 textarea, pre, code, kbd, samp,
 .terminal, .terminal *, .timeline-terminal, .timeline-terminal *,
 .log-content, .log-details, .log-time, .log-title, .lpv-code, .mono {
-    font-family: var(--rx-mono) !important;
+    font-family: var(--mc-mono) !important;
     font-style: normal !important;
 }
 
 /* --- 3. The room --------------------------------------------------------- */
 html, body {
-    background: var(--rx-void);
-    color: var(--rx-text);
+    background: var(--mc-void);
+    color: var(--mc-text);
 }
 
+/* Ambient light: an amber console glow low-left, an ice wash high-right. */
 body::before {
     content: '';
     position: fixed;
@@ -8173,99 +8182,108 @@ body::before {
     z-index: 0;
     pointer-events: none;
     background:
-        radial-gradient(900px 520px at 6% 106%, rgba(168, 15, 30, .30), transparent 62%),
-        radial-gradient(1100px 620px at 104% -10%, rgba(255, 45, 63, .13), transparent 58%),
-        radial-gradient(700px 420px at 46% 118%, rgba(47, 200, 255, .07), transparent 60%),
-        linear-gradient(180deg, #05060a 0%, #070910 46%, #05060a 100%);
+        radial-gradient(900px 540px at 4% 108%, rgba(255, 176, 46, .14), transparent 62%),
+        radial-gradient(1100px 640px at 106% -12%, rgba(89, 220, 255, .10), transparent 58%),
+        radial-gradient(700px 420px at 52% 120%, rgba(61, 255, 160, .05), transparent 60%),
+        linear-gradient(180deg, #020608 0%, #05090e 46%, #020608 100%);
 }
 
-/* A hairline technical grid, so large empty areas read as a blueprint rather
-   than a void. Two line weights, 32px and 160px. */
+/* A hairline technical grid plus a faint scanline, so large empty areas read
+   as a console wall rather than a void. Three line weights: 32px, 160px,
+   and the 3px CRT scan. */
 body::after {
     content: '';
     position: fixed;
     inset: 0;
     z-index: 0;
     pointer-events: none;
-    opacity: .5;
+    opacity: .55;
     background-image:
-        linear-gradient(rgba(120, 170, 230, .045) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(120, 170, 230, .045) 1px, transparent 1px),
-        linear-gradient(rgba(255, 60, 80, .05) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 60, 80, .05) 1px, transparent 1px);
-    background-size: 32px 32px, 32px 32px, 160px 160px, 160px 160px;
+        linear-gradient(rgba(120, 180, 210, .05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120, 180, 210, .05) 1px, transparent 1px),
+        linear-gradient(rgba(255, 176, 46, .05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 176, 46, .05) 1px, transparent 1px),
+        repeating-linear-gradient(0deg, rgba(255, 255, 255, .022) 0 1px, transparent 1px 3px);
+    background-size: 32px 32px, 32px 32px, 160px 160px, 160px 160px, 100% 3px;
 }
 
 [data-theme="light"] body::before {
     background:
-        radial-gradient(900px 520px at 6% 106%, rgba(212, 9, 28, .10), transparent 62%),
-        radial-gradient(1100px 620px at 104% -10%, rgba(212, 9, 28, .06), transparent 58%),
-        linear-gradient(180deg, #f6f8fc 0%, #eef1f8 100%);
+        radial-gradient(900px 540px at 4% 108%, rgba(168, 98, 0, .10), transparent 62%),
+        radial-gradient(1100px 640px at 106% -12%, rgba(11, 126, 166, .08), transparent 58%),
+        linear-gradient(180deg, #f2f5f9 0%, #e9eef4 100%);
 }
-[data-theme="light"] body::after { opacity: .35; }
+[data-theme="light"] body::after { opacity: .4; }
 
-.main-app { position: relative; z-index: 1; }
+/* My own proportions for the three-column room: a wider ops rail left, a
+   wider instrument rail right. The base grid stays the mechanics; this is
+   the layout. */
+.main-app {
+    position: relative;
+    z-index: 1;
+    grid-template-columns: 236px minmax(0, 1fr) 252px !important;
+}
 
-/* --- 4. Header ----------------------------------------------------------- */
+/* --- 4. Header: the command deck ----------------------------------------- */
 .header {
-    height: 58px;
+    height: 62px;
     padding: 0 18px;
     background:
-        linear-gradient(180deg, rgba(255, 45, 63, .10), transparent 70%),
-        linear-gradient(180deg, #0e111a 0%, #070910 100%);
-    border-bottom: 1px solid var(--rx-red-line);
+        linear-gradient(180deg, rgba(255, 176, 46, .09), transparent 70%),
+        linear-gradient(180deg, #0c141e 0%, #060a10 100%);
+    border-bottom: 1px solid var(--mc-line-amber);
     box-shadow:
-        0 1px 0 rgba(255, 90, 103, .35),
-        0 10px 30px -18px rgba(255, 45, 63, .55),
+        0 1px 0 rgba(255, 217, 138, .35),
+        0 12px 32px -18px rgba(255, 176, 46, .5),
         inset 0 1px 0 rgba(255, 255, 255, .05);
 }
 
-/* A lit seam under the header, the way the armour panels are edged. */
+/* The lit seam under the deck. */
 .header::after {
     content: '';
     position: absolute;
     left: 0; right: 0; bottom: -1px;
     height: 1px;
     background: linear-gradient(90deg,
-        transparent 0%, var(--rx-red) 12%, rgba(255, 90, 103, .5) 50%,
-        var(--rx-red) 88%, transparent 100%);
-    opacity: .75;
+        transparent 0%, var(--mc-amber) 12%, rgba(255, 217, 138, .55) 50%,
+        var(--mc-amber) 88%, transparent 100%);
+    opacity: .8;
 }
 
 .logo-section { gap: 12px; }
 
-/* The arc reactor mark: rings, a lit core, and a slow rotation that stops
-   for prefers-reduced-motion. Pure CSS, no image. */
+/* The console mark: a round reticle with a lit amber core and a slow
+   rotating ring. Pure CSS, no image. */
 .logo-icon {
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
     border-radius: 50%;
     background:
-        radial-gradient(circle at 50% 50%, #ffffff 0 16%, var(--rx-cyan) 26%, rgba(47, 200, 255, .22) 46%, transparent 62%),
-        conic-gradient(from 0deg, #12202c, #1d3d4f, #12202c);
+        radial-gradient(circle at 50% 50%, #fff7e6 0 15%, var(--mc-amber) 27%, rgba(255, 176, 46, .25) 48%, transparent 64%),
+        conic-gradient(from 0deg, #131c26, #24374a, #131c26);
     box-shadow:
-        0 0 0 1px rgba(139, 230, 255, .55),
-        0 0 14px rgba(47, 200, 255, .65),
+        0 0 0 1px rgba(255, 217, 138, .6),
+        0 0 16px rgba(255, 176, 46, .7),
         inset 0 0 10px rgba(255, 255, 255, .35);
     position: relative;
-    animation: rx-pulse 4.5s ease-in-out infinite;
+    animation: mc-pulse 4.5s ease-in-out infinite;
 }
 .logo-icon::before {
     content: '';
     position: absolute;
     inset: -4px;
     border-radius: 50%;
-    border: 1px solid rgba(47, 200, 255, .35);
-    border-top-color: rgba(255, 255, 255, .8);
-    animation: rx-spin 9s linear infinite;
+    border: 1px solid rgba(255, 176, 46, .4);
+    border-top-color: rgba(255, 255, 255, .85);
+    animation: mc-spin 9s linear infinite;
 }
-.logo-icon svg { width: 18px; height: 18px; fill: #041018; position: relative; z-index: 1; }
+.logo-icon svg { width: 19px; height: 19px; fill: #160e02; position: relative; z-index: 1; }
 
 /* The header title. The panel's own rule paints it with a gradient through
-   `background-clip: text` and a transparent fill, which would also eat the
-   glow below - so the fill is restored to a solid white here. */
+   background-clip: text, which would eat the glow - so the fill is restored
+   to a solid light tone here. */
 .header .logo-text {
-    font-size: 28px;
+    font-size: 27px;
     font-weight: 800;
     letter-spacing: .01em;
     color: #fff;
@@ -8274,8 +8292,8 @@ body::after {
     background-clip: border-box;
     -webkit-text-fill-color: #fff;
     text-shadow:
-        0 0 16px rgba(255, 45, 63, .85),
-        0 0 34px rgba(255, 45, 63, .45),
+        0 0 16px rgba(255, 176, 46, .85),
+        0 0 36px rgba(255, 176, 46, .45),
         0 1px 0 rgba(0, 0, 0, .6);
 }
 
@@ -8284,83 +8302,94 @@ body::after {
     gap: 8px;
     padding: 4px 6px;
     border-radius: 4px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, .04), rgba(0, 0, 0, .25));
-    border: 1px solid rgba(255, 45, 63, .18);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+    background: linear-gradient(180deg, rgba(255, 255, 255, .04), rgba(0, 0, 0, .3));
+    border: 1px solid var(--mc-line);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04), inset 0 0 14px rgba(0, 0, 0, .55);
 }
 
 .stats-item {
     font-size: 11.5px;
     font-weight: 700;
-    color: var(--rx-text-dim);
+    color: var(--mc-dim);
     padding: 3px 7px;
     letter-spacing: .02em;
 }
-.stats-item svg { width: 13px; height: 13px; fill: var(--rx-cyan); filter: drop-shadow(0 0 4px rgba(47, 200, 255, .6)); }
-.stats-item.status { color: var(--rx-green); }
+.stats-item svg { width: 13px; height: 13px; fill: var(--mc-ice); filter: drop-shadow(0 0 4px rgba(89, 220, 255, .6)); }
+.stats-item.status { color: var(--mc-green); }
 .stats-item .status-dot {
     width: 7px; height: 7px; border-radius: 50%;
-    background: var(--rx-green);
-    box-shadow: 0 0 9px var(--rx-green);
+    background: var(--mc-green);
+    box-shadow: 0 0 9px var(--mc-green);
+    animation: mc-blink 2.4s ease-in-out infinite;
 }
 
 .theme-toggle {
     width: 40px; height: 21px;
     border-radius: 999px;
-    background: #0a0d15;
-    border: 1px solid rgba(255, 45, 63, .35);
+    background: var(--mc-well);
+    border: 1px solid var(--mc-line-amber);
     box-shadow: inset 0 0 12px rgba(0, 0, 0, .8);
 }
 .theme-toggle::before {
     width: 15px; height: 15px;
-    background: radial-gradient(circle at 35% 30%, #fff, #cfd7e6 60%, #93a0b8);
-    box-shadow: 0 0 10px rgba(255, 255, 255, .5);
+    background: radial-gradient(circle at 35% 30%, #fff, #ffe2ae 60%, #c98f1e);
+    box-shadow: 0 0 10px rgba(255, 176, 46, .6);
 }
-.theme-toggle.switched { background: #131820; }
+.theme-toggle.switched { background: #131c26; }
 
-/* Command buttons ------------------------------------------------------- */
+/* Command keys ------------------------------------------------------- */
 .keepalive-btn, .logout-btn {
     height: 30px;
     padding: 0 14px;
-    border-radius: 3px;
+    border-radius: 0;
     font-size: 12.5px;
     font-weight: 700;
-    letter-spacing: .02em;
+    letter-spacing: .03em;
     gap: 7px;
-    clip-path: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px);
+    text-transform: uppercase;
+    clip-path: var(--mc-key-cut);
     transition: filter .16s ease, box-shadow .16s ease, transform .1s ease;
 }
 .keepalive-btn svg, .logout-btn svg { width: 14px; height: 14px; }
 
 .keepalive-btn {
-    color: #d8ffe9;
-    background: linear-gradient(180deg, #128a45 0%, #0a5c2e 100%);
-    border: 1px solid rgba(41, 217, 119, .55);
-    box-shadow: 0 0 16px -4px rgba(41, 217, 119, .7), inset 0 1px 0 rgba(255, 255, 255, .18);
+    color: #d9ffec;
+    background: linear-gradient(180deg, #0f8a4c 0%, #0a5c31 100%);
+    border: 1px solid rgba(61, 255, 160, .55);
+    box-shadow: 0 0 16px -4px rgba(61, 255, 160, .7), inset 0 1px 0 rgba(255, 255, 255, .18);
 }
 .keepalive-btn:hover { filter: brightness(1.14); }
 .keepalive-btn.active {
-    background: linear-gradient(180deg, #22c55e 0%, #0f7a3d 100%);
-    box-shadow: 0 0 22px -2px rgba(41, 217, 119, .85), inset 0 1px 0 rgba(255, 255, 255, .3);
+    background: linear-gradient(180deg, #23d184 0%, #0f8a52 100%);
+    box-shadow: 0 0 22px -2px rgba(61, 255, 160, .9), inset 0 1px 0 rgba(255, 255, 255, .3);
 }
 
 .logout-btn {
-    color: #ffe6e9;
-    background: linear-gradient(180deg, #d01326 0%, #7d0a16 100%);
-    border: 1px solid rgba(255, 45, 63, .6);
-    box-shadow: 0 0 16px -4px rgba(255, 45, 63, .7), inset 0 1px 0 rgba(255, 255, 255, .16);
+    color: #ffece4;
+    background: linear-gradient(180deg, #e04a1d 0%, #8a1c05 100%);
+    border: 1px solid rgba(255, 90, 42, .6);
+    box-shadow: 0 0 16px -4px rgba(255, 90, 42, .7), inset 0 1px 0 rgba(255, 255, 255, .16);
 }
 .logout-btn:hover { filter: brightness(1.15); }
 .keepalive-btn:active, .logout-btn:active { transform: translateY(1px); }
 
-/* --- 5. Left rail: active sessions -------------------------------------- */
+.drawer-toggle {
+    border: 1px solid var(--mc-line);
+    background: var(--mc-panel-2);
+    color: var(--mc-dim);
+    clip-path: var(--mc-key-cut);
+}
+.drawer-toggle:hover { color: #fff; border-color: var(--mc-line-amber); box-shadow: 0 0 14px -6px rgba(255, 176, 46, .8); }
+.drawer-toggle svg { fill: currentColor; }
+
+/* --- 5. Left rail: sessions as tab rows ---------------------------------- */
 .sidebar {
     background:
-        linear-gradient(180deg, rgba(255, 45, 63, .07) 0%, transparent 34%),
-        linear-gradient(180deg, #080a11 0%, #05070c 100%);
+        linear-gradient(180deg, rgba(255, 176, 46, .06) 0%, transparent 34%),
+        linear-gradient(180deg, #070c12 0%, #04070b 100%);
     z-index: 1;
-    border-right: 1px solid var(--rx-red-line);
-    box-shadow: 12px 0 34px -28px rgba(255, 45, 63, .8), inset -1px 0 0 rgba(255, 45, 63, .12);
+    border-right: 1px solid var(--mc-line-amber);
+    box-shadow: 12px 0 34px -28px rgba(255, 176, 46, .8), inset -1px 0 0 rgba(255, 176, 46, .10);
     padding: 14px 10px 16px;
     position: relative;
 }
@@ -8368,14 +8397,15 @@ body::after {
 .sidebar-title {
     font-size: 11px;
     font-weight: 800;
-    letter-spacing: .12em;
-    color: #ffd9dd;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: #ffe9c4;
     padding: 7px 10px;
     margin-bottom: 14px;
-    background: linear-gradient(180deg, rgba(255, 45, 63, .26), rgba(255, 45, 63, .06));
-    border: 1px solid var(--rx-red-line);
-    clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
-    text-shadow: 0 0 12px rgba(255, 45, 63, .8);
+    background: linear-gradient(180deg, rgba(255, 176, 46, .24), rgba(255, 176, 46, .05));
+    border: 1px solid var(--mc-line-amber);
+    clip-path: var(--mc-key-cut);
+    text-shadow: 0 0 12px rgba(255, 176, 46, .8);
 }
 
 .sidebar .client-list { position: relative; z-index: 3; }
@@ -8388,64 +8418,67 @@ body::after {
     padding: 18px;
     box-sizing: content-box;
     border-radius: 50%;
-    fill: var(--rx-cyan);
+    fill: var(--mc-ice);
     margin: 0 auto 14px;
-    background: radial-gradient(circle at 50% 38%, rgba(47, 200, 255, .16), rgba(4, 8, 14, .9) 70%);
-    border: 1px solid rgba(47, 200, 255, .45);
+    background: radial-gradient(circle at 50% 38%, rgba(89, 220, 255, .16), rgba(4, 8, 13, .9) 70%);
+    border: 1px solid rgba(89, 220, 255, .45);
     box-shadow:
-        0 0 0 6px rgba(47, 200, 255, .05),
-        0 0 26px -6px rgba(47, 200, 255, .7),
-        inset 0 0 22px rgba(47, 200, 255, .18);
-    filter: drop-shadow(0 0 8px rgba(47, 200, 255, .5));
+        0 0 0 6px rgba(89, 220, 255, .05),
+        0 0 26px -6px rgba(89, 220, 255, .7),
+        inset 0 0 22px rgba(89, 220, 255, .18);
+    filter: drop-shadow(0 0 8px rgba(89, 220, 255, .5));
 }
 
 .empty-text {
     font-size: 13px;
-    color: var(--rx-text-dim);
+    color: var(--mc-dim);
     line-height: 1.45;
 }
 
-/* Client cards inherit the plating. */
+/* Client cards are tab rows: a lit edge on the left when live. */
 .client-card {
-    background: linear-gradient(180deg, var(--rx-panel-2), var(--rx-panel));
-    border: 1px solid rgba(255, 45, 63, .22);
-    border-radius: 3px;
+    background: linear-gradient(180deg, var(--mc-panel-2), var(--mc-panel));
+    border: 1px solid var(--mc-line);
+    border-left: 3px solid rgba(95, 116, 130, .5);
+    border-radius: 0;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
     transition: border-color .16s ease, box-shadow .16s ease, transform .1s ease;
 }
 .client-card:hover {
-    border-color: rgba(255, 45, 63, .55);
-    box-shadow: 0 0 20px -8px var(--rx-red-glow), inset 0 1px 0 rgba(255, 255, 255, .07);
+    border-color: var(--mc-line-ice);
+    border-left-color: var(--mc-ice);
+    box-shadow: 0 0 20px -8px rgba(89, 220, 255, .6), inset 0 1px 0 rgba(255, 255, 255, .07);
 }
 .client-card.active, .client-card.selected {
-    border-color: var(--rx-red);
-    box-shadow: 0 0 22px -6px var(--rx-red-glow), inset 0 0 0 1px rgba(255, 45, 63, .25);
+    border-color: var(--mc-line-amber);
+    border-left-color: var(--mc-amber);
+    box-shadow: 0 0 22px -6px rgba(255, 176, 46, .75), inset 0 0 0 1px rgba(255, 176, 46, .22);
 }
 
-/* --- 6. Navigation rows -------------------------------------------------- */
+/* --- 6. The tab rail: every nav entry is a console key -------------------- */
 .top-tabs {
     background:
-        linear-gradient(180deg, rgba(255, 45, 63, .07), transparent 80%),
-        #080a11;
-    border-bottom: 1px solid var(--rx-red-line);
-    padding: 7px 14px 8px;
-    gap: 7px;
-    box-shadow: inset 0 -1px 0 rgba(255, 45, 63, .18);
+        linear-gradient(180deg, rgba(255, 176, 46, .06), transparent 80%),
+        #060a10;
+    border-bottom: 1px solid var(--mc-line-amber);
+    padding: 8px 14px 9px;
+    gap: 6px;
+    box-shadow: inset 0 -1px 0 rgba(255, 176, 46, .16);
 }
 
 .top-tab {
-    height: 32px;
-    padding: 0 14px;
+    height: 34px;
+    padding: 0 16px;
     gap: 7px;
-    font-size: 11.5px;
-    font-weight: 700;
-    letter-spacing: .015em;
-    color: var(--rx-text-dim);
-    background: linear-gradient(180deg, #141a26 0%, #0a0d15 100%);
-    border: 1px solid rgba(255, 45, 63, .22);
-    border-bottom: none;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--mc-dim);
+    background: linear-gradient(180deg, #131c28 0%, #0a1017 100%);
+    border: 1px solid var(--mc-line);
     border-radius: 0;
-    clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+    clip-path: var(--mc-tab-cut);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
     transition: color .15s ease, background .15s ease, box-shadow .15s ease;
 }
@@ -8453,74 +8486,78 @@ body::after {
 
 .top-tab:hover {
     color: #fff;
-    background: linear-gradient(180deg, #23283a 0%, #12161f 100%);
-    box-shadow: inset 0 0 0 1px rgba(255, 45, 63, .35);
+    background: linear-gradient(180deg, #1d2938 0%, #101823 100%);
+    box-shadow: inset 0 0 0 1px var(--mc-line-ice), 0 0 16px -8px rgba(89, 220, 255, .8);
 }
 
+/* The active key is lit amber, like a pressed console switch. */
 .top-tab.active {
-    color: #fff;
-    background: linear-gradient(180deg, #ff3d4e 0%, #b40f1f 100%);
-    border-color: rgba(255, 120, 130, .8);
+    color: #1a1206;
+    background: linear-gradient(180deg, #ffc25e 0%, #e08f00 100%);
+    border-color: rgba(255, 217, 138, .9);
     box-shadow:
-        0 0 24px -6px rgba(255, 45, 63, .95),
-        inset 0 1px 0 rgba(255, 255, 255, .35);
-    text-shadow: 0 0 10px rgba(255, 255, 255, .55);
+        0 0 24px -6px rgba(255, 176, 46, .95),
+        inset 0 1px 0 rgba(255, 255, 255, .5),
+        inset 0 -2px 0 rgba(122, 77, 0, .55);
+    text-shadow: 0 1px 0 rgba(255, 255, 255, .35);
 }
 
-/* Sub-tabs (Live View / Dashboard) -------------------------------------- */
+/* Segmented sub-tabs (Live View / Dashboard, archive subtabs) -------------- */
 .display-subtabs {
     gap: 8px;
     padding: 8px 0 10px;
-    border-bottom: 1px solid rgba(255, 45, 63, .16);
+    border-bottom: 1px solid var(--mc-line);
     margin-bottom: 12px;
 }
 
-.display-subtab {
-    height: 34px;
+.display-subtab, .lpv-subtab {
+    height: 32px;
     padding: 0 18px;
     gap: 8px;
-    font-size: 12.5px;
-    font-weight: 700;
-    color: var(--rx-text-dim);
-    background: linear-gradient(180deg, #131826, #0a0d15);
-    border: 1px solid rgba(255, 45, 63, .22);
+    font-size: 11.5px;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--mc-dim);
+    background: linear-gradient(180deg, #111a25, #0a1017);
+    border: 1px solid var(--mc-line);
     border-radius: 0;
-    clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+    clip-path: var(--mc-tab-cut);
     transition: color .15s ease, box-shadow .15s ease, background .15s ease;
 }
-.display-subtab svg { width: 15px; height: 15px; stroke: currentColor; }
-.display-subtab:hover { color: #fff; }
+.display-subtab svg { width: 15px; height: 15px; stroke: currentColor; fill: none; }
+.display-subtab:hover, .lpv-subtab:hover { color: #fff; }
 
-.display-subtab.active {
-    color: #fff;
-    border-color: rgba(255, 120, 130, .75);
-    background: linear-gradient(180deg, rgba(255, 45, 63, .34), rgba(168, 15, 30, .22));
-    box-shadow: 0 0 22px -8px rgba(255, 45, 63, .9), inset 0 1px 0 rgba(255, 255, 255, .2);
-    text-shadow: 0 0 10px rgba(255, 45, 63, .7);
+.display-subtab.active, .lpv-subtab.active {
+    color: var(--mc-amber-hot);
+    border-color: var(--mc-line-amber);
+    background: linear-gradient(180deg, rgba(255, 176, 46, .30), rgba(122, 77, 0, .18));
+    box-shadow: 0 0 22px -8px rgba(255, 176, 46, .9), inset 0 1px 0 rgba(255, 255, 255, .18);
+    text-shadow: 0 0 10px rgba(255, 176, 46, .7);
 }
 
 /* --- 7. The stage: Live View -------------------------------------------- */
 .main-content {
     background:
-        radial-gradient(760px 420px at 50% 8%, rgba(47, 200, 255, .05), transparent 62%),
+        radial-gradient(760px 420px at 50% 8%, rgba(89, 220, 255, .05), transparent 62%),
         transparent;
     padding: 0 14px 12px;
 }
 
 .screenshot-panel {
     position: relative;
-    background: linear-gradient(180deg, #0b0e17 0%, #06080e 100%);
-    border: 1px solid var(--rx-red-line);
+    background: linear-gradient(180deg, #0b121c 0%, #060a10 100%);
+    border: 1px solid var(--mc-line-amber);
     border-radius: 0;
     padding: 12px 14px 14px;
-    clip-path: var(--rx-cut);
+    clip-path: var(--mc-cut);
     box-shadow:
-        0 0 0 1px rgba(255, 45, 63, .12),
-        0 0 34px -14px rgba(255, 45, 63, .8),
-        inset 0 0 46px -22px rgba(255, 45, 63, .5);
+        0 0 0 1px rgba(255, 176, 46, .12),
+        0 0 34px -14px rgba(255, 176, 46, .8),
+        inset 0 0 46px -22px rgba(255, 176, 46, .45);
 }
 
-/* Corner brackets: the reference frames the stage with them. */
+/* Corner brackets frame the stage, like a viewfinder. */
 .screenshot-panel::before,
 .screenshot-panel::after {
     content: '';
@@ -8528,8 +8565,9 @@ body::after {
     width: 26px;
     height: 26px;
     pointer-events: none;
-    border: 1px solid var(--rx-red);
-    filter: drop-shadow(0 0 6px var(--rx-red-glow));
+    border: 1px solid var(--mc-amber);
+    filter: drop-shadow(0 0 6px rgba(255, 176, 46, .7));
+    z-index: 4;
 }
 .screenshot-panel::before { top: 6px; left: 6px; border-right: none; border-bottom: none; }
 .screenshot-panel::after { bottom: 6px; right: 6px; border-left: none; border-top: none; }
@@ -8537,20 +8575,21 @@ body::after {
 .screenshot-panel .panel-title {
     margin: 0 0 10px;
     padding: 0 4px 8px;
-    border-bottom: 1px solid rgba(255, 45, 63, .18);
+    border-bottom: 1px solid var(--mc-line);
     color: #fff;
 }
 
 .screenshot-panel .panel-title > span:first-child {
     font-size: 1rem;
     font-weight: 800;
-    letter-spacing: .01em;
-    color: #ffe9ec;
-    text-shadow: 0 0 16px rgba(255, 45, 63, .55);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: #ffedc9;
+    text-shadow: 0 0 16px rgba(255, 176, 46, .55);
 }
 .screenshot-panel .panel-title > span:first-child svg {
-    fill: var(--rx-red);
-    filter: drop-shadow(0 0 8px var(--rx-red-glow));
+    fill: var(--mc-amber);
+    filter: drop-shadow(0 0 8px rgba(255, 176, 46, .8));
 }
 
 /* The status pill: "Waiting for client selection" / "Streaming" */
@@ -8561,45 +8600,43 @@ body::after {
     padding: 5px 13px;
     font-size: 11.5px;
     font-weight: 700;
-    color: #c6ffd9;
-    background: linear-gradient(180deg, rgba(41, 217, 119, .2), rgba(8, 40, 24, .55));
-    border: 1px solid rgba(41, 217, 119, .5);
+    letter-spacing: .06em;
+    color: #d2ffe4;
+    background: linear-gradient(180deg, rgba(61, 255, 160, .18), rgba(6, 40, 24, .55));
+    border: 1px solid rgba(61, 255, 160, .5);
     border-radius: 999px;
-    box-shadow: 0 0 16px -6px rgba(41, 217, 119, .9), inset 0 1px 0 rgba(255, 255, 255, .12);
+    box-shadow: 0 0 16px -6px rgba(61, 255, 160, .9), inset 0 1px 0 rgba(255, 255, 255, .12);
 }
 #screenshot-status::before {
     content: '';
     width: 7px; height: 7px;
     border-radius: 50%;
-    background: var(--rx-green);
-    box-shadow: 0 0 10px var(--rx-green);
-    animation: rx-blink 2.4s ease-in-out infinite;
+    background: var(--mc-green);
+    box-shadow: 0 0 10px var(--mc-green);
+    animation: mc-blink 2.4s ease-in-out infinite;
 }
 
 .screenshot-wrapper {
     position: relative;
     background:
-        radial-gradient(600px 300px at 50% 42%, rgba(47, 200, 255, .10), transparent 70%),
-        linear-gradient(180deg, #070b14 0%, #04070d 100%);
-    border: 1px solid rgba(90, 130, 190, .18);
+        radial-gradient(600px 300px at 50% 42%, rgba(89, 220, 255, .10), transparent 70%),
+        linear-gradient(180deg, #060b12 0%, #03060a 100%);
+    border: 1px solid var(--mc-line-ice);
     border-radius: 0;
     overflow: hidden;
 }
-
-/* The old diagonal hatch belonged to the previous look; the cockpit's stage is
-   a dot field over a map, so the hatch goes rather than sitting under it. */
 .screenshot-wrapper::before { background: none; opacity: 0; }
 
-/* The blueprint stage behind the empty state: dot field + dotted world map.
-   Both are drawn here, so a cockpit with no client still looks instrumented. */
+/* The console backdrop behind the empty stage: a dot field, a scanline,
+   and a radar scope drawn inline (see the .mc-radar svg in the markup). */
 .lx-stage {
     position: absolute;
     inset: 0;
     pointer-events: none;
     z-index: 1;
     background-image:
-        radial-gradient(rgba(120, 190, 255, .16) 1px, transparent 1.3px),
-        radial-gradient(rgba(120, 190, 255, .07) 1px, transparent 1.3px);
+        radial-gradient(rgba(89, 220, 255, .15) 1px, transparent 1.3px),
+        radial-gradient(rgba(89, 220, 255, .07) 1px, transparent 1.3px);
     background-size: 22px 22px, 11px 11px;
     background-position: 0 0, 5px 5px;
     opacity: .8;
@@ -8611,18 +8648,25 @@ body::after {
     position: absolute;
     inset: 0;
     background:
-        repeating-linear-gradient(0deg, rgba(255, 45, 63, .05) 0 1px, transparent 1px 4px),
-        radial-gradient(circle at 50% 118%, rgba(47, 200, 255, .16), transparent 58%);
+        repeating-linear-gradient(0deg, rgba(255, 176, 46, .045) 0 1px, transparent 1px 4px),
+        radial-gradient(circle at 50% 118%, rgba(89, 220, 255, .16), transparent 58%);
 }
-.lx-map {
+.mc-radar {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    opacity: .5;
+    opacity: .55;
     z-index: 1;
     pointer-events: none;
 }
+.mc-radar .mc-sweep {
+    transform-origin: 300px 300px;
+    animation: mc-sweep 8s linear infinite;
+}
+.mc-radar .mc-blip { animation: mc-blink 2.2s ease-in-out infinite; }
+.mc-radar .mc-blip.b2 { animation-delay: .7s; }
+.mc-radar .mc-blip.b3 { animation-delay: 1.4s; }
 
 .stream-placeholder { z-index: 3; padding: 26px 32px; grid-area: 1 / 1; }
 
@@ -8632,15 +8676,15 @@ body::after {
     height: 168px;
     margin-bottom: 20px;
     border-radius: 50%;
-    border: 1px solid rgba(47, 200, 255, .5);
+    border: 1px solid rgba(89, 220, 255, .5);
     background:
-        radial-gradient(circle at 50% 50%, rgba(47, 200, 255, .22) 0 22%, rgba(8, 26, 38, .55) 55%, transparent 70%),
-        conic-gradient(from 200deg, transparent 0deg, rgba(47, 200, 255, .35) 60deg, transparent 130deg);
+        radial-gradient(circle at 50% 50%, rgba(89, 220, 255, .22) 0 22%, rgba(6, 22, 32, .55) 55%, transparent 70%),
+        conic-gradient(from 200deg, transparent 0deg, rgba(89, 220, 255, .35) 60deg, transparent 130deg);
     box-shadow:
-        0 0 0 1px rgba(139, 230, 255, .22),
-        0 0 44px -8px rgba(47, 200, 255, .8),
-        inset 0 0 40px rgba(47, 200, 255, .18);
-    animation: none;
+        0 0 0 1px rgba(155, 234, 255, .22),
+        0 0 44px -8px rgba(89, 220, 255, .8),
+        inset 0 0 40px rgba(89, 220, 255, .18);
+    position: relative;
     transition: box-shadow .3s ease;
 }
 
@@ -8649,8 +8693,8 @@ body::after {
     position: absolute;
     inset: 12px;
     border-radius: 50%;
-    border: 1px dashed rgba(47, 200, 255, .45);
-    animation: rx-spin 26s linear infinite;
+    border: 1px dashed rgba(89, 220, 255, .45);
+    animation: mc-spin 26s linear infinite;
 }
 .placeholder-icon::after {
     content: '';
@@ -8658,341 +8702,520 @@ body::after {
     inset: -14px;
     border-radius: 50%;
     background: none;
-    filter: none;
-    border: 1px solid rgba(47, 200, 255, .14);
-    box-shadow: 0 0 30px -6px rgba(47, 200, 255, .5);
-    animation: rx-spin 60s linear infinite reverse;
+    border: 1px solid rgba(89, 220, 255, .14);
+    box-shadow: 0 0 30px -6px rgba(89, 220, 255, .5);
+    animation: mc-spin 60s linear infinite reverse;
 }
 
 .placeholder-icon svg {
     width: 56px;
     height: 56px;
-    stroke: var(--rx-cyan-soft);
-    filter: drop-shadow(0 0 10px rgba(47, 200, 255, .85));
-    opacity: 1;
+    stroke: var(--mc-ice-soft);
+    fill: none;
+    filter: drop-shadow(0 0 10px rgba(89, 220, 255, .85));
 }
 
 .stream-placeholder:hover .placeholder-icon {
-    transform: none;
-    border-color: rgba(139, 230, 255, .8);
+    border-color: rgba(155, 234, 255, .8);
     box-shadow:
-        0 0 0 1px rgba(139, 230, 255, .4),
-        0 0 60px -6px rgba(47, 200, 255, .95),
-        inset 0 0 44px rgba(47, 200, 255, .24);
+        0 0 0 1px rgba(155, 234, 255, .4),
+        0 0 60px -6px rgba(89, 220, 255, .95),
+        inset 0 0 44px rgba(89, 220, 255, .24);
 }
-.stream-placeholder:hover .placeholder-icon svg { transform: none; }
 
 .placeholder-text {
     font-size: 25px;
     font-weight: 800;
-    letter-spacing: .02em;
+    letter-spacing: .03em;
+    text-transform: uppercase;
     color: #fff;
     margin-bottom: 8px;
     background: none;
     -webkit-text-fill-color: currentColor;
-    text-shadow: 0 0 22px rgba(47, 200, 255, .55), 0 0 44px rgba(47, 200, 255, .25);
+    text-shadow: 0 0 22px rgba(89, 220, 255, .55), 0 0 44px rgba(89, 220, 255, .25);
 }
 
 .placeholder-subtext {
     font-size: 13.5px;
     line-height: 1.55;
     max-width: 340px;
-    color: var(--rx-text-dim);
+    color: var(--mc-dim);
 }
 
 /* The instrument strip under the stage. */
 .screenshot-meta {
     margin-top: 10px;
     padding: 9px 14px;
-    background: linear-gradient(180deg, rgba(47, 200, 255, .07), rgba(4, 8, 14, .85));
-    border: 1px solid rgba(47, 200, 255, .22);
+    background: linear-gradient(180deg, rgba(89, 220, 255, .07), rgba(4, 7, 12, .85));
+    border: 1px solid var(--mc-line-ice);
     border-radius: 0;
     clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
     font-size: 12px;
     font-weight: 700;
-    color: var(--rx-cyan-soft);
-    letter-spacing: .02em;
+    color: var(--mc-ice-soft);
+    letter-spacing: .03em;
 }
 .screenshot-meta span::before {
     width: 7px; height: 7px;
-    background: var(--rx-cyan);
-    box-shadow: 0 0 10px var(--rx-cyan);
-    opacity: 1;
+    background: var(--mc-ice);
+    box-shadow: 0 0 10px var(--mc-ice);
 }
-.screenshot-meta span:last-child::before { background: var(--rx-cyan); box-shadow: 0 0 10px var(--rx-cyan); }
+.screenshot-meta span:last-child::before { background: var(--mc-amber); box-shadow: 0 0 10px var(--mc-amber); }
 
 /* The maximise hint keeps its function, takes the palette. */
 .stream-max-hint {
-    border: 1px solid rgba(255, 45, 63, .35);
-    border-radius: 3px;
-    background: linear-gradient(180deg, rgba(20, 26, 38, .96), rgba(6, 8, 14, .96));
-    box-shadow: 0 0 26px -10px rgba(255, 45, 63, .9);
+    border: 1px solid var(--mc-line-amber);
+    border-radius: 0;
+    background: linear-gradient(180deg, rgba(18, 26, 38, .96), rgba(6, 9, 14, .96));
+    box-shadow: 0 0 26px -10px rgba(255, 176, 46, .9);
 }
 .max-hint-title { color: #fff; }
-.max-hint-sub { color: var(--rx-text-dim); }
+.max-hint-sub { color: var(--mc-dim); }
 
 .stream-overlay .stream-status {
-    background: rgba(6, 12, 10, .82);
-    border: 1px solid rgba(41, 217, 119, .5);
+    background: rgba(5, 14, 10, .82);
+    border: 1px solid rgba(61, 255, 160, .5);
     border-radius: 999px;
-    box-shadow: 0 0 18px -6px rgba(41, 217, 119, .9);
+    box-shadow: 0 0 18px -6px rgba(61, 255, 160, .9);
 }
-.stream-status-text { color: #bdffd6; letter-spacing: .14em; }
-.stream-status-dot { background: var(--rx-green); box-shadow: 0 0 10px var(--rx-green); }
+.stream-status-text { color: #c8ffe0; letter-spacing: .16em; }
+.stream-status-dot { background: var(--mc-green); box-shadow: 0 0 10px var(--mc-green); animation: mc-blink 1.6s ease-in-out infinite; }
 
 .stream-fs-btn {
-    border: 1px solid rgba(255, 45, 63, .4);
-    background: rgba(6, 8, 14, .78);
-    border-radius: 3px;
-    color: #ffd9dd;
-    box-shadow: 0 0 18px -8px rgba(255, 45, 63, .9);
+    border: 1px solid var(--mc-line-amber);
+    background: rgba(6, 9, 14, .78);
+    border-radius: 0;
+    color: #ffe9c4;
+    clip-path: var(--mc-key-cut);
+    box-shadow: 0 0 18px -8px rgba(255, 176, 46, .9);
 }
-.stream-fs-btn:hover { background: rgba(255, 45, 63, .18); }
+.stream-fs-btn:hover { background: rgba(255, 176, 46, .18); }
 
-/* The stage is sized by a subtraction that was tuned for a 44px header. The
-   cockpit header is 58px and the nav is a hair taller, so the constant moves
-   with it - otherwise the readout strip sits below the fold. */
-#display-sub-live .screenshot-panel { height: calc(100vh - 256px); }
+/* The stage is sized by a subtraction tuned for the 62px deck and the 51px
+   tab rail, so the readout strip stays above the fold. */
+#display-sub-live .screenshot-panel { height: calc(100vh - 272px); }
 
-/* --- 7b. The sign-in sheet, in the same language ------------------------- */
-.login-overlay {
+/* --- 7b. Every modal is a console dialog ----------------------------------
+   Sign-in sheet, capture dialog, archive preview, KLG dialog, profile
+   editor, the LPV bind/pick/edit dialogs and JS-injected overlays all speak
+   the same language: dark panel, bevel cut, amber corner brackets, a header
+   strip with a blinking lamp, and chunky lit keys in the footer. */
+.login-overlay,
+.pcm-modal-overlay,
+.klg-modal-overlay,
+.profile-modal-overlay,
+.lpv-modal-overlay,
+.lpv-bind-overlay,
+.lpv-device-overlay,
+.lpv-guard-overlay,
+.profiles-fullscreen-modal,
+#lpv-modal-host > * {
     background:
-        radial-gradient(900px 520px at 50% 118%, rgba(255, 45, 63, .18), transparent 62%),
-        rgba(3, 4, 8, .94);
+        repeating-linear-gradient(0deg, rgba(255, 255, 255, .02) 0 1px, transparent 1px 3px),
+        radial-gradient(900px 520px at 50% 118%, rgba(255, 176, 46, .12), transparent 62%),
+        rgba(2, 6, 8, .82);
+    backdrop-filter: blur(7px) saturate(1.15);
+    -webkit-backdrop-filter: blur(7px) saturate(1.15);
     z-index: 9000;
 }
-.login-modal {
-    background: linear-gradient(180deg, #0b0e17 0%, #06080e 100%);
-    border: 1px solid var(--rx-red-line);
-    border-radius: 0;
-    clip-path: var(--rx-cut);
-    box-shadow:
-        0 0 0 1px rgba(255, 45, 63, .14),
-        0 0 60px -18px rgba(255, 45, 63, .95),
-        inset 0 0 50px -26px rgba(255, 45, 63, .6);
+
+/* The PCM status chip is a small floating console pill, not a scrim. */
+.pcm-overlay {
+    background: linear-gradient(180deg, rgba(16, 26, 38, .92), rgba(6, 10, 16, .92));
+    border: 1px solid var(--mc-line-amber);
+    border-radius: 999px;
+    box-shadow: 0 0 18px -8px rgba(255, 176, 46, .8);
+    color: var(--mc-text);
 }
+
+.login-modal, .pcm-modal, .klg-modal,
+.profile-modal, .profile-modal-content,
+.modal-content, .lpv-modal, .lpv-bind-modal,
+.lpv-edit-modal, .lpv-pick-modal, .lpv-vals-modal {
+    position: relative;
+    background: linear-gradient(180deg, var(--mc-panel-2) 0%, var(--mc-panel) 55%, var(--mc-ink) 100%);
+    border: 1px solid var(--mc-line-amber);
+    border-radius: 0;
+    clip-path: var(--mc-cut);
+    box-shadow:
+        0 0 0 1px rgba(255, 176, 46, .14),
+        0 0 60px -16px rgba(255, 176, 46, .85),
+        0 40px 80px -30px rgba(0, 0, 0, .9),
+        inset 0 0 50px -26px rgba(255, 176, 46, .5);
+}
+
+/* Corner brackets on every dialog. */
+.login-modal::before, .pcm-modal::before, .klg-modal::before,
+.profile-modal::before, .profile-modal-content::before,
+.modal-content::before, .lpv-modal::before, .lpv-bind-modal::before,
+.lpv-edit-modal::before, .lpv-pick-modal::before, .lpv-vals-modal::before {
+    content: '';
+    position: absolute;
+    top: 7px; left: 7px;
+    width: 22px; height: 22px;
+    pointer-events: none;
+    border-top: 1px solid var(--mc-amber);
+    border-left: 1px solid var(--mc-amber);
+    filter: drop-shadow(0 0 5px rgba(255, 176, 46, .8));
+    z-index: 5;
+}
+.login-modal::after, .pcm-modal::after, .klg-modal::after,
+.profile-modal::after, .profile-modal-content::after,
+.modal-content::after, .lpv-modal::after, .lpv-bind-modal::after,
+.lpv-edit-modal::after, .lpv-pick-modal::after, .lpv-vals-modal::after {
+    content: '';
+    position: absolute;
+    bottom: 7px; right: 7px;
+    width: 22px; height: 22px;
+    pointer-events: none;
+    border-bottom: 1px solid var(--mc-amber);
+    border-right: 1px solid var(--mc-amber);
+    filter: drop-shadow(0 0 5px rgba(255, 176, 46, .8));
+    z-index: 5;
+}
+
+/* Header strips carry the dialog title and a blinking lamp. */
+.pcm-modal-header, .klg-modal-header, .lpv-modal-header,
+.lpv-bind-head, .profile-modal-header, .login-logo {
+    border-bottom: 1px solid var(--mc-line-amber);
+    background: linear-gradient(180deg, rgba(255, 176, 46, .10), transparent);
+}
+.pcm-modal-title, .klg-modal-title-section, .lpv-modal-title,
+.lpv-bind-title, .profile-modal-title, .login-title {
+    font-weight: 800;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    color: #ffe9c4;
+    text-shadow: 0 0 14px rgba(255, 176, 46, .55);
+}
+.pcm-modal-title::before, .klg-modal-title-section::before,
+.lpv-modal-title::before, .lpv-bind-title::before, .profile-modal-title::before {
+    content: '';
+    display: inline-block;
+    width: 8px; height: 8px;
+    margin-right: 9px;
+    border-radius: 50%;
+    background: var(--mc-hot);
+    box-shadow: 0 0 10px var(--mc-hot);
+    animation: mc-blink 1.8s ease-in-out infinite;
+}
+.pcm-modal-title svg, .klg-modal-icon, .lpv-bind-title svg { color: var(--mc-amber); }
+
+/* Close keys and ghost keys. */
+.pcm-modal-close, .klg-modal-close, .lpv-modal-close,
+.profile-modal-close, .toast-close {
+    border: 1px solid var(--mc-line);
+    background: transparent;
+    color: var(--mc-dim);
+    border-radius: 0;
+}
+.pcm-modal-close:hover, .klg-modal-close:hover, .lpv-modal-close:hover,
+.profile-modal-close:hover, .toast-close:hover {
+    color: #fff;
+    border-color: var(--mc-hot);
+    box-shadow: 0 0 14px -4px rgba(255, 90, 42, .9);
+}
+
+/* Footers and the keys inside them. */
+.pcm-modal-footer, .klg-modal-footer, .lpv-modal-footer,
+.lpv-bind-foot, .klg-modal-actions {
+    border-top: 1px solid var(--mc-line);
+    background: linear-gradient(0deg, rgba(255, 176, 46, .06), transparent);
+    gap: 10px;
+}
+
+.pcm-modal-btn, .lpv-btn, .logs-btn, .file-toolbar-btn,
+.access-btn, .profile-action-btn, .dm-btn, .btn {
+    height: 32px;
+    padding: 0 14px;
+    font-size: 11.5px;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--mc-text);
+    background: linear-gradient(180deg, #182231 0%, #0b1119 100%);
+    border: 1px solid var(--mc-line);
+    border-radius: 0;
+    clip-path: var(--mc-key-cut);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+    transition: border-color .15s ease, box-shadow .15s ease, background .15s ease, color .15s ease;
+}
+.pcm-modal-btn svg, .lpv-btn svg, .btn svg { width: 13px; height: 13px; fill: currentColor; }
+.pcm-modal-btn:hover, .lpv-btn:hover, .logs-btn:hover, .file-toolbar-btn:hover,
+.access-btn:hover, .profile-action-btn:hover, .dm-btn:hover, .btn:hover {
+    color: #fff;
+    border-color: var(--mc-line-amber);
+    background: linear-gradient(180deg, #232f42 0%, #121a26 100%);
+    box-shadow: 0 0 18px -8px rgba(255, 176, 46, .9), inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+.pcm-modal-btn:active, .lpv-btn:active, .btn:active { transform: translateY(1px); }
+
+/* The primary action is the lit amber key. */
+.pcm-modal-btn.primary, .lpv-btn.primary, .btn.primary {
+    color: #1a1206;
+    background: linear-gradient(180deg, #ffc25e 0%, #e08f00 100%);
+    border-color: rgba(255, 217, 138, .9);
+    box-shadow: 0 0 22px -8px rgba(255, 176, 46, 1), inset 0 1px 0 rgba(255, 255, 255, .5);
+    text-shadow: 0 1px 0 rgba(255, 255, 255, .3);
+}
+.pcm-modal-btn.primary:hover, .lpv-btn.primary:hover, .btn.primary:hover { filter: brightness(1.08); color: #1a1206; }
+
+.btn.danger, .lpv-btn.danger {
+    color: #ffece4;
+    background: linear-gradient(180deg, #e04a1d 0%, #8a1c05 100%);
+    border-color: rgba(255, 90, 42, .65);
+    box-shadow: 0 0 18px -8px rgba(255, 90, 42, .9), inset 0 1px 0 rgba(255, 255, 255, .18);
+}
+
+/* Dialog bodies and the fields inside them. */
+.pcm-modal-body, .klg-modal-body, .lpv-modal-body { color: var(--mc-dim); }
+.pcm-modal-hint {
+    border: 1px dashed var(--mc-line-amber);
+    background: rgba(255, 176, 46, .05);
+    color: var(--mc-muted);
+    border-radius: 0;
+}
+.pcm-modal-hint code { color: var(--mc-amber-hot); }
+
+.pcm-modal-input, .lpv-input, .url-input-small, .form-input,
+input[type="text"], input[type="password"], input[type="number"],
+input[type="search"], input[type="url"], select, textarea {
+    background: var(--mc-well);
+    border: 1px solid var(--mc-line);
+    border-radius: 0;
+    color: var(--mc-text);
+    box-shadow: inset 0 0 16px rgba(0, 0, 0, .75);
+    transition: border-color .15s ease, box-shadow .15s ease;
+}
+.pcm-modal-input:focus, .lpv-input:focus, .url-input-small:focus,
+.form-input:focus, input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--mc-amber);
+    box-shadow: 0 0 0 1px rgba(255, 176, 46, .4), 0 0 20px -6px rgba(255, 176, 46, .9), inset 0 0 16px rgba(0, 0, 0, .75);
+}
+input::placeholder, textarea::placeholder { color: var(--mc-muted); }
+.url-input-group { gap: 6px; }
+.form-label { color: var(--mc-muted); text-transform: uppercase; letter-spacing: .08em; font-size: 11px; font-weight: 700; }
+
+/* The sign-in sheet. */
+.login-modal { max-width: 400px; }
 .login-title {
-    color: #ffe9ec;
-    font-style: italic;
-    text-shadow: 0 0 18px rgba(255, 45, 63, .5);
+    color: #ffe9c4;
+    text-shadow: 0 0 18px rgba(255, 176, 46, .5);
 }
 .login-btn {
-    color: #fff;
-    background: linear-gradient(180deg, #ff3d4e 0%, #a80f1e 100%);
-    border: 1px solid rgba(255, 120, 130, .8);
+    color: #1a1206;
+    background: linear-gradient(180deg, #ffc25e 0%, #e08f00 100%);
+    border: 1px solid rgba(255, 217, 138, .9);
     border-radius: 0;
-    clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
-    box-shadow: 0 0 26px -8px rgba(255, 45, 63, 1), inset 0 1px 0 rgba(255, 255, 255, .28);
-    font-style: italic;
-    letter-spacing: .04em;
+    clip-path: var(--mc-key-cut);
+    box-shadow: 0 0 26px -8px rgba(255, 176, 46, 1), inset 0 1px 0 rgba(255, 255, 255, .4);
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
 }
 .login-btn:hover { filter: brightness(1.1); }
+.login-error { color: var(--mc-hot); text-shadow: 0 0 10px rgba(255, 90, 42, .6); }
+.login-server { color: var(--mc-muted); }
+#loginServerHost {
+    border: 1px solid var(--mc-line);
+    background: var(--mc-well);
+    color: var(--mc-ice);
+    border-radius: 0;
+}
+
+/* Capacity warning strip and toasts: small console chips. */
+.capacity-alert {
+    border: 1px solid rgba(255, 90, 42, .5);
+    background: linear-gradient(180deg, rgba(255, 90, 42, .16), rgba(60, 12, 2, .35));
+    border-radius: 0;
+    clip-path: var(--mc-key-cut);
+    box-shadow: 0 0 20px -10px rgba(255, 90, 42, .9);
+}
+.alert-icon { color: var(--mc-hot); filter: drop-shadow(0 0 8px rgba(255, 90, 42, .8)); }
+.alert-title { color: #ffe9e2; letter-spacing: .06em; text-transform: uppercase; }
+.alert-message { color: var(--mc-dim); }
+
+.toast-stack { z-index: 9500; }
+.toast {
+    background: linear-gradient(180deg, var(--mc-panel-2), var(--mc-panel));
+    border: 1px solid var(--mc-line-amber);
+    border-left: 3px solid var(--mc-amber);
+    border-radius: 0;
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    box-shadow: 0 0 24px -10px rgba(255, 176, 46, .9), 0 18px 40px -20px rgba(0, 0, 0, .9);
+    color: var(--mc-text);
+}
+.toast-icon { fill: var(--mc-amber); filter: drop-shadow(0 0 6px rgba(255, 176, 46, .8)); }
+
+/* Drawer scrim between the rails and the content on small screens. */
+.drawer-scrim {
+    background: rgba(2, 6, 8, .72);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
 
 /* --- 8. Right rail: instruments ------------------------------------------ */
 .right-sidebar {
     background:
-        linear-gradient(180deg, rgba(255, 45, 63, .06) 0%, transparent 30%),
-        linear-gradient(180deg, #080a11 0%, #05070c 100%);
+        linear-gradient(180deg, rgba(89, 220, 255, .05) 0%, transparent 30%),
+        linear-gradient(180deg, #070c12 0%, #04070b 100%);
     z-index: 1;
-    border-left: 1px solid var(--rx-red-line);
-    box-shadow: -12px 0 34px -28px rgba(255, 45, 63, .8), inset 1px 0 0 rgba(255, 45, 63, .12);
+    border-left: 1px solid var(--mc-line-ice);
+    box-shadow: -12px 0 34px -28px rgba(89, 220, 255, .8), inset 1px 0 0 rgba(89, 220, 255, .10);
     padding: 14px 10px 16px;
 }
 
 .detail-section {
-    border: 1px solid rgba(255, 45, 63, .18);
+    border: 1px solid var(--mc-line);
     background: linear-gradient(180deg, rgba(255, 255, 255, .025), rgba(0, 0, 0, .25));
     padding: 4px 10px;
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    clip-path: var(--mc-key-cut);
 }
 
 .detail-row {
     padding: 8px 0;
-    border-bottom: 1px dashed rgba(255, 45, 63, .22);
+    border-bottom: 1px dashed var(--mc-line);
 }
 .detail-row:last-child { border-bottom: none; }
 
 .detail-label {
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--rx-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--mc-muted);
 }
 .detail-value {
     font-size: 12px;
     font-weight: 700;
-    color: #eef3ff;
+    color: var(--mc-text);
 }
 
-/* --- 9. Controls --------------------------------------------------------- */
-.btn {
-    height: 30px;
-    padding: 0 12px;
-    font-size: 12px;
-    font-weight: 700;
-    color: #e4e9f7;
-    background: linear-gradient(180deg, #161c29 0%, #0a0e16 100%);
-    border: 1px solid rgba(255, 45, 63, .3);
-    border-radius: 0;
-    clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
-    transition: border-color .15s ease, box-shadow .15s ease, background .15s ease, color .15s ease;
-}
-.btn svg { width: 13px; height: 13px; fill: currentColor; }
-.btn:hover {
-    color: #fff;
-    border-color: rgba(255, 45, 63, .65);
-    background: linear-gradient(180deg, #232a3b 0%, #121724 100%);
-    box-shadow: 0 0 18px -8px rgba(255, 45, 63, .9), inset 0 1px 0 rgba(255, 255, 255, .1);
-}
-.btn:active { transform: translateY(1px); }
-
-.btn.primary {
-    color: #fff;
-    background: linear-gradient(180deg, #ff3d4e 0%, #a80f1e 100%);
-    border-color: rgba(255, 120, 130, .85);
-    box-shadow: 0 0 22px -8px rgba(255, 45, 63, 1), inset 0 1px 0 rgba(255, 255, 255, .28);
-}
-.btn.primary:hover { filter: brightness(1.08); }
-
-.button-group { gap: 7px; }
-
-.url-input-small, .form-input, input[type="text"], input[type="password"],
-input[type="number"], input[type="search"], select, textarea {
-    background: #06080e;
-    border: 1px solid rgba(255, 45, 63, .28);
-    border-radius: 0;
-    color: #e9efff;
-    box-shadow: inset 0 0 16px rgba(0, 0, 0, .8);
-    transition: border-color .15s ease, box-shadow .15s ease;
-}
-.url-input-small:focus, .form-input:focus, input:focus, select:focus, textarea:focus {
-    outline: none;
-    border-color: var(--rx-red);
-    box-shadow: 0 0 0 1px rgba(255, 45, 63, .35), 0 0 20px -6px rgba(255, 45, 63, .9), inset 0 0 16px rgba(0, 0, 0, .8);
-}
-input::placeholder, textarea::placeholder { color: #5c6478; }
-
-.url-input-group { gap: 6px; }
-
-/* Panels shared by the other tabs get the same plating, so the skin does not
-   stop at the tab the reference happens to show. */
+/* --- 9. Panels shared by the other tabs ---------------------------------- */
 .panel, .stats-card, .card, .profiles-container, .settings-section,
-.modal-content, .profile-modal, .lpv-card, .klg-card {
-    background: linear-gradient(180deg, #0b0e17 0%, #06080e 100%);
-    border: 1px solid rgba(255, 45, 63, .2);
+.modal-content, .profile-modal, .lpv-card, .klg-card, .dm-card, .graph-card,
+.lpv-panel, .monitor-stat-card, .settings-group {
+    background: linear-gradient(180deg, var(--mc-panel-2) 0%, var(--mc-panel) 100%);
+    border: 1px solid var(--mc-line);
     border-radius: 0;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045);
 }
-.panel-title { color: #ffe9ec; letter-spacing: .01em; }
+.panel-title, .lpv-panel-title, .tgbot-section-title, .lpv-section-title,
+.klg-section-title, .logs-title, .graph-title {
+    color: #ffe9c4;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    font-weight: 800;
+    text-shadow: 0 0 12px rgba(255, 176, 46, .4);
+}
 
-/* Scrollbars ------------------------------------------------------------- */
-* { scrollbar-color: rgba(255, 45, 63, .5) rgba(0, 0, 0, .4); scrollbar-width: thin; }
+/* Filter pills and subtab-like rows. */
+.lpv-filter-pill, .dm-row {
+    border: 1px solid var(--mc-line);
+    border-radius: 0;
+    background: var(--mc-well);
+}
+.lpv-filter-pill[aria-pressed="true"], .lpv-filter-pill.active {
+    border-color: var(--mc-line-amber);
+    color: var(--mc-amber-hot);
+    background: rgba(255, 176, 46, .12);
+    box-shadow: 0 0 14px -6px rgba(255, 176, 46, .8);
+}
+
+/* --- 10. Scrollbars ------------------------------------------------------- */
+* { scrollbar-color: rgba(255, 176, 46, .45) rgba(0, 0, 0, .4); scrollbar-width: thin; }
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-track { background: rgba(0, 0, 0, .45); }
 ::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, rgba(255, 45, 63, .8), rgba(120, 8, 18, .9));
+    background: linear-gradient(180deg, rgba(255, 176, 46, .75), rgba(122, 77, 0, .9));
     border-radius: 0;
 }
-::-webkit-scrollbar-thumb:hover { background: var(--rx-red); }
-
-/* --- 10. Decorative art: the sentinel ------------------------------------ */
-/* Iron Man, standing in the corner of the cockpit the way the reference plate
-   has him: red-and-gold plating, a lit arc reactor, the palm flare up, feet
-   running off the bottom edge. Drawn here as inline SVG - about eighty paths,
-   eight gradients, no raster and no fetch - so he costs one request fewer than
-   any picture would and survives a filtered network.
-
-   He is decoration and nothing else: aria-hidden, pointer-events:none, and the
-   art carries no information the rails do not. */
-/* The box matches the artwork's own ratio (240:540), so nothing is
-   letterboxed: he stands as tall as the rail allows and takes the corner. */
-.lx-sentinel {
-    position: fixed;
-    left: 0;
-    bottom: 0;
-    height: min(74vh, 660px);
-    width: calc(min(74vh, 660px) * 0.4444);
-    z-index: 2;
-    pointer-events: none;
-    opacity: .97;
-    filter:
-        drop-shadow(0 0 30px rgba(255, 45, 63, .38))
-        drop-shadow(0 0 64px rgba(47, 200, 255, .16));
-}
-/* `meet` with xMinYMax: the whole figure scales to the box and stands on the
-   bottom-left corner. Nothing is cropped but the plate's own crop line. */
-.lx-sentinel svg { width: 100%; height: 100%; display: block; }
+::-webkit-scrollbar-thumb:hover { background: var(--mc-amber); }
 
 /* --- 11. Motion ---------------------------------------------------------- */
-@keyframes rx-spin { to { transform: rotate(360deg); } }
-@keyframes rx-pulse {
-    0%, 100% { box-shadow: 0 0 0 1px rgba(139, 230, 255, .55), 0 0 14px rgba(47, 200, 255, .55), inset 0 0 10px rgba(255, 255, 255, .3); }
-    50%      { box-shadow: 0 0 0 1px rgba(139, 230, 255, .9), 0 0 26px rgba(47, 200, 255, .95), inset 0 0 12px rgba(255, 255, 255, .45); }
+@keyframes mc-spin { to { transform: rotate(360deg); } }
+@keyframes mc-sweep { to { transform: rotate(360deg); } }
+@keyframes mc-blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@keyframes mc-pulse {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(255, 217, 138, .6), 0 0 14px rgba(255, 176, 46, .55), inset 0 0 10px rgba(255, 255, 255, .3); }
+    50%      { box-shadow: 0 0 0 1px rgba(255, 217, 138, .95), 0 0 28px rgba(255, 176, 46, .95), inset 0 0 12px rgba(255, 255, 255, .45); }
 }
-@keyframes rx-blink { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
 @media (prefers-reduced-motion: reduce) {
     .logo-icon, .logo-icon::before, .placeholder-icon::before,
-    .placeholder-icon::after, #screenshot-status::before {
+    .placeholder-icon::after, #screenshot-status::before,
+    .stats-item .status-dot, .stream-status-dot,
+    .pcm-modal-title::before, .klg-modal-title-section::before,
+    .lpv-modal-title::before, .lpv-bind-title::before, .profile-modal-title::before,
+    .mc-radar .mc-sweep, .mc-radar .mc-blip {
         animation: none !important;
     }
-    .top-tab, .display-subtab, .btn, .client-card { transition: none !important; }
+    .top-tab, .display-subtab, .lpv-subtab, .btn, .client-card,
+    .pcm-modal-btn, .lpv-btn { transition: none !important; }
 }
 
-/* --- 12. Light theme: a daylight cockpit, not a broken one --------------- */
+/* --- 12. Light theme: a daylight ops room, not a broken one -------------- */
 [data-theme="light"] .header {
-    background: linear-gradient(180deg, #ffffff 0%, #f4f6fb 100%);
-    box-shadow: 0 1px 0 rgba(212, 9, 28, .25), 0 10px 26px -22px rgba(15, 20, 32, .5);
+    background: linear-gradient(180deg, #ffffff 0%, #f2f5f9 100%);
+    box-shadow: 0 1px 0 rgba(168, 98, 0, .25), 0 10px 26px -22px rgba(15, 25, 40, .5);
 }
-[data-theme="light"] .logo-text { color: #10141f; text-shadow: 0 0 18px rgba(212, 9, 28, .25); }
+[data-theme="light"] .header .logo-text { color: #0e1620; text-shadow: 0 0 18px rgba(168, 98, 0, .25); -webkit-text-fill-color: #0e1620; }
 [data-theme="light"] .sidebar,
-[data-theme="light"] .right-sidebar { background: linear-gradient(180deg, #ffffff, #f6f8fc); }
+[data-theme="light"] .right-sidebar { background: linear-gradient(180deg, #ffffff, #f4f7fa); }
 [data-theme="light"] .sidebar-title {
-    background: linear-gradient(180deg, rgba(212, 9, 28, .12), rgba(212, 9, 28, .03));
-    color: #8c0714;
+    background: linear-gradient(180deg, rgba(168, 98, 0, .12), rgba(168, 98, 0, .03));
+    color: #6e4300;
     text-shadow: none;
 }
 [data-theme="light"] .top-tabs { background: #ffffff; }
 [data-theme="light"] .top-tab {
-    background: linear-gradient(180deg, #ffffff, #f1f4fa);
-    color: #414a5f;
+    background: linear-gradient(180deg, #ffffff, #eef2f7);
+    color: #3d4a58;
 }
-[data-theme="light"] .top-tab:hover { background: #eef2f9; color: #0f1420; }
-[data-theme="light"] .top-tab.active { color: #fff; }
-[data-theme="light"] .display-subtab { background: linear-gradient(180deg, #ffffff, #f1f4fa); color: #414a5f; }
-[data-theme="light"] .screenshot-panel { background: linear-gradient(180deg, #ffffff, #f7f9fd); }
+[data-theme="light"] .top-tab:hover { background: #e8eef5; color: #0e1620; }
+[data-theme="light"] .top-tab.active { color: #fff; background: linear-gradient(180deg, #d98a1c, #a86200); }
+[data-theme="light"] .display-subtab, [data-theme="light"] .lpv-subtab { background: linear-gradient(180deg, #ffffff, #eef2f7); color: #3d4a58; }
+[data-theme="light"] .screenshot-panel { background: linear-gradient(180deg, #ffffff, #f6f9fc); }
 [data-theme="light"] .screenshot-wrapper {
-    background: radial-gradient(600px 300px at 50% 42%, rgba(11, 127, 176, .10), transparent 70%), #eef2f8;
+    background: radial-gradient(600px 300px at 50% 42%, rgba(11, 126, 166, .10), transparent 70%), #e9eef4;
 }
 [data-theme="light"] .lx-stage {
     background-image:
-        radial-gradient(rgba(11, 127, 176, .22) 1px, transparent 1.3px),
-        radial-gradient(rgba(11, 127, 176, .10) 1px, transparent 1.3px);
+        radial-gradient(rgba(11, 126, 166, .22) 1px, transparent 1.3px),
+        radial-gradient(rgba(11, 126, 166, .10) 1px, transparent 1.3px);
 }
-[data-theme="light"] .placeholder-text { color: #0f1420; text-shadow: none; }
-[data-theme="light"] .btn { background: linear-gradient(180deg, #ffffff, #f1f4fa); color: #1a2130; }
+[data-theme="light"] .placeholder-text { color: #0e1620; text-shadow: none; }
+[data-theme="light"] .btn,
+[data-theme="light"] .pcm-modal-btn,
+[data-theme="light"] .lpv-btn { background: linear-gradient(180deg, #ffffff, #eef2f7); color: #1a2130; }
+[data-theme="light"] .pcm-modal-input,
+[data-theme="light"] .lpv-input,
 [data-theme="light"] .url-input-small,
 [data-theme="light"] .form-input,
 [data-theme="light"] input[type="text"],
 [data-theme="light"] input[type="password"],
+[data-theme="light"] input[type="number"],
+[data-theme="light"] input[type="search"],
+[data-theme="light"] input[type="url"],
 [data-theme="light"] select,
-[data-theme="light"] textarea { background: #ffffff; color: #0f1420; box-shadow: none; }
-[data-theme="light"] .detail-value { color: #0f1420; }
-/* On white the figure needs a ground shadow rather than a glow, and a little
-   less presence: he is a plate of armour in daylight, not a lamp. */
-[data-theme="light"] .lx-sentinel {
-    opacity: .92;
-    filter: drop-shadow(12px 10px 26px rgba(18, 22, 34, .22)) drop-shadow(0 0 26px rgba(212, 9, 28, .18));
-}
+[data-theme="light"] textarea { background: #ffffff; color: #0e1620; box-shadow: none; }
+[data-theme="light"] .detail-value { color: #0e1620; }
+[data-theme="light"] .login-modal,
+[data-theme="light"] .pcm-modal,
+[data-theme="light"] .klg-modal,
+[data-theme="light"] .modal-content,
+[data-theme="light"] .lpv-modal,
+[data-theme="light"] .lpv-bind-modal { background: linear-gradient(180deg, #ffffff, #f4f7fa); }
 
 /* --- 13. Small screens ---------------------------------------------------- */
 @media (max-width: 1100px) {
-    .lx-sentinel { display: none; }
-    .header { height: 52px; padding: 0 10px; }
+    .mc-radar { display: none; }
+    .header { height: 54px; padding: 0 10px; }
     .logo-text { font-size: 20px; }
     .placeholder-icon { width: 122px; height: 122px; }
     .placeholder-text { font-size: 19px; }
-    .top-tab { height: 30px; padding: 0 11px; font-size: 11px; }
+    .top-tab { height: 30px; padding: 0 12px; font-size: 10px; }
     .main-content { padding: 0 8px 10px; }
 }
 @media (max-width: 760px) {
@@ -9001,6 +9224,8 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
     .placeholder-text { font-size: 17px; }
     .placeholder-subtext { font-size: 12px; }
     .lx-stage { opacity: .5; }
+    .top-tabs { padding: 6px 8px 7px; }
+    .top-tab { height: 28px; padding: 0 9px; }
 }
 
     </style>
@@ -9037,254 +9262,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
 
     
     <div class="main-app" id="mainApp">
-    <!-- Iron Man, standing at the foot of the rail as in the reference plate:
-         inline SVG only - no image request, no external asset - aria-hidden,
-         and it never takes a pointer event. -->
 
-    <div class="lx-sentinel" aria-hidden="true">
-        <svg viewBox="0 0 240 540" preserveAspectRatio="xMinYMax meet" xmlns="http://www.w3.org/2000/svg" focusable="false">
-          <defs>
-            <linearGradient id="imRed" x1=".15" y1="0" x2=".85" y2="1">
-              <stop offset="0" stop-color="#ff5a64"/>
-              <stop offset=".28" stop-color="#d91422"/>
-              <stop offset=".66" stop-color="#8e0a18"/>
-              <stop offset="1" stop-color="#43040c"/>
-            </linearGradient>
-            <linearGradient id="imRedSide" x1="1" y1="0" x2="0" y2=".6">
-              <stop offset="0" stop-color="#ff5a64"/>
-              <stop offset=".4" stop-color="#c0111f"/>
-              <stop offset="1" stop-color="#4d0610"/>
-            </linearGradient>
-            <linearGradient id="imRedDark" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#8b0b17"/>
-              <stop offset="1" stop-color="#26030a"/>
-            </linearGradient>
-            <linearGradient id="imGold" x1=".15" y1="0" x2=".85" y2="1">
-              <stop offset="0" stop-color="#fff6dc"/>
-              <stop offset=".28" stop-color="#ffd88f"/>
-              <stop offset=".6" stop-color="#d99b3c"/>
-              <stop offset="1" stop-color="#7a4e13"/>
-            </linearGradient>
-            <linearGradient id="imGoldDark" x1="0" y1="0" x2=".4" y2="1">
-              <stop offset="0" stop-color="#c9913a"/>
-              <stop offset="1" stop-color="#6a4310"/>
-            </linearGradient>
-            <linearGradient id="imSteel" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#39404f"/>
-              <stop offset="1" stop-color="#0a0d13"/>
-            </linearGradient>
-            <radialGradient id="imGlow" cx=".5" cy=".5" r=".5">
-              <stop offset="0" stop-color="#ffffff"/>
-              <stop offset=".2" stop-color="#d6f8ff"/>
-              <stop offset=".45" stop-color="#2fc8ff" stop-opacity=".9"/>
-              <stop offset="1" stop-color="#2fc8ff" stop-opacity="0"/>
-            </radialGradient>
-            <radialGradient id="imHalo" cx=".5" cy=".5" r=".5">
-              <stop offset="0" stop-color="#8fe8ff" stop-opacity=".5"/>
-              <stop offset=".5" stop-color="#2fc8ff" stop-opacity=".16"/>
-              <stop offset="1" stop-color="#2fc8ff" stop-opacity="0"/>
-            </radialGradient>
-          </defs>
-
-          <!-- ambient halo, as in the reference plate -->
-          <ellipse cx="120" cy="300" rx="126" ry="210" fill="url(#imHalo)" opacity=".5"/>
-
-          <!-- dark under-suit: any gap between plates reads as shadow, not paper -->
-          <g fill="#1b0206">
-            <path d="M120 112 L150 122 L164 152 L162 220 L144 250 L140 306 L148 350 L150 430 L156 470 L162 540 L78 540 L84 470 L90 430 L92 350 L100 306 L96 250 L78 220 L76 152 L90 122 Z"/>
-            <rect x="52" y="150" width="30" height="180" rx="14"/>
-            <rect x="158" y="150" width="30" height="180" rx="14"/>
-          </g>
-
-          <!-- ============================== legs ========================== -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M103 342 C89 360 82 392 85 424 L114 424 C114 396 115 366 117 342 Z" fill="url(#imRed)"/>
-            <path d="M137 342 C151 360 158 392 155 424 L126 424 C126 396 125 366 123 342 Z" fill="url(#imRedSide)"/>
-            <path d="M84 420 C84 409 91 402 100 402 C109 402 115 409 115 420 L115 446 L84 446 Z" fill="url(#imGold)"/>
-            <path d="M156 420 C156 409 149 402 140 402 C131 402 125 409 125 420 L125 446 L156 446 Z" fill="url(#imGold)"/>
-            <path d="M84 442 C80 470 80 494 84 518 L115 518 C117 494 117 470 115 442 Z" fill="url(#imRed)"/>
-            <path d="M156 442 C160 470 160 494 156 518 L125 518 C123 494 123 470 125 442 Z" fill="url(#imRedSide)"/>
-            <path d="M83 506 L114 506 L115 518 L83 518 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
-            <path d="M126 506 L157 506 L157 518 L126 518 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
-            <path d="M85 520 L113 520 L114 540 L76 540 C77 530 80 524 85 520 Z" fill="url(#imRed)"/>
-            <path d="M127 520 L155 520 C160 524 163 530 164 540 L126 540 Z" fill="url(#imRedSide)"/>
-            <path d="M92 448 L104 448 L105 496 L91 496 Z" fill="#ffffff" opacity=".07" stroke="none"/>
-            <path d="M136 448 L148 448 L149 496 L135 496 Z" fill="#ffffff" opacity=".05" stroke="none"/>
-          </g>
-
-          <!-- ============================== pelvis ======================== -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M96 296 C90 312 90 330 94 348 L146 348 C150 330 150 312 144 296 Z" fill="url(#imRed)"/>
-            <path d="M92 288 L148 288 L150 306 L90 306 Z" fill="url(#imRedDark)"/>
-            <path d="M110 289 L130 289 L131 305 L109 305 Z" fill="url(#imGold)"/>
-            <path d="M96 320 L144 320 L144 325 L96 325 Z" fill="#000" opacity=".4" stroke="none"/>
-            <path d="M120 330 L120 348" fill="none" stroke="#000" stroke-width="2" opacity=".45"/>
-          </g>
-
-          <!-- ============================== abdomen ======================= -->
-          <g stroke="#16040a" stroke-width="1.8" stroke-linejoin="round">
-            <path d="M98 240 L142 240 L146 274 L140 298 L100 298 L94 274 Z" fill="url(#imRedDark)"/>
-            <path d="M99 242 L141 242 L142 256 L98 256 Z" fill="url(#imRed)"/>
-            <path d="M98 259 L142 259 L143 273 L97 273 Z" fill="url(#imRed)"/>
-            <path d="M97 276 L143 276 L144 290 L96 290 Z" fill="url(#imRed)"/>
-            <path d="M120 242 L120 298" fill="none" stroke="#000" stroke-width="2" opacity=".4"/>
-          </g>
-
-          <!-- ============================== torso ========================= -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M120 122
-                     C99 122 83 129 75 143
-                     C67 157 67 181 73 201
-                     C79 220 91 234 101 242
-                     L139 242
-                     C149 234 161 220 167 201
-                     C173 181 173 157 165 143
-                     C157 129 141 122 120 122 Z" fill="url(#imRed)"/>
-
-            <path d="M120 128
-                     C112 128 106 138 105 152
-                     L105 190 C107 208 113 220 120 224
-                     C127 220 133 208 135 190
-                     L135 152 C134 138 128 128 120 128 Z" fill="url(#imGoldDark)"/>
-            <!-- red plates closing over the chassis -->
-            <path d="M105 150 C100 160 99 176 100 190 C101 200 104 208 107 214 L109 190 Z" fill="url(#imRed)" stroke="none"/>
-            <path d="M135 150 C140 160 141 176 140 190 C139 200 136 208 133 214 L131 190 Z" fill="url(#imRed)" stroke="none"/>
-
-            <path d="M78 152 C86 140 100 134 113 136 L113 158 C101 157 88 162 80 172 Z" fill="#ff6a72" opacity=".2" stroke="none"/>
-            <path d="M162 152 C154 140 140 134 127 136 L127 158 C139 157 152 162 160 172 Z" fill="#ff6a72" opacity=".2" stroke="none"/>
-            <path d="M80 186 C88 176 100 172 110 173" fill="none" stroke="#ff9aa2" stroke-width="1.4" opacity=".32"/>
-            <path d="M160 186 C152 176 140 172 130 173" fill="none" stroke="#ff9aa2" stroke-width="1.4" opacity=".32"/>
-
-            <path d="M100 116 C110 126 130 126 140 116 L148 130 C132 140 108 140 92 130 Z" fill="url(#imGold)"/>
-          </g>
-
-          <!-- ============================== arc reactor =================== -->
-          <g>
-            <circle cx="120" cy="178" r="27" fill="url(#imSteel)" stroke="#16040a" stroke-width="2"/>
-            <circle cx="120" cy="178" r="20" fill="#05121b" stroke="#9fe9ff" stroke-opacity=".55" stroke-width="1.6"/>
-            <circle cx="120" cy="178" r="19" fill="url(#imGlow)"/>
-            <circle cx="120" cy="178" r="7.5" fill="#ffffff"/>
-            <g stroke="#c9f6ff" stroke-width="1.6" opacity=".65" fill="none">
-              <path d="M120 160 L120 167"/><path d="M120 189 L120 196"/>
-              <path d="M102 178 L109 178"/><path d="M131 178 L138 178"/>
-            </g>
-          </g>
-
-          <!-- ============================== shoulders ===================== -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M86 122 C66 120 50 132 46 152 C42 172 50 190 66 195 C78 199 88 190 91 178 Z" fill="url(#imRed)"/>
-            <path d="M154 122 C174 120 190 132 194 152 C198 172 190 190 174 195 C162 199 152 190 149 178 Z" fill="url(#imRedSide)"/>
-            <path d="M49 150 C52 136 62 127 76 125 C60 131 52 140 49 150 Z" fill="#ffa0a7" opacity=".3" stroke="none"/>
-            <path d="M191 150 C188 136 178 127 164 125 C180 131 188 140 191 150 Z" fill="#ffa0a7" opacity=".18" stroke="none"/>
-            <path d="M46 168 C50 180 58 190 68 194" fill="none" stroke="#16040a" stroke-width="1.4" opacity=".5"/>
-            <path d="M194 168 C190 180 182 190 172 194" fill="none" stroke="#16040a" stroke-width="1.4" opacity=".5"/>
-            <path d="M58 158 C62 146 72 140 82 141" fill="none" stroke="#ff9aa2" stroke-width="1.6" opacity=".28"/>
-            <path d="M182 158 C178 146 168 140 158 141" fill="none" stroke="#ff9aa2" stroke-width="1.6" opacity=".28"/>
-          </g>
-
-          <!-- ============================== arms ========================== -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M74 174 C58 182 51 200 51 222 L54 252 L80 250 L79 214 C79 194 80 182 74 174 Z" fill="url(#imRed)"/>
-            <path d="M166 174 C182 182 189 200 189 222 L186 252 L160 250 L161 214 C161 194 160 182 166 174 Z" fill="url(#imRedSide)"/>
-            <path d="M53 250 L80 250 L81 268 L51 268 Z" fill="url(#imGoldDark)" stroke-width="1.6"/>
-            <path d="M160 250 L187 250 L189 268 L159 268 Z" fill="url(#imGoldDark)" stroke-width="1.6"/>
-            <path d="M51 266 L81 266 L85 322 L56 326 Z" fill="url(#imGold)"/>
-            <path d="M159 266 L189 266 L184 326 L155 322 Z" fill="url(#imGold)"/>
-            <path d="M58 276 L74 276 L76 312 L59 314 Z" fill="#fff8e6" opacity=".3" stroke="none"/>
-            <path d="M166 276 L182 276 L181 312 L164 314 Z" fill="#fff8e6" opacity=".18" stroke="none"/>
-            <path d="M55 318 L84 318 L86 332 L54 332 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
-            <path d="M156 318 L185 318 L186 332 L154 332 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
-            <path d="M56 328 C48 336 47 348 51 357 C55 366 67 368 75 360 C83 352 84 338 81 330 Z" fill="url(#imRed)"/>
-            <path d="M184 328 C192 336 193 348 189 357 C185 366 173 368 165 360 C157 352 156 338 159 330 Z" fill="url(#imRedSide)"/>
-            <g fill="#16040a" opacity=".45" stroke="none">
-              <path d="M56 344 L80 342 L80 345 L56 347 Z"/>
-              <path d="M160 342 L184 344 L184 347 L160 345 Z"/>
-              <path d="M58 352 L78 350 L78 353 L58 355 Z"/>
-              <path d="M162 350 L182 352 L182 355 L162 353 Z"/>
-            </g>
-            <g fill="#b3121f" stroke="#16040a" stroke-width="1" opacity=".95">
-              <path d="M62 330 L74 330 L74 340 L62 340 Z"/>
-              <path d="M170 330 L182 330 L182 340 L170 340 Z"/>
-            </g>
-          </g>
-
-          <!-- left palm repulsor, aimed forward -->
-          <g>
-            <ellipse cx="58" cy="344" rx="34" ry="34" fill="url(#imHalo)"/>
-            <ellipse cx="58" cy="344" rx="15" ry="15" fill="url(#imGlow)"/>
-            <circle cx="58" cy="344" r="5.5" fill="#ffffff"/>
-          </g>
-
-          <!-- neck, at body scale so the helmet keeps its own proportions -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M107 92 L133 92 L137 126 L103 126 Z" fill="url(#imSteel)"/>
-            <path d="M110 98 L130 98 L130 126 L110 126 Z" fill="#12161f" stroke="none"/>
-            <g stroke="#5c6b85" stroke-width="1.3" opacity=".5" fill="none">
-              <path d="M111 105 L129 105"/><path d="M110 112 L130 112"/>
-            </g>
-          </g>
-          <ellipse cx="120" cy="122" rx="30" ry="10" fill="#000" opacity=".45"/>
-
-          <!-- ============================== helmet ========================= -->
-          <g transform="translate(15.6 13.4) scale(0.8712 0.7826)">
-            <g stroke="#16040a" stroke-width="2.6" stroke-linejoin="round">
-              <!-- red shell: boxy skull, jaw tucked in -->
-              <path d="M120 6
-                       C99 6 86 20 85 44
-                       C84 58 85 72 88 82
-                       C91 95 98 108 106 116
-                       C110 120 115 122 120 122
-                       C125 122 130 120 134 116
-                       C142 108 149 95 152 82
-                       C155 72 156 58 155 44
-                       C154 20 141 6 120 6 Z" fill="url(#imRed)"/>
-              <path d="M95 26 C104 14 136 14 145 26 C136 19 104 19 95 26 Z" fill="#ffa0a7" opacity=".28" stroke="none"/>
-
-              <!-- gold faceplate: wide brow, cheek planes, blunt chin -->
-              <path d="M120 20
-                       C108 20 99 31 97 47
-                       L96 62
-                       C96 76 99 88 104 98
-                       C108 106 114 112 120 112
-                       C126 112 132 106 136 98
-                       C141 88 144 76 144 62
-                       L143 47
-                       C141 31 132 20 120 20 Z" fill="url(#imGold)"/>
-              <!-- brow band -->
-              <path d="M97 47 C107 38 133 38 143 47 L143 52 C133 43 107 43 97 52 Z" fill="#6f480f" opacity=".85" stroke="none"/>
-              <!-- cheek planes -->
-              <path d="M98 58 L104 60 L103 86 C100 78 98 68 98 58 Z" fill="#b9822f" opacity=".45" stroke="none"/>
-              <path d="M142 58 L136 60 L137 86 C140 78 142 68 142 58 Z" fill="#b9822f" opacity=".3" stroke="none"/>
-              <!-- chin seam, not a mouth -->
-              <path d="M104 96 L136 96" fill="none" stroke="#6f480f" stroke-width="2.4" opacity=".55"/>
-
-              <!-- eye slits: thin, angled up at the temples -->
-              <path d="M101 53 L114 60 L114 67 L102 60 Z" fill="#06202c" stroke-width="1.8"/>
-              <path d="M139 53 L126 60 L126 67 L138 60 Z" fill="#06202c" stroke-width="1.8"/>
-
-              <!-- mouth grille -->
-              <path d="M110 80 L130 80 L128 88 L112 88 Z" fill="#1a0206" stroke-width="1.6"/>
-            </g>
-
-            <!-- the eyes and the grille, lit -->
-            <path d="M102 55 L113 60 L113 65 L103 60 Z" fill="#d8f9ff"/>
-            <path d="M138 55 L127 60 L127 65 L137 60 Z" fill="#d8f9ff"/>
-            <ellipse cx="120" cy="59" rx="26" ry="13" fill="url(#imGlow)" opacity=".38"/>
-            <g fill="#4f93ab" opacity=".5">
-              <rect x="114" y="81.5" width="1.2" height="6"/>
-              <rect x="117.2" y="81.5" width="1.2" height="6"/>
-              <rect x="120.4" y="81.5" width="1.2" height="6"/>
-              <rect x="123.6" y="81.5" width="1.2" height="6"/>
-            </g>
-
-            <!-- ear discs -->
-            <g stroke="#16040a" stroke-width="1.9">
-              <circle cx="86" cy="62" r="5.5" fill="url(#imGoldDark)"/>
-              <circle cx="154" cy="62" r="5.5" fill="url(#imGoldDark)"/>
-            </g>
-          </g>
-        </svg>
-    </div>
 
         
         <header class="header">
@@ -9524,38 +9502,62 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                             <span id="screenshot-status" class="message-text">Waiting for client selection</span>
                         </div>
                         <div class="screenshot-wrapper">
-                            <!-- Blueprint stage: a dotted world map behind the
-                                 instrument ring. Drawn inline (a dot pattern
-                                 masked by continent shapes), so an empty
-                                 cockpit still reads as instrumented and the
+                            <!-- Console stage: a dot field, scanlines and a radar scope behind the
+                                 instrument ring. Drawn inline, so an empty
+                                 console still reads as instrumented and the
                                  panel fetches nothing. -->
                             <div class="lx-stage" aria-hidden="true"></div>
-                            <svg class="lx-map" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid slice"
+                            <svg class="mc-radar" viewBox="0 0 600 600" preserveAspectRatio="xMidYMid slice"
                                  aria-hidden="true" focusable="false">
                                 <defs>
-                                    <pattern id="lxDots" width="7" height="7" patternUnits="userSpaceOnUse">
-                                        <circle cx="1.6" cy="1.6" r="1.15" fill="#5fb8e8" fill-opacity=".75"/>
-                                    </pattern>
-                                    <mask id="lxLand">
-                                        <g fill="#fff">
-                                            <path d="M120 110 C160 78 232 66 300 80 C332 86 352 110 340 140 C330 166 300 170 280 190 C264 206 250 214 230 206 C205 196 196 176 180 180 C160 186 142 190 130 168 C118 146 108 128 120 110 Z"/>
-                                            <path d="M360 58 C390 50 422 56 426 78 C430 96 402 106 386 98 C370 90 352 70 360 58 Z"/>
-                                            <path d="M262 232 C286 224 312 236 318 262 C324 290 312 318 308 346 C304 372 300 402 292 418 C284 432 270 424 268 402 C266 372 258 344 254 316 C250 286 248 246 262 232 Z"/>
-                                            <path d="M470 96 C500 84 536 86 552 100 C566 112 556 128 540 132 C524 136 506 146 492 142 C476 138 462 120 470 96 Z"/>
-                                            <path d="M486 166 C520 158 560 160 578 176 C596 192 592 222 586 246 C580 272 566 300 552 320 C540 338 526 344 520 326 C512 300 500 272 492 244 C484 216 476 182 486 166 Z"/>
-                                            <path d="M566 90 C620 74 700 70 760 84 C812 96 836 120 830 146 C824 172 796 182 770 196 C744 210 716 208 692 200 C664 190 636 186 612 172 C588 158 566 128 566 90 Z"/>
-                                            <path d="M676 206 C696 200 712 208 714 226 C716 244 704 266 694 272 C686 276 678 260 674 240 C670 224 668 210 676 206 Z"/>
-                                            <ellipse cx="762" cy="242" rx="20" ry="13"/>
-                                            <ellipse cx="806" cy="266" rx="16" ry="9"/>
-                                            <ellipse cx="848" cy="150" rx="9" ry="18"/>
-                                            <path d="M812 318 C846 306 880 318 884 340 C888 362 866 378 842 376 C818 374 800 356 802 336 C803 326 806 321 812 318 Z"/>
-                                            <ellipse cx="902" cy="386" rx="10" ry="7"/>
-                                            <ellipse cx="846" cy="300" rx="7" ry="5"/>
-                                            <ellipse cx="512" cy="130" rx="5" ry="4"/>
-                                        </g>
-                                    </mask>
+                                    <radialGradient id="mcRadarGlow" cx=".5" cy=".5" r=".5">
+                                        <stop offset="0" stop-color="#59dcff" stop-opacity=".20"/>
+                                        <stop offset=".55" stop-color="#59dcff" stop-opacity=".07"/>
+                                        <stop offset="1" stop-color="#59dcff" stop-opacity="0"/>
+                                    </radialGradient>
+                                    <linearGradient id="mcSweepGrad" x1="0" y1="0" x2="1" y2="0">
+                                        <stop offset="0" stop-color="#3dffa0" stop-opacity="0"/>
+                                        <stop offset="1" stop-color="#3dffa0" stop-opacity=".32"/>
+                                    </linearGradient>
                                 </defs>
-                                <rect width="1000" height="500" fill="url(#lxDots)" mask="url(#lxLand)"/>
+                                <!-- scope glow -->
+                                <circle cx="300" cy="300" r="286" fill="url(#mcRadarGlow)"/>
+                                <!-- range rings + crosshairs -->
+                                <g class="mc-rings" fill="none" stroke="#59dcff" stroke-opacity=".28">
+                                    <circle cx="300" cy="300" r="280" stroke-width="1.4"/>
+                                    <circle cx="300" cy="300" r="210" stroke-width="1"/>
+                                    <circle cx="300" cy="300" r="140" stroke-width="1"/>
+                                    <circle cx="300" cy="300" r="70" stroke-width="1"/>
+                                    <path d="M300 14v572M14 300h572" stroke-width="1"/>
+                                    <path d="M300 300 497 103M300 300 497 497M300 300 103 497M300 300 103 103" stroke-opacity=".15"/>
+                                </g>
+                                <!-- amber degree ticks every 30 degrees -->
+                                <g class="mc-ticks" stroke="#ffb02e" stroke-opacity=".5" stroke-width="2">
+                                    <path d="M300 22v14"/>
+                                    <g transform="rotate(30 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(60 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(90 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(120 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(150 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(180 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(210 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(240 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(270 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(300 300 300)"><path d="M300 22v14"/></g>
+                                    <g transform="rotate(330 300 300)"><path d="M300 22v14"/></g>
+                                </g>
+                                <!-- the sweep -->
+                                <g class="mc-sweep">
+                                    <path d="M300 300 300 26A274 274 0 0 1 437 64Z" fill="url(#mcSweepGrad)"/>
+                                    <path d="M300 300 300 26" stroke="#3dffa0" stroke-width="2" stroke-opacity=".85"/>
+                                </g>
+                                <!-- the blips -->
+                                <circle cx="300" cy="300" r="5" fill="#ffb02e"/>
+                                <g fill="#ff5a2a">
+                                    <circle class="mc-blip" cx="410" cy="180" r="4"/>
+                                    <circle class="mc-blip b2" cx="180" cy="400" r="4"/>
+                                    <circle class="mc-blip b3" cx="360" cy="430" r="3.4"/>
+                                </g>
                             </svg>
                             <div class="stream-placeholder" id="stream-placeholder">
                                 <div class="placeholder-icon">
