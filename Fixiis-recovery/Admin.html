@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -8096,11 +8096,11 @@
 }
 
 [data-theme="light"] {
-    --mc-void:   #edf1f5;
+    --mc-void:   #ffffff;
     --mc-ink:    #ffffff;
     --mc-panel:  #ffffff;
-    --mc-panel-2:#f4f7fa;
-    --mc-well:   #e7edf2;
+    --mc-panel-2:#f7f8fa;
+    --mc-well:   #f2f4f7;
 
     --mc-amber:      #a86200;
     --mc-amber-hot:  #8a5200;
@@ -8110,32 +8110,32 @@
     --mc-ice-soft:   #0a6a8c;
     --mc-green:      #0c8a52;
 
-    --mc-text:  #0e1620;
-    --mc-dim:   #3d4a58;
-    --mc-muted: #6b7a89;
+    --mc-text:  #000000;
+    --mc-dim:   #333333;
+    --mc-muted: #666666;
 
-    --mc-line:       rgba(20, 40, 60, .14);
-    --mc-line-amber: rgba(168, 98, 0, .35);
-    --mc-line-ice:   rgba(11, 126, 166, .30);
+    --mc-line:       rgba(0, 0, 0, .16);
+    --mc-line-amber: rgba(168, 98, 0, .42);
+    --mc-line-ice:   rgba(11, 126, 166, .32);
 
-    --bg-primary:   #edf1f5;
+    --bg-primary:   #ffffff;
     --bg-secondary: #ffffff;
     --bg-card:      #ffffff;
-    --bg-hover:     #eef3f8;
-    --bg-input:     #fbfcfe;
-    --text-primary: #0e1620;
-    --text-secondary: #3d4a58;
-    --text-muted:   #6b7a89;
+    --bg-hover:     #eeeeee;
+    --bg-input:     #f5f5f5;
+    --text-primary: #000000;
+    --text-secondary: #333333;
+    --text-muted:   #666666;
     --accent:       #a86200;
     --accent-hover: #8a5200;
     --success:      #0c8a52;
     --warning:      #a86200;
     --danger:       #d63c0a;
-    --border:       rgba(168, 98, 0, .25);
-    --shadow:       rgba(15, 25, 40, .12);
+    --border:       rgba(0, 0, 0, .18);
+    --shadow:       rgba(0, 0, 0, .12);
     --gradient-start: #a86200;
     --gradient-end:   #6e4300;
-    --card-shadow:  0 18px 44px -24px rgba(15, 25, 40, .30);
+    --card-shadow:  0 18px 44px -24px rgba(0, 0, 0, .25);
 }
 
 /* --- 2. Type: Helvetica, oblique ---------------------------------------- */
@@ -8240,11 +8240,11 @@ body::after {
 
 [data-theme="light"] body::before {
     background:
-        radial-gradient(900px 540px at 4% 108%, rgba(168, 98, 0, .10), transparent 62%),
-        radial-gradient(1100px 640px at 106% -12%, rgba(11, 126, 166, .08), transparent 58%),
-        linear-gradient(180deg, #f2f5f9 0%, #e9eef4 100%);
+        radial-gradient(900px 540px at 4% 108%, rgba(168, 98, 0, .07), transparent 62%),
+        radial-gradient(1100px 640px at 106% -12%, rgba(11, 126, 166, .06), transparent 58%),
+        linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
 }
-[data-theme="light"] body::after { opacity: .4; }
+[data-theme="light"] body::after { opacity: .28; }
 
 /* My own proportions for the three-column room: a wider ops rail left, a
    wider instrument rail right. The base grid stays the mechanics; this is
@@ -9316,7 +9316,7 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
     background: linear-gradient(180deg, #ffffff 0%, #f2f5f9 100%);
     box-shadow: 0 1px 0 rgba(168, 98, 0, .25), 0 10px 26px -22px rgba(15, 25, 40, .5);
 }
-[data-theme="light"] .header .logo-text { color: #0e1620; text-shadow: 0 0 18px rgba(168, 98, 0, .25); -webkit-text-fill-color: #0e1620; }
+[data-theme="light"] .header .logo-text { color: #000000; text-shadow: 0 0 18px rgba(168, 98, 0, .25); -webkit-text-fill-color: #0e1620; }
 [data-theme="light"] .sidebar,
 [data-theme="light"] .right-sidebar { background: linear-gradient(180deg, #ffffff, #f4f7fa); }
 [data-theme="light"] .sidebar-title {
@@ -9329,7 +9329,7 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
     background: linear-gradient(180deg, #ffffff, #eef2f7);
     color: #3d4a58;
 }
-[data-theme="light"] .top-tab:hover { background: #e8eef5; color: #0e1620; }
+[data-theme="light"] .top-tab:hover { background: #eeeeee; color: #000000; }
 [data-theme="light"] .top-tab.active { color: #fff; background: linear-gradient(180deg, #d98a1c, #a86200); }
 [data-theme="light"] .display-subtab, [data-theme="light"] .lpv-subtab { background: linear-gradient(180deg, #ffffff, #eef2f7); color: #3d4a58; }
 [data-theme="light"] .screenshot-panel { background: linear-gradient(180deg, #ffffff, #f6f9fc); }
@@ -9341,7 +9341,7 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
         radial-gradient(rgba(11, 126, 166, .22) 1px, transparent 1.3px),
         radial-gradient(rgba(11, 126, 166, .10) 1px, transparent 1.3px);
 }
-[data-theme="light"] .placeholder-text { color: #0e1620; text-shadow: none; }
+[data-theme="light"] .placeholder-text { color: #000000; text-shadow: none; }
 [data-theme="light"] .btn,
 [data-theme="light"] .pcm-modal-btn,
 [data-theme="light"] .lpv-btn { background: linear-gradient(180deg, #ffffff, #eef2f7); color: #1a2130; }
@@ -9355,8 +9355,8 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
 [data-theme="light"] input[type="search"],
 [data-theme="light"] input[type="url"],
 [data-theme="light"] select,
-[data-theme="light"] textarea { background: #ffffff; color: #0e1620; box-shadow: none; }
-[data-theme="light"] .detail-value { color: #0e1620; }
+[data-theme="light"] textarea { background: #ffffff; color: #000000; box-shadow: none; }
+[data-theme="light"] .detail-value { color: #000000; }
 [data-theme="light"] .login-modal,
 [data-theme="light"] .pcm-modal,
 [data-theme="light"] .klg-modal,
@@ -9385,8 +9385,8 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
         0 40px 80px -32px rgba(15, 25, 40, .5),
         inset 0 1px 0 #ffffff;
 }
-[data-theme="light"] .login-modal .logo-text { color: #0e1620; text-shadow: 0 0 18px rgba(168, 98, 0, .25); }
-[data-theme="light"] .login-modal .form-input { background: #ffffff; color: #0e1620; box-shadow: none; }
+[data-theme="light"] .login-modal .logo-text { color: #000000; text-shadow: 0 0 18px rgba(168, 98, 0, .25); }
+[data-theme="light"] .login-modal .form-input { background: #ffffff; color: #000000; box-shadow: none; }
 [data-theme="light"] .login-server { border-top-color: rgba(20, 40, 60, .14); }
 
 /* --- 13. Small screens ---------------------------------------------------- */
@@ -12704,7 +12704,7 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
         }
 
         function loadTheme() {
-            const savedTheme = localStorage.getItem('admin-theme') || 'dark';
+            const savedTheme = localStorage.getItem('admin-theme') || 'light';
             document.documentElement.setAttribute('data-theme', savedTheme);
             if (themeToggle) themeToggle.classList.toggle('switched', savedTheme === 'light');
         }

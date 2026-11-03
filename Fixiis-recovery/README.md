@@ -699,10 +699,11 @@ dressed up as a redesign:
   sweeps; under `prefers-reduced-motion: reduce` all of them stop and the
   design still reads.
 
-The light theme is a **daylight ops room** (paper-white panels with amber
-keys), not a dark theme with the colours inverted: every token has a light
-value, and the lighter surfaces are re-tuned where a glow would disappear on
-white.
+The panel **opens in the light theme by default** — literal black text on
+white (`--mc-text: #000000` on `--mc-void: #ffffff`), amber keys kept — and the
+black theme stays one toggle away (`data-theme` + the `admin-theme` saved
+choice). Every token has both values, and the lighter surfaces are re-tuned
+where a glow would disappear on white.
 
 `node tests/test_admin_cockpit.cjs` checks all of the above (104 checks).
 

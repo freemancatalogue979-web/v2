@@ -91,6 +91,15 @@ const skin = admin.slice(skinStart, cssEnd);
     'the light theme is a real theme, not a broken dark one');
   ok(!/--mc-amber:\s*#ffb02e/.test(css.slice(css.indexOf('[data-theme="light"]'))),
     'and it does not reuse the dark amber');
+  ok(/<html lang="en" data-theme="light">/.test(admin),
+    'the panel opens in the light theme by default');
+  ok(/localStorage\.getItem\('admin-theme'\)\s*\|\|\s*'light'/.test(admin),
+    'and the JS fallback agrees (a saved choice still wins)');
+  ok(/\[data-theme="light"\]\s*\{[\s\S]*?--mc-void:\s*#ffffff/.test(css) &&
+     /\[data-theme="light"\]\s*\{[\s\S]*?--mc-text:\s*#000000/.test(css),
+    'the light theme is literal: white ground, black text');
+  ok(/:root\s*\{[\s\S]*?--mc-void:\s*#020608/.test(css),
+    'and the black theme stays one toggle away');
 
   // Bevel-cut panels and slanted tab keys: the console's two strongest shapes.
   ok(/--mc-cut:\s*polygon\(/.test(css), 'a bevel cut is defined once as a token');
