@@ -670,7 +670,12 @@ describes how existing elements look and never renames one.
 | palette, bevels, type | CSS custom properties on `:root`, with a full `[data-theme="light"]` counterpart |
 | the arc-reactor mark | inline SVG inside the existing `.logo-icon` |
 | the blueprint stage | `.lx-stage` (dot field + scanlines) and `.lx-map` (a dot pattern masked by inline continent shapes) |
-| the plating figure | `.lx-sentinel`, an original inline SVG, `aria-hidden`, `pointer-events: none` |
+| Iron Man | `.lx-sentinel`: the character, drawn as inline SVG (~80 paths, 8 gradients) — `aria-hidden`, `pointer-events: none`, dropped below 1100px |
+
+The figure in the corner is the character himself — hand-drawn here as vector
+art (red-and-gold plating, arc reactor, palm flare), not an asset lifted from a
+film or a comic. He is a costume-and-silhouette drawing of Iron Man, which is
+what the reference plate asks for.
 
 **Nothing is fetched for the look.** No image, no icon CDN, no font file: every
 piece of art is inline SVG or a CSS gradient, so the panel renders the same on a

@@ -117,9 +117,9 @@ const skin = admin.slice(skinStart, cssEnd);
   ok(landShapes >= 10, 'and the continents are actually there (' + landShapes + ' shapes)');
 
   // Plating figure.
-  ok(/class="lx-sentinel"/.test(admin), 'the rail has its plating figure');
-  ok(/viewBox="0 0 214 340"/.test(admin), 'drawn at the reference proportion');
-  ok(/id="lxCore"/.test(admin), 'with an arc core');
+  ok(/<div class="lx-sentinel" aria-hidden="true">/.test(admin), 'the rail has the figure');
+  ok(/viewBox="0 0 240 540"/.test(admin), 'drawn full-length, so the rails can crop or scale him');
+  ok(/id="imGlow"/.test(admin), 'with a lit arc reactor');
 }
 
 // ---------------------------------------------------------------------------
@@ -149,15 +149,38 @@ const skin = admin.slice(skinStart, cssEnd);
   const urls = Array.from(skin.matchAll(/url\((['"]?)([^)'"]*)\1\)/g)).map((m) => m[2]);
   ok(urls.length === 0, 'the skin fetches nothing (found: ' + urls.slice(0, 3).join(', ') + ')');
   ok(!/https?:\/\//.test(skin), 'no absolute URL anywhere in the skin');
-  ok(!/<img\b/i.test(admin.slice(admin.indexOf('class="lx-sentinel"'), admin.indexOf('class="lx-sentinel"') + 6000)),
-    'the figure is drawn, not loaded');
+  const figure = admin.slice(admin.indexOf('<div class="lx-sentinel"'),
+                             admin.indexOf('</svg>', admin.indexOf('<div class="lx-sentinel"')) + 6);
+  ok(!/<img\b/i.test(figure), 'the figure is drawn, not loaded');
+  ok(!/<image\b/i.test(figure), 'and it embeds no raster either');
+  ok(/viewBox="0 0 240 540"/.test(figure), 'the figure is a 240x540 drawing that scales with the rail');
+  ok(/preserveAspectRatio="xMinYMax meet"/.test(figure),
+    'it stands on the bottom-left corner instead of being cropped');
+
+  // The figure is the character: the reactor, the palm flare and the plating.
+  const paths = (figure.match(/<path\b/g) || []).length;
+  ok(paths >= 40, 'the figure is real artwork (' + paths + ' paths)');
+  const grads = (figure.match(/<(?:linear|radial)Gradient\b/g) || []).length;
+  ok(grads >= 6, 'with lit plating: ' + grads + ' gradients');
+  ok(/id="imRed"/.test(figure) && /id="imGold"/.test(figure),
+    'red plating and gold plating are separate materials');
+  ok(/id="imGlow"/.test(figure), 'the reactor glow is its own gradient');
 
   // Decoration is decoration.
-  const sentinel = admin.slice(admin.indexOf('<div class="lx-sentinel"'), admin.indexOf('class="lx-sentinel"') + 9000);
-  ok(/aria-hidden="true"/.test(sentinel), 'the figure is hidden from assistive tech');
+  ok(/aria-hidden="true"/.test(figure), 'the figure is hidden from assistive tech');
   ok(/pointer-events:\s*none/.test(css), 'and never takes a pointer event');
   ok(/class="lx-stage" aria-hidden="true"/.test(admin), 'the stage backdrop is hidden too');
   ok(/class="lx-map"[^>]*aria-hidden="true"/.test(admin), 'and so is the map');
+
+  // The art's gradient ids live in the same document as 400-odd panel ids, so
+  // they are namespaced and unique - a duplicate id silently steals the fill.
+  const artIds = Array.from(figure.matchAll(/id="([^"]+)"/g)).map(m => m[1]);
+  ok(artIds.length > 0, 'the art names its gradients');
+  ok(artIds.every(id => id.startsWith('im')), 'and namespaces every one of them');
+  ok(new Set(artIds).size === artIds.length, 'none of them repeats');
+  const docIds = Array.from(admin.matchAll(/\sid="([^"]+)"/g)).map(m => m[1]);
+  const stolen = artIds.filter(id => docIds.filter(d => d === id).length > 1);
+  ok(stolen.length === 0, 'no id is defined twice in the page (found: ' + stolen.join(', ') + ')');
 
   // Motion.
   ok(/@media \(prefers-reduced-motion: reduce\)/.test(css), 'reduced motion is honoured');

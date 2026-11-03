@@ -8896,22 +8896,31 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
 ::-webkit-scrollbar-thumb:hover { background: var(--rx-red); }
 
 /* --- 10. Decorative art: the sentinel ------------------------------------ */
-/* Original artwork, drawn here in SVG: a plating silhouette in the panel's own
-   palette, cropped by the rail the way the reference crops its figure. It is
-   aria-hidden and pointer-events:none, so it is decoration and nothing else. */
+/* Iron Man, standing in the corner of the cockpit the way the reference plate
+   has him: red-and-gold plating, a lit arc reactor, the palm flare up, feet
+   running off the bottom edge. Drawn here as inline SVG - about eighty paths,
+   eight gradients, no raster and no fetch - so he costs one request fewer than
+   any picture would and survives a filtered network.
+
+   He is decoration and nothing else: aria-hidden, pointer-events:none, and the
+   art carries no information the rails do not. */
+/* The box matches the artwork's own ratio (240:540), so nothing is
+   letterboxed: he stands as tall as the rail allows and takes the corner. */
 .lx-sentinel {
     position: fixed;
     left: 0;
     bottom: 0;
-    width: 214px;
-    height: 340px;
+    height: min(74vh, 660px);
+    width: calc(min(74vh, 660px) * 0.4444);
     z-index: 2;
     pointer-events: none;
-    opacity: .96;
-    filter: drop-shadow(0 0 26px rgba(255, 45, 63, .45));
-    mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
-    -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+    opacity: .97;
+    filter:
+        drop-shadow(0 0 30px rgba(255, 45, 63, .38))
+        drop-shadow(0 0 64px rgba(47, 200, 255, .16));
 }
+/* `meet` with xMinYMax: the whole figure scales to the box and stands on the
+   bottom-left corner. Nothing is cropped but the plate's own crop line. */
 .lx-sentinel svg { width: 100%; height: 100%; display: block; }
 
 /* --- 11. Motion ---------------------------------------------------------- */
@@ -8969,7 +8978,12 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
 [data-theme="light"] select,
 [data-theme="light"] textarea { background: #ffffff; color: #0f1420; box-shadow: none; }
 [data-theme="light"] .detail-value { color: #0f1420; }
-[data-theme="light"] .lx-sentinel { opacity: .9; filter: drop-shadow(0 0 22px rgba(212, 9, 28, .25)); }
+/* On white the figure needs a ground shadow rather than a glow, and a little
+   less presence: he is a plate of armour in daylight, not a lamp. */
+[data-theme="light"] .lx-sentinel {
+    opacity: .92;
+    filter: drop-shadow(12px 10px 26px rgba(18, 22, 34, .22)) drop-shadow(0 0 26px rgba(212, 9, 28, .18));
+}
 
 /* --- 13. Small screens ---------------------------------------------------- */
 @media (max-width: 1100px) {
@@ -9023,61 +9037,252 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
 
     
     <div class="main-app" id="mainApp">
-    <!-- Decorative plating figure at the foot of the rail. Original artwork,
-         drawn inline: the panel's own palette and nothing else - no image
-         request, no external asset, aria-hidden, and it never takes a pointer
-         event. -->
+    <!-- Iron Man, standing at the foot of the rail as in the reference plate:
+         inline SVG only - no image request, no external asset - aria-hidden,
+         and it never takes a pointer event. -->
+
     <div class="lx-sentinel" aria-hidden="true">
-        <svg viewBox="0 0 214 340" xmlns="http://www.w3.org/2000/svg" focusable="false">
-            <defs>
-                <linearGradient id="lxArmor" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0" stop-color="#e82534"/>
-                    <stop offset=".42" stop-color="#a80f1e"/>
-                    <stop offset="1" stop-color="#3d040b"/>
-                </linearGradient>
-                <linearGradient id="lxArmorDark" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0" stop-color="#5d0a13"/>
-                    <stop offset="1" stop-color="#160409"/>
-                </linearGradient>
-                <linearGradient id="lxSteel" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0" stop-color="#f0c9a8"/>
-                    <stop offset=".5" stop-color="#b98a63"/>
-                    <stop offset="1" stop-color="#6d4530"/>
-                </linearGradient>
-                <radialGradient id="lxCore" cx=".5" cy=".5" r=".5">
-                    <stop offset="0" stop-color="#ffffff"/>
-                    <stop offset=".3" stop-color="#9fe9ff"/>
-                    <stop offset=".62" stop-color="#2fc8ff" stop-opacity=".6"/>
-                    <stop offset="1" stop-color="#2fc8ff" stop-opacity="0"/>
-                </radialGradient>
-            </defs>
-            <ellipse cx="96" cy="196" rx="92" ry="96" fill="url(#lxCore)" opacity=".26"/>
-            <path d="M62 132 L146 124 L178 166 L184 340 L26 340 L32 172 Z" fill="url(#lxArmor)" stroke="#1c0308" stroke-width="2"/>
-            <path d="M96 148 L146 142 L166 178 L168 340 L96 340 Z" fill="url(#lxArmorDark)" opacity=".9"/>
-            <path d="M96 150 L74 156 L60 196 L64 340 L96 340 Z" fill="#2b0510" opacity=".75"/>
-            <g stroke="#1c0308" stroke-width="1.6" opacity=".9" fill="none">
-                <path d="M74 246 L152 240"/><path d="M72 276 L156 270"/><path d="M70 306 L158 300"/>
+        <svg viewBox="0 0 240 540" preserveAspectRatio="xMinYMax meet" xmlns="http://www.w3.org/2000/svg" focusable="false">
+          <defs>
+            <linearGradient id="imRed" x1=".15" y1="0" x2=".85" y2="1">
+              <stop offset="0" stop-color="#ff5a64"/>
+              <stop offset=".28" stop-color="#d91422"/>
+              <stop offset=".66" stop-color="#8e0a18"/>
+              <stop offset="1" stop-color="#43040c"/>
+            </linearGradient>
+            <linearGradient id="imRedSide" x1="1" y1="0" x2="0" y2=".6">
+              <stop offset="0" stop-color="#ff5a64"/>
+              <stop offset=".4" stop-color="#c0111f"/>
+              <stop offset="1" stop-color="#4d0610"/>
+            </linearGradient>
+            <linearGradient id="imRedDark" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#8b0b17"/>
+              <stop offset="1" stop-color="#26030a"/>
+            </linearGradient>
+            <linearGradient id="imGold" x1=".15" y1="0" x2=".85" y2="1">
+              <stop offset="0" stop-color="#fff6dc"/>
+              <stop offset=".28" stop-color="#ffd88f"/>
+              <stop offset=".6" stop-color="#d99b3c"/>
+              <stop offset="1" stop-color="#7a4e13"/>
+            </linearGradient>
+            <linearGradient id="imGoldDark" x1="0" y1="0" x2=".4" y2="1">
+              <stop offset="0" stop-color="#c9913a"/>
+              <stop offset="1" stop-color="#6a4310"/>
+            </linearGradient>
+            <linearGradient id="imSteel" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#39404f"/>
+              <stop offset="1" stop-color="#0a0d13"/>
+            </linearGradient>
+            <radialGradient id="imGlow" cx=".5" cy=".5" r=".5">
+              <stop offset="0" stop-color="#ffffff"/>
+              <stop offset=".2" stop-color="#d6f8ff"/>
+              <stop offset=".45" stop-color="#2fc8ff" stop-opacity=".9"/>
+              <stop offset="1" stop-color="#2fc8ff" stop-opacity="0"/>
+            </radialGradient>
+            <radialGradient id="imHalo" cx=".5" cy=".5" r=".5">
+              <stop offset="0" stop-color="#8fe8ff" stop-opacity=".5"/>
+              <stop offset=".5" stop-color="#2fc8ff" stop-opacity=".16"/>
+              <stop offset="1" stop-color="#2fc8ff" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+
+          <!-- ambient halo, as in the reference plate -->
+          <ellipse cx="120" cy="300" rx="126" ry="210" fill="url(#imHalo)" opacity=".5"/>
+
+          <!-- dark under-suit: any gap between plates reads as shadow, not paper -->
+          <g fill="#1b0206">
+            <path d="M120 112 L150 122 L164 152 L162 220 L144 250 L140 306 L148 350 L150 430 L156 470 L162 540 L78 540 L84 470 L90 430 L92 350 L100 306 L96 250 L78 220 L76 152 L90 122 Z"/>
+            <rect x="52" y="150" width="30" height="180" rx="14"/>
+            <rect x="158" y="150" width="30" height="180" rx="14"/>
+          </g>
+
+          <!-- ============================== legs ========================== -->
+          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
+            <path d="M103 342 C89 360 82 392 85 424 L114 424 C114 396 115 366 117 342 Z" fill="url(#imRed)"/>
+            <path d="M137 342 C151 360 158 392 155 424 L126 424 C126 396 125 366 123 342 Z" fill="url(#imRedSide)"/>
+            <path d="M84 420 C84 409 91 402 100 402 C109 402 115 409 115 420 L115 446 L84 446 Z" fill="url(#imGold)"/>
+            <path d="M156 420 C156 409 149 402 140 402 C131 402 125 409 125 420 L125 446 L156 446 Z" fill="url(#imGold)"/>
+            <path d="M84 442 C80 470 80 494 84 518 L115 518 C117 494 117 470 115 442 Z" fill="url(#imRed)"/>
+            <path d="M156 442 C160 470 160 494 156 518 L125 518 C123 494 123 470 125 442 Z" fill="url(#imRedSide)"/>
+            <path d="M83 506 L114 506 L115 518 L83 518 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
+            <path d="M126 506 L157 506 L157 518 L126 518 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
+            <path d="M85 520 L113 520 L114 540 L76 540 C77 530 80 524 85 520 Z" fill="url(#imRed)"/>
+            <path d="M127 520 L155 520 C160 524 163 530 164 540 L126 540 Z" fill="url(#imRedSide)"/>
+            <path d="M92 448 L104 448 L105 496 L91 496 Z" fill="#ffffff" opacity=".07" stroke="none"/>
+            <path d="M136 448 L148 448 L149 496 L135 496 Z" fill="#ffffff" opacity=".05" stroke="none"/>
+          </g>
+
+          <!-- ============================== pelvis ======================== -->
+          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
+            <path d="M96 296 C90 312 90 330 94 348 L146 348 C150 330 150 312 144 296 Z" fill="url(#imRed)"/>
+            <path d="M92 288 L148 288 L150 306 L90 306 Z" fill="url(#imRedDark)"/>
+            <path d="M110 289 L130 289 L131 305 L109 305 Z" fill="url(#imGold)"/>
+            <path d="M96 320 L144 320 L144 325 L96 325 Z" fill="#000" opacity=".4" stroke="none"/>
+            <path d="M120 330 L120 348" fill="none" stroke="#000" stroke-width="2" opacity=".45"/>
+          </g>
+
+          <!-- ============================== abdomen ======================= -->
+          <g stroke="#16040a" stroke-width="1.8" stroke-linejoin="round">
+            <path d="M98 240 L142 240 L146 274 L140 298 L100 298 L94 274 Z" fill="url(#imRedDark)"/>
+            <path d="M99 242 L141 242 L142 256 L98 256 Z" fill="url(#imRed)"/>
+            <path d="M98 259 L142 259 L143 273 L97 273 Z" fill="url(#imRed)"/>
+            <path d="M97 276 L143 276 L144 290 L96 290 Z" fill="url(#imRed)"/>
+            <path d="M120 242 L120 298" fill="none" stroke="#000" stroke-width="2" opacity=".4"/>
+          </g>
+
+          <!-- ============================== torso ========================= -->
+          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
+            <path d="M120 122
+                     C99 122 83 129 75 143
+                     C67 157 67 181 73 201
+                     C79 220 91 234 101 242
+                     L139 242
+                     C149 234 161 220 167 201
+                     C173 181 173 157 165 143
+                     C157 129 141 122 120 122 Z" fill="url(#imRed)"/>
+
+            <path d="M120 128
+                     C112 128 106 138 105 152
+                     L105 190 C107 208 113 220 120 224
+                     C127 220 133 208 135 190
+                     L135 152 C134 138 128 128 120 128 Z" fill="url(#imGoldDark)"/>
+            <!-- red plates closing over the chassis -->
+            <path d="M105 150 C100 160 99 176 100 190 C101 200 104 208 107 214 L109 190 Z" fill="url(#imRed)" stroke="none"/>
+            <path d="M135 150 C140 160 141 176 140 190 C139 200 136 208 133 214 L131 190 Z" fill="url(#imRed)" stroke="none"/>
+
+            <path d="M78 152 C86 140 100 134 113 136 L113 158 C101 157 88 162 80 172 Z" fill="#ff6a72" opacity=".2" stroke="none"/>
+            <path d="M162 152 C154 140 140 134 127 136 L127 158 C139 157 152 162 160 172 Z" fill="#ff6a72" opacity=".2" stroke="none"/>
+            <path d="M80 186 C88 176 100 172 110 173" fill="none" stroke="#ff9aa2" stroke-width="1.4" opacity=".32"/>
+            <path d="M160 186 C152 176 140 172 130 173" fill="none" stroke="#ff9aa2" stroke-width="1.4" opacity=".32"/>
+
+            <path d="M100 116 C110 126 130 126 140 116 L148 130 C132 140 108 140 92 130 Z" fill="url(#imGold)"/>
+          </g>
+
+          <!-- ============================== arc reactor =================== -->
+          <g>
+            <circle cx="120" cy="178" r="27" fill="url(#imSteel)" stroke="#16040a" stroke-width="2"/>
+            <circle cx="120" cy="178" r="20" fill="#05121b" stroke="#9fe9ff" stroke-opacity=".55" stroke-width="1.6"/>
+            <circle cx="120" cy="178" r="19" fill="url(#imGlow)"/>
+            <circle cx="120" cy="178" r="7.5" fill="#ffffff"/>
+            <g stroke="#c9f6ff" stroke-width="1.6" opacity=".65" fill="none">
+              <path d="M120 160 L120 167"/><path d="M120 189 L120 196"/>
+              <path d="M102 178 L109 178"/><path d="M131 178 L138 178"/>
             </g>
-            <path d="M60 130 C44 118 26 124 18 146 C12 164 20 182 34 188 L62 168 Z" fill="url(#lxArmor)" stroke="#1c0308" stroke-width="2"/>
-            <path d="M148 122 C166 112 186 120 194 142 C200 160 192 178 178 184 L148 164 Z" fill="url(#lxArmor)" stroke="#1c0308" stroke-width="2"/>
-            <path d="M88 108 L124 104 L128 132 L84 136 Z" fill="url(#lxArmorDark)" stroke="#1c0308" stroke-width="2"/>
-            <path d="M88 30 C104 20 124 20 138 34 C150 46 152 76 146 96 C140 114 122 122 104 120 C86 118 72 106 70 86 C68 66 74 40 88 30 Z" fill="url(#lxArmor)" stroke="#1c0308" stroke-width="2"/>
-            <path d="M86 50 C100 42 126 44 134 60 C142 76 138 100 124 108 C110 116 92 112 84 98 C76 84 78 58 86 50 Z" fill="url(#lxSteel)" opacity=".92"/>
-            <path d="M82 74 C98 68 126 70 136 78 C126 86 98 88 82 82 Z" fill="#0a2f42"/>
-            <path d="M84 76 C98 71 126 73 134 79 C124 84 98 85 84 80 Z" fill="#8be6ff" opacity=".95"/>
-            <ellipse cx="108" cy="78" rx="30" ry="7" fill="url(#lxCore)" opacity=".55"/>
-            <g stroke="#1c0308" stroke-width="1.2" opacity=".85" fill="none">
-                <path d="M92 96 L124 96"/><path d="M94 102 L122 102"/>
+          </g>
+
+          <!-- ============================== shoulders ===================== -->
+          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
+            <path d="M86 122 C66 120 50 132 46 152 C42 172 50 190 66 195 C78 199 88 190 91 178 Z" fill="url(#imRed)"/>
+            <path d="M154 122 C174 120 190 132 194 152 C198 172 190 190 174 195 C162 199 152 190 149 178 Z" fill="url(#imRedSide)"/>
+            <path d="M49 150 C52 136 62 127 76 125 C60 131 52 140 49 150 Z" fill="#ffa0a7" opacity=".3" stroke="none"/>
+            <path d="M191 150 C188 136 178 127 164 125 C180 131 188 140 191 150 Z" fill="#ffa0a7" opacity=".18" stroke="none"/>
+            <path d="M46 168 C50 180 58 190 68 194" fill="none" stroke="#16040a" stroke-width="1.4" opacity=".5"/>
+            <path d="M194 168 C190 180 182 190 172 194" fill="none" stroke="#16040a" stroke-width="1.4" opacity=".5"/>
+            <path d="M58 158 C62 146 72 140 82 141" fill="none" stroke="#ff9aa2" stroke-width="1.6" opacity=".28"/>
+            <path d="M182 158 C178 146 168 140 158 141" fill="none" stroke="#ff9aa2" stroke-width="1.6" opacity=".28"/>
+          </g>
+
+          <!-- ============================== arms ========================== -->
+          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
+            <path d="M74 174 C58 182 51 200 51 222 L54 252 L80 250 L79 214 C79 194 80 182 74 174 Z" fill="url(#imRed)"/>
+            <path d="M166 174 C182 182 189 200 189 222 L186 252 L160 250 L161 214 C161 194 160 182 166 174 Z" fill="url(#imRedSide)"/>
+            <path d="M53 250 L80 250 L81 268 L51 268 Z" fill="url(#imGoldDark)" stroke-width="1.6"/>
+            <path d="M160 250 L187 250 L189 268 L159 268 Z" fill="url(#imGoldDark)" stroke-width="1.6"/>
+            <path d="M51 266 L81 266 L85 322 L56 326 Z" fill="url(#imGold)"/>
+            <path d="M159 266 L189 266 L184 326 L155 322 Z" fill="url(#imGold)"/>
+            <path d="M58 276 L74 276 L76 312 L59 314 Z" fill="#fff8e6" opacity=".3" stroke="none"/>
+            <path d="M166 276 L182 276 L181 312 L164 314 Z" fill="#fff8e6" opacity=".18" stroke="none"/>
+            <path d="M55 318 L84 318 L86 332 L54 332 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
+            <path d="M156 318 L185 318 L186 332 L154 332 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
+            <path d="M56 328 C48 336 47 348 51 357 C55 366 67 368 75 360 C83 352 84 338 81 330 Z" fill="url(#imRed)"/>
+            <path d="M184 328 C192 336 193 348 189 357 C185 366 173 368 165 360 C157 352 156 338 159 330 Z" fill="url(#imRedSide)"/>
+            <g fill="#16040a" opacity=".45" stroke="none">
+              <path d="M56 344 L80 342 L80 345 L56 347 Z"/>
+              <path d="M160 342 L184 344 L184 347 L160 345 Z"/>
+              <path d="M58 352 L78 350 L78 353 L58 355 Z"/>
+              <path d="M162 350 L182 352 L182 355 L162 353 Z"/>
             </g>
-            <path d="M34 188 C18 204 12 236 18 268 C24 300 40 318 56 322 L74 292 C58 282 48 258 46 232 C44 212 44 198 34 188 Z" fill="url(#lxArmor)" stroke="#1c0308" stroke-width="2"/>
-            <path d="M178 184 C194 200 200 232 194 264 C188 296 172 316 156 322 L138 292 C154 282 164 258 166 232 C168 212 168 196 178 184 Z" fill="url(#lxArmor)" stroke="#1c0308" stroke-width="2"/>
-            <circle cx="96" cy="196" r="36" fill="#05121b" stroke="#2fc8ff" stroke-opacity=".55" stroke-width="1.4"/>
-            <circle cx="96" cy="196" r="27" fill="url(#lxCore)" opacity=".95"/>
-            <circle cx="96" cy="196" r="15" fill="#ffffff" opacity=".92"/>
-            <g stroke="#8be6ff" stroke-width="1.4" opacity=".8" fill="none">
-                <path d="M96 152 L96 166"/><path d="M96 226 L96 240"/>
-                <path d="M52 196 L66 196"/><path d="M126 196 L140 196"/>
+            <g fill="#b3121f" stroke="#16040a" stroke-width="1" opacity=".95">
+              <path d="M62 330 L74 330 L74 340 L62 340 Z"/>
+              <path d="M170 330 L182 330 L182 340 L170 340 Z"/>
             </g>
+          </g>
+
+          <!-- left palm repulsor, aimed forward -->
+          <g>
+            <ellipse cx="58" cy="344" rx="34" ry="34" fill="url(#imHalo)"/>
+            <ellipse cx="58" cy="344" rx="15" ry="15" fill="url(#imGlow)"/>
+            <circle cx="58" cy="344" r="5.5" fill="#ffffff"/>
+          </g>
+
+          <!-- neck, at body scale so the helmet keeps its own proportions -->
+          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
+            <path d="M107 92 L133 92 L137 126 L103 126 Z" fill="url(#imSteel)"/>
+            <path d="M110 98 L130 98 L130 126 L110 126 Z" fill="#12161f" stroke="none"/>
+            <g stroke="#5c6b85" stroke-width="1.3" opacity=".5" fill="none">
+              <path d="M111 105 L129 105"/><path d="M110 112 L130 112"/>
+            </g>
+          </g>
+          <ellipse cx="120" cy="122" rx="30" ry="10" fill="#000" opacity=".45"/>
+
+          <!-- ============================== helmet ========================= -->
+          <g transform="translate(15.6 13.4) scale(0.8712 0.7826)">
+            <g stroke="#16040a" stroke-width="2.6" stroke-linejoin="round">
+              <!-- red shell: boxy skull, jaw tucked in -->
+              <path d="M120 6
+                       C99 6 86 20 85 44
+                       C84 58 85 72 88 82
+                       C91 95 98 108 106 116
+                       C110 120 115 122 120 122
+                       C125 122 130 120 134 116
+                       C142 108 149 95 152 82
+                       C155 72 156 58 155 44
+                       C154 20 141 6 120 6 Z" fill="url(#imRed)"/>
+              <path d="M95 26 C104 14 136 14 145 26 C136 19 104 19 95 26 Z" fill="#ffa0a7" opacity=".28" stroke="none"/>
+
+              <!-- gold faceplate: wide brow, cheek planes, blunt chin -->
+              <path d="M120 20
+                       C108 20 99 31 97 47
+                       L96 62
+                       C96 76 99 88 104 98
+                       C108 106 114 112 120 112
+                       C126 112 132 106 136 98
+                       C141 88 144 76 144 62
+                       L143 47
+                       C141 31 132 20 120 20 Z" fill="url(#imGold)"/>
+              <!-- brow band -->
+              <path d="M97 47 C107 38 133 38 143 47 L143 52 C133 43 107 43 97 52 Z" fill="#6f480f" opacity=".85" stroke="none"/>
+              <!-- cheek planes -->
+              <path d="M98 58 L104 60 L103 86 C100 78 98 68 98 58 Z" fill="#b9822f" opacity=".45" stroke="none"/>
+              <path d="M142 58 L136 60 L137 86 C140 78 142 68 142 58 Z" fill="#b9822f" opacity=".3" stroke="none"/>
+              <!-- chin seam, not a mouth -->
+              <path d="M104 96 L136 96" fill="none" stroke="#6f480f" stroke-width="2.4" opacity=".55"/>
+
+              <!-- eye slits: thin, angled up at the temples -->
+              <path d="M101 53 L114 60 L114 67 L102 60 Z" fill="#06202c" stroke-width="1.8"/>
+              <path d="M139 53 L126 60 L126 67 L138 60 Z" fill="#06202c" stroke-width="1.8"/>
+
+              <!-- mouth grille -->
+              <path d="M110 80 L130 80 L128 88 L112 88 Z" fill="#1a0206" stroke-width="1.6"/>
+            </g>
+
+            <!-- the eyes and the grille, lit -->
+            <path d="M102 55 L113 60 L113 65 L103 60 Z" fill="#d8f9ff"/>
+            <path d="M138 55 L127 60 L127 65 L137 60 Z" fill="#d8f9ff"/>
+            <ellipse cx="120" cy="59" rx="26" ry="13" fill="url(#imGlow)" opacity=".38"/>
+            <g fill="#4f93ab" opacity=".5">
+              <rect x="114" y="81.5" width="1.2" height="6"/>
+              <rect x="117.2" y="81.5" width="1.2" height="6"/>
+              <rect x="120.4" y="81.5" width="1.2" height="6"/>
+              <rect x="123.6" y="81.5" width="1.2" height="6"/>
+            </g>
+
+            <!-- ear discs -->
+            <g stroke="#16040a" stroke-width="1.9">
+              <circle cx="86" cy="62" r="5.5" fill="url(#imGoldDark)"/>
+              <circle cx="154" cy="62" r="5.5" fill="url(#imGoldDark)"/>
+            </g>
+          </g>
         </svg>
     </div>
 
