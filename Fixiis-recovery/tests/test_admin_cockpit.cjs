@@ -149,16 +149,20 @@ const skin = admin.slice(skinStart, cssEnd);
 }
 
 // ---------------------------------------------------------------------------
-// 5. Corptic for every text — embedded once, nothing fetched
+// 5. Corptic for every letter, Montserrat for every number — embedded, nothing fetched
 // ---------------------------------------------------------------------------
 {
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 1, 'Admin.html carries exactly one embedded face');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 2, 'Admin.html carries exactly two embedded faces');
   ok(/<style id="shf-corptic-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*Corptic;/.test(admin),
-    'the embedded face is Corptic (Pandeka Foundry), in its own block');
-  ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin), 'and it ships as a data: URI');
-  const faceRule = (admin.match(/@font-face\s*\{[\s\S]*?\}/) || [''])[0];
-  ok(!/https?:\/\//.test(faceRule), 'the face rule has no remote URL');
-  ok(/--mc-font:\s*Corptic,/.test(css), 'the universal font stack leads with Corptic');
+    'the letter face is Corptic (Pandeka Foundry), in its own block');
+  ok(/<style id="shf-montserrat-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*Montserrat;/.test(admin),
+    'and the digit face is Montserrat, subset to numbers, in its own block');
+  ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin), 'and they ship as data: URIs');
+  const faceRules = admin.match(/@font-face\s*\{[\s\S]*?\}/g) || [];
+  ok(faceRules.length === 2 && faceRules.every((r) => !/https?:\/\//.test(r) && /data:font\/woff2;base64,/.test(r)),
+    'both face rules are local data: URIs, no remote URL');
+  ok(/--mc-font:\s*Corptic, Montserrat,/.test(css),
+    'the universal stack is Corptic for letters, Montserrat for numbers');
   ok(/font-family:\s*var\(--mc-font\)\s*!important/.test(css),
     'every text uses it, with !important over the panel\'s `*` reset');
   ok(/font-style:\s*italic/.test(css), 'the chrome is oblique');
@@ -168,9 +172,13 @@ const skin = admin.slice(skinStart, cssEnd);
   ok(!/Roboto Slab/.test(admin), 'the panel asks for no other house face');
   ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')) &&
      admin.includes(fs.readFileSync(path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')).toString('base64')),
-    'the embedded copy is byte-identical to the asset in assets/fonts');
-  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')),
-    'and the licence travels with the font');
+    'the embedded Corptic is byte-identical to the asset in assets/fonts');
+  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'montserrat-digits-400.woff2')) &&
+     admin.includes(fs.readFileSync(path.join(root, 'assets', 'fonts', 'montserrat-digits-400.woff2')).toString('base64')),
+    'and so is the embedded Montserrat digit subset');
+  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')) &&
+     fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Montserrat.txt')),
+    'and both licences travel with their fonts');
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +291,7 @@ const skin = admin.slice(skinStart, cssEnd);
     ok(/@media/.test(Array.from(sheet.cssRules).map((r) => r.cssText).join('').slice(0, 40000)),
       'including its media queries');
     ok(doc.getElementById('shf-corptic-face').sheet.cssRules.length === 1, 'the Corptic face parses as one rule');
+    ok(doc.getElementById('shf-montserrat-face').sheet.cssRules.length === 1, 'and so does the Montserrat digit face');
 
     const style = (sel, prop) => {
       const el = doc.querySelector(sel);
@@ -291,6 +300,8 @@ const skin = admin.slice(skinStart, cssEnd);
     ok(doc.documentElement.getAttribute('data-theme') === 'light', 'the panel computes as light by default');
     ok(style('body', 'fontStyle') === 'italic', 'the panel computes as oblique');
     ok(/mc-font/.test(style('body', 'fontFamily') || ''), 'every text computes to the Corptic stack');
+    ok(/Montserrat/.test(dom.window.getComputedStyle(doc.documentElement).getPropertyValue('--mc-font') || ''),
+      'the --mc-font stack offers Montserrat after Corptic');
     ok(/mc-font/.test(style('.top-tab', 'fontFamily') || '') && style('.top-tab', 'fontStyle') === 'italic',
       'the nav is Corptic and oblique');
     ok(style('.logo-text', 'fontStyle') === 'italic', 'the title is oblique');

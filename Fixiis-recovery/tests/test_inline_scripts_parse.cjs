@@ -94,15 +94,18 @@ for (const page of PAGES) {
     ok(!/Space\+Grotesk/.test(src) && !/Space Grotesk/.test(src),
        name + ' asks for Space Grotesk nowhere');
   }
-  ok(/--mc-font:\s*Corptic,/.test(admin), 'Admin.html names the embedded Corptic for every text');
+  ok(/--mc-font:\s*Corptic, Montserrat,/.test(admin), 'Admin.html names Corptic for letters and Montserrat for numbers');
   ok(!/Roboto Slab/.test(admin), 'Admin.html asks for no other house face');
-  // One embedded face is allowed - Corptic, as a data: URI, nothing remote.
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
-     'Admin.html carries exactly one embedded face');
+  // Two embedded faces are allowed - Corptic for letters, Montserrat for
+  // digits, both as data: URIs, nothing remote.
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 2,
+     'Admin.html carries exactly two embedded faces');
   ok(/<style id="shf-corptic-face">[\s\S]*?data:font\/woff2;base64,/.test(admin),
-     'the face is Corptic, embedded as a data: URI (no fetch)');
-  const adminFace = (admin.match(/@font-face\s*\{[\s\S]*?\}/) || [''])[0];
-  ok(!/https?:\/\//.test(adminFace), 'the face rule points nowhere remote');
+     'the letter face is Corptic, embedded as a data: URI (no fetch)');
+  ok(/<style id="shf-montserrat-face">[\s\S]*?data:font\/woff2;base64,/.test(admin),
+     'and the digit face is Montserrat, embedded the same way');
+  const adminFaces = admin.match(/@font-face\s*\{[\s\S]*?\}/g) || [];
+  ok(adminFaces.every((r) => !/https?:\/\//.test(r)), 'both face rules point nowhere remote');
   ok(!/Space\+Grotesk/.test(admin) && !/Space Grotesk/.test(admin),
      'Admin.html asks for Space Grotesk nowhere');
   // The shell and the panels must not fetch a font at all; the one exception in

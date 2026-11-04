@@ -34,7 +34,9 @@ MARKER_ID = "shf-font-face"
 # a reader does: font first, then the typography that uses it).
 # Admin.html is deliberately NOT here: every text in it is set in Corptic DEMO,
 # embedded in its own <style id="shf-corptic-face"> block
-# (asset: assets/fonts/corptic-demo-regular.woff2).
+# (asset: assets/fonts/corptic-demo-regular.woff2), and every digit in a
+# Montserrat digit subset in <style id="shf-montserrat-face">
+# (asset: assets/fonts/montserrat-digits-400.woff2).
 # See tests/test_slab_font.cjs section 2b, which asserts that.
 TARGETS = [
     ("mini-admin.html", "<style>\n/* ============================================================"),

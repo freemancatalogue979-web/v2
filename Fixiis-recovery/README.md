@@ -675,7 +675,7 @@ describes how existing elements look and never renames one.
 |---|---|
 | palette, pills, rounded corners, type | CSS custom properties on `:root`, strict monochrome (grays only), with a full `[data-theme=\"light\"]` counterpart |
 | the console mark | inline SVG inside the existing `.logo-icon` (a round reticle, CSS rings around it) |
-| the face for every text | Corptic DEMO (Pandeka Foundry), embedded once as a data: URI in `<style id=\"shf-corptic-face\">` and applied to every element with `!important`; letters-only demo, so digits/punctuation fall back to Helvetica per glyph |
+| the face for every text | Corptic DEMO (Pandeka Foundry), embedded as a data: URI in `<style id=\"shf-corptic-face\">` and applied to every element with `!important`; the demo is letters-only, so **numbers** fall through to the embedded Montserrat digit subset (`<style id=\"shf-montserrat-face\">`) and any other punctuation to Helvetica per glyph |
 | the sign-in airlock | the login is a round glass card over concentric rings, with a porthole reticle, pill fields and one pill key — deliberately none of the angular cuts |
 | the console stage | `.lx-stage` (dot field + scanlines) and an inline `.mc-radar` scope — rings, degree ticks, a sweep and blips, all in `currentColor` so the scope is white on black and black on white |
 | the tab rail | `.top-tabs` / `.top-tab`: uppercase oblique pill keys (`border-radius: 999px`), the active one filled with the accent |
@@ -1175,8 +1175,12 @@ like one product.
 
 **The admin console is set in Corptic too.** `Admin.html` draws every text —
 body, labels, keys, titles, the sign-in, even the log lines — in **Corptic
-DEMO** by Pandeka Foundry, embedded once as a data: URI, oblique across the
-chrome and upright in machine output. See *The mission-control console* below.
+DEMO** by Pandeka Foundry, embedded as a data: URI, oblique across the
+chrome and upright in machine output. The one thing Corptic cannot draw is
+numbers (the demo ships letters only), so **every digit falls through to
+Montserrat Regular**, embedded as a digits-only subset in
+`<style id=\"shf-montserrat-face\">`; any remaining punctuation falls to
+Helvetica per glyph. See *The mission-control console* below.
 
 The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 `data:` URI — so nothing about the product's type is requested over the network:
@@ -1184,7 +1188,7 @@ The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 | Surface | How it gets the font |
 |---|---|
 | `client.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
-| `Admin.html` | every element: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI, applied with `!important` (demo licence, personal use — see `assets/fonts/LICENSE-Corptic.txt`) |
+| `Admin.html` | every element: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI, applied with `!important`; every digit: Montserrat Regular digit subset in `<style id=\"shf-montserrat-face\">` as a data: URI (licences: `assets/fonts/LICENSE-Corptic.txt`, `assets/fonts/LICENSE-Montserrat.txt`) |
 | the live mirror | the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) plus rules that give the document root, `body` and every element the family with `!important` — written **into the captured document's own HTML** before it is rendered, and re-asserted on the frame's `load` |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in

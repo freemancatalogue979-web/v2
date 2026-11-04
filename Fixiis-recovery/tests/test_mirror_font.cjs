@@ -351,17 +351,18 @@ function makeDoc() {
   ok(/font-family:\s*Roboto Slab/.test(mini), 'mini-admin.html is set in Roboto Slab');
   ok(!/Helvetica Neue/.test(mini), 'mini-admin.html mixes in no other face');
   ok(/<style id="shf-font-face">/.test(mini), 'mini-admin.html carries the face it names');
-  ok(/--mc-font:\s*Corptic,/.test(admin), 'Admin.html names the embedded Corptic for every text');
+  ok(/--mc-font:\s*Corptic, Montserrat,/.test(admin), 'Admin.html names Corptic for letters, Montserrat for numbers');
   ok(!/Roboto Slab/.test(admin), 'Admin.html mixes in no other face');
   ok(/<style id="shf-corptic-face">/.test(admin) && /font-family:\s*Corptic/.test(admin),
     'Admin.html carries the Corptic display face inline');
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
-    'that is its one payload - exactly one @font-face');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 2,
+    'its payload is exactly two @font-face rules - Corptic for letters, Montserrat for digits');
   ok(!/Space\+?Grotesk/.test(admin), 'Admin.html no longer asks for Space Grotesk');
   ok(!/Space\+?Grotesk/.test(mini), 'mini-admin.html no longer asks for Space Grotesk');
   ok(!/fonts\.googleapis/.test(admin), 'Admin.html fetches no webfont');
   ok(!/fonts\.googleapis/.test(mini), 'mini-admin.html fetches no webfont');
-  ok(!/Montserrat/.test(admin), 'Admin.html has no Montserrat left');
+  ok(/<style id="shf-montserrat-face">/.test(admin) && /font-family:\s*Montserrat;/.test(admin),
+    'Admin.html embeds Montserrat as the digit face');
   ok(!/Montserrat/.test(mini), 'mini-admin.html has no Montserrat left');
 }
 
