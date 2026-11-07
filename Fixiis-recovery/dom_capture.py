@@ -424,6 +424,31 @@ async def _ensure_page_stable(page: Any) -> None:
 # we ensure the captured page's <head> has one so relative URLs in the
 # captured HTML resolve against the original page URL.
 _BASE_HREF_RE = re.compile(r"<base\b[^>]*\bhref=[\"'][^\"']*[\"'][^>]*>", re.IGNORECASE)
+_BASE_HREF_VAL_RE = re.compile(r"<base\b[^>]*?\bhref=[\"']([^\"']*)[\"']", re.IGNORECASE)
+
+
+def _document_base_url(html, fallback):
+    """The base URL the ORIGINAL document resolved its relative refs against.
+
+    A captured page that carries its own <base href> (Gmail and most large
+    SPAs do) resolves "images/cleardot.gif" against THAT, not against the
+    page URL: urljoin(page_url, "images/cleardot.gif") points at
+    /mail/u/0/images/... and 404s, which is exactly how mirrored pages end
+    up with broken images.  Only a usable absolute http(s) base wins;
+    anything else falls back to the page URL (what a base-less document uses).
+    """
+    if not html or not fallback:
+        return fallback
+    m = _BASE_HREF_VAL_RE.search(html)
+    if not m:
+        return fallback
+    href = (m.group(1) or "").strip()
+    if not href:
+        return fallback
+    abs_u = urljoin(fallback, href)
+    if abs_u.lower().startswith(("http://", "https://")):
+        return abs_u
+    return fallback
 
 # ---------------------------------------------------------------------------
 # Dead-subframe stripping
@@ -596,7 +621,9 @@ def _strip_dead_subframes(html: str, base_url: Optional[str] = None) -> str:
 def _inject_base_href(html: str, url: str) -> str:
     if not html or not url:
         return html
-    safe_url = url.replace('"', "&quot;")
+    # Keep the captured document's own <base href> when it has one: relative
+    # refs in the mirror must resolve exactly like they did on the real page.
+    safe_url = (_document_base_url(html, url) or url).replace('"', "&quot;")
     injected = f'<base href="{safe_url}"><meta name="referrer" content="no-referrer">'
     if _BASE_HREF_RE.search(html):
         return _BASE_HREF_RE.sub(injected, html, count=1)
@@ -2218,6 +2245,9 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     eff_css_embed = CSS_EMBED_MAX_BYTES if embed else 0
     eff_embed = EMBED_MAX_BYTES if embed else 0
     _t_start = time.monotonic()
+    # Resolve relative refs against the document's own <base href> when the
+    # capture carries one — the page URL is only the fallback.
+    base_url = _document_base_url(html, base_url) or base_url
     if report is not None:
         report.clear()
         report.update({"swap": [], "missing": [], "applied": 0})

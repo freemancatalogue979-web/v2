@@ -264,4 +264,29 @@ run(sess2._send_full("https://new.example/page", reason="click"))
 ok(not any('"full_document"' in f for f in ws2.frames),
    "a same-URL no-mutation capture is still skipped")
 
+# ---------------------------------------------------------------------------
+# 8. Regression: a capture with its own <base href> resolves relative refs
+#    against THAT base, not against the page URL (Gmail-style
+#    "images/cleardot.gif" must not become /mail/u/0/images/... and 404).
+# ---------------------------------------------------------------------------
+base_prefix = "https://static%d.example" % os.getpid()
+FakeClient.routes = {
+    base_prefix + "/images/cleardot.gif": (PNG, "image/gif"),
+}
+FakeClient.requests = []
+gmailish = ('<html><head><base href="' + base_prefix + '/"></head><body>'
+            '<img src="images/cleardot.gif" alt=""></body></html>')
+page_url = "https://mail%d.example/mail/u/0/#inbox" % os.getpid()
+out, _meta = run(dom_capture._rewrite_assets_to_cache(gmailish, page_url))
+ok(base_prefix + "/images/cleardot.gif" in FakeClient.requests,
+   "the img ref was resolved against the document <base>, not the page URL "
+   "(got %r)" % (FakeClient.requests,))
+ok("images/cleardot.gif" not in out and "data:image/gif" in out,
+   "the tiny image was embedded instead of left dangling: %r" % (out[:160],))
+ok('<base href="' + base_prefix + '/">' in dom_capture._inject_base_href(gmailish, page_url),
+   "the injected <base href> keeps the document's own base")
+plain2 = "<html><head></head><body><img src=\"pic.png\"></body></html>"
+ok('<base href="' + page_url + '">' in dom_capture._inject_base_href(plain2, page_url),
+   "a base-less capture still gets the page URL as <base href>")
+
 print("capture pipeline: %d checks passed" % PASSED)
