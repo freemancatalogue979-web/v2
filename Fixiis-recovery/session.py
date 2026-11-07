@@ -1895,6 +1895,118 @@ class NeoStreamingSession:
         self.dom_capture = DOMCaptureSession(page=page, websocket=websocket or self.websocket, client_id=client_id or self.session_id)
         return self.dom_capture
 
+    # ---- dead-browser detection + self-healing recovery ---------------------
+    # A crashed/killed remote browser surfaces as "CDP connection closed" /
+    # "Target closed" / "Browser closed" on every evaluate.  Instead of
+    # logging capture failures forever, relaunch the SAME persistent profile
+    # (user-data dir keyed by user_id — cookies/storage survive the crash).
+    _DEAD_BROWSER_MARKERS = (
+        "connection closed", "target closed", "target crashed",
+        "browser closed", "browser crashed", "browser has been closed",
+        "session closed", "most likely because of a crash",
+        "econnreset", "broken pipe", "pipe closed",
+    )
+
+    @staticmethod
+    def _dead_browser_err(exc) -> bool:
+        if exc is None:
+            return False
+        msg = str(exc).lower()
+        return any(m in msg for m in NeoStreamingSession._DEAD_BROWSER_MARKERS)
+
+    async def _browser_alive(self) -> bool:
+        try:
+            b = getattr(self, 'browser', None)
+            if b is not None and hasattr(b, 'is_connected') and not b.is_connected():
+                return False
+            ctx = getattr(self, 'context', None)
+            if ctx is None:
+                return False
+            page = self.get_active_page() or getattr(self, 'page', None)
+            if page is None or page.is_closed():
+                return False
+            await page.evaluate("1", timeout=1500)
+            return True
+        except Exception:
+            return False
+
+    async def _maybe_recover(self) -> None:
+        """Probe liveness (rate-limited) and recover if the browser is dead."""
+        now = time.time()
+        if now - getattr(self, '_last_alive_probe', 0) < 5:
+            return
+        self._last_alive_probe = now
+        try:
+            if await self._browser_alive():
+                return
+        except Exception:
+            pass
+        await self._recover_browser()
+
+    async def _recover_browser(self) -> bool:
+        """Relaunch the persistent-context browser after a crash/CDP drop.
+
+        The profile user-data dir is keyed by user_id, so the relaunched
+        browser keeps cookies/storage — the session survives a browser crash.
+        Rate-limited to one attempt per 15 s.
+        """
+        now = time.time()
+        if now - getattr(self, '_last_browser_recovery', 0) < 15:
+            return False
+        self._last_browser_recovery = now
+        try:
+            logger.warning("[RECOVERY] session %s: browser/CDP lost — relaunching persistent profile (user_id=%s)",
+                           self.session_id, self.user_id)
+            for attr in ('context', 'browser'):
+                h = getattr(self, attr, None)
+                if h is not None:
+                    try:
+                        await h.close()
+                    except Exception:
+                        pass
+            self.context = None
+            self.browser = None
+            self.pages = {}
+            self.active_page_id = None
+            if not self.browser_manager:
+                from browser_manager import BrowserManager
+                self.browser_manager = BrowserManager(self.config, getattr(self, 'gpu_manager', None))
+            self.browser, self.context = await self.browser_manager.create_browser(
+                self.session_id, self.viewport, self.pixel_ratio, self.user_id,
+                getattr(self, 'gpu_id', 0), getattr(self, 'user_agent', None),
+                getattr(self, 'is_mobile', False), getattr(self, 'target_url', None),
+            )
+            if not self.browser or not self.context:
+                logger.error("[RECOVERY] session %s: browser relaunch returned None", self.session_id)
+                return False
+            self.page = await self.context.new_page()
+            if self.viewport and self.viewport.get('width') and self.viewport.get('height'):
+                try:
+                    await self.page.set_viewport_size({
+                        'width': int(self.viewport['width']),
+                        'height': int(self.viewport['height']),
+                    })
+                except Exception:
+                    pass
+            page_id = self._generate_page_id(self.page)
+            self.pages[page_id] = self.page
+            self.active_page_id = page_id
+            self._setup_page_listeners()
+            self._sync_dom_capture()
+            url = getattr(self, 'current_url', None) or getattr(self, 'target_url', None)
+            if url:
+                try:
+                    await self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                except Exception as exc:
+                    logger.debug("[RECOVERY] session %s: re-navigation to %s failed: %s",
+                                 self.session_id, str(url)[:120], exc)
+            logger.info("[RECOVERY] session %s: browser relaunched, back on %s",
+                        self.session_id, str(url)[:120])
+            return True
+        except Exception as exc:
+            logger.error("[RECOVERY] session %s: relaunch failed: %s", self.session_id, exc)
+            return False
+
     async def capture_remote_page(self, reason: Optional[str] = None, force: bool = False):
         # Interaction reasons the live delta observer already carries as
         # 16 ms patches — a full capture here would only add latency.
@@ -1947,7 +2059,40 @@ class NeoStreamingSession:
                 and LIVE_DELTA and getattr(capture, "_delta_active", False)):
             logger.debug("[CAPTURE] %s recapture owned by delta observer — skipping full capture", reason)
             return None
-        return await capture.send_page(reason=reason, force=force)
+        try:
+            result = await capture.send_page(reason=reason, force=force)
+        except Exception as exc:
+            if self._dead_browser_err(exc):
+                logger.warning("[CAPTURE] session %s: dead-browser error (%s) — recovering", self.session_id, exc)
+                if await self._recover_browser():
+                    capture = self._sync_dom_capture()
+                    if capture:
+                        try:
+                            return await capture.send_page(reason=reason, force=force)
+                        except Exception as exc2:
+                            logger.debug("[CAPTURE] post-recovery capture failed: %s", exc2)
+                            return None
+                return None
+            raise
+        if result is None:
+            # send_page swallowed the capture error — if it was a dead browser,
+            # verify liveness and recover + retry once.
+            try:
+                import dom_capture as _dc
+                last_err = str(getattr(_dc, "_LAST_FAST_CAPTURE_ERROR", "") or "")
+            except Exception:
+                last_err = ""
+            if self._dead_browser_err(last_err):
+                logger.warning("[CAPTURE] session %s: dead-browser error in capture (%s) — probing liveness",
+                               self.session_id, last_err[:160])
+                if not await self._browser_alive() and await self._recover_browser():
+                    capture = self._sync_dom_capture()
+                    if capture:
+                        try:
+                            return await capture.send_page(reason=reason, force=force)
+                        except Exception:
+                            return None
+        return result
     
     async def switch_to_tab(self, page_id: str) -> bool:
         """Switch to a specific tab by ID (with safe error handling)"""
@@ -2238,6 +2383,12 @@ class NeoStreamingSession:
                 # Get current page URL
                 page = self.get_active_page()
                 if not page or page.is_closed():
+                    # Browser may be dead — schedule a (rate-limited) recovery
+                    # probe instead of spinning on a closed page forever.
+                    try:
+                        asyncio.create_task(self._maybe_recover())
+                    except Exception:
+                        pass
                     continue
                 
                 try:
@@ -2955,7 +3106,14 @@ class NeoStreamingSession:
                 return
             await page.goto(url, wait_until='commit', timeout=30000)
         except Exception as exc:
-            logger.debug("[PROXY] sync_remote_url failed for %s: %s", str(url)[:120], exc)
+            if self._dead_browser_err(exc):
+                logger.debug("[PROXY] sync_remote_url: dead browser for %s — scheduling recovery", str(url)[:120])
+                try:
+                    asyncio.create_task(self._maybe_recover())
+                except Exception:
+                    pass
+            else:
+                logger.debug("[PROXY] sync_remote_url failed for %s: %s", str(url)[:120], exc)
 
     async def handle_prefetch(self, url: str):
         """Warm the next page's assets before the click lands.

@@ -5372,6 +5372,14 @@ async def _proxy_cookie_records(session) -> list:
             return await ctx.cookies()
     except Exception as exc:
         logger.debug("[PROXY] could not read context cookies: %s", exc)
+        # If the persistent browser died (CDP closed), schedule a self-healing
+        # relaunch so /m/ requests get the cookie jar again.
+        if session is not None and hasattr(session, "_dead_browser_err") and session._dead_browser_err(exc) \
+                and hasattr(session, "_maybe_recover"):
+            try:
+                asyncio.create_task(session._maybe_recover())
+            except Exception:
+                pass
     return []
 
 
