@@ -81,4 +81,9 @@ ok(/function setupIframeEventListeners\(d\) \{\s*[^]*?if \(state\.proxyMode\) re
     'page_transition redirects only on a REAL url change');
 }
 
+// profile-bound links: client.html must honor ?user_id= so a generated link
+// attaches to the persistent profile (cookies/storage) it was crafted from
+ok(/urlParams\.get\('user_id'\)/.test(client), 'client reads ?user_id= from the link');
+ok(/state\.userId = userIdParam/.test(client), 'user_id param becomes the session profile identity');
+
 console.log('proxy mirror client: %d checks passed', checks);

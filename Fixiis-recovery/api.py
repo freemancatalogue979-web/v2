@@ -3225,11 +3225,17 @@ def generate_auth_id() -> str:
     """Generate a unique authentication ID for links"""
     return str(uuid.uuid4())[:16]  # Use first 16 chars for shorter URLs
 
-def create_auth_link(target_url: str, workflow_id: Optional[str] = None) -> Dict[str, Any]:
+def create_auth_link(target_url: str, workflow_id: Optional[str] = None,
+                     profile_user_id: Optional[str] = None) -> Dict[str, Any]:
     """Create a new authenticated link with unique ID.
     
     If workflow_id is given, the link is a workflow link — when a client
     opens it, the server boots that client into LPV mode and auto-starts the workflow.
+
+    If profile_user_id is given, the link is BOUND to that persistent profile:
+    the generated URL carries &user_id=<profile> and the WS init also forces
+    it, so the connecting client attaches to the SAME persistent browser
+    context (user-data dir) — cookies, storage and login state come along.
     """
     auth_id = generate_auth_id()
     current_time = datetime.now().isoformat()
@@ -3242,6 +3248,8 @@ def create_auth_link(target_url: str, workflow_id: Optional[str] = None) -> Dict
     if workflow_id:
         entry["workflow_id"] = workflow_id
         entry["is_workflow_link"] = True
+    if profile_user_id:
+        entry["profile_user_id"] = profile_user_id
     generated_links[auth_id] = entry
     
     # Save to disk for persistence
@@ -3251,6 +3259,7 @@ def create_auth_link(target_url: str, workflow_id: Optional[str] = None) -> Dict
         "auth_id": auth_id,
         "target_url": target_url,
         "workflow_id": workflow_id,
+        "profile_user_id": profile_user_id,
         "created_at": current_time
     }
 
@@ -5383,7 +5392,8 @@ async def _proxy_sync_cookies(session, records: list) -> None:
 async def mirror_proxy(request: Request, target: str):
     from proxy_mirror import (
         FORWARD_REQUEST_HEADERS, STRIP_RESPONSE_HEADERS,
-        cookie_header_from_records, is_proxy_enabled, parse_proxy_path,
+        cookie_header_from_records, cookie_records_from_header, is_proxy_enabled,
+        merge_cookie_headers, mirror_set_cookie_for_our_origin, parse_proxy_path,
         rewrite_css_for_proxy, rewrite_html_for_proxy, rewrite_location,
         set_cookie_records,
     )
@@ -5412,6 +5422,13 @@ async def mirror_proxy(request: Request, target: str):
 
     cookie_records = await _proxy_cookie_records(session)
     cookie_header = cookie_header_from_records(cookie_records)
+    # Cookies the browser attached to the /m/ request are our origin's mirror
+    # of upstream Set-Cookie (see mirror_set_cookie_for_our_origin) plus any
+    # document.cookie writes by page JS — merge them in (browser wins) and
+    # sync them back into the persistent context.
+    browser_cookie = request.headers.get("cookie", "")
+    if browser_cookie:
+        await _proxy_sync_cookies(session, cookie_records_from_header(browser_cookie, target_url))
 
     up_headers: Dict[str, str] = {}
     for name, value in request.headers.items():
@@ -5422,10 +5439,11 @@ async def mirror_proxy(request: Request, target: str):
             if ln in ("referer", "origin"):
                 value = f"{parts.scheme}://{parts.netloc}/"
             if ln == "cookie":
-                continue  # we send the persistent context's jar instead
+                continue  # merged below from context jar + browser mirror cookies
             up_headers[name] = value
-    if cookie_header:
-        up_headers["Cookie"] = cookie_header
+    merged_cookie = merge_cookie_headers(cookie_header, browser_cookie)
+    if merged_cookie:
+        up_headers["Cookie"] = merged_cookie
     if "user-agent" not in {k.lower() for k in up_headers}:
         up_headers["User-Agent"] = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -5450,12 +5468,16 @@ async def mirror_proxy(request: Request, target: str):
         logger.debug("[PROXY] upstream fetch failed for %s: %s", target_url[:120], exc)
         return JSONResponse({"error": "upstream fetch failed"}, status_code=502)
 
-    # Keep the persistent remote context's jar in sync with what the site set.
+    # Keep the persistent remote context's jar in sync with what the site set,
+    # and mirror the same cookies onto OUR origin (Path=/) so document.cookie
+    # inside the proxied iframe sees them.
     try:
         sc = resp.headers.get_list("set-cookie")
     except Exception:
         sc = []
     await _proxy_sync_cookies(session, set_cookie_records(sc, target_url))
+    sc_mirrors = [mirror_set_cookie_for_our_origin(v) for v in sc]
+    sc_mirrors = [m for m in sc_mirrors if m]
 
     # Redirects: rewrite Location to its proxied form so the client iframe
     # stays on our origin.
@@ -5467,11 +5489,14 @@ async def mirror_proxy(request: Request, target: str):
                 continue
             rheaders[name] = value
         rheaders["Cache-Control"] = "no-store"
-        return RedirectResponse(
+        rr = RedirectResponse(
             rewrite_location(resp.headers["location"], target_url, sid),
             status_code=resp.status_code,
             headers=rheaders,
         )
+        for m in sc_mirrors:
+            rr.headers.append("set-cookie", m)
+        return rr
 
     out_headers: Dict[str, str] = {}
     for name, value in resp.headers.items():
@@ -5492,22 +5517,111 @@ async def mirror_proxy(request: Request, target: str):
             text = data.decode(resp.encoding or "utf-8", errors="replace")
         except Exception:
             text = data.decode("utf-8", errors="replace")
-        return Response(
+        out = Response(
             content=rewrite_html_for_proxy(text, target_url, sid),
             media_type="text/html",
             headers=out_headers,
         )
+        for m in sc_mirrors:
+            out.headers.append("set-cookie", m)
+        return out
     if ctype == "text/css":
         try:
             text = data.decode(resp.encoding or "utf-8", errors="replace")
         except Exception:
             text = data.decode("utf-8", errors="replace")
-        return Response(
+        out = Response(
             content=rewrite_css_for_proxy(text, target_url, sid),
             media_type="text/css",
             headers=out_headers,
         )
-    return Response(content=data, media_type=ctype or "application/octet-stream", headers=out_headers)
+        for m in sc_mirrors:
+            out.headers.append("set-cookie", m)
+        return out
+    out = Response(content=data, media_type=ctype or "application/octet-stream", headers=out_headers)
+    for m in sc_mirrors:
+        out.headers.append("set-cookie", m)
+    return out
+
+
+@app.get("/api/proxy/store")
+async def proxy_store_get(sid: str = "", origin: str = ""):
+    """localStorage/sessionStorage of the persistent remote context for `origin`.
+
+    Read from the remote page itself (it is kept on the same URL via
+    proxy_sync).  Best-effort: returns empty stores on any mismatch/failure.
+    """
+    empty = {"localStorage": {}, "sessionStorage": {}}
+    try:
+        if not (sid and session_manager):
+            return JSONResponse(empty)
+        session = await session_manager.get_session(sid)
+        page = await _proxy_page_of(session)
+        if page is None or not origin:
+            return JSONResponse(empty)
+        try:
+            if urlsplit(page.url or "").netloc != urlsplit(origin).netloc:
+                return JSONResponse(empty)
+        except Exception:
+            return JSONResponse(empty)
+        data = await page.evaluate(
+            "(() => { const o = {localStorage:{}, sessionStorage:{}};"
+            " try { for (let i=0;i<localStorage.length;i++){const k=localStorage.key(i); o.localStorage[k]=localStorage.getItem(k);} } catch(e){}"
+            " try { for (let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i); o.sessionStorage[k]=sessionStorage.getItem(k);} } catch(e){}"
+            " return o; })()"
+        )
+        if isinstance(data, dict):
+            return JSONResponse({
+                "localStorage": data.get("localStorage") or {},
+                "sessionStorage": data.get("sessionStorage") or {},
+            })
+        return JSONResponse(empty)
+    except Exception as exc:
+        logger.debug("[PROXY] store get failed: %s", exc)
+        return JSONResponse(empty)
+
+
+@app.post("/api/proxy/store")
+async def proxy_store_post(request: Request, sid: str = "", origin: str = ""):
+    """Apply a storage write made inside the proxied page to the persistent
+    remote context (so logins/tokens stored by the client land in the remote
+    browser's session too)."""
+    try:
+        if not (sid and session_manager):
+            return JSONResponse({"ok": True})
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": True})
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": True})
+        session = await session_manager.get_session(sid)
+        page = await _proxy_page_of(session)
+        if page is None or not origin:
+            return JSONResponse({"ok": True})
+        try:
+            if urlsplit(page.url or "").netloc != urlsplit(origin).netloc:
+                return JSONResponse({"ok": True})
+        except Exception:
+            return JSONResponse({"ok": True})
+        op = str(body.get("op") or "")
+        which = "localStorage" if body.get("which") == "localStorage" else "sessionStorage"
+        key = str(body.get("key") or "")
+        value = body.get("value")
+        arg = {"op": op, "key": key, "value": None if value is None else str(value), "which": which}
+        if op == "set" and key:
+            await page.evaluate(
+                "(a)=>{try{window[a.which].setItem(a.key,a.value);}catch(e){}}", arg)
+        elif op == "remove" and key:
+            await page.evaluate(
+                "(a)=>{try{window[a.which].removeItem(a.key);}catch(e){}}", arg)
+        elif op == "clear":
+            await page.evaluate(
+                "(a)=>{try{window[a.which].clear();}catch(e){}}", arg)
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        logger.debug("[PROXY] store post failed: %s", exc)
+        return JSONResponse({"ok": True})
 
 
 @app.get("/api/cache/stats")
@@ -6416,7 +6530,7 @@ async def generate_cloudflare_link(target: str, port: int = 80):
 
 
 @app.get("/api/links/client")
-async def generate_client_link(request: Request, target: str = ""):
+async def generate_client_link(request: Request, target: str = "", user_id: str = "", profile: str = ""):
     """
     Generate a client access link with authentication.
     
@@ -6440,20 +6554,28 @@ async def generate_client_link(request: Request, target: str = ""):
         else:
             clean_target = "https://www.google.com"
         
+        # Optional persistent-profile binding: the link then opens the client
+        # INSIDE that profile's persistent browser context (cookies included).
+        profile_id = (user_id or profile or "").strip()
+        
         # Create authenticated link
-        link_data = create_auth_link(clean_target)
+        link_data = create_auth_link(clean_target, profile_user_id=profile_id or None)
         auth_id = link_data["auth_id"]
         
         # Get base URL
         base_url = str(request.base_url).rstrip('/')
         
-        # Build final URL with auth_id
+        # Build final URL with auth_id (+ user_id so the client attaches to the
+        # persistent profile even before the WS handshake applies the binding)
         final_url = f"{base_url}/client.html?auth={auth_id}&url={quote(clean_target, safe='')}"
+        if profile_id:
+            final_url += f"&user_id={quote(profile_id, safe='')}"
         
         return JSONResponse({
             "link": final_url,
             "auth_id": auth_id,
             "target": clean_target,
+            "profile_user_id": profile_id,
             "description": "Share this link with clients. It includes authentication and will navigate to the target URL."
         })
     except Exception as e:
@@ -6490,7 +6612,9 @@ async def get_all_links():
             links_list.append({
                 "auth_id": auth_id,
                 "target_url": data.get("target_url", ""),
-                "created_at": created_at
+                "created_at": created_at,
+                "profile_user_id": data.get("profile_user_id", ""),
+                "workflow_id": data.get("workflow_id", ""),
             })
         
         # Sort by creation date, newest first
@@ -11798,6 +11922,12 @@ async def websocket_endpoint(websocket: WebSocket):
         
         if auth_token:
             link_data = validate_auth_link(auth_token)
+            # Profile-bound link: force the persistent profile so the client
+            # attaches to the same browser context (cookies/storage) that the
+            # link was crafted from — "as if I am in the remote browser".
+            _link_profile = str(link_data.get("profile_user_id") or "").strip() if isinstance(link_data, dict) else ""
+            if _link_profile:
+                init_data["user_id"] = _link_profile
             if not link_data:
                 await websocket.send_json({"type": "error", "message": "Invalid or expired link"})
                 await websocket.close()

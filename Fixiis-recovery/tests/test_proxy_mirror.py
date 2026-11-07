@@ -178,4 +178,81 @@ ok("rewrite_location(resp.headers[\"location\"], target_url, sid)" in api_src, "
 ok("elif msg_type == 'proxy_sync':" in api_src and "session.sync_remote_url(url_value)" in api_src,
    "WS proxy_sync puts the remote browser on the client's current /m/ page")
 
+# --- our own paths are never re-proxied --------------------------------------
+ok(pm.rewrite_ref("/m/S/https://a.com/x", TARGET) is None, "/m/ refs left alone")
+ok(pm.rewrite_ref("/api/proxy/store?sid=1", TARGET) is None, "/api/ refs left alone (storage bridge stays direct)")
+ok(pm.rewrite_ref("/assets/abc123.css", TARGET) is None, "/assets/ refs left alone")
+
+# --- meta refresh stays inside /m/ --------------------------------------------
+mr = pm.rewrite_html_for_proxy(
+    '<html><head><meta http-equiv="refresh" content="0; url=https://login.yahoo.com/x?a=1"></head><body></body></html>',
+    TARGET, "S")
+ok("url=/m/S/https://login.yahoo.com/x%3Fa%3D1" in mr, "meta refresh url rewritten into /m/ (no breakout)")
+mr2 = pm.rewrite_html_for_proxy(
+    '<html><head><meta http-equiv="refresh" content="5; URL=/next"></head><body></body></html>',
+    TARGET, "S")
+ok("URL=/m/S/https://mail.example.com/next" in mr2, "meta refresh root-relative rewritten against target origin (case preserved)")
+
+# --- injected router script: valid JS, first in head, patches the URL entry points ---
+rout = pm.rewrite_html_for_proxy(
+    "<html><head><title>t</title><script>var page=1;</script></head><body><p>hi</p></body></html>",
+    TARGET, "S")
+m_router = _re.search(r"<script>(\(function\(\)\{var P=.*?)</script>", rout, _re.DOTALL)
+ok(m_router is not None, "router script injected")
+if m_router:
+    rjs = m_router.group(1)
+    if shutil.which("node"):
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(rjs)
+            tmpr = f.name
+        r = subprocess.run(["node", "--check", tmpr], capture_output=True)
+        ok(r.returncode == 0, "router script passes node --check: " + r.stderr.decode()[:200])
+    for needle, label in [
+        ("window.fetch=function", "fetch patched"),
+        ("XMLHttpRequest.prototype.open", "XHR open patched"),
+        ("navigator.sendBeacon", "sendBeacon patched"),
+        ("window.EventSource", "EventSource patched"),
+        ("window.open=function", "window.open patched"),
+        ("HTMLImageElement", "img.src setter patched"),
+        ("HTMLAnchorElement", "a.href setter patched"),
+        ("Storage.prototype.setItem", "storage writes pushed back to the remote context"),
+        ("/api/proxy/store", "storage bridge endpoint used"),
+        ("window.__PROXY__=P", "proxy config exposed"),
+    ]:
+        ok(needle in rjs, "router: " + label)
+    ok('"sid": "S"' in rjs or '"sid":"S"' in rjs, "router carries the sid")
+# router must come before the page's own scripts in <head>
+head_end = rout.lower().index("</head>")
+head = rout[:head_end]
+ok(head.index("var P=") < head.index("var page=1"), "router script runs BEFORE page scripts")
+
+# --- cookie merge / mirror ------------------------------------------------------
+ok(pm.merge_cookie_headers("a=1; b=2", "b=9; c=3") == "a=1; b=9; c=3",
+   "cookie merge: browser mirror wins on conflicts, order preserved")
+ok(pm.merge_cookie_headers("", "") == "", "empty merge")
+recs2 = pm.cookie_records_from_header("tok=abc; x=1", TARGET)
+ok(recs2 == [{"name": "tok", "value": "abc", "url": TARGET}, {"name": "x", "value": "1", "url": TARGET}],
+   "cookie request header -> context records (document.cookie writes sync back)")
+ok(pm.mirror_set_cookie_for_our_origin("SID=xyz; Domain=.yahoo.com; Path=/; HttpOnly") == "SID=xyz; Path=/",
+   "Set-Cookie mirrored to our origin (Domain dropped, Path=/) so document.cookie works")
+ok(pm.mirror_set_cookie_for_our_origin("bad") == "", "invalid Set-Cookie not mirrored")
+ok("range" in pm.FORWARD_REQUEST_HEADERS, "Range requests forwarded (media seeking works)")
+
+# --- api.py wiring pins ----------------------------------------------------------
+ok("@app.get(\"/api/proxy/store\")" in api_src and "@app.post(\"/api/proxy/store\")" in api_src,
+   "storage bridge endpoints exist")
+ok("merge_cookie_headers(cookie_header, browser_cookie)" in api_src,
+   "route merges context jar + browser mirror cookies upstream")
+ok("cookie_records_from_header(browser_cookie, target_url)" in api_src,
+   "route syncs browser/document.cookie writes back into the persistent context")
+ok("sc_mirrors" in api_src and 'out.headers.append("set-cookie", m)' in api_src,
+   "upstream Set-Cookie mirrored onto our origin on responses")
+ok('rr.headers.append("set-cookie", m)' in api_src, "Set-Cookie mirrored on redirects too")
+ok("profile_user_id" in api_src and "_link_profile" in api_src,
+   "links bind a persistent profile and the WS init forces it (client attaches with cookies)")
+ok("profile_user_id: Optional[str] = None" in api_src and 'entry["profile_user_id"] = profile_user_id' in api_src,
+   "create_auth_link stores profile_user_id")
+ok('final_url += f"&user_id={quote(profile_id, safe=\'\')}"' in api_src,
+   "generated client links embed &user_id= so the persistent context follows the link")
+
 print("proxy mirror: %d checks passed" % PASSED)

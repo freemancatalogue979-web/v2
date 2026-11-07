@@ -10224,6 +10224,7 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
                         <div class="section-title">Generate Client Link</div>
                         <div class="url-input-group">
                             <input type="text" class="url-input" id="targetUrl" placeholder="Enter target URL or leave empty for default">
+                            <input type="text" class="url-input" id="linkProfileUserId" placeholder="Optional profile/user_id to bind — link opens inside that persistent browser session (cookies included)">
                             <button class="generate-btn" onclick="generateLink()">Generate Link</button>
                         </div>
                         <div id="create-link-base-host"></div>
@@ -14460,9 +14461,13 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
 
         async function generateLink() {
             const targetUrl = document.getElementById('targetUrl').value.trim();
+            const profileEl = document.getElementById('linkProfileUserId');
+            const profileId = profileEl ? profileEl.value.trim() : '';
             
             try {
-                const response = await serverFetch(`/api/links/client?target=${encodeURIComponent(targetUrl)}`);
+                let linkApi = `/api/links/client?target=${encodeURIComponent(targetUrl)}`;
+                if (profileId) linkApi += `&user_id=${encodeURIComponent(profileId)}`;
+                const response = await serverFetch(linkApi);
                 const data = await response.json();
                 
                 if (data.link) {
@@ -14695,13 +14700,15 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
             }
         }
         
-        function buildFullLink(authId, targetUrl) {
+        function buildFullLink(authId, targetUrl, userId) {
             // Was window.location.origin, which is "null" from file:// and
             // the static host from a CDN -- neither is a working client.
             const baseUrl = lpvLinkBaseForBuild();
-            return lpvWithServerParam(
-                `${baseUrl}/client.html?auth=${authId}&url=${encodeURIComponent(targetUrl)}`
-            );
+            let link = `${baseUrl}/client.html?auth=${authId}&url=${encodeURIComponent(targetUrl)}`;
+            // Profile-bound links keep the client inside the persistent
+            // browser context the link was crafted from (cookies/storage).
+            if (userId) link += `&user_id=${encodeURIComponent(userId)}`;
+            return lpvWithServerParam(link);
         }
 
         function renderPersistentLinksList() {
@@ -14746,7 +14753,7 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
                     }
                 }
                 
-                const fullLink = buildFullLink(authId, link.target_url);
+                const fullLink = buildFullLink(authId, link.target_url, link.profile_user_id);
                 
                 html += `
                     <div class="link-item" data-index="${index}">
@@ -14782,7 +14789,7 @@ input::placeholder, textarea::placeholder { color: var(--mc-muted); }
             const link = allPersistentLinks[index];
             if (!link) return;
             
-            const fullLink = buildFullLink(link.auth_id, link.target_url);
+            const fullLink = buildFullLink(link.auth_id, link.target_url, link.profile_user_id);
             navigator.clipboard.writeText(fullLink).then(() => {
                 showToast('Link copied to clipboard!', 'success');
             }).catch(err => {

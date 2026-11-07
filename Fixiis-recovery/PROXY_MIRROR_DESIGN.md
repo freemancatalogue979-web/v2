@@ -114,6 +114,36 @@ the remote context as the source of session data.  Wiring:
   http origin is what the browser's "origin was untrustworthy" warning was).
 - Cookie values are sanitized (no CR/LF/`;`) before sending upstream.
 
+## Session fidelity: links carry the persistent context, page storage bridges over
+
+- **Profile-bound links**: `create_auth_link(..., profile_user_id=...)` stores
+  the profile in the link; `/api/links/client?target=...&user_id=<profile>`
+  embeds `&user_id=` in the generated `client.html?auth=...&url=...` URL, and
+  the WS init also forces `init_data["user_id"] = link.profile_user_id`.
+  client.html already honors `?user_id=` -> the client attaches to the SAME
+  persistent user-data dir (`launch_persistent_context`), so the cookies and
+  login state of the remote browser come with the link.  Admin's link
+  generator has an optional profile field for this.
+- **Cookies in the proxied page**: every `/m/` request sends
+  `merge_cookie_headers(context jar, browser-attached mirror cookies)`; every
+  upstream `Set-Cookie` is (a) synced into the persistent context AND
+  (b) mirrored onto our own origin (`Path=/`), so `document.cookie` inside the
+  proxied iframe works.  Browser-side cookie writes are synced back into the
+  context too.
+- **localStorage/sessionStorage bridge**: the injected router script seeds
+  storage from the remote context (`GET /api/proxy/store?sid=&origin=`) and
+  pushes every set/remove/clear back (`POST /api/proxy/store`) — applied to
+  the remote page via CDP evaluate when it is on the same origin (proxy_sync
+  keeps it there).  Sites that keep JWTs/tokens in storage now behave as if
+  they were the remote browser.
+- **Runtime URL routing**: on an insecure (http) origin a service worker is
+  unavailable, so the router script injected at the top of `<head>` (before
+  any page script, `node --check`-pinned in tests) patches `fetch`,
+  `XMLHttpRequest.open`, `navigator.sendBeacon`, `EventSource`, `window.open`,
+  and the `src`/`href`/`action`/`data` property setters to route absolute
+  URLs through `/m/<sid>/...`.  `<meta http-equiv=refresh>` is rewritten in
+  the HTML.  `Range` is forwarded for media.
+
 ## Known limits of P0 / next phases
 
 - **P1 — dynamic request routing**: a service worker registered on our origin
@@ -123,8 +153,10 @@ the remote context as the source of session data.  Wiring:
 - **P2 — full session fidelity**: localStorage/sessionStorage of the persistent
   context are not yet shared into the proxied page (cookies are); sync via CDP
   or serve an init script that replays them.
-- **P3 — WebSocket proxying** (`wss://` frame relay) for chat/ticker pages;
-  media Range streaming.
+- **P3 — WebSocket proxying** (`wss://` relay, e.g. `/mw/<sid>/<target>`) for
+  chat/ticker pages — `websockets` is not installed in the runtime image, so
+  WS URLs currently go direct (CORS may block them).  Media Range streaming is
+  already forwarded.
 - **P4 — handoff**: remote browser does login/setup through the proxy, then the
   client continues the session; capture mirror demoted to fallback/archive.
 - Sites with meta-CSS we must keep, HSTS preload, or certificate pinning will
