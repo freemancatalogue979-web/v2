@@ -985,9 +985,20 @@ _FAST_SERIALIZE_JS = r"""
       const doc = (el && el.ownerDocument) || (typeof document !== 'undefined' ? document : null);
       if (!doc || !doc.querySelectorAll) return;
       const nodes = doc.querySelectorAll('[' + MID + ']');
+      const weak = (typeof WeakRef === 'function');
       for (let i = 0; i < nodes.length; i++) {
         const v = parseInt(nodes[i].getAttribute(MID), 10);
-        if (v && v >= window.__domMidNext) window.__domMidNext = v + 1;
+        if (!v) continue;
+        if (v >= window.__domMidNext) window.__domMidNext = v + 1;
+        // Register the owner in the same one-time scan: afterwards midTaken()
+        // answers from the map alone and never runs another per-element
+        // querySelector against the whole document (that search, once per
+        // first-touched element, was O(page) each and made updates crawl on
+        // large pages).
+        if (!window.__domMidOwner.has(v)) {
+          try { window.__domMidOwner.set(v, weak ? new WeakRef(nodes[i]) : nodes[i]); }
+          catch (e) { /* ignore */ }
+        }
       }
     } catch (e) { /* no document, or a hostile selector */ }
   };
@@ -4046,9 +4057,20 @@ _DELTA_OBSERVER_JS = r"""
       const doc = (el && el.ownerDocument) || (typeof document !== 'undefined' ? document : null);
       if (!doc || !doc.querySelectorAll) return;
       const nodes = doc.querySelectorAll('[' + MID + ']');
+      const weak = (typeof WeakRef === 'function');
       for (let i = 0; i < nodes.length; i++) {
         const v = parseInt(nodes[i].getAttribute(MID), 10);
-        if (v && v >= window.__domMidNext) window.__domMidNext = v + 1;
+        if (!v) continue;
+        if (v >= window.__domMidNext) window.__domMidNext = v + 1;
+        // Register the owner in the same one-time scan: afterwards midTaken()
+        // answers from the map alone and never runs another per-element
+        // querySelector against the whole document (that search, once per
+        // first-touched element, was O(page) each and made updates crawl on
+        // large pages).
+        if (!window.__domMidOwner.has(v)) {
+          try { window.__domMidOwner.set(v, weak ? new WeakRef(nodes[i]) : nodes[i]); }
+          catch (e) { /* ignore */ }
+        }
       }
     } catch (e) { /* no document, or a hostile selector */ }
   };
@@ -4131,8 +4153,27 @@ _DELTA_OBSERVER_JS = r"""
     for (const sh of adoptedSheets()) n += sheetRuleCount(sh);
     return n;
   };
+  // The style-element LIST is cached and only re-searched when a mutation
+  // actually adds/removes a <style> (noteStyleChurn, called from the observer
+  // below).  The old shape ran document.querySelectorAll('style') inside
+  // cssSignature() on EVERY 16 ms flush — a full-document search at 60 Hz,
+  // which is what made updates crawl on large pages.
+  let styleElsCache = null;
+  const noteStyleChurn = (nodes) => {
+    if (!nodes || !nodes.length) return;
+    for (const n of nodes) {
+      if (!n || n.nodeType !== 1) continue;
+      if (n.tagName === 'STYLE') { styleElsCache = null; return; }
+      try {
+        if (n.querySelectorAll && n.querySelectorAll('style').length) { styleElsCache = null; return; }
+      } catch (e) { /* ignore */ }
+    }
+  };
   const styleElements = () => {
-    try { return document.querySelectorAll('style'); } catch (e) { return []; }
+    if (styleElsCache) return styleElsCache;
+    try { styleElsCache = Array.from(document.querySelectorAll('style')); }
+    catch (e) { styleElsCache = []; }
+    return styleElsCache;
   };
   const cssSignature = () => {
     let n = 0;
@@ -4141,7 +4182,15 @@ _DELTA_OBSERVER_JS = r"""
     return n + '/' + els.length + '/' + adoptedRuleCount();
   };
   let lastCssSig = cssSignature();
-  const flushStyleOps = () => {
+  let lastCssCheck = 0;
+  const flushStyleOps = (force) => {
+    // Rule-count signature is O(sheets) now that the element list is cached;
+    // style-only churn (insertRule, no DOM mutation) still does not need a
+    // 60 Hz check — 50 ms is visually instant and 3x cheaper per flush, and
+    // the slow timer below forces a check on its own cadence.
+    const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    if (!force && nowMs - lastCssCheck < 50) return false;
+    lastCssCheck = nowMs;
     const sig = cssSignature();
     if (sig === lastCssSig) return false;
     lastCssSig = sig;
@@ -4422,6 +4471,8 @@ _DELTA_OBSERVER_JS = r"""
         }
         if (idx >= 0) pushText(p, idx, r.target.nodeValue);
       } else if (r.type === 'childList') {
+        noteStyleChurn(r.addedNodes);
+        noteStyleChurn(r.removedNodes);
         const box = containerOf(r.target);
         if (!box) continue;
         const pm = box.id;
@@ -4718,7 +4769,7 @@ _DELTA_OBSERVER_JS = r"""
   // component's styles is not.
   try {
     setInterval(() => {
-      try { if (flushStyleOps()) flush(); } catch (e) { /* ignore */ }
+      try { if (flushStyleOps(true)) flush(); } catch (e) { /* ignore */ }
     }, 1200);
   } catch (e) { /* no timers */ }
   // A document can reload to the same URL.  Its token changes even when the

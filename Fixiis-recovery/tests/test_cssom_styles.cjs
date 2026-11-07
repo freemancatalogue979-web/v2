@@ -43,6 +43,10 @@ const deltaBodyStart = capture.indexOf('"""', deltaStart) + 3;
 const deltaSrc = capture.slice(deltaBodyStart, capture.indexOf('"""', deltaBodyStart));
 
 ok(deltaSrc.includes('sheetRuleCount'), 'the observer can count a sheet\'s rules');
+ok(deltaSrc.includes('styleElsCache') && deltaSrc.includes('noteStyleChurn(r.addedNodes)'),
+  'the style-element list is cached — no document-wide querySelectorAll per flush');
+ok(/midFloor[\s\S]*?__domMidOwner\.set/.test(deltaSrc),
+  'stamped mids register their owner in the one-time scan, so midTaken never searches the document per element');
 ok(deltaSrc.includes('cssSignature'), 'it keeps a cheap signature of the cascade');
 ok(deltaSrc.includes('flushStyleOps'), 'and a routine that ships a changed sheet');
 ok(deltaSrc.includes("pushCoalesced('s|' + id, ['s', id, css])"),
