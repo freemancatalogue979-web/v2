@@ -13,7 +13,8 @@ import sys
 import tempfile
 from urllib.parse import quote as _q, unquote
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 import proxy_mirror as pm  # noqa: E402
 
@@ -284,5 +285,43 @@ if shutil.which("node"):
 # --- WAF 400/403 clean-header retry wiring --------------------------------------
 ok("clean-header retry" in api_src and 'resp.status_code in (400, 403)' in api_src,
    "route retries upstream 400/403 once with clean minimal headers (Yahoo WAF case)")
+
+# --- browser-attached fetch mode (pages served THROUGH the remote browser) ----
+os.environ.pop("MIRROR_FETCH_MODE", None)
+ok(pm.fetch_mode() == "auto", "fetch mode defaults to auto (browser first, httpx fallback)")
+os.environ["MIRROR_FETCH_MODE"] = "browser"
+ok(pm.fetch_mode() == "browser", "MIRROR_FETCH_MODE=browser")
+os.environ["MIRROR_FETCH_MODE"] = "httpx"
+ok(pm.fetch_mode() == "httpx", "MIRROR_FETCH_MODE=httpx (old server-side route)")
+os.environ["MIRROR_FETCH_MODE"] = "bogus"
+ok(pm.fetch_mode() == "auto", "invalid mode falls back to auto")
+os.environ.pop("MIRROR_FETCH_MODE", None)
+pfjs = pm.build_page_fetch_js()
+ok("credentials:'include'" in pfjs, "in-page fetch sends the browser's own cookies natively (incl. HttpOnly)")
+ok("redirect:'follow'" in pfjs, "redirects followed in-browser (Set-Cookie stored by the browser itself)")
+ok("btoa(bin)" in pfjs and "atob(a.b)" in pfjs, "binary body base64 relay both ways")
+if shutil.which("node"):
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write("(" + pfjs + ")")
+        tmpf = f.name
+    r = subprocess.run(["node", "--check", tmpf], capture_output=True)
+    ok(r.returncode == 0, "page-fetch JS passes node --check: " + r.stderr.decode()[:200])
+ok("fetch_mode()" in api_src and "fetch_via_browser(target_url" in api_src,
+   "/m/ route serves through the remote browser first (auto), httpx as fallback")
+ok("class _ProxyUpstreamResponse" in api_src and "_browser_ok" in api_src,
+   "browser-fetch responses shimmed into the existing response pipeline")
+ok("_PROXY_BROWSER_MAX_BODY_BYTES" in api_src, "CDP base64 relay body cap")
+ok("session.sync_remote_url(target_url)" in api_src,
+   "after an in-browser redirect the remote browser is synced to the final URL")
+ok('if not _browser_ok and _mode == "browser":' in api_src,
+   "MIRROR_FETCH_MODE=browser hard-fails instead of silently falling back")
+
+session_src2 = open(os.path.join(ROOT, "session.py"), encoding="utf-8").read()
+ok("async def fetch_via_browser" in session_src2, "session.fetch_via_browser exists")
+fb = session_src2[session_src2.index("async def fetch_via_browser"):]
+ok("sync_remote_url(url)" in fb[:1500], "in-page fetch first puts the remote browser on the target origin (same-origin fetch)")
+ok('"cookie", "content-length", "origin", "referer"' in fb, "forbidden headers stripped — the browser sets them natively")
+ok("base64.b64encode(body)" in fb, "request body relayed base64")
+ok("_dead_browser_err(exc)" in fb and "_maybe_recover()" in fb, "dead browser during in-page fetch triggers recovery")
 
 print("proxy mirror: %d checks passed" % PASSED)

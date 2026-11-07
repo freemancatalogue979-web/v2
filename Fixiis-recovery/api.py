@@ -5349,7 +5349,24 @@ async def serve_asset_options(hash_hex: str):
 # ---------------------------------------------------------------------------
 
 _PROXY_MAX_BODY_BYTES = 25 * 1024 * 1024
+_PROXY_BROWSER_MAX_BODY_BYTES = 8 * 1024 * 1024   # in-page fetch goes through CDP as base64
 _PROXY_TIMEOUT_S = 20.0
+
+
+class _ProxyUpstreamResponse:
+    """Minimal httpx.Response-like shim for a response fetched THROUGH the
+    remote browser (in-page fetch via CDP) — the page is attached to the
+    persistent context, so cookies (incl. HttpOnly) / storage / SW apply."""
+    def __init__(self, status_code: int, headers_list, content: bytes, url: str):
+        self.status_code = status_code
+        self.headers = httpx.Headers(headers_list)
+        self.content = content
+        self.url = url
+        self.encoding = None
+
+    @property
+    def is_redirect(self) -> bool:
+        return 300 <= self.status_code < 400 and "location" in self.headers
 
 
 async def _proxy_page_of(session) -> Any:
@@ -5464,43 +5481,81 @@ async def mirror_proxy(request: Request, target: str):
         if len(body) > _PROXY_MAX_BODY_BYTES:
             return JSONResponse({"error": "body too large"}, status_code=413)
 
-    try:
-        timeout = httpx.Timeout(_PROXY_TIMEOUT_S)
-        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
-            resp = await client.request(
-                request.method, target_url,
-                headers=up_headers,
-                content=body if body is not None else None,
-            )
-        # Some WAFs (Yahoo's "Will be right back…" 400 etc.) reject odd
-        # forwarded headers.  On a 400/403 retry once with a clean, minimal
-        # browser-like header set before giving up.
-        if resp.status_code in (400, 403) and request.method in ("GET", "HEAD"):
-            clean_headers = {
-                "User-Agent": up_headers.get("User-Agent") or (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": up_headers.get("Accept-Language") or "en-US,en;q=0.9",
-            }
-            if merged_cookie:
-                clean_headers["Cookie"] = merged_cookie
+    # --- Browser-attached fetch (default in auto mode): serve /m/ THROUGH the
+    # persistent remote browser via in-page fetch — native cookies/storage/SW.
+    from proxy_mirror import fetch_mode
+    _mode = fetch_mode()
+    _browser_ok = False
+    if (session is not None and _mode in ("auto", "browser")
+            and hasattr(session, "fetch_via_browser")
+            and (body is None or len(body) <= _PROXY_BROWSER_MAX_BODY_BYTES)):
+        fres = None
+        try:
+            fres = await session.fetch_via_browser(target_url, request.method, up_headers, body)
+        except Exception as exc:
+            logger.debug("[PROXY] fetch_via_browser raised for %s: %s", target_url[:120], exc)
+        if fres:
             try:
-                async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client2:
-                    resp2 = await client2.request(
-                        request.method, target_url,
-                        headers=clean_headers,
-                        content=body if body is not None else None,
-                    )
-                if resp2.status_code not in (400, 403):
-                    logger.info("[PROXY] upstream %s answered %s; clean-header retry -> %s",
-                                target_url[:100], resp.status_code, resp2.status_code)
-                    resp = resp2
+                raw = base64.b64decode(fres.get("bodyB64") or "")
+                if len(raw) > _PROXY_MAX_BODY_BYTES:
+                    raise ValueError("response too large for browser relay")
+                hdrs = [(str(k), str(v)) for k, v in (fres.get("headers") or {}).items()]
+                resp = _ProxyUpstreamResponse(
+                    int(fres.get("status") or 502), hdrs, raw, str(fres.get("url") or target_url))
+                if resp.url and resp.url != target_url:
+                    # Redirects were followed in-browser; land on the final URL.
+                    target_url = resp.url
+                    parts = urlsplit(target_url)
+                    try:
+                        asyncio.create_task(session.sync_remote_url(target_url))
+                    except Exception:
+                        pass
+                _browser_ok = True
+                logger.debug("[PROXY] served via remote browser: %s -> %s (%s, %d bytes)",
+                             str(fres.get("url"))[:100], resp.status_code, request.method, len(raw))
             except Exception as exc:
-                logger.debug("[PROXY] clean-header retry failed for %s: %s", target_url[:120], exc)
-    except Exception as exc:
-        logger.debug("[PROXY] upstream fetch failed for %s: %s", target_url[:120], exc)
-        return JSONResponse({"error": "upstream fetch failed"}, status_code=502)
+                logger.debug("[PROXY] browser-fetch decode failed for %s: %s", target_url[:120], exc)
+        if not _browser_ok and _mode == "browser":
+            return JSONResponse({"error": "browser fetch failed"}, status_code=502)
+
+    if not _browser_ok:
+        try:
+            timeout = httpx.Timeout(_PROXY_TIMEOUT_S)
+            async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+                resp = await client.request(
+                    request.method, target_url,
+                    headers=up_headers,
+                    content=body if body is not None else None,
+                )
+            # Some WAFs (Yahoo's "Will be right back…" 400 etc.) reject odd
+            # forwarded headers.  On a 400/403 retry once with a clean, minimal
+            # browser-like header set before giving up.
+            if resp.status_code in (400, 403) and request.method in ("GET", "HEAD"):
+                clean_headers = {
+                    "User-Agent": up_headers.get("User-Agent") or (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": up_headers.get("Accept-Language") or "en-US,en;q=0.9",
+                }
+                if merged_cookie:
+                    clean_headers["Cookie"] = merged_cookie
+                try:
+                    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client2:
+                        resp2 = await client2.request(
+                            request.method, target_url,
+                            headers=clean_headers,
+                            content=body if body is not None else None,
+                        )
+                    if resp2.status_code not in (400, 403):
+                        logger.info("[PROXY] upstream %s answered %s; clean-header retry -> %s",
+                                    target_url[:100], resp.status_code, resp2.status_code)
+                        resp = resp2
+                except Exception as exc:
+                    logger.debug("[PROXY] clean-header retry failed for %s: %s", target_url[:120], exc)
+        except Exception as exc:
+            logger.debug("[PROXY] upstream fetch failed for %s: %s", target_url[:120], exc)
+            return JSONResponse({"error": "upstream fetch failed"}, status_code=502)
 
     # Keep the persistent remote context's jar in sync with what the site set,
     # and mirror the same cookies onto OUR origin (Path=/) so document.cookie

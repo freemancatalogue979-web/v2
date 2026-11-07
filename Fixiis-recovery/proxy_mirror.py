@@ -42,6 +42,40 @@ def is_proxy_enabled() -> bool:
     return os.environ.get("MIRROR_PROXY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+def fetch_mode() -> str:
+    """How /m/ fetches upstream: 'browser' (in-page fetch via CDP — the page is
+    literally attached to the remote browser: native cookies incl. HttpOnly,
+    storage, service workers), 'httpx' (server-side fetch with the context's
+    cookie jar), or 'auto' (default: browser first, httpx fallback)."""
+    v = (os.environ.get("MIRROR_FETCH_MODE") or "auto").strip().lower()
+    return v if v in ("auto", "browser", "httpx") else "auto"
+
+
+def build_page_fetch_js() -> str:
+    """JS evaluated IN the remote browser: fetch() a URL through the browser's
+    own network stack (credentials included natively — the context's cookies,
+    incl. HttpOnly, apply and Set-Cookie is stored by the browser itself).
+    Returns {status, url (final, after redirects), headers, bodyB64}.
+    Pinned by node --check in the tests."""
+    return (
+        "async (a) => {"
+        "try{"
+        "const hdrs={};for(const k in (a.h||{}))hdrs[k]=a.h[k];"
+        "let body=undefined;"
+        "if(a.b){const bin=atob(a.b);const bytes=new Uint8Array(bin.length);"
+        "for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);body=bytes;}"
+        "const r=await fetch(a.u,{method:a.m||'GET',headers:hdrs,body:body,"
+        "credentials:'include',redirect:'follow',cache:'no-store',mode:'cors'});"
+        "const ab=await r.arrayBuffer();const bytes=new Uint8Array(ab);"
+        "let bin='';const CH=0x8000;"
+        "for(let i=0;i<bytes.length;i+=CH)bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH));"
+        "const headers={};r.headers.forEach(function(v,k){headers[k]=v;});"
+        "return {status:r.status,url:r.url,headers:headers,bodyB64:btoa(bin)};"
+        "}catch(e){return {error:String(e&&e.message||e)};}"
+        "}"
+    )
+
+
 def is_capture_enabled() -> bool:
     """Is the DOM-capture mirror active?
 

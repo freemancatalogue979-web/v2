@@ -10,6 +10,8 @@ import time
 import json
 import re
 import os
+import base64
+from urllib.parse import urlsplit
 from typing import Dict, Optional, Any, List
 from dataclasses import dataclass, field
 from collections import deque
@@ -2016,6 +2018,59 @@ class NeoStreamingSession:
             return not is_capture_enabled()
         except Exception:
             return False
+
+    async def fetch_via_browser(self, url: str, method: str = "GET",
+                                  headers: Optional[Dict[str, str]] = None,
+                                  body: Optional[bytes] = None) -> Optional[Dict[str, Any]]:
+        """Fetch a URL THROUGH the persistent remote browser (in-page fetch via
+        CDP).  The page is then literally attached to the remote browser: its
+        network stack applies the context's cookies (incl. HttpOnly), storage
+        and service workers natively, and Set-Cookie is stored in the context
+        by the browser itself — no manual jar sync needed.
+
+        Returns {status, url (final after redirects), headers, bodyB64} or
+        None on any failure (caller falls back to server-side httpx).
+        """
+        try:
+            from proxy_mirror import build_page_fetch_js
+            page = self.get_active_page() or getattr(self, 'page', None)
+            if page is None or page.is_closed():
+                return None
+            # In-page fetch is same-origin: make sure the remote browser is on
+            # the target's origin first (light goto; cookies accumulate there).
+            try:
+                if urlsplit(page.url or '').netloc != urlsplit(url or '').netloc:
+                    await self.sync_remote_url(url)
+                    page = self.get_active_page() or page
+                    if page is None or page.is_closed():
+                        return None
+            except Exception:
+                pass
+            # Forbidden headers are set by the browser itself (Cookie, Host,
+            # Origin, Referer, Content-Length) — strip them from the forward.
+            skip = {"host", "cookie", "content-length", "origin", "referer",
+                    "connection", "accept-encoding", "transfer-encoding"}
+            fwd = {k: v for k, v in (headers or {}).items() if k.lower() not in skip}
+            arg = {
+                "u": url,
+                "m": (method or "GET").upper(),
+                "h": fwd,
+                "b": base64.b64encode(body).decode("ascii") if body else "",
+            }
+            res = await page.evaluate(build_page_fetch_js(), arg)
+            if isinstance(res, dict) and "error" not in res:
+                return res
+            if isinstance(res, dict) and res.get("error"):
+                logger.debug("[PROXY] in-browser fetch error for %s: %s", str(url)[:120], res["error"][:160])
+            return None
+        except Exception as exc:
+            if self._dead_browser_err(exc):
+                try:
+                    asyncio.create_task(self._maybe_recover())
+                except Exception:
+                    pass
+            logger.debug("[PROXY] fetch_via_browser failed for %s: %s", str(url)[:120], exc)
+            return None
 
     async def capture_remote_page(self, reason: Optional[str] = None, force: bool = False):
         # Proxy mirror active: the client reads the live page through /m/… —

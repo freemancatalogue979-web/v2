@@ -98,6 +98,33 @@ the remote context as the source of session data.  Wiring:
   while proxy mode owns the iframe; a 10s load watchdog falls back to the
   capture mirror if a proxied page fails to load.
 
+## Browser-attached serving (the route that makes pages "attached" to the remote browser)
+
+Problem with pure server-side proxying: httpx fetches with a *copied* cookie
+jar — HttpOnly cookies, storage, service workers and redirect chains of the
+remote browser don't apply; the pages are fetched *for* the browser, not *by*
+it.
+
+Fix — `MIRROR_FETCH_MODE` (default `auto`): in auto/browser mode the `/m/`
+route serves every response **through the persistent remote browser** via an
+in-page `fetch()` (CDP `page.evaluate`, JS pinned by `node --check`):
+
+- the remote browser is first put on the target origin (`sync_remote_url`,
+  commit-only) so the in-page fetch is same-origin;
+- `credentials:'include'` → the context's cookies apply natively, **including
+  HttpOnly**, and every `Set-Cookie` is stored in the persistent context by
+  the browser itself (no manual jar sync);
+- `redirect:'follow'` → redirect chains execute in the browser; the final URL
+  becomes the rewrite base and the remote browser is synced to it;
+- localStorage/sessionStorage/service workers of the context all apply — the
+  client is literally browsing inside the remote browser's session.
+
+Bodies relay as base64 through CDP (capped at 8 MB; larger goes httpx).
+`auto` falls back to the server-side httpx path (with cookie-jar merge +
+Set-Cookie sync + WAF clean-header retry) whenever there is no live session;
+`MIRROR_FETCH_MODE=browser` hard-fails instead of falling back,
+`=httpx` forces the old route.
+
 ## DOM capture stands down in proxy mode
 
 With the proxy mirror owning the live view, the DOM-capture pipeline is
