@@ -152,25 +152,24 @@ const skin = admin.slice(skinStart, cssEnd);
 // 5. Corptic for every letter, Montserrat for every number — embedded, nothing fetched
 // ---------------------------------------------------------------------------
 {
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 3, 'Admin.html carries exactly three embedded faces');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 2, 'Admin.html carries exactly two embedded faces');
   ok(/<style id="shf-corptic-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*Corptic;/.test(admin),
     'the letter face is Corptic (Pandeka Foundry), in its own block');
   ok(/<style id="shf-montserrat-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*Montserrat;/.test(admin),
     'and the digit face is Montserrat, subset to numbers, in its own block');
-  ok(/<style id="shf-dmmono-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*"DM Mono";/.test(admin),
-    'and the machine-output face is DM Mono Medium, in its own block');
   ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin), 'and they ship as data: URIs');
   const faceRules = admin.match(/@font-face\s*\{[\s\S]*?\}/g) || [];
-  ok(faceRules.length === 3 && faceRules.every((r) => !/https?:\/\//.test(r) && /data:font\/woff2;base64,/.test(r)),
-    'all three face rules are local data: URIs, no remote URL');
+  ok(faceRules.length === 2 && faceRules.every((r) => !/https?:\/\//.test(r) && /data:font\/woff2;base64,/.test(r)),
+    'both face rules are local data: URIs, no remote URL');
   ok(/--mc-font:\s*Corptic, Montserrat,/.test(css),
     'the universal stack is Corptic for letters, Montserrat for numbers');
   ok(/font-family:\s*var\(--mc-font\)\s*!important/.test(css),
     'every text uses it, with !important over the panel\'s `*` reset');
   ok(/font-style:\s*italic/.test(css), 'the chrome is oblique');
   const machineRule = (css.match(/textarea, pre, code, kbd, samp,[\s\S]*?\}/) || [''])[0];
-  ok(/font-family:\s*"DM Mono", monospace\s*!important/.test(machineRule),
-    'machine output is set in DM Mono, not the chrome face');
+  ok(/font-family:\s*"Courier", monospace\s*!important/.test(machineRule),
+    'machine output is set in Courier (a system font), not the chrome face');
+  ok(!/DM Mono|dmmono/.test(admin), 'no DM Mono is embedded or named anywhere');
   ok(/font-size:\s*11px\s*!important/.test(machineRule) && /font-weight:\s*500\s*!important/.test(machineRule) &&
      /letter-spacing:\s*0\.1em\s*!important/.test(machineRule) && /text-transform:\s*uppercase\s*!important/.test(machineRule),
     'at 11px, weight 500, 0.1em tracking, uppercased - all !important over the base styles');
@@ -187,13 +186,9 @@ const skin = admin.slice(skinStart, cssEnd);
   ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'montserrat-digits-400.woff2')) &&
      admin.includes(fs.readFileSync(path.join(root, 'assets', 'fonts', 'montserrat-digits-400.woff2')).toString('base64')),
     'and so is the embedded Montserrat digit subset');
-  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'dm-mono-latin-500.woff2')) &&
-     admin.includes(fs.readFileSync(path.join(root, 'assets', 'fonts', 'dm-mono-latin-500.woff2')).toString('base64')),
-    'and so is the embedded DM Mono subset');
   ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')) &&
-     fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Montserrat.txt')) &&
-     fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-DM-Mono.txt')),
-    'and all three licences travel with their fonts');
+     fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Montserrat.txt')),
+    'and both licences travel with their fonts');
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +302,6 @@ const skin = admin.slice(skinStart, cssEnd);
       'including its media queries');
     ok(doc.getElementById('shf-corptic-face').sheet.cssRules.length === 1, 'the Corptic face parses as one rule');
     ok(doc.getElementById('shf-montserrat-face').sheet.cssRules.length === 1, 'and so does the Montserrat digit face');
-    ok(doc.getElementById('shf-dmmono-face').sheet.cssRules.length === 1, 'and the DM Mono face');
 
     const style = (sel, prop) => {
       const el = doc.querySelector(sel);
@@ -323,7 +317,7 @@ const skin = admin.slice(skinStart, cssEnd);
       'the nav is Corptic and oblique');
     ok(style('.logo-text', 'fontStyle') === 'italic', 'the title is oblique');
     ok(style('textarea', 'fontStyle') === 'normal', 'a textarea is upright');
-    ok(/DM Mono/.test(style('textarea', 'fontFamily') || ''), 'a textarea computes to DM Mono');
+    ok(/Courier/.test(style('textarea', 'fontFamily') || ''), 'a textarea computes to Courier');
     ok(/11px/.test(style('textarea', 'fontSize') || '') && /uppercase/.test(style('textarea', 'textTransform') || ''),
       'at 11px, uppercased');
     ok(style('.top-tab', 'borderRadius') === '999px' || style('.top-tab', 'borderRadius') === 'var(--mc-pill)',

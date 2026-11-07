@@ -36,9 +36,8 @@ MARKER_ID = "shf-font-face"
 # embedded in its own <style id="shf-corptic-face"> block
 # (asset: assets/fonts/corptic-demo-regular.woff2), every digit in a
 # Montserrat digit subset in <style id="shf-montserrat-face">
-# (asset: assets/fonts/montserrat-digits-400.woff2), and machine output in a
-# DM Mono Medium subset in <style id="shf-dmmono-face">
-# (asset: assets/fonts/dm-mono-latin-500.woff2).
+# (asset: assets/fonts/montserrat-digits-400.woff2); machine output uses the
+# system Courier, so it needs no embedded face.
 # See tests/test_slab_font.cjs section 2b, which asserts that.
 TARGETS = [
     ("mini-admin.html", "<style>\n/* ============================================================"),
