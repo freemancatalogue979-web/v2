@@ -289,4 +289,69 @@ plain2 = "<html><head></head><body><img src=\"pic.png\"></body></html>"
 ok('<base href="' + page_url + '">' in dom_capture._inject_base_href(plain2, page_url),
    "a base-less capture still gets the page URL as <base href>")
 
+# ---------------------------------------------------------------------------
+# 9. Snapshot mode for heavy hosts (YouTube/TikTok-class pages)
+# ---------------------------------------------------------------------------
+ok(dom_capture.is_snapshot_host("https://www.youtube.com/watch?v=x"),
+   "youtube is a snapshot host")
+ok(dom_capture.is_snapshot_host("https://m.tiktok.com/video/7"),
+   "tiktok is a snapshot host")
+ok(not dom_capture.is_snapshot_host("https://youtube.com.evil.example/"),
+   "a lookalike suffix is NOT a snapshot host")
+ok(not dom_capture.is_snapshot_host("https://mail.google.com/mail/u/0/"),
+   "a normal page is not a snapshot host")
+
+# embed_all inlines even images above the normal EMBED_MAX_BYTES cap
+big_prefix = "https://snap%d.example" % os.getpid()
+BIG_PNG = b"\x89PNG\r\n\x1a\n" + b"1" * (1024 * 1024 + 10)   # > 1 MB default cap
+FakeClient.routes = {big_prefix + "/big.png": (BIG_PNG, "image/png")}
+FakeClient.requests = []
+snap_html = "<html><head></head><body><img src=\"/big.png\"></body></html>"
+out_snap, _ = run(dom_capture._rewrite_assets_to_cache(snap_html, big_prefix + "/", embed_all=True))
+ok("data:image/png;base64," in out_snap and "/big.png" not in out_snap,
+   "embed_all inlines an over-cap image as a data URI (snapshot is self-contained)")
+out_norm, _ = run(dom_capture._rewrite_assets_to_cache(snap_html, big_prefix + "/", embed=True))
+ok("/assets/" in out_norm and "data:image/png" not in out_norm,
+   "the normal path still uses the /assets cache for over-cap images")
+
+# ...but the total snapshot embed budget stops runaway pages
+old_budget = dom_capture.SNAPSHOT_EMBED_TOTAL_MAX_BYTES
+dom_capture.SNAPSHOT_EMBED_TOTAL_MAX_BYTES = 1024 * 1024 + 64   # room for one image only
+try:
+    two = ('<html><body><img src="/a.png"><img src="/big.png"></body></html>')
+    FakeClient.routes[big_prefix + "/a.png"] = (PNG, "image/png")
+    out_b, _ = run(dom_capture._rewrite_assets_to_cache(two, big_prefix + "/", embed_all=True))
+    ok("data:image/png" in out_b and "/assets/" in out_b,
+       "past the total budget the rest keeps /assets refs (frame stays sendable)")
+finally:
+    dom_capture.SNAPSHOT_EMBED_TOTAL_MAX_BYTES = old_budget
+
+# a snapshot-host send: full document, NO delta flag, snapshot_only on, and
+# a byte-identical recapture is skipped instead of re-sent
+old_hosts = dom_capture.SNAPSHOT_HOSTS
+dom_capture.SNAPSHOT_HOSTS = frozenset({"snap%d.example" % os.getpid()})
+try:
+    FakeClient.routes = {big_prefix + "/big.png": (BIG_PNG, "image/png")}
+    ws3 = FakeWS()
+    sess3 = make_nav_session(ws3)
+    sess3.page.url = big_prefix + "/watch"
+    sess3._delta_installed = False            # isolate from the seq/checksum skips
+    sess3._last_capture_supports_assets = True
+    async def _cap3(settle=None):
+        return '<html><body><img src="/big.png"></body></html>'
+    sess3.capture_page = _cap3
+    run(sess3._send_full(big_prefix + "/watch", reason="navigation"))
+    frames3 = [f for f in ws3.frames if '"full_document"' in f]
+    ok(len(frames3) == 1, "snapshot host got exactly one full document")
+    ok('"delta": true' not in frames3[0],
+       "snapshot host sends NO delta flag — the client re-renders, never patches")
+    ok("data:image/png;base64," in frames3[0],
+       "the snapshot document carries the inlined image (self-contained)")
+    ok(sess3.snapshot_only is True, "snapshot_only is armed for the host")
+    run(sess3._send_full(big_prefix + "/watch", reason="click"))
+    frames3b = [f for f in ws3.frames if '"full_document"' in f]
+    ok(len(frames3b) == 1, "a byte-identical snapshot recapture is skipped")
+finally:
+    dom_capture.SNAPSHOT_HOSTS = old_hosts
+
 print("capture pipeline: %d checks passed" % PASSED)

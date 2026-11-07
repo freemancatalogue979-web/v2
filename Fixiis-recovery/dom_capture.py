@@ -158,6 +158,56 @@ def is_redraw_only_host(url: str) -> bool:
     return False
 
 
+# Hosts whose pages CANNOT be rebuilt from small DOM patches — heavy
+# shadow-DOM / JS-driven apps (YouTube, TikTok, ...).  For these the mirror
+# does not use the delta channel at all: every change is sent as one full,
+# self-contained snapshot (all assets inlined, SingleFile/MHTML-equivalent
+# single artifact — raw MHTML itself cannot render inside the viewer's blob
+# iframe, so the snapshot is shipped as plain inlined HTML).  Normal pages
+# keep the fast 16 ms delta path.  Override with
+# DOM_CAPTURE_SNAPSHOT_HOSTS="youtube.com,tiktok.com,...".
+SNAPSHOT_HOSTS: frozenset = frozenset(
+    h.strip().lower().lstrip(".")
+    for h in os.environ.get(
+        "DOM_CAPTURE_SNAPSHOT_HOSTS",
+        "youtube.com,tiktok.com,x.com,twitter.com,instagram.com,"
+        "facebook.com,twitch.tv,reddit.com",
+    ).split(",")
+    if h.strip()
+)
+
+# Full-snapshot cadence for snapshot hosts (the delta channel is off there,
+# so every interaction falls back to a full capture — debounced to this).
+SNAPSHOT_HOST_CAPTURE_MIN_INTERVAL_S: float = float(
+    os.environ.get("DOM_SNAPSHOT_HOST_MIN_INTERVAL_S", "0.5")
+)
+
+# Total bytes one snapshot may inline before the remaining refs fall back to
+# the /assets cache (keeps one monster page from producing an unsendable
+# document).
+SNAPSHOT_EMBED_TOTAL_MAX_BYTES: int = int(
+    os.environ.get("DOM_SNAPSHOT_EMBED_TOTAL_MAX_BYTES", str(32 * 1024 * 1024))
+)
+
+
+def is_snapshot_host(url: Optional[str]) -> bool:
+    """True when the URL belongs to a heavy host that needs full snapshots
+    instead of delta patches (suffix match, so www.youtube.com matches but
+    youtube.com.evil.example does not)."""
+    if not url:
+        return False
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    for h in SNAPSHOT_HOSTS:
+        if host == h or host.endswith("." + h):
+            return True
+    return False
+
+
 
 # ---------------------------------------------------------------------------
 # Fast-capture pipeline (see MIGRATION_LIVE_MIRROR.md)
@@ -2203,7 +2253,8 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                                   allow_fetch: bool = True,
                                   report: Optional[Dict[str, Any]] = None,
                                   max_fetch: Optional[int] = None,
-                                  embed: bool = True
+                                  embed: bool = True,
+                                  embed_all: bool = False
                                   ) -> Tuple[str, List[Dict[str, Any]]]:
     """Resolve external asset refs in captured HTML: small images/icons are
     data-URI EMBEDDED (see EMBED_MAX_BYTES), small stylesheets become inline
@@ -2240,10 +2291,22 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     ``embed=False`` turns OFF the data-URI/CSS inlining for this pass, so
     recaptures of a page stay small and use the /assets cache refs (which the
     browser HTTP-caches) instead of re-shipping megabytes every capture.
+
+    ``embed_all=True`` is SNAPSHOT mode (heavy hosts): every asset is inlined
+    so the sent document is one self-contained artifact.  Per-asset size is
+    still bounded by ASSET_MAX_BYTES at fetch time, and the TOTAL inlined
+    bytes by SNAPSHOT_EMBED_TOTAL_MAX_BYTES — past that, refs keep the
+    /assets cache path so a monster page cannot produce an unsendable frame.
     """
     manager = get_global_asset_manager()
     eff_css_embed = CSS_EMBED_MAX_BYTES if embed else 0
     eff_embed = EMBED_MAX_BYTES if embed else 0
+    embed_budget: Optional[int] = None
+    if embed_all:
+        eff_css_embed = max(eff_css_embed, ASSET_MAX_BYTES)
+        eff_embed = max(eff_embed, ASSET_MAX_BYTES)
+        embed_budget = SNAPSHOT_EMBED_TOTAL_MAX_BYTES
+    embed_spent = 0
     _t_start = time.monotonic()
     # Resolve relative refs against the document's own <base href> when the
     # capture carries one — the page URL is only the fallback.
@@ -2474,14 +2537,19 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                 # Small stylesheets INLINE as <style> (client needs no
                 # /assets route to render styled pages — the yahoo case);
                 # larger ones keep the cache path below.
-                if eff_css_embed > 0 and len(data) <= eff_css_embed:
+                if (eff_css_embed > 0 and len(data) <= eff_css_embed
+                        and (embed_budget is None
+                             or embed_spent + len(data) <= embed_budget)):
                     inline_css[abs_u] = data.decode("utf-8", errors="ignore")
                     hash_by_url[abs_u] = raw_hash_by_url.get(abs_u) or manager.digest_for(data)
+                    embed_spent += len(data)
                     n_embed += 1
                     continue
-            elif kind in ("img", "icon") and eff_embed > 0 and len(data) <= eff_embed:
+            elif kind in ("img", "icon") and eff_embed > 0 and len(data) <= eff_embed \
+                    and (embed_budget is None or embed_spent + len(data) <= embed_budget):
                 repl[abs_u] = _data_uri(data, ctype)
                 hash_by_url[abs_u] = raw_hash_by_url.get(abs_u) or manager.digest_for(data)
+                embed_spent += len(data)
                 n_embed += 1
                 continue
             digest = raw_hash_by_url.get(abs_u) or manager.digest_for(data)
@@ -4777,9 +4845,16 @@ async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") 
                 # the full document is the only way to reflect an activation.
                 now = asyncio.get_event_loop().time()
                 last = getattr(session, "_last_interaction_capture_t", 0.0)
-                _min_iv = (SNAPSHOT_CAPTURE_MIN_INTERVAL_S
-                           if getattr(session, "snapshot_only", False)
-                           else INTERACTION_CAPTURE_MIN_INTERVAL_S)
+                _cur_url = getattr(session, "last_sent_url", "") or (
+                    session.page.url if getattr(session, "page", None) is not None else "")
+                if is_snapshot_host(_cur_url):
+                    # snapshot hosts: a full self-contained capture per change,
+                    # debounced harder — they are the expensive ones
+                    _min_iv = SNAPSHOT_HOST_CAPTURE_MIN_INTERVAL_S
+                elif getattr(session, "snapshot_only", False):
+                    _min_iv = SNAPSHOT_CAPTURE_MIN_INTERVAL_S
+                else:
+                    _min_iv = INTERACTION_CAPTURE_MIN_INTERVAL_S
                 if (now - last) < _min_iv:
                     logger.debug(
                         "interaction recapture suppressed (debounce): "
@@ -5640,13 +5715,19 @@ class DOMCaptureSession:
             # First capture of a URL may inline small assets/CSS (the client
             # might not reach /assets at all); recaptures stay small and use
             # the HTTP-cached /assets refs instead.
-            embed_ok = bool(url) and url not in self._embed_done_urls
+            # Heavy hosts (YouTube, TikTok, ...) cannot be rebuilt from small
+            # DOM patches: for them every send is one full self-contained
+            # snapshot — delta channel off, no progressive deferral (the first
+            # document must already be complete), and every asset inlined.
+            snap = is_snapshot_host(url)
+            self.snapshot_only = snap
+            embed_ok = snap or (bool(url) and url not in self._embed_done_urls)
             if supports_assets and url and self._assets_ok:
                 t_rw = time.perf_counter()
                 try:
                     if DOM_CAPTURE_STRIP_SCRIPTS:
                         html_data = _strip_script_tags(html_data)
-                    if PROGRESSIVE_ASSETS:
+                    if PROGRESSIVE_ASSETS and not snap:
                         plan: Dict[str, Any] = {}
                         ready_html, _ready_meta = await _rewrite_assets_to_cache(
                             html_data, url, self.page, owner_id=self.client_id,
@@ -5663,7 +5744,7 @@ class DOMCaptureSession:
                     else:
                         html_data, assets_meta = await _rewrite_assets_to_cache(
                             html_data, url, self.page, owner_id=self.client_id,
-                            embed=embed_ok,
+                            embed=embed_ok, embed_all=snap,
                         )
                 except ImportError:
                     self._assets_ok = False
@@ -5688,6 +5769,7 @@ class DOMCaptureSession:
                 and self._delta_installed
                 and self._last_capture_supports_delta
                 and not is_redraw
+                and not snap
             )
 
             # Snapshot mode: skip byte-identical re-sends.  Hybrid delta
@@ -6228,6 +6310,8 @@ __all__ = [
     "DOMCaptureSession",
     "prefer_snapshot_for_url",
     "is_redraw_only_host",
+    "is_snapshot_host",
+    "SNAPSHOT_HOSTS",
     "_inject_base_href",
     "_capture_with_single_file",
     "_capture_via_extension",
