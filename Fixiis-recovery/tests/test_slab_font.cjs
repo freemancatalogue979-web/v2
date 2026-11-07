@@ -100,16 +100,18 @@ const PAGES = ['client.html', 'mini-admin.html'];
   ok(!/<style id="shf-font-face">/.test(admin), 'Admin.html carries no Roboto Slab block');
   ok(/<style id="shf-corptic-face">/.test(admin),
     'Admin.html carries the Corptic face in its own block');
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 2,
-    'exactly two @font-face rules in Admin.html - Corptic plus the Montserrat digit subset');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 3,
+    'exactly three @font-face rules in Admin.html - Corptic, the Montserrat digit subset, DM Mono');
   ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin),
     'the face ships as a data: URI - nothing is fetched');
   const corpticB64 = fs.readFileSync(
     path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')).toString('base64');
   ok(admin.includes(corpticB64),
     'the embedded Corptic is byte-identical to assets/fonts/corptic-demo-regular.woff2');
-  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')),
-    'the licence travels with the font');
+  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')) &&
+     fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Montserrat.txt')) &&
+     fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-DM-Mono.txt')),
+    'the licences travel with the fonts');
   ok(/--mc-font:\s*Corptic, Montserrat,/.test(admin), 'letters lead with Corptic, numbers with Montserrat');
   ok(!/Roboto Slab/.test(admin), 'and asks for no other house face');
 }

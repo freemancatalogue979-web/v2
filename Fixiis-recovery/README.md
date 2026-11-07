@@ -675,7 +675,7 @@ describes how existing elements look and never renames one.
 |---|---|
 | palette, pills, rounded corners, type | CSS custom properties on `:root`, strict monochrome (grays only), with a full `[data-theme=\"light\"]` counterpart |
 | the console mark | inline SVG inside the existing `.logo-icon` (a round reticle, CSS rings around it) |
-| the face for every text | Corptic DEMO (Pandeka Foundry), embedded as a data: URI in `<style id=\"shf-corptic-face\">` and applied to every element with `!important`; the demo is letters-only, so **numbers** fall through to the embedded Montserrat digit subset (`<style id=\"shf-montserrat-face\">`) and any other punctuation to Helvetica per glyph |
+| the face for every text | Corptic DEMO (Pandeka Foundry), embedded as a data: URI in `<style id=\"shf-corptic-face\">` and applied to every element with `!important`; the demo is letters-only, so **numbers** fall through to the embedded Montserrat digit subset (`<style id=\"shf-montserrat-face\">`) and any other punctuation to Helvetica per glyph. **Machine output** (logs, terminal, code, textareas) is the one exception: `font-family: "DM Mono", monospace; font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase`, upright — DM Mono Medium embedded in `<style id=\"shf-dmmono-face\">` |
 | the sign-in airlock | the login is a round glass card over concentric rings, with a porthole reticle, pill fields and one pill key — deliberately none of the angular cuts |
 | the console stage | `.lx-stage` (dot field + scanlines) and an inline `.mc-radar` scope — rings, degree ticks, a sweep and blips, all in `currentColor` so the scope is white on black and black on white |
 | the tab rail | `.top-tabs` / `.top-tab`: uppercase oblique pill keys (`border-radius: 999px`), the active one filled with the accent |
@@ -692,11 +692,12 @@ dressed up as a redesign:
   still exists. `tests/fixtures/admin_shell_contract.json` is that contract,
   captured before the reskin; `tests/test_admin_cockpit.cjs` fails if any entry
   disappears.
-* **One face for every text, machine output upright.** Corptic is applied to
-  every element with `!important` — the panel's own `* { font-family: … !important }`
-  reset claims every element, so the skin lists the log/terminal/message
-  classes explicitly to win that fight. Logs, the terminal, code fields and
-  `<textarea>` keep `font-style: normal`.
+* **One face for every text, DM Mono for machine output.** Corptic is applied
+  to every element with `!important` — the panel's own `* { font-family: … !important }`
+  reset claims every element, so the skin lists the message classes explicitly
+  to win that fight. Logs, the terminal, code fields and `<textarea>` are set
+  in **DM Mono** instead — 11px, weight 500, `letter-spacing: 0.1em`,
+  `text-transform: uppercase`, still upright (`font-style: normal`).
 * **Motion is optional.** The reticle ring turns, the lamps blink and the radar
   sweeps; under `prefers-reduced-motion: reduce` all of them stop and the
   design still reads.
@@ -707,7 +708,7 @@ white (`--mc-text: #000000` on `--mc-void: #ffffff`) — and the black theme
 choice). Every token has both values; the palette is pure black and white, so
 there is no hue to re-tune.
 
-`node tests/test_admin_cockpit.cjs` checks all of the above (130 checks).
+`node tests/test_admin_cockpit.cjs` checks all of the above (143 checks).
 
 ---
 
@@ -1180,7 +1181,9 @@ chrome and upright in machine output. The one thing Corptic cannot draw is
 numbers (the demo ships letters only), so **every digit falls through to
 Montserrat Regular**, embedded as a digits-only subset in
 `<style id=\"shf-montserrat-face\">`; any remaining punctuation falls to
-Helvetica per glyph. See *The mission-control console* below.
+Helvetica per glyph. Machine output — logs, the terminal, code fields — is
+set in **DM Mono** (`<style id=\"shf-dmmono-face\">`) at 11px / 500 /
+0.1em / uppercase, upright. See *The mission-control console* below.
 
 The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 `data:` URI — so nothing about the product's type is requested over the network:
@@ -1188,7 +1191,7 @@ The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 | Surface | How it gets the font |
 |---|---|
 | `client.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
-| `Admin.html` | every element: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI, applied with `!important`; every digit: Montserrat Regular digit subset in `<style id=\"shf-montserrat-face\">` as a data: URI (licences: `assets/fonts/LICENSE-Corptic.txt`, `assets/fonts/LICENSE-Montserrat.txt`) |
+| `Admin.html` | every element: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI, applied with `!important`; every digit: Montserrat Regular digit subset in `<style id=\"shf-montserrat-face\">`; machine output: DM Mono Medium subset in `<style id=\"shf-dmmono-face\">` — all data: URIs (licences: `assets/fonts/LICENSE-Corptic.txt`, `LICENSE-Montserrat.txt`, `LICENSE-DM-Mono.txt`) |
 | the live mirror | the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) plus rules that give the document root, `body` and every element the family with `!important` — written **into the captured document's own HTML** before it is rendered, and re-asserted on the frame's `load` |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in

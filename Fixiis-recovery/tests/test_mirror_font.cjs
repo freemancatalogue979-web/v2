@@ -355,8 +355,8 @@ function makeDoc() {
   ok(!/Roboto Slab/.test(admin), 'Admin.html mixes in no other face');
   ok(/<style id="shf-corptic-face">/.test(admin) && /font-family:\s*Corptic/.test(admin),
     'Admin.html carries the Corptic display face inline');
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 2,
-    'its payload is exactly two @font-face rules - Corptic for letters, Montserrat for digits');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 3,
+    'its payload is exactly three @font-face rules - Corptic, the Montserrat digit subset, DM Mono');
   ok(!/Space\+?Grotesk/.test(admin), 'Admin.html no longer asks for Space Grotesk');
   ok(!/Space\+?Grotesk/.test(mini), 'mini-admin.html no longer asks for Space Grotesk');
   ok(!/fonts\.googleapis/.test(admin), 'Admin.html fetches no webfont');
