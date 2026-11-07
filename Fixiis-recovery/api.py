@@ -23,7 +23,7 @@ from urllib.parse import quote, urlsplit
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Query, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response, HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +31,18 @@ from contextlib import asynccontextmanager
 import logging
 import mimetypes
 import httpx
+
+try:
+    from proxy_mirror import PROXY_PREFIX as _PROXY_PREFIX
+
+    def _proxy_enabled() -> bool:
+        from proxy_mirror import is_proxy_enabled
+        return is_proxy_enabled()
+except Exception:  # pragma: no cover
+    _PROXY_PREFIX = None
+
+    def _proxy_enabled() -> bool:
+        return False
 import bcrypt
 import jwt
 from slowapi import Limiter
@@ -5311,6 +5323,174 @@ async def serve_asset_options(hash_hex: str):
             "Access-Control-Max-Age": "86400",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# /m/{target} — proxy mirror ("redirect from browser to client")
+#
+# When MIRROR_PROXY=1, the client iframe loads the site through this same-origin
+# route instead of waiting on the DOM-capture pipeline: the server fetches the
+# target with the persistent remote context's cookies, rewrites every reference
+# to /m/..., and serves the document from OUR origin.  The site's own JS then
+# runs in the client iframe and drives the session natively — clicks, forms and
+# XHRs go back through /m/ — so the client controls the remote browser's data
+# directly, with no capture round-trip in the loop.  Set-Cookie responses are
+# synced back into the persistent context so the remote browser stays in sync.
+# The DOM-capture mirror remains as the fallback (see PROXY_MIRROR_DESIGN.md).
+# ---------------------------------------------------------------------------
+
+_PROXY_MAX_BODY_BYTES = 25 * 1024 * 1024
+_PROXY_TIMEOUT_S = 20.0
+
+
+async def _proxy_page_of(session) -> Any:
+    try:
+        if session is None:
+            return None
+        if hasattr(session, "get_active_page"):
+            return session.get_active_page()
+        return getattr(session, "page", None)
+    except Exception:
+        return None
+
+
+async def _proxy_cookie_records(session) -> list:
+    """Cookies of the persistent remote context, as Playwright-style dicts."""
+    try:
+        page = await _proxy_page_of(session)
+        ctx = getattr(page, "context", None) if page is not None else None
+        if ctx is not None and hasattr(ctx, "cookies"):
+            return await ctx.cookies()
+    except Exception as exc:
+        logger.debug("[PROXY] could not read context cookies: %s", exc)
+    return []
+
+
+async def _proxy_sync_cookies(session, records: list) -> None:
+    """Write proxied Set-Cookie values back into the persistent context."""
+    if not records:
+        return
+    try:
+        page = await _proxy_page_of(session)
+        ctx = getattr(page, "context", None) if page is not None else None
+        if ctx is not None and hasattr(ctx, "add_cookies"):
+            await ctx.add_cookies(records)
+    except Exception as exc:
+        logger.debug("[PROXY] could not sync cookies into context: %s", exc)
+
+
+@app.api_route("/m/{target:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+async def mirror_proxy(request: Request, target: str):
+    from proxy_mirror import (
+        FORWARD_REQUEST_HEADERS, STRIP_RESPONSE_HEADERS,
+        cookie_header_from_records, is_proxy_enabled, rewrite_css_for_proxy,
+        rewrite_html_for_proxy, rewrite_location, set_cookie_records,
+    )
+    if not is_proxy_enabled():
+        return JSONResponse({"error": "proxy mirror disabled"}, status_code=404)
+    target_url = target if re.match(r"^https?://", target or "", re.I) else "https://" + (target or "")
+    parts = urlsplit(target_url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return JSONResponse({"error": "invalid target url"}, status_code=400)
+
+    sid = request.query_params.get("sid", "")
+    session = None
+    if sid and session_manager:
+        try:
+            session = await session_manager.get_session(sid)
+        except Exception:
+            session = None
+
+    cookie_records = await _proxy_cookie_records(session)
+    cookie_header = cookie_header_from_records(cookie_records)
+
+    up_headers: Dict[str, str] = {}
+    for name, value in request.headers.items():
+        ln = name.lower()
+        if ln in ("host", "content-length", "connection", "accept-encoding"):
+            continue
+        if ln in FORWARD_REQUEST_HEADERS:
+            if ln in ("referer", "origin"):
+                value = f"{parts.scheme}://{parts.netloc}/"
+            if ln == "cookie":
+                continue  # we send the persistent context's jar instead
+            up_headers[name] = value
+    if cookie_header:
+        up_headers["Cookie"] = cookie_header
+    if "user-agent" not in {k.lower() for k in up_headers}:
+        up_headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+
+    body = None
+    if request.method in ("POST", "PUT", "PATCH"):
+        body = await request.body()
+        if len(body) > _PROXY_MAX_BODY_BYTES:
+            return JSONResponse({"error": "body too large"}, status_code=413)
+
+    try:
+        timeout = httpx.Timeout(_PROXY_TIMEOUT_S)
+        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+            resp = await client.request(
+                request.method, target_url,
+                headers=up_headers,
+                content=body if body is not None else None,
+            )
+    except Exception as exc:
+        logger.debug("[PROXY] upstream fetch failed for %s: %s", target_url[:120], exc)
+        return JSONResponse({"error": "upstream fetch failed"}, status_code=502)
+
+    # Keep the persistent remote context's jar in sync with what the site set.
+    try:
+        sc = resp.headers.get_list("set-cookie")
+    except Exception:
+        sc = []
+    await _proxy_sync_cookies(session, set_cookie_records(sc, target_url))
+
+    # Redirects: rewrite Location to its proxied form so the client iframe
+    # stays on our origin.
+    if resp.is_redirect and "location" in resp.headers:
+        return RedirectResponse(
+            rewrite_location(resp.headers["location"], target_url),
+            status_code=resp.status_code,
+        )
+
+    out_headers: Dict[str, str] = {}
+    for name, value in resp.headers.items():
+        if name.lower() in STRIP_RESPONSE_HEADERS:
+            continue
+        if name.lower() in ("content-length", "content-encoding", "transfer-encoding", "connection"):
+            continue
+        out_headers[name] = value
+    out_headers["Cache-Control"] = "no-store"
+
+    ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    data = resp.content
+    if len(data) > _PROXY_MAX_BODY_BYTES:
+        return JSONResponse({"error": "response too large"}, status_code=502)
+
+    if ctype in ("text/html", "application/xhtml+xml", ""):
+        try:
+            text = data.decode(resp.encoding or "utf-8", errors="replace")
+        except Exception:
+            text = data.decode("utf-8", errors="replace")
+        return Response(
+            content=rewrite_html_for_proxy(text, target_url),
+            media_type="text/html",
+            headers=out_headers,
+        )
+    if ctype == "text/css":
+        try:
+            text = data.decode(resp.encoding or "utf-8", errors="replace")
+        except Exception:
+            text = data.decode("utf-8", errors="replace")
+        return Response(
+            content=rewrite_css_for_proxy(text, target_url),
+            media_type="text/css",
+            headers=out_headers,
+        )
+    return Response(content=data, media_type=ctype or "application/octet-stream", headers=out_headers)
 
 
 @app.get("/api/cache/stats")
@@ -11822,6 +12002,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "type": "session_info",
             "session_id": session_id,
             "url": url,
+            "proxy_prefix": _PROXY_PREFIX if _proxy_enabled() else None,
             "site_icon": _site_icon,
             "user_id": session.user_id if hasattr(session, 'user_id') else user_id,
             "domain": session.current_domain if hasattr(session, 'current_domain') else "",

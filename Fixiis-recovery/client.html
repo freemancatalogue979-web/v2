@@ -4992,6 +4992,12 @@ function applySpinnerColorFromHex(hexColor) {
                 viewport: { width: window.innerWidth, height: window.innerHeight },
                 serverViewport: null,
                 targetUrl: null,
+                // Proxy mirror ("redirect from browser to client"): when the
+                // server advertises proxy_prefix, the iframe loads the site
+                // through /m/<url> on our origin and the page's own JS drives
+                // the session — no capture round-trip in the control loop.
+                proxyPrefix: null,
+                proxyMode: false,
                 authToken: null,
                 isHiddenSession: false,
                 resizeTimeout: null,
@@ -9009,6 +9015,10 @@ function applySpinnerColorFromHex(hexColor) {
                         break;
                     case 'session_info':
                         state.sessionId = message.session_id;
+                        if (message.proxy_prefix) {
+                            state.proxyPrefix = message.proxy_prefix;
+                            if (state.targetUrl) openProxiedPage(state.targetUrl);
+                        }
                         if (state.sessionId && !state.isHiddenSession) {
                             try { sessionStorage.setItem('fixiis_runtime_session_id', state.sessionId); } catch (e) {}
                         }
@@ -9047,6 +9057,13 @@ function applySpinnerColorFromHex(hexColor) {
                         break;
                     // --- New stability-driven sync messages ----------------
                     case 'page_transition':
+                        // Proxy mirror: the browser navigated — redirect the
+                        // client iframe straight to the proxied URL.  The page
+                        // loads and runs live on our origin; no capture needed.
+                        if (state.proxyPrefix && message.url) {
+                            openProxiedPage(message.url);
+                            break;
+                        }
                         // Server's URL-watcher detected a navigation.  The
                         // full_document with the new page is on its way but
                         // takes 100-500ms; until then every dom_patch we get
@@ -9069,6 +9086,7 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         break;
                     case 'dom_patch':
+                        if (state.proxyMode) break;   // live proxied page owns itself
                         // Incremental ops are the low-latency path.  They are
                         // anchored to the current full-document generation;
                         // any missing node or generation mismatch asks the
@@ -9127,6 +9145,15 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         break;
                     case 'full_document':
+                        // Proxy mode: the iframe already shows the live proxied
+                        // page — only generation bookkeeping, no re-render.
+                        if (state.proxyMode) {
+                            try { acceptGeneration(message.generation); } catch (e) {}
+                            state._deltaGen = (typeof message.gen === 'number') ? message.gen : state._deltaGen;
+                            state._docGen = state._deltaGen;
+                            if (message.url) reportPageChange(message.url);
+                            break;
+                        }
                         // URL changed or major desync.  Apply as a fresh
                         // SingleFile-style render.
                         try {
@@ -9871,6 +9898,7 @@ function applySpinnerColorFromHex(hexColor) {
             }
 
             function requestResync(currentGen, reason) {
+                if (state.proxyMode) return;   // live proxied page cannot desync
                 // Invalidating the identity-skip marker ensures the next
                 // full_document re-renders even if byte-identical to the
                 // last one (the local frame may be corrupted — that is why
@@ -9938,6 +9966,72 @@ function applySpinnerColorFromHex(hexColor) {
             // Safety net: if no full_document arrives within 5s (server
             // hung, transport hiccup) we drop the buffer and make sure the
             // old iframe is visible.
+            // Open (or redirect) the mirror iframe at the PROXIED url: same
+            // origin, so the site's own JS runs inside it and every click /
+            // form / XHR goes back through /m/ — the client drives the
+            // persistent remote browser's data directly, no capture loop.
+            function openProxiedPage(url) {
+                if (!state.proxyPrefix || !url) return;
+                try {
+                    const proxied = state.proxyPrefix + url
+                        + (url.indexOf('?') >= 0 ? '&' : '?') + 'sid=' + state.sessionId;
+                    let f = frame;
+                    if (!f) {
+                        f = document.createElement('iframe');
+                        f.style.position = 'absolute';
+                        f.style.top = '0';
+                        f.style.left = '0';
+                        f.style.width = '100%';
+                        f.style.height = '100%';
+                        f.style.border = 'none';
+                        f.style.opacity = '1';
+                        f.style.overflow = 'auto';
+                        f.style.webkitOverflowScrolling = 'touch';
+                        if (elements.pageContainer) {
+                            elements.pageContainer.innerHTML = '';
+                            elements.pageContainer.appendChild(f);
+                            if (getComputedStyle(elements.pageContainer).position === 'static') {
+                                elements.pageContainer.style.position = 'relative';
+                            }
+                        }
+                        frame = f;
+                        mirrorFrameA = f;
+                    }
+                    state.proxyMode = true;
+                    state._navPending = false;
+                    state._navPatchBuffer = [];
+                    if (state._navWatchdog) { clearTimeout(state._navWatchdog); state._navWatchdog = null; }
+                    // If the proxied page never loads (site down, proxy
+                    // error), fall back to the capture mirror for this page.
+                    let loaded = false;
+                    const onLoad = () => { loaded = true; };
+                    f.addEventListener('load', onLoad, { once: true });
+                    if (state._proxyWatchdog) clearTimeout(state._proxyWatchdog);
+                    state._proxyWatchdog = setTimeout(() => {
+                        if (!loaded) {
+                            state.proxyPrefix = null;
+                            state.proxyMode = false;
+                            try { requestResync(state._deltaGen, 'proxy_load_timeout'); } catch (e) {}
+                        }
+                    }, 10000);
+                    f.src = proxied;
+                    if (elements.loadingScreen) elements.loadingScreen.style.display = 'none';
+                    if (elements.streamContainer) elements.streamContainer.classList.add('visible');
+                    state.hasInitialRender = true;
+                    try { lpvStreamShown('proxy redirect'); } catch (e) {}
+                    try {
+                        const u = new URL(window.location.href);
+                        u.searchParams.set('url', url);
+                        history.replaceState(null, '', u.toString());
+                        state.targetUrl = url;
+                    } catch (e) {}
+                    try { reportPageChange(url); } catch (e) {}
+                    try { dbg('[PROXY] iframe redirected to', proxied); } catch (e) {}
+                } catch (e) {
+                    console.warn('openProxiedPage failed:', e);
+                }
+            }
+
             function beginNavigationTransition(newUrl) {
                 if (state._navPending) {
                     // Already in a transition; just refresh the watchdog.
