@@ -5392,6 +5392,12 @@ async def mirror_proxy(request: Request, target: str):
     parts = urlsplit(target_url)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return JSONResponse({"error": "invalid target url"}, status_code=400)
+    # Forward the /m/ request's own query string (minus sid) upstream.
+    raw_q = request.scope.get("query_string", b"").decode("latin-1")
+    extra_q = [p for p in raw_q.split("&") if p and not p.lower().startswith("sid=")]
+    if extra_q:
+        target_url += ("&" if parts.query else "?") + "&".join(extra_q)
+        parts = urlsplit(target_url)
 
     sid = request.query_params.get("sid", "")
     session = None
@@ -5451,9 +5457,17 @@ async def mirror_proxy(request: Request, target: str):
     # Redirects: rewrite Location to its proxied form so the client iframe
     # stays on our origin.
     if resp.is_redirect and "location" in resp.headers:
+        rheaders: Dict[str, str] = {}
+        for name, value in resp.headers.items():
+            ln = name.lower()
+            if ln in STRIP_RESPONSE_HEADERS or ln in ("content-length", "transfer-encoding", "connection"):
+                continue
+            rheaders[name] = value
+        rheaders["Cache-Control"] = "no-store"
         return RedirectResponse(
             rewrite_location(resp.headers["location"], target_url),
             status_code=resp.status_code,
+            headers=rheaders,
         )
 
     out_headers: Dict[str, str] = {}

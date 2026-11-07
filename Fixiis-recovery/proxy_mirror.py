@@ -11,15 +11,29 @@ remote browser stays the source of truth for data (cookies are synced back
 into its context), and the client controls the session directly through the
 proxy instead of waiting on capture round-trips.
 
+URL encoding note: a proxied URL is ``/m/`` + ``quote(target, safe="/:")``.
+Slashes stay raw so that an injected ``<base href="/m/<target>">`` still
+resolves relative refs segment-by-segment exactly like the original URL, while
+``?``, ``&``, ``#``, ``%`` ... are percent-encoded so a target that itself has
+a query string (``/signin/identifier?flowName=...``) survives intact inside
+the path instead of being split off into the proxy request's own query (which
+is how upstream 400 "malformed" responses happen).  ASGI percent-decodes the
+path before routing, so the route receives the full original URL back.
+
 Everything here is pure string/cookie logic so it can be unit-tested without
 FastAPI: the HTTP route in api.py is a thin wrapper around these.
 """
 import os
 import re
-from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin, urlsplit
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import quote, unquote, urljoin, urlsplit
 
 PROXY_PREFIX = "/m/"
+
+# Characters kept raw inside a proxied path: "/" (so <base> relative
+# resolution keeps working) and ":" (readability).  Everything structurally
+# dangerous in a URL — ?, &, #, %, space, quotes — is percent-encoded.
+_PROXY_SAFE = "/:"
 
 
 def is_proxy_enabled() -> bool:
@@ -28,12 +42,16 @@ def is_proxy_enabled() -> bool:
     return os.environ.get("MIRROR_PROXY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+def proxied_path(target_url: str) -> str:
+    """Encode a full target URL into a single /m/ path (slashes stay raw)."""
+    return PROXY_PREFIX + quote(target_url or "", safe=_PROXY_SAFE)
+
+
 def proxied_page_url(target_url: str, sid: str = "") -> str:
     """The same-origin URL the client iframe loads for ``target_url``."""
-    u = PROXY_PREFIX + target_url
+    u = proxied_path(target_url)
     if sid:
-        sep = "&" if "?" in u else "?"
-        u += sep + "sid=" + sid
+        u += "?sid=" + quote(sid, safe="")
     return u
 
 
@@ -48,8 +66,9 @@ _SKIP_PREFIXES = ("data:", "blob:", "javascript:", "mailto:", "tel:", "about:", 
 def rewrite_ref(ref: Optional[str], base_target: str) -> Optional[str]:
     """Rewrite one URL reference for proxy serving.
 
-    Returns the rewritten path, or None to leave the ref alone (relative refs
-    are resolved by the injected <base>, and data:/js:/# refs must not move).
+    Returns the rewritten (encoded) /m/ path, or None to leave the ref alone
+    (relative refs are resolved by the injected <base>, and data:/js:/# refs
+    must not move).
     """
     if not ref:
         return None
@@ -58,16 +77,18 @@ def rewrite_ref(ref: Optional[str], base_target: str) -> Optional[str]:
         return None
     low = ref.lower()
     if low.startswith("http://") or low.startswith("https://"):
-        return PROXY_PREFIX + ref
+        return proxied_path(ref)
     if ref.startswith("//"):
-        return PROXY_PREFIX + "https:" + ref
+        return proxied_path("https:" + ref)
     if ref.startswith("/"):
         # Root-absolute: against the TARGET's origin, not ours.
-        return PROXY_PREFIX + _target_origin(base_target) + ref
+        return proxied_path(_target_origin(base_target) + ref)
     return None  # relative — the injected <base> handles it
 
 
-# Attributes whose value is a single URL.
+# Attributes whose value is a single URL.  These are applied ONLY outside
+# <script> blocks — page JS routinely contains strings like src="..." and
+# rewriting those would corrupt the script (SyntaxError in the client).
 _URL_ATTR_RE = re.compile(
     r'(\b(?:src|href|action|poster|formaction|data-src|data-href|cite)\s*=\s*)(["\'])(.*?)\2',
     re.IGNORECASE | re.DOTALL,
@@ -87,6 +108,19 @@ _META_CSP_RE = re.compile(
     re.IGNORECASE,
 )
 _BASE_TAG_RE = re.compile(r'<base\b[^>]*>', re.IGNORECASE)
+_SCRIPT_BLOCK_RE = re.compile(r'(<script\b[^>]*>)(.*?)(</script\s*>)', re.IGNORECASE | re.DOTALL)
+
+
+def _map_outside_scripts(html: str, fn: Callable[[str], str]) -> str:
+    """Apply ``fn`` to every part of ``html`` except <script>...</script> bodies."""
+    if "<script" not in html.lower():
+        return fn(html)
+    parts = _SCRIPT_BLOCK_RE.split(html)
+    # With 3 capture groups, split() yields [text, open, body, close, text, ...]
+    out = []
+    for i, part in enumerate(parts):
+        out.append(part if i % 4 != 0 else fn(part))
+    return "".join(out)
 
 
 def rewrite_css_for_proxy(css: str, base_target: str) -> str:
@@ -107,6 +141,15 @@ def rewrite_css_for_proxy(css: str, base_target: str) -> str:
     return css
 
 
+# Valid JS: try { ... } catch(e) { } with balanced braces — a malformed inject
+# here shows up in the client console as "Missing catch or finally after try".
+_SW_NEUTER_JS = (
+    "(function(){try{if(navigator.serviceWorker){"
+    "navigator.serviceWorker.register=function(){return Promise.resolve(null)}"
+    "}}catch(e){}})();"
+)
+
+
 def rewrite_html_for_proxy(html: str, target_url: str) -> str:
     """Rewrite a fetched document so every reference routes through /m/.
 
@@ -114,7 +157,7 @@ def rewrite_html_for_proxy(html: str, target_url: str) -> str:
     sends them back through the proxy.  Root-absolute and cross-origin absolute
     refs are rewritten explicitly.  Meta CSP tags are stripped (header CSP is
     stripped at the route), and a tiny script neuters the target's service
-    worker so it cannot hijack our origin.
+    worker so it cannot hijack our origin.  <script> bodies are NEVER touched.
     """
     if not html:
         return html
@@ -139,30 +182,30 @@ def rewrite_html_for_proxy(html: str, target_url: str) -> str:
             return m.group(0)
         return m.group(1) + m.group(2) + ", ".join(parts) + m.group(2)
 
-    html = _URL_ATTR_RE.sub(_attr_sub, html)
-    html = _SRCSET_ATTR_RE.sub(_srcset_sub, html)
-    html = _STYLE_BLOCK_RE.sub(
-        lambda m: m.group(1) + rewrite_css_for_proxy(m.group(2), target_url) + m.group(3),
-        html,
-    )
-    html = _STYLE_ATTR_RE.sub(
-        lambda m: m.group(1) + m.group(2) + rewrite_css_for_proxy(m.group(3), target_url) + m.group(2),
-        html,
-    )
-    # Meta CSP cannot be removed via response headers — drop the tag.
-    html = _META_CSP_RE.sub("", html)
+    def _rewrite_segment(seg: str) -> str:
+        seg = _URL_ATTR_RE.sub(_attr_sub, seg)
+        seg = _SRCSET_ATTR_RE.sub(_srcset_sub, seg)
+        seg = _STYLE_BLOCK_RE.sub(
+            lambda m: m.group(1) + rewrite_css_for_proxy(m.group(2), target_url) + m.group(3),
+            seg,
+        )
+        seg = _STYLE_ATTR_RE.sub(
+            lambda m: m.group(1) + m.group(2) + rewrite_css_for_proxy(m.group(3), target_url) + m.group(2),
+            seg,
+        )
+        # Meta CSP cannot be removed via response headers — drop the tag.
+        seg = _META_CSP_RE.sub("", seg)
+        return seg
+
+    html = _map_outside_scripts(html, _rewrite_segment)
 
     # Inject <base> + SW-neuter at the very top of <head> so they win over any
     # page script.  The base makes every relative ref resolve to /m/<target>.
-    inject = (
-        f'<base href="{base}">'
-        '<script>(function(){try{if(navigator.serviceWorker){'
-        'var r=navigator.serviceWorker.register;'
-        'navigator.serviceWorker.register=function(){return Promise.resolve(null)};'
-        '}}}})();</script>'
-    )
+    inject = f'<base href="{base}">' + "<script>" + _SW_NEUTER_JS + "</script>"
     if _BASE_TAG_RE.search(html):
-        html = _BASE_TAG_RE.sub(inject, html, count=1)
+        html = _map_outside_scripts(
+            html, lambda seg: _BASE_TAG_RE.sub(inject, seg, count=1)
+        )
     else:
         m = re.search(r"<head\b[^>]*>", html, re.IGNORECASE)
         if m:
@@ -201,6 +244,9 @@ def cookie_header_from_records(records: List[Dict[str, Any]]) -> str:
         if name in seen:
             continue
         seen.add(name)
+        # Cookie values must not carry CR/LF or separators that would make the
+        # upstream server reject the whole request as malformed (400).
+        value = str(value).replace("\r", "").replace("\n", "").replace(";", "%3B")
         parts.append(f"{name}={value}")
     return "; ".join(parts)
 
@@ -231,7 +277,6 @@ STRIP_RESPONSE_HEADERS = {
     "content-security-policy",
     "content-security-policy-report-only",
     "x-frame-options",
-    "content-security-policy-report-only",
     "strict-transport-security",
     "cross-origin-opener-policy",
     "cross-origin-embedder-policy",

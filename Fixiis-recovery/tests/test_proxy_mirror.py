@@ -6,7 +6,12 @@ lets the client drive the persistent remote browser directly through the
 proxy instead of waiting on the DOM-capture mirror.
 """
 import os
+import re as _re
+import shutil
+import subprocess
 import sys
+import tempfile
+from urllib.parse import unquote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -53,7 +58,7 @@ html = (
     "</body></html>"
 )
 out = pm.rewrite_html_for_proxy(html, TARGET)
-ok('<base href="/m/' + TARGET + '">' in out, "base injected pointing at the proxied page")
+ok('<base href="' + pm.proxied_path(TARGET) + '">' in out, "base injected pointing at the proxied page")
 ok('http-equiv="Content-Security-Policy"' not in out.lower().replace(" ", "") or "content-security-policy" not in out.lower(),
    "meta CSP stripped")
 ok('href="/m/https://mail.example.com/css/site.css"' in out, "root-absolute link rewritten")
@@ -71,7 +76,7 @@ ok("serviceWorker.register" in out, "SW-neuter script injected")
 
 # base replacement when the page has its own <base>
 out2 = pm.rewrite_html_for_proxy('<html><head><base href="https://other.example/"></head><body></body></html>', TARGET)
-ok('href="https://other.example/"' not in out2 and '<base href="/m/' + TARGET + '">' in out2,
+ok('href="https://other.example/"' not in out2 and '<base href="' + pm.proxied_path(TARGET) + '">' in out2,
    "existing <base> replaced with the proxied base")
 
 # --- css ---------------------------------------------------------------------
@@ -97,11 +102,58 @@ recs = pm.set_cookie_records(["SID=xyz; Domain=example.com; Path=/; HttpOnly", "
 ok(recs == [{"name": "SID", "value": "xyz", "url": TARGET}, {"name": "n", "value": "v", "url": TARGET}],
    f"Set-Cookie parsed to context records (domain dropped): {recs!r}")
 
-ok(pm.proxied_page_url(TARGET, "s1") == "/m/" + TARGET + "?sid=s1", "proxied url carries sid")
+ok(pm.proxied_page_url(TARGET, "s1") == pm.proxied_path(TARGET) + "?sid=s1", "proxied url carries sid")
 ok(pm.is_proxy_enabled() is True, "proxy enabled by default (MIRROR_PROXY=0 is the kill switch)")
 for _v in ("0", "false", "no", "off"):
     os.environ["MIRROR_PROXY"] = _v
     ok(pm.is_proxy_enabled() is False, "MIRROR_PROXY=%s disables" % _v)
 os.environ.pop("MIRROR_PROXY", None)
+
+
+# --- target encoding: a target's own ?query&#fragment must survive ----------
+# Regression: iframe src "/m/https://.../identifier?flowName=..." used to lose
+# its query (the ? became the proxy request's query), so upstream got the bare
+# path and answered 400 "malformed".
+QT = "https://accounts.google.com/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin&dsh=S237#frag"
+pp = pm.proxied_page_url(QT, "s1")
+ok(pp == "/m/https://accounts.google.com/signin/identifier%3FflowName%3DGlifWebSignIn%26flowEntry%3DServiceLogin%26dsh%3DS237%23frag?sid=s1",
+   "target query/fragment percent-encoded into the /m/ path, sid stays a real query param")
+ok("%2F" not in pp, "slashes stay raw so injected <base> relative resolution keeps working segment-by-segment")
+ok(unquote(pp[len("/m/"):].split("?sid=")[0]) == QT, "proxied path decodes back to the exact target (ASGI unquotes the path before routing)")
+ok(pm.rewrite_ref("https://x.example.com/p?a=1&b=2", TARGET) == "/m/https://x.example.com/p%3Fa%3D1%26b%3D2",
+   "rewritten refs with query strings are encoded too")
+ok(pm.rewrite_location("/cb?code=abc&state=xyz", QT) == "/m/https://accounts.google.com/cb%3Fcode%3Dabc%26state%3Dxyz",
+   "redirect Location carrying a query is encoded")
+
+# --- <script> bodies must never be rewritten ---------------------------------
+# Regression: attr regexes used to run over inline JS (strings like
+# src="https://..." inside scripts) and corrupt page code.
+js = 'var a = \'src="https://evil.example.com/x.png";\'; try { f("action=/y") } catch(e) { g() }'
+html2 = ("<html><head></head><body><script>" + js + "</script>"
+         '<img src="https://cdn.example.com/real.png"></body></html>')
+out3 = pm.rewrite_html_for_proxy(html2, TARGET)
+ok(js in out3, "inline <script> body is byte-identical after rewriting")
+ok("/m/https://evil.example.com" not in out3, "no /m/ rewrite leaked into script strings")
+ok('src="/m/https://cdn.example.com/real.png"' in out3, "real attrs outside scripts are still rewritten")
+
+# --- injected SW-neuter script must be VALID js ------------------------------
+# Regression: the inject used to be "try{...}}" with no catch -> client console
+# "Uncaught SyntaxError: Missing catch or finally after try".
+bodies = _re.findall(r"<script>(.*?)</script>", out3, _re.DOTALL)
+sw = [b for b in bodies if "serviceWorker" in b]
+ok(len(sw) == 1, "exactly one SW-neuter script injected")
+if sw and shutil.which("node"):
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(sw[0])
+        tmp = f.name
+    r = subprocess.run(["node", "--check", tmp], capture_output=True)
+    ok(r.returncode == 0, "injected SW-neuter script passes node --check: " + r.stderr.decode()[:200])
+
+# --- api.py route wiring pins -------------------------------------------------
+api_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "api.py"), encoding="utf-8").read()
+ok(_re.search(r"RedirectResponse\(\s*rewrite_location\([^)]*\),\s*status_code=[^,]+,\s*headers=rheaders", api_src) is not None,
+   "redirect responses strip COOP/CSP/XFO headers (else the browser warns on our http origin)")
+ok('not p.lower().startswith("sid=")' in api_src,
+   "route re-attaches the /m/ request query string (minus sid) to the upstream URL")
 
 print("proxy mirror: %d checks passed" % PASSED)

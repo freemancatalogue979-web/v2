@@ -67,6 +67,22 @@ exactly as the capture-mirror-only build did. The DOM-capture
 pipeline (fast serializer + deltas + snapshot hosts) remains fully intact as
 the fallback and for archives (PCM/LPV/SingleFile/MHTML).
 
+## Operational notes (bugs found in the field, fixed)
+
+- `/m/` targets are **percent-encoded** (`quote(target, safe="/:")` — slashes
+  raw so the injected `<base>` resolves relative refs correctly, `?&#%` encoded
+  so a target's own query string stays inside the path). Without this, an
+  iframe src like `/m/.../identifier?flowName=...` split at the `?` and the
+  upstream got the bare path → Google **400 "malformed"**.
+- The route re-attaches any real query params on the `/m/` request (minus
+  `sid`) to the upstream URL, so even unencoded `/m/<url?query>` links work.
+- `<script>` bodies are never rewritten (attr regexes apply only outside
+  script blocks) — rewriting JS strings corrupted page code.
+- The injected SW-neuter script is validated with `node --check` in the tests.
+- Redirect responses strip COOP/CSP/XFO too (a COOP on a redirect from our
+  http origin is what the browser's "origin was untrustworthy" warning was).
+- Cookie values are sanitized (no CR/LF/`;`) before sending upstream.
+
 ## Known limits of P0 / next phases
 
 - **P1 — dynamic request routing**: a service worker registered on our origin

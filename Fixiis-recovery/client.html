@@ -9973,8 +9973,14 @@ function applySpinnerColorFromHex(hexColor) {
             function openProxiedPage(url) {
                 if (!state.proxyPrefix || !url) return;
                 try {
-                    const proxied = state.proxyPrefix + url
-                        + (url.indexOf('?') >= 0 ? '&' : '?') + 'sid=' + state.sessionId;
+                    // Encode the target like the server does (quote, safe="/:")
+                    // so a target with its own ?query&#fragment stays inside
+                    // the /m/ path instead of becoming the proxy request's
+                    // query (which made upstream return 400 malformed).
+                    const encTarget = encodeURIComponent(url)
+                        .replace(/%2F/g, '/').replace(/%3A/g, ':');
+                    const proxied = state.proxyPrefix + encTarget
+                        + '?sid=' + encodeURIComponent(state.sessionId || '');
                     let f = frame;
                     if (!f) {
                         f = document.createElement('iframe');

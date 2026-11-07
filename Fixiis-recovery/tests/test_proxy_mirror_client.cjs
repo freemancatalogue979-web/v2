@@ -28,9 +28,12 @@ ok(/case 'session_info':[\s\S]{0,200}?message\.proxy_prefix/.test(client),
 {
   const i = client.indexOf('function openProxiedPage(url)');
   assert.ok(i > 0, 'openProxiedPage exists');
-  const body = client.slice(i, i + 3200);
-  ok(/state\.proxyPrefix \+ url/.test(body), 'iframe src is proxyPrefix + url');
-  ok(/'sid=' \+ state\.sessionId/.test(body), 'carries sid so the proxy uses the persistent context cookies');
+  const body = client.slice(i, i + 4600);
+  ok(/state\.proxyPrefix \+ encTarget/.test(body), 'iframe src is proxyPrefix + encoded target');
+  ok(/encodeURIComponent\(url\)\s*\.replace\(%2F/.test(body.replace(/\s/g,' ')) || /encodeURIComponent\(url\)/.test(body),
+    'target is URI-encoded so its own ?query&#fragment stays inside the /m/ path (no upstream 400)');
+  ok(body.includes('%2F') && body.includes('%3A'), 'slashes and colons restored (matches server quote(safe="/:")) so <base> resolves correctly');
+  ok(/'\?sid=' \+ encodeURIComponent\(state\.sessionId/.test(body), 'carries sid so the proxy uses the persistent context cookies');
   ok(/f\.src = proxied/.test(body), 'assigns the proxied src to the iframe');
   ok(/state\.proxyMode = true/.test(body), 'proxyMode armed');
   ok(/u\.searchParams\.set\('url', url\)/.test(body) && /history\.replaceState/.test(body),
