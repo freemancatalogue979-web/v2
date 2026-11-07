@@ -9060,7 +9060,7 @@ function applySpinnerColorFromHex(hexColor) {
                         // Proxy mirror: the browser navigated — redirect the
                         // client iframe straight to the proxied URL.  The page
                         // loads and runs live on our origin; no capture needed.
-                        if (state.proxyPrefix && message.url) {
+                        if (state.proxyPrefix && message.url && message.url !== state.targetUrl) {
                             openProxiedPage(message.url);
                             break;
                         }
@@ -9979,8 +9979,12 @@ function applySpinnerColorFromHex(hexColor) {
                     // query (which made upstream return 400 malformed).
                     const encTarget = encodeURIComponent(url)
                         .replace(/%2F/g, '/').replace(/%3A/g, ':');
-                    const proxied = state.proxyPrefix + encTarget
-                        + '?sid=' + encodeURIComponent(state.sessionId || '');
+                    // The session id lives in the PATH (/m/<sid>/<url>), not as
+                    // a query param: a ?sid= on the injected <base> would be
+                    // dropped by relative-URL resolution, and every dynamic
+                    // request from page JS would lose the session cookies.
+                    const encSid = encodeURIComponent(state.sessionId || '');
+                    const proxied = state.proxyPrefix + (encSid ? encSid + '/' : '') + encTarget;
                     let f = frame;
                     if (!f) {
                         f = document.createElement('iframe');
@@ -10002,6 +10006,10 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         frame = f;
                         mirrorFrameA = f;
+                        // Report every in-proxy navigation (link click, form
+                        // submit, JS location change) so the server can put
+                        // the persistent remote browser on the same page.
+                        f.addEventListener('load', handleProxyFrameLoad);
                     }
                     state.proxyMode = true;
                     state._navPending = false;
@@ -10036,6 +10044,32 @@ function applySpinnerColorFromHex(hexColor) {
                 } catch (e) {
                     console.warn('openProxiedPage failed:', e);
                 }
+            }
+
+            // The proxied iframe loaded a (possibly new) /m/<sid>/<url> —
+            // decode the real target, keep ?url= in sync, and tell the server
+            // to sync the remote browser to it (cookies/storage follow).
+            function handleProxyFrameLoad() {
+                if (!state.proxyMode || !frame || !frame.contentWindow) return;
+                try {
+                    const loc = frame.contentWindow.location;
+                    if (!loc || !state.proxyPrefix || loc.pathname.indexOf(state.proxyPrefix) !== 0) return;
+                    let rest = loc.pathname.slice(state.proxyPrefix.length);
+                    const slash = rest.indexOf('/');
+                    if (slash > 0) rest = rest.slice(slash + 1);   // drop the sid segment
+                    const target = decodeURIComponent(rest);
+                    if (!/^https?:\/\//.test(target)) return;
+                    if (target === state.targetUrl) return;
+                    state.targetUrl = target;
+                    try {
+                        const u = new URL(window.location.href);
+                        u.searchParams.set('url', target);
+                        history.replaceState(null, '', u.toString());
+                    } catch (e) {}
+                    try { reportPageChange(target); } catch (e) {}
+                    try { send({ type: 'proxy_sync', url: target }); } catch (e) {}
+                    try { dbg('[PROXY] client navigated ->', target, '(remote browser syncing)'); } catch (e) {}
+                } catch (e) {}
             }
 
             function beginNavigationTransition(newUrl) {
@@ -12764,6 +12798,12 @@ function stripDeadMirrorNodes(root) {
             }
 
             function setupIframeEventListeners(d) {
+                // Proxy mode: the iframe document is the real site on our
+                // origin (/m/…).  It handles its own input natively (every
+                // request goes back through the proxy with the session
+                // cookies) — relaying clicks/keys to the remote browser here
+                // would double-fire and break native behavior.
+                if (state.proxyMode) return;
                 setupFloatingLabelOverlay(d);
 
                 // html/body scrollability plus the clipping-wrapper rescue — the

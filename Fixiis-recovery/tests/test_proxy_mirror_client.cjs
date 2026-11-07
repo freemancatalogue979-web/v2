@@ -29,11 +29,12 @@ ok(/case 'session_info':[\s\S]{0,200}?message\.proxy_prefix/.test(client),
   const i = client.indexOf('function openProxiedPage(url)');
   assert.ok(i > 0, 'openProxiedPage exists');
   const body = client.slice(i, i + 4600);
-  ok(/state\.proxyPrefix \+ encTarget/.test(body), 'iframe src is proxyPrefix + encoded target');
-  ok(/encodeURIComponent\(url\)\s*\.replace\(%2F/.test(body.replace(/\s/g,' ')) || /encodeURIComponent\(url\)/.test(body),
-    'target is URI-encoded so its own ?query&#fragment stays inside the /m/ path (no upstream 400)');
-  ok(body.includes('%2F') && body.includes('%3A'), 'slashes and colons restored (matches server quote(safe="/:")) so <base> resolves correctly');
-  ok(/'\?sid=' \+ encodeURIComponent\(state\.sessionId/.test(body), 'carries sid so the proxy uses the persistent context cookies');
+  ok(/state\.proxyPrefix \+ \(encSid \? encSid \+ '\/' : ''\) \+ encTarget/.test(body),
+    'iframe src is /m/<sid>/<encoded-target> — sid in the PATH, not a query param');
+  ok(/encodeURIComponent\(url\)/.test(body) && body.includes('%2F') && body.includes('%3A'),
+    'target is URI-encoded with slashes/colons restored (matches server quote(safe="/:")) so its ?query&#fragment stays in the path and <base> resolves correctly');
+  ok(/encodeURIComponent\(state\.sessionId/.test(body),
+    'sid is encoded into the first path segment so it survives <base> relative resolution (keeps the persistent-context cookies on every request)');
   ok(/f\.src = proxied/.test(body), 'assigns the proxied src to the iframe');
   ok(/state\.proxyMode = true/.test(body), 'proxyMode armed');
   ok(/u\.searchParams\.set\('url', url\)/.test(body) && /history\.replaceState/.test(body),
@@ -53,5 +54,31 @@ ok(/case 'dom_patch':\s*if \(state\.proxyMode\) break;/.test(client),
 }
 ok(/function requestResync\(currentGen, reason\) \{\s*if \(state\.proxyMode\) return;/.test(client),
   'no resync storms against a live proxied page');
+
+// remote-browser sync: in-proxy navigations are reported so the server can
+// put the persistent browser on the same page
+{
+  const i = client.indexOf('function handleProxyFrameLoad()');
+  assert.ok(i > 0, 'handleProxyFrameLoad exists');
+  const body = client.slice(i, i + 1600);
+  ok(/loc\.pathname\.indexOf\(state\.proxyPrefix\)/.test(body), 'load listener reads the proxied iframe location');
+  ok(/rest\.slice\(slash \+ 1\)/.test(body), 'sid segment is stripped when decoding the real target');
+  ok(/send\(\{ type: 'proxy_sync', url: target \}\)/.test(body), 'sends proxy_sync so the remote browser follows the client navigation');
+  ok(/target === state\.targetUrl/.test(body), 'same-URL loads are ignored (no loop with the server-side sync)');
+  ok(/f\.addEventListener\('load', handleProxyFrameLoad\)/.test(client), 'load listener attached to the mirror frame');
+}
+
+// native input in proxy mode: the WS click/key relay must NOT bind to the live iframe
+ok(/function setupIframeEventListeners\(d\) \{\s*[^]*?if \(state\.proxyMode\) return;/.test(client),
+  'setupIframeEventListeners is a no-op in proxy mode (the live page handles input itself through /m/)');
+
+// page_transition from the remote browser must not reload the iframe when the
+// URL is unchanged (proxy_sync already put the remote browser there)
+{
+  const i = client.indexOf("case 'page_transition':");
+  const body = client.slice(i, i + 700);
+  ok(/state\.proxyPrefix && message\.url && message\.url !== state\.targetUrl/.test(body),
+    'page_transition redirects only on a REAL url change');
+}
 
 console.log('proxy mirror client: %d checks passed', checks);

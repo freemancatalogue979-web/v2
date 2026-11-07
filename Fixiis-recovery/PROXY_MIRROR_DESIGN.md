@@ -67,6 +67,37 @@ exactly as the capture-mirror-only build did. The DOM-capture
 pipeline (fast serializer + deltas + snapshot hosts) remains fully intact as
 the fallback and for archives (PCM/LPV/SingleFile/MHTML).
 
+## Two-sided sync: proxy page <-> persistent remote browser
+
+The client iframe and the remote browser must stay on the **same page**, with
+the remote context as the source of session data.  Wiring:
+
+- **Session id lives in the /m/ path**: `/m/<sid>/<encoded-target>`, not
+  `?sid=`.  A query on the injected `<base>` is dropped by RFC 3986 relative
+  resolution, so every runtime-built relative URL in page JS would lose the
+  session; in the path it survives (`new URL('z.png', base)` keeps
+  `/m/<sid>/…`).  Verified against WHATWG URL semantics in the tests.
+  Every rewritten ref (attrs, srcset, CSS, redirects, the `<base>` itself)
+  carries the sid, so **every** proxied subrequest is made with the persistent
+  context's cookie jar (`context.cookies()` read per request), and upstream
+  `Set-Cookie` is written back into the context (`add_cookies`).  Login state
+  therefore comes from the remote browser, in both directions.
+- **Client -> remote**: in proxy mode the iframe is the live same-origin site,
+  so input is NATIVE (`setupIframeEventListeners` is a no-op while
+  `state.proxyMode`) — clicks/forms/XHR go through `/m/` as real requests.
+  The iframe's `load` listener (`handleProxyFrameLoad`) decodes the real target
+  from `/m/<sid>/<url>`, updates `?url=`, and sends `{type:'proxy_sync', url}`;
+  the server runs `session.sync_remote_url(url)` — a lightweight
+  `page.goto(wait_until='commit')` with a same-URL guard — so the persistent
+  browser lands on the same page and keeps accumulating cookies/storage.
+- **Remote -> client**: a remote-side navigation fires `page_transition`; if
+  the URL really changed the client redirects the iframe via
+  `openProxiedPage(url)` (same-URL transitions are ignored, so the sync above
+  doesn't cause a reload loop).  The DOM-capture pipeline still archives in
+  the background but the client ignores `full_document`/`dom_patch`/`resync`
+  while proxy mode owns the iframe; a 10s load watchdog falls back to the
+  capture mirror if a proxied page fails to load.
+
 ## Operational notes (bugs found in the field, fixed)
 
 - `/m/` targets are **percent-encoded** (`quote(target, safe="/:")` — slashes

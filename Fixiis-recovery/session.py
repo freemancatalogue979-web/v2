@@ -2922,6 +2922,41 @@ class NeoStreamingSession:
             self._apply_snapshot_preference(url)
             await self.dom_capture.handle_navigation(url)
 
+    async def sync_remote_url(self, url: str) -> None:
+        """Proxy-mirror sync: put the persistent remote browser on the same
+        URL the client is viewing through /m/ (link click / form submit /
+        JS navigation inside the proxied iframe).
+
+        Lightweight on purpose: wait_until='commit' only, no forced capture —
+        the client is NOT waiting on the mirror for this page (it gets the
+        real document through the proxy); the remote browser just needs to be
+        ON the page so its context accumulates the site's cookies/storage and
+        the operator's remote view matches.  Same-URL guard prevents loops
+        when the remote browser initiated the navigation itself.
+        """
+        try:
+            page = None
+            if hasattr(self, 'get_active_page'):
+                try:
+                    page = self.get_active_page()
+                except Exception:
+                    page = None
+            if page is None:
+                page = getattr(self, 'page', None)
+            if page is None or not url:
+                return
+            if not re.match(r'^https?://', url or '', re.I):
+                url = 'https://' + url
+            try:
+                cur = page.url or ''
+            except Exception:
+                cur = ''
+            if cur and cur.split('#')[0].rstrip('/') == url.split('#')[0].rstrip('/'):
+                return
+            await page.goto(url, wait_until='commit', timeout=30000)
+        except Exception as exc:
+            logger.debug("[PROXY] sync_remote_url failed for %s: %s", str(url)[:120], exc)
+
     async def handle_prefetch(self, url: str):
         """Warm the next page's assets before the click lands.
 

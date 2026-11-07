@@ -5383,23 +5383,26 @@ async def _proxy_sync_cookies(session, records: list) -> None:
 async def mirror_proxy(request: Request, target: str):
     from proxy_mirror import (
         FORWARD_REQUEST_HEADERS, STRIP_RESPONSE_HEADERS,
-        cookie_header_from_records, is_proxy_enabled, rewrite_css_for_proxy,
-        rewrite_html_for_proxy, rewrite_location, set_cookie_records,
+        cookie_header_from_records, is_proxy_enabled, parse_proxy_path,
+        rewrite_css_for_proxy, rewrite_html_for_proxy, rewrite_location,
+        set_cookie_records,
     )
     if not is_proxy_enabled():
         return JSONResponse({"error": "proxy mirror disabled"}, status_code=404)
-    target_url = target if re.match(r"^https?://", target or "", re.I) else "https://" + (target or "")
+    # /m/<sid>/<url> (preferred — the sid survives <base> relative resolution)
+    # or /m/<url> with ?sid=… as a fallback.
+    path_sid, target_url = parse_proxy_path(target)
     parts = urlsplit(target_url)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return JSONResponse({"error": "invalid target url"}, status_code=400)
     # Forward the /m/ request's own query string (minus sid) upstream.
     raw_q = request.scope.get("query_string", b"").decode("latin-1")
-    extra_q = [p for p in raw_q.split("&") if p and not p.lower().startswith("sid=")]
+    extra_q = [p for p in raw_q.split("&") if p and not p.lower().startswith(("sid=", "top="))]
     if extra_q:
         target_url += ("&" if parts.query else "?") + "&".join(extra_q)
         parts = urlsplit(target_url)
 
-    sid = request.query_params.get("sid", "")
+    sid = request.query_params.get("sid", "") or path_sid
     session = None
     if sid and session_manager:
         try:
@@ -5465,7 +5468,7 @@ async def mirror_proxy(request: Request, target: str):
             rheaders[name] = value
         rheaders["Cache-Control"] = "no-store"
         return RedirectResponse(
-            rewrite_location(resp.headers["location"], target_url),
+            rewrite_location(resp.headers["location"], target_url, sid),
             status_code=resp.status_code,
             headers=rheaders,
         )
@@ -5490,7 +5493,7 @@ async def mirror_proxy(request: Request, target: str):
         except Exception:
             text = data.decode("utf-8", errors="replace")
         return Response(
-            content=rewrite_html_for_proxy(text, target_url),
+            content=rewrite_html_for_proxy(text, target_url, sid),
             media_type="text/html",
             headers=out_headers,
         )
@@ -5500,7 +5503,7 @@ async def mirror_proxy(request: Request, target: str):
         except Exception:
             text = data.decode("utf-8", errors="replace")
         return Response(
-            content=rewrite_css_for_proxy(text, target_url),
+            content=rewrite_css_for_proxy(text, target_url, sid),
             media_type="text/css",
             headers=out_headers,
         )
@@ -12182,6 +12185,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     url_value = message.get('url', '')
                     if url_value:
                         await session.handle_navigation(url_value)
+
+                elif msg_type == 'proxy_sync':
+                    # Proxy mirror: the client iframe navigated through /m/ —
+                    # sync the persistent remote browser to the same URL so
+                    # both sides stay on the same page and the context's
+                    # cookies/storage keep accumulating from the real site.
+                    url_value = message.get('url', '')
+                    if url_value and hasattr(session, 'sync_remote_url'):
+                        try:
+                            await session.sync_remote_url(url_value)
+                        except Exception as exc:
+                            logger.debug("[WS] proxy_sync failed: %s", exc)
 
                 elif msg_type == 'input_sync':
                     await session.handle_input_sync(

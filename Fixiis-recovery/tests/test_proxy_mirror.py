@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from urllib.parse import unquote
+from urllib.parse import quote as _q, unquote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -102,7 +102,7 @@ recs = pm.set_cookie_records(["SID=xyz; Domain=example.com; Path=/; HttpOnly", "
 ok(recs == [{"name": "SID", "value": "xyz", "url": TARGET}, {"name": "n", "value": "v", "url": TARGET}],
    f"Set-Cookie parsed to context records (domain dropped): {recs!r}")
 
-ok(pm.proxied_page_url(TARGET, "s1") == pm.proxied_path(TARGET) + "?sid=s1", "proxied url carries sid")
+ok(pm.proxied_page_url(TARGET, "s1") == pm.proxied_path(TARGET, "s1"), "proxied url embeds sid in the path")
 ok(pm.is_proxy_enabled() is True, "proxy enabled by default (MIRROR_PROXY=0 is the kill switch)")
 for _v in ("0", "false", "no", "off"):
     os.environ["MIRROR_PROXY"] = _v
@@ -116,10 +116,27 @@ os.environ.pop("MIRROR_PROXY", None)
 # path and answered 400 "malformed".
 QT = "https://accounts.google.com/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin&dsh=S237#frag"
 pp = pm.proxied_page_url(QT, "s1")
-ok(pp == "/m/https://accounts.google.com/signin/identifier%3FflowName%3DGlifWebSignIn%26flowEntry%3DServiceLogin%26dsh%3DS237%23frag?sid=s1",
-   "target query/fragment percent-encoded into the /m/ path, sid stays a real query param")
-ok("%2F" not in pp, "slashes stay raw so injected <base> relative resolution keeps working segment-by-segment")
-ok(unquote(pp[len("/m/"):].split("?sid=")[0]) == QT, "proxied path decodes back to the exact target (ASGI unquotes the path before routing)")
+ok(pp == "/m/s1/https://accounts.google.com/signin/identifier%3FflowName%3DGlifWebSignIn%26flowEntry%3DServiceLogin%26dsh%3DS237%23frag",
+   "sid is the first path segment; target query/fragment percent-encoded inside the path")
+ok("%2F" not in pp, "slashes stay raw so injected <base> relative resolution keeps working segment-by-segment (WHATWG URL)")
+ok(unquote(pp[len("/m/s1/"):]) == QT, "proxied path decodes back to the exact target (ASGI unquotes the path before routing)")
+
+# --- sid in the path survives <base> relative resolution (browser semantics) -
+# WHATWG URL: new URL('z.png', 'https://me/m/S/https://a.com/x/y')
+#   -> /m/S/https://a.com/x/z.png   (python urljoin mangles ://; browsers don't)
+basep = pm.proxied_page_url("https://a.com/x/y", "S")
+ok(basep == "/m/S/https://a.com/x/y", "path-sid base form")
+ok(basep.rsplit("/", 1)[0] + "/z.png" == "/m/S/https://a.com/x/z.png", "simulated browser relative resolution keeps the sid segment")
+ok(pm.parse_proxy_path("S/https://a.com/x%3Fy%3D1") == ("S", "https://a.com/x%3Fy%3D1"), "parse_proxy_path does NOT unquote (ASGI already decoded scope[path] before routing)")
+ok(pm.parse_proxy_path("https://a.com/x") == ("", "https://a.com/x"), "parse_proxy_path without sid")
+ok(pm.parse_proxy_path("S/https://a.com/x?y=1") == ("S", "https://a.com/x?y=1"), "parse_proxy_path keeps raw query in target")
+ok(pm.rewrite_ref("https://c.com/a.js", TARGET, "S") == "/m/S/https://c.com/a.js", "rewritten refs carry the sid in the path")
+ok(pm.rewrite_ref("/img/i.png", TARGET, "S") == "/m/S/" + _q("https://mail.example.com/img/i.png", safe="/:"), "root-absolute refs carry sid too")
+ok(pm.rewrite_location("/cb?code=abc", TARGET, "S").startswith("/m/S/https://mail.example.com/cb%3Fcode%3Dabc"), "redirect Location carries sid in path")
+hs = pm.rewrite_html_for_proxy('<head><link href="/a.css"></head><body><img src="https://c.com/p.png"></body>', TARGET, "S")
+ok('<base href="/m/S/' + _q(TARGET, safe="/:") + '">' in hs, "injected base carries sid (relative refs keep the session)")
+ok('href="/m/S/https://mail.example.com/a.css"' in hs, "rewritten link carries sid")
+ok('src="/m/S/https://c.com/p.png"' in hs, "rewritten img carries sid")
 ok(pm.rewrite_ref("https://x.example.com/p?a=1&b=2", TARGET) == "/m/https://x.example.com/p%3Fa%3D1%26b%3D2",
    "rewritten refs with query strings are encoded too")
 ok(pm.rewrite_location("/cb?code=abc&state=xyz", QT) == "/m/https://accounts.google.com/cb%3Fcode%3Dabc%26state%3Dxyz",
@@ -153,7 +170,12 @@ if sw and shutil.which("node"):
 api_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "api.py"), encoding="utf-8").read()
 ok(_re.search(r"RedirectResponse\(\s*rewrite_location\([^)]*\),\s*status_code=[^,]+,\s*headers=rheaders", api_src) is not None,
    "redirect responses strip COOP/CSP/XFO headers (else the browser warns on our http origin)")
-ok('not p.lower().startswith("sid=")' in api_src,
-   "route re-attaches the /m/ request query string (minus sid) to the upstream URL")
+ok('not p.lower().startswith(("sid=", "top="))' in api_src,
+   "route re-attaches the /m/ request query string (minus sid/top) to the upstream URL")
+ok("parse_proxy_path(target)" in api_src, "route resolves sid from the /m/ path (survives <base> relative resolution)")
+ok("rewrite_html_for_proxy(text, target_url, sid)" in api_src, "HTML rewrite threads the sid into every /m/ ref")
+ok("rewrite_location(resp.headers[\"location\"], target_url, sid)" in api_src, "redirect rewrite keeps the sid in the path")
+ok("elif msg_type == 'proxy_sync':" in api_src and "session.sync_remote_url(url_value)" in api_src,
+   "WS proxy_sync puts the remote browser on the client's current /m/ page")
 
 print("proxy mirror: %d checks passed" % PASSED)

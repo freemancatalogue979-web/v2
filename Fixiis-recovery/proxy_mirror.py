@@ -42,17 +42,40 @@ def is_proxy_enabled() -> bool:
     return os.environ.get("MIRROR_PROXY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def proxied_path(target_url: str) -> str:
-    """Encode a full target URL into a single /m/ path (slashes stay raw)."""
-    return PROXY_PREFIX + quote(target_url or "", safe=_PROXY_SAFE)
+def proxied_path(target_url: str, sid: str = "") -> str:
+    """Encode a full target URL into a single /m/ path (slashes stay raw).
+
+    The session id is embedded as the FIRST PATH SEGMENT — /m/<sid>/<url> —
+    NOT as a ?sid= query param: a query on the injected <base> is dropped by
+    RFC 3986 relative resolution, so every runtime-built relative URL in page
+    JS would lose the session and hit /m/ without the persistent context's
+    cookies.  With the sid in the path, relative resolution keeps it:
+    base /m/S/https://a.com/x/y + "z.png" -> /m/S/https://a.com/x/z.png.
+    """
+    enc = quote(target_url or "", safe=_PROXY_SAFE)
+    if sid:
+        return PROXY_PREFIX + quote(sid, safe="") + "/" + enc
+    return PROXY_PREFIX + enc
+
+
+def parse_proxy_path(target: str):
+    """Split a /m/ path back into (sid, target_url).  sid may be empty.
+
+    Accepts both /m/<sid>/<url> (preferred) and /m/<url> (sid then comes from
+    the ?sid= query param at the route).
+    """
+    target = target or ""
+    m = re.match(r"^(?:([^/]+)/)?(https?://.+)$", target, re.I | re.S)
+    if m:
+        return (m.group(1) or ""), m.group(2)
+    if re.match(r"^https?://", target, re.I):
+        return "", target
+    return "", "https://" + target
 
 
 def proxied_page_url(target_url: str, sid: str = "") -> str:
     """The same-origin URL the client iframe loads for ``target_url``."""
-    u = proxied_path(target_url)
-    if sid:
-        u += "?sid=" + quote(sid, safe="")
-    return u
+    return proxied_path(target_url, sid)
 
 
 def _target_origin(target_url: str) -> str:
@@ -63,7 +86,7 @@ def _target_origin(target_url: str) -> str:
 _SKIP_PREFIXES = ("data:", "blob:", "javascript:", "mailto:", "tel:", "about:", "#")
 
 
-def rewrite_ref(ref: Optional[str], base_target: str) -> Optional[str]:
+def rewrite_ref(ref: Optional[str], base_target: str, sid: str = "") -> Optional[str]:
     """Rewrite one URL reference for proxy serving.
 
     Returns the rewritten (encoded) /m/ path, or None to leave the ref alone
@@ -77,13 +100,13 @@ def rewrite_ref(ref: Optional[str], base_target: str) -> Optional[str]:
         return None
     low = ref.lower()
     if low.startswith("http://") or low.startswith("https://"):
-        return proxied_path(ref)
+        return proxied_path(ref, sid)
     if ref.startswith("//"):
-        return proxied_path("https:" + ref)
+        return proxied_path("https:" + ref, sid)
     if ref.startswith("/"):
         # Root-absolute: against the TARGET's origin, not ours.
-        return proxied_path(_target_origin(base_target) + ref)
-    return None  # relative — the injected <base> handles it
+        return proxied_path(_target_origin(base_target) + ref, sid)
+    return None  # relative — the injected <base> handles it (sid stays in path)
 
 
 # Attributes whose value is a single URL.  These are applied ONLY outside
@@ -123,15 +146,15 @@ def _map_outside_scripts(html: str, fn: Callable[[str], str]) -> str:
     return "".join(out)
 
 
-def rewrite_css_for_proxy(css: str, base_target: str) -> str:
+def rewrite_css_for_proxy(css: str, base_target: str, sid: str = "") -> str:
     def _url_sub(m: "re.Match[str]") -> str:
-        new = rewrite_ref(m.group(2), base_target)
+        new = rewrite_ref(m.group(2), base_target, sid)
         if not new:
             return m.group(0)
         return m.group(0).replace(m.group(2), new, 1)
 
     def _import_sub(m: "re.Match[str]") -> str:
-        new = rewrite_ref(m.group(2), base_target)
+        new = rewrite_ref(m.group(2), base_target, sid)
         if not new:
             return m.group(0)
         return m.group(0).replace(m.group(2), new, 1)
@@ -150,7 +173,7 @@ _SW_NEUTER_JS = (
 )
 
 
-def rewrite_html_for_proxy(html: str, target_url: str) -> str:
+def rewrite_html_for_proxy(html: str, target_url: str, sid: str = "") -> str:
     """Rewrite a fetched document so every reference routes through /m/.
 
     Relative refs need no rewrite: the injected ``<base href="/m/<target>">``
@@ -161,10 +184,10 @@ def rewrite_html_for_proxy(html: str, target_url: str) -> str:
     """
     if not html:
         return html
-    base = proxied_page_url(target_url)
+    base = proxied_page_url(target_url, sid)
 
     def _attr_sub(m: "re.Match[str]") -> str:
-        new = rewrite_ref(m.group(3), target_url)
+        new = rewrite_ref(m.group(3), target_url, sid)
         if not new:
             return m.group(0)
         return m.group(1) + m.group(2) + new + m.group(2)
@@ -176,7 +199,7 @@ def rewrite_html_for_proxy(html: str, target_url: str) -> str:
             if not tok_stripped:
                 continue
             bits = tok_stripped.split(None, 1)
-            new = rewrite_ref(bits[0], target_url)
+            new = rewrite_ref(bits[0], target_url, sid)
             parts.append((new if new else bits[0]) + ((" " + bits[1]) if len(bits) > 1 else ""))
         if not parts:
             return m.group(0)
@@ -186,11 +209,11 @@ def rewrite_html_for_proxy(html: str, target_url: str) -> str:
         seg = _URL_ATTR_RE.sub(_attr_sub, seg)
         seg = _SRCSET_ATTR_RE.sub(_srcset_sub, seg)
         seg = _STYLE_BLOCK_RE.sub(
-            lambda m: m.group(1) + rewrite_css_for_proxy(m.group(2), target_url) + m.group(3),
+            lambda m: m.group(1) + rewrite_css_for_proxy(m.group(2), target_url, sid) + m.group(3),
             seg,
         )
         seg = _STYLE_ATTR_RE.sub(
-            lambda m: m.group(1) + m.group(2) + rewrite_css_for_proxy(m.group(3), target_url) + m.group(2),
+            lambda m: m.group(1) + m.group(2) + rewrite_css_for_proxy(m.group(3), target_url, sid) + m.group(2),
             seg,
         )
         # Meta CSP cannot be removed via response headers — drop the tag.
@@ -219,12 +242,12 @@ def rewrite_html_for_proxy(html: str, target_url: str) -> str:
     return html
 
 
-def rewrite_location(location: str, base_target: str) -> str:
-    """Rewrite a redirect Location header to its proxied form."""
+def rewrite_location(location: str, base_target: str, sid: str = "") -> str:
+    """Rewrite a redirect Location header to its proxied form (sid kept in path)."""
     if not location:
         return location
     absu = urljoin(base_target, location)
-    new = rewrite_ref(absu, base_target)
+    new = rewrite_ref(absu, base_target, sid)
     return new if new else location
 
 
