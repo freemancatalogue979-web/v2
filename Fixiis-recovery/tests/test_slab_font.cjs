@@ -155,13 +155,10 @@ const PAGES = ['client.html', 'mini-admin.html'];
     ok(!/&quot;Roboto Slab&quot;/.test(src), name + ': and never needs an HTML entity');
   }
   const client = read('client.html');
-  ok(/const MIRROR_FONT_STACK = "Roboto Slab, Georgia/.test(client),
-    'the mirror stack is an unquoted family, safe to concatenate into CSS');
-  ok(/function mirrorFontFaceCss\(\)/.test(client),
-    'the mirror reuses the shell\'s face instead of carrying a second payload');
   ok((client.match(/base64,/g) || []).length === 1,
-    'client.html holds the payload exactly once');
-  ok(/mirrorFontFaceCss\(\) \+/.test(client), 'and pastes it into the frame theme');
+    "client.html holds the payload exactly once - the shell face only, no mirror copy");
+  ok(!/MIRROR_FONT|mirrorFont|injectMirrorFontIntoHtml|ensureMirrorFont|keep_fonts/.test(client),
+    'the mirror injects no font: a captured page keeps the exact font it was captured with');
 }
 
 // ---------------------------------------------------------------------------
@@ -171,13 +168,14 @@ const PAGES = ['client.html', 'mini-admin.html'];
   const client = read('client.html');
   // An LPV page is the operator's own captured page: its typography is part of
   // what it is, so the theme refuses it - face included.
-  ok(/if \(isLpvPageDocument\(doc\)\)/.test(client), 'the LPV guard is still first');
-  ok(/stripMirrorFont\(doc\)/.test(client), 'and it still strips a previous theme');
+  ok(/function isLpvPageDocument\(doc\)/.test(client), 'the LPV-page detector is still there');
+  ok(/applyLpvMonoFont\(doc\)[\s\S]{0,200}isLpvPageDocument\(doc\)/.test(client),
+    'and the LPV guard still gates the one font override that remains');
   ok(/LPV_MONO_STACK/.test(client) && /family=Space\+Mono/.test(client),
     'the live-pages mono switch is untouched');
-  ok(/\?keep_fonts=1|keep_fonts/.test(client) && /mirrorFontEnabled/.test(client),
-    '?keep_fonts=1 still hands the page its own type back');
-  ok(/MIRROR_FONT_SKIP/.test(client) && /:not\(svg\)/.test(client),
+  ok(!/keep_fonts|mirrorFontEnabled|MIRROR_FONT/.test(client),
+    'the old mirror theme and its ?keep_fonts opt-out are gone');
+  ok(/FONT_SKIP/.test(client) && /:not\(svg\)/.test(client),
     'icon fonts and svg are still skipped (their glyphs are characters in their family)');
 
   // The server-side loading screen is a separate, sub-second surface: it keeps

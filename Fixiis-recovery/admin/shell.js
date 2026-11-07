@@ -480,7 +480,6 @@
             { kind: 'Action', label: 'Send a Telegram test message', sub: 'Telegram', tab: 'tgbot', keywords: 'telegram bot test notify' },
             { kind: 'Action', label: 'Restart the server', sub: 'Server', tab: 'manager', keywords: 'restart server reboot manager' },
             { kind: 'Action', label: 'Change the timezone', sub: 'Settings', tab: 'settings', keywords: 'timezone time clock settings' },
-            { kind: 'Action', label: 'Toggle the mirror font', sub: 'Settings', tab: 'settings', keywords: 'font mono mirror settings lpv' }
         ];
         return hits.concat(extra);
     }

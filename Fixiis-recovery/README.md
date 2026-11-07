@@ -1168,11 +1168,11 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 
 ---
 
-## The font: Roboto Slab in the shell and the live mirror — never an LPV page
+## The font: Roboto Slab in the shell and the panels — the mirror keeps each page's own fonts
 
-`client.html` and the phone panel are set in **Roboto Slab**, and so is the **live
-mirror** (the streamed browser): what the operator watches all day should look
-like one product.
+`client.html` and the phone panel are set in **Roboto Slab**. The **live mirror**
+(the streamed browser) deliberately does *not* restyle what it captures: a page
+is shown with the exact fonts of the page captured.
 
 **The admin console is set in Corptic too.** `Admin.html` draws every text —
 body, labels, keys, titles, the sign-in, even the log lines — in **Corptic
@@ -1192,115 +1192,36 @@ The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 |---|---|
 | `client.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
 | `Admin.html` | every element: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI, applied with `!important`; every digit: Montserrat Regular digit subset in `<style id=\"shf-montserrat-face\">` as a data: URI; machine output: the system Courier, no embed needed (licences: `assets/fonts/LICENSE-Corptic.txt`, `LICENSE-Montserrat.txt`) |
-| the live mirror | the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) plus rules that give the document root, `body` and every element the family with `!important` — written **into the captured document's own HTML** before it is rendered, and re-asserted on the frame's `load` |
+| the live mirror | **nothing** — the captured document is streamed as-is and renders in the exact fonts it was captured with. (It used to splice a ~45 KB data-URI `@font-face` plus `!important` font rules into every capture and re-assert them on `load`; that per-page font work was a measurable bottleneck in the capture pipeline, so it was removed.) |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in
 any panel or in the shell: the first paint cannot wait on a CDN, a filtered
 network cannot leave the shell in a different face from the panels, and the
 mirror injects no request into a visitor's page.
 
-### The mirror's theme is part of the document, not something done to it later
+### The mirror keeps the page's own fonts
 
-The theme used to be applied from the iframe's `load` handler, which looked
-sufficient and was not. That handler:
+The mirror used to theme every captured page in Roboto Slab — the face copied
+into the HTML as a ~45 KB data: URI, plus `font-family … !important` on the
+root, `body` and every element, written into the captured HTML *and*
+re-asserted from the frame's `load` handler. That was two bottlenecks on every
+single capture (a big string splice per page, a DOM write per frame), so the
+whole mechanism is **gone**: `renderPageSnapshot()` does no font work at all,
+no `<style>` is injected into a mirrored document, and there is no
+`?keep_fonts` opt-out left because there is nothing left to opt out of. What
+the operator watches is the page exactly as it was captured — its own
+typography included, which is also the most faithful answer to "what does this
+site look like".
 
-* runs **after** the first paint, so the visitor saw the page in its own
-  type until the handler got there;
-* needs a parsed `<body>`, and returns early for a document it classifies as an
-  error interstitial;
-* is one code path among several — a frame filled any other way kept the
-  site's own fonts.
-
-An error screen is where this surfaced (a blocked visit landing on a 403 page,
-rendered in the page's own Arial), but the hole was general. So
-`renderPageSnapshot()` now writes the theme **into the HTML** — the last rule in
-`<head>`, or the end of the document when a page has no `<head>` at all, which
-is exactly the shape those error pages come in — and only then builds the
-`blob:`. The first paint is already in the product font, and no handler has to
-run for it to be true.
-
-Rules that keep it honest:
-
-* **`:root`, `html`, `body` and every element**, not just `body *`: a captured
-  fragment can have content outside a body, and `body *` would never reach it.
-* **One description of the theme** (`mirrorFontCssText()`) is used by both
-  doors, so the document copy and the runtime copy cannot drift; a tag left by
-  an older build is **rewritten**, never trusted.
-* **`load` still themes**, and now for *every* document (a frame that arrived by
-  another route, e.g. `about:blank` + a body swap), and a document with no
-  `<head>` gets one rather than being skipped.
-
-**Why embedded rather than a `system` face or a URL?** Two reasons, both
-practical:
-
-* the panels and the shell must look *the same on every machine*. Naming a
-  face the OS happens to have makes the product's typography a property of the
-  visitor's device. This one is the same file everywhere, offline included, and
-  it works in the standalone copies opened from `file://`.
-* a mirrored document lives in an `iframe` loaded from a `blob:` URL, so it has
-  an **opaque origin**. A `@font-face` pointing at any URL — ours or a font CDN —
-  is then a cross-origin font request, and font loads are CORS-checked: the page
-  would come back in the wrong type with no error to show for it. A `data:` URI
-  is exempt from origin rules.
-
-The payload is the **variable** Latin build (weights 100–900 in one 34 KB file,
-~45 KB once base64-encoded), which is smaller than a 400 + 700 pair and covers
-every weight the panels use (400, 500, 600, 650, 700, 800) by interpolation
-instead of snapping to the nearest static face. `assets/fonts/` holds the source
-of truth and its licence (Apache-2.0); if the face is ever refused — a mirrored
-site's own `font-src` policy, an exotic engine — the stack falls back to
-Georgia and then a generic serif, so the page keeps a serif texture instead of
-flipping to a sans look mid-load.
-
-`fonts.py` is the canonical description (family, stacks, the face CSS);
-`deploy/embed_font.py` writes that block into the three pages and
-`python3 deploy/embed_font.py --check` fails if any copy has drifted from
-`assets/fonts`. `tests/test_slab_font.cjs` checks the same thing from the other
-side: byte-identical payloads, no other house face, no quotes around the family
-name (the shape that has silently broken a panel before), and no font request
-anywhere.
-
-**The one exception is the server's domain spinner** (`api.py`): the branded
-logo + name + progress bar shown for a site that has configured a domain but no
-custom loading screen. It is a fraction of a second long and its whole job is to
-be there instantly, so it keeps a plain system stack rather than growing by
-34 KB of font on the critical path. Everything the operator *works* in, and the
-mirror they watch, carries the face.
-
-The family is always spelled **unquoted** (`font-family: Roboto Slab, Georgia,
-serif`). A quoted family inside a JS string or an inline `style="…"` attribute
-ends the string or the attribute early — that bug has already cost this project
-one panel. `Roboto Slab` needs no quotes, so it cannot cause it.
-
-**An LPV page keeps its own typography by default.** A pushed Live-pages document
-is the operator's own saved page, shown to a visitor exactly as it was captured:
-its fonts are part of what it is, and restyling it in our font would be changing
-their page. It is enforced in three places, so no call site can re-introduce it:
+The one remaining font override is the operator's own switch for pushed
+*live pages* (below); it is gated so it can never reach a streamed document:
 
 | Guard | What it does |
 |---|---|
-| `isLpvPageDocument(doc)` | an LPV pushed document is recognised by its own `data-lpv-page="1"` marker, its window flag, or the `data-lpv-frame` / `lpv-page-frame` frame it is rendered in |
-| `ensureMirrorFont(doc)` | returns `false` for such a document and never injects anything |
-| `stripMirrorFont(doc)` | **removes** the injected style again, for a frame that was themed before it became an LPV page (a re-push into the same frame) |
+| `isLpvPageDocument(doc)` | a pushed live-page document is recognised by its own `data-lpv-page="1"` marker, its window flag, or the `data-lpv-frame` / `lpv-page-frame` frame it is rendered in — and `applyLpvMonoFont` refuses anything else |
 
 The LPV frame marks the document the moment it has `contentDocument`, before any
 other code touches it, so the guard is in place for the first paint.
-
-Details that still apply to the live mirror:
-
-* **Icons keep their own font.** Font Awesome, Material Icons, Glyphicons, MDI
-  and anything with `icon` in its class are excluded, plus `svg` — their glyphs
-  are characters in *their* family, so replacing it would turn every icon into a
-  letter. (The exclusions are simple `:not()` conditions only; a complex one
-  like `:not(svg *)` is silently ignored by some engines.)
-* **The override is the last rule in `<head>`**, so a page stylesheet injected
-  later cannot win back its own font on a tie.
-* **`?keep_fonts=1`** on the client URL (`/client.html?url=…&keep_fonts=1`)
-  leaves even the live mirror with the site's real typography, for checking a
-  capture against the original. It cannot turn the font *on* for an LPV page.
-* The mirror theme no longer injects a `<link>` at all. A page themed by an
-  older build may still carry one (`__shifix_mirror_font_css__`); it is removed
-  on sight rather than left as a dead request in a visitor's document.
 
 ### The one exception: "Set live pages in Space Mono"
 
@@ -1317,7 +1238,7 @@ What it does and does not touch:
 | | Roboto Slab (shell/mirror) | Space Mono (this switch) |
 |---|---|---|
 | the panels and the shell | yes | no |
-| the streamed mirror | yes | no |
+| the streamed mirror | no (it keeps its own fonts) | no |
 | a pushed **live page** | never | only when the switch is on |
 
 * Icons, `svg` and anything declaring itself an icon are excluded, exactly as in
@@ -1337,10 +1258,11 @@ What it does and does not touch:
 * Off is the fallback everywhere: a copy that cannot reach the backend, or a
   saved file written before this switch existed, keeps the page's own fonts.
 
-Tests: `node tests/test_mirror_font.cjs` (74 checks, including the LPV refusal
-executed against a fake document), `node tests/test_lpv_mono_font.cjs`
-(51 checks — the switch itself) and `python tests/test_lpv_font_switch.py`
-(20 checks — setting, boot flag, live push, panel wiring).
+Tests: `node tests/test_mirror_font.cjs` (31 checks — the injection machinery is
+gone and the capture does no font work), `node tests/test_mirror_font_apply.cjs`
+(19 checks — a captured page keeps its own font-family in a real DOM),
+`node tests/test_lpv_mono_font.cjs` (51 checks — the switch itself) and
+`python tests/test_lpv_font_switch.py` (setting, boot flag, live push, panel wiring).
 
 ---
 
@@ -2121,8 +2043,8 @@ node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; 
 node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
-node tests/test_mirror_font.cjs           # Roboto Slab in the live mirror, never an LPV page
-node tests/test_mirror_font_apply.cjs     # the theme lands in the document itself (jsdom; a real 403 page)
+node tests/test_mirror_font.cjs           # the mirror keeps captured fonts; only the LPV mono switch overrides, on request
+node tests/test_mirror_font_apply.cjs     # a captured page keeps its own font-family in a real DOM (jsdom)
 node tests/test_admin_cockpit.cjs         # the console skin: contract, monochrome palette, pills, Corptic everywhere, no fetch
 node tests/test_slab_font.cjs             # the embedded face: one payload, three pages, no fetch
 python tests/test_boot_priority.py         # page first, patches never dropped

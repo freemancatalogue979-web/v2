@@ -9,13 +9,10 @@ One decision per surface, no third-party host, no render-blocking stylesheet.
 
 Why the glyphs travel *inside* the document
 -------------------------------------------
-A mirrored page is rendered into an iframe whose document comes from a `blob:`
-URL, so it has an **opaque origin**. A `@font-face` pointing at a URL — ours or
-Google's — is then a cross-origin font request, and the CSS Fonts spec makes
-font loads CORS-checked. The page would come back with its own typography
-silently dropped (or, worse, blank boxes) while images and CSS loaded fine.
-A `data:` URI sidesteps origin rules entirely, and is also what makes the
-standalone copies work from `file://` and behind a filter.
+The shell pages embed their face so they fetch nothing for type and work from
+`file://` and behind a filter. (The live mirror no longer injects any face
+into captured pages — each capture keeps the exact fonts of the page captured —
+so the old blob:-origin/CORS concern no longer applies to the mirror.)
 
 The payload below is the **variable** Latin build (weights 100-900 in one
 34 KB file), which is smaller than the 400 + 700 pair it replaces and covers
@@ -48,8 +45,8 @@ FONT_FILE = (
 FONT_FAMILY = "Roboto Slab"
 
 # Slab serif with slab-flavoured fallbacks: if the embedded face is ever
-# refused (a mirrored site's own `font-src` CSP, an exotic engine), the text
-# keeps its serif texture instead of flipping to a sans face mid-page.
+# refused (an exotic engine, a strict `font-src` policy), the text keeps its
+# serif texture instead of flipping to a sans face mid-load.
 FONT_STACK = "Roboto Slab, Georgia, 'Times New Roman', serif"
 
 # Where a monospace face is meant, it stays monospace — Roboto Slab is only

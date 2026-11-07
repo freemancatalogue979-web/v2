@@ -41,9 +41,9 @@ function sliceBetween(from, to) {
   return source.slice(start, end);
 }
 
-// Stacks + skip list + the whole mono block (it sits before mirrorFontForced).
-const head = sliceBetween('const MIRROR_FONT_STACK =', '\n            let mirrorFontForced = null;');
-// isLpvPageDocument / stripMirrorFont / ensureMirrorFont — the LPV test.
+// The skip list + the whole mono block (it sits before isLpvPageDocument).
+const head = sliceBetween('const FONT_SKIP =', '\n            // Is this document an LPV pushed page');
+// isLpvPageDocument — the LPV test.
 const guard = sliceBetween('function isLpvPageDocument(doc) {', 'function initializeViewportState() {');
 const slice = head + '\n' + guard;
 
@@ -270,7 +270,7 @@ const MONO_HREF = 'https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;
   const frameHandler = source.indexOf("frame.classList.add('lpv-page-frame')");
   ok(frameHandler > 0, 'the LPV frame handler still marks its document');
   const after = source.slice(frameHandler, frameHandler + 700);
-  ok(/stripMirrorFont\(innerDoc\)/.test(after), 'it still removes the shell/mirror font');
+  ok(!/stripMirrorFont|MIRROR_FONT/.test(after), 'no mirror-font tag is stripped because none is ever injected');
   ok(/applyLpvMonoFont\(innerDoc\)/.test(after),
     'and then applies the operator\'s mono choice on every mount (including a re-push)');
 
