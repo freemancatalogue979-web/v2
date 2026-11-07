@@ -1,10 +1,9 @@
 """The product font: Roboto Slab — embedded, never fetched.
 
 Every surface the operator or a visitor looks at (the client shell, the LIVE
-mirror, Mini Admin) is set in **Roboto Slab**; Admin.html is set entirely in an
-embedded Corptic DEMO, with an embedded Montserrat digit subset for the numbers
-and the system Courier (11px/500/0.1em/uppercase) for machine output
-(black & white themes, rounded shapes only).
+mirror, Mini Admin) is set in **Roboto Slab**; Admin.html is set entirely in the
+system Courier, with an embedded Montserrat digit subset for the numbers
+(black & white themes, dark by default, rounded shapes only).
 One decision per surface, no third-party host, no render-blocking stylesheet.
 
 Why the glyphs travel *inside* the document

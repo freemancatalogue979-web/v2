@@ -45,9 +45,8 @@ const b64 = raw.toString('base64');
 // ---------------------------------------------------------------------------
 // 2. Every page carries exactly that font — no more, no less
 // ---------------------------------------------------------------------------
-// Admin.html is NOT in this list on purpose: its body is set in Helvetica
-// from the OS. Its display chrome uses Corptic DEMO, embedded once as a data:
-// URI in its own block - section 2b asserts that instead.
+// Admin.html is NOT in this list on purpose: its text is set in the system
+// Courier, with one embedded Montserrat digit subset - section 2b asserts that.
 const PAGES = ['client.html', 'mini-admin.html'];
 {
   for (const name of PAGES) {
@@ -93,25 +92,24 @@ const PAGES = ['client.html', 'mini-admin.html'];
 }
 
 // ---------------------------------------------------------------------------
-// 2b. Admin.html: the Corptic display face, embedded once, nothing remote
+// 2b. Admin.html: the system Courier, one embedded digit face, nothing remote
 // ---------------------------------------------------------------------------
 {
   const admin = read('Admin.html');
   ok(!/<style id="shf-font-face">/.test(admin), 'Admin.html carries no Roboto Slab block');
-  ok(/<style id="shf-corptic-face">/.test(admin),
-    'Admin.html carries the Corptic face in its own block');
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 2,
-    'exactly two @font-face rules in Admin.html - Corptic plus the Montserrat digit subset');
+  ok(!/Corptic/i.test(admin), 'no Corptic anywhere - the panel font is the system Courier');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
+    'exactly one @font-face rule in Admin.html - the Montserrat digit subset');
   ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin),
     'the face ships as a data: URI - nothing is fetched');
-  const corpticB64 = fs.readFileSync(
-    path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')).toString('base64');
-  ok(admin.includes(corpticB64),
-    'the embedded Corptic is byte-identical to assets/fonts/corptic-demo-regular.woff2');
-  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')) &&
-     fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Montserrat.txt')),
-    'the licences travel with the fonts');
-  ok(/--mc-font:\s*Corptic, Montserrat,/.test(admin), 'letters lead with Corptic, numbers with Montserrat');
+  ok(/<style id="shf-montserrat-face">/.test(admin) &&
+     admin.includes(fs.readFileSync(
+       path.join(root, 'assets', 'fonts', 'montserrat-digits-400.woff2')).toString('base64')),
+    'the embedded digit face is byte-identical to assets/fonts/montserrat-digits-400.woff2');
+  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Montserrat.txt')),
+    'the licence travels with the font');
+  ok(/--mc-font:\s*Montserrat, "Courier", monospace/.test(admin),
+    'numbers lead with the Montserrat subset, every letter falls to the system Courier');
   ok(!/Roboto Slab/.test(admin), 'and asks for no other house face');
 }
 

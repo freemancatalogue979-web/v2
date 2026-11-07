@@ -78,8 +78,8 @@ for (const page of PAGES) {
 // 3. The font itself: the house face per surface, and no webfont request
 // ---------------------------------------------------------------------------
 // The client and the phone panel are set in Roboto Slab and carry the face
-// inline. The admin console keeps Helvetica for its body and embeds Corptic
-// DEMO once (data: URI) for its display chrome - that single embedded face is
+// inline. The admin console uses the system Courier for every text and embeds
+// only the Montserrat digit subset (data: URI) - that single embedded face is
 // the exception asserted below.
 {
   const client = fs.readFileSync(path.join(root, 'client.html'), 'utf8');
@@ -94,19 +94,18 @@ for (const page of PAGES) {
     ok(!/Space\+Grotesk/.test(src) && !/Space Grotesk/.test(src),
        name + ' asks for Space Grotesk nowhere');
   }
-  ok(/--mc-font:\s*Corptic, Montserrat,/.test(admin), 'Admin.html names Corptic for letters and Montserrat for numbers');
+  ok(/--mc-font:\s*Montserrat, "Courier", monospace/.test(admin), 'Admin.html names Montserrat for numbers and the system Courier for letters');
   ok(!/Roboto Slab/.test(admin), 'Admin.html asks for no other house face');
-  // Two embedded faces are allowed - Corptic for letters, Montserrat for
-  // digits - both as data: URIs, nothing remote. Machine output uses the
-  // system Courier, so it needs no face at all.
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 2,
-     'Admin.html carries exactly two embedded faces');
-  ok(/<style id="shf-corptic-face">[\s\S]*?data:font\/woff2;base64,/.test(admin),
-     'the letter face is Corptic, embedded as a data: URI (no fetch)');
+  // One embedded face is allowed - the Montserrat digit subset - as a data:
+  // URI, nothing remote. Letters and machine output use the system Courier,
+  // so they need no face at all.
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 1,
+     'Admin.html carries exactly one embedded face');
+  ok(!/Corptic/i.test(admin), 'no Corptic anywhere');
   ok(/<style id="shf-montserrat-face">[\s\S]*?data:font\/woff2;base64,/.test(admin),
-     'and the digit face is Montserrat, embedded the same way');
+     'the digit face is Montserrat, embedded as a data: URI (no fetch)');
   const adminFaces = admin.match(/@font-face\s*\{[\s\S]*?\}/g) || [];
-  ok(adminFaces.every((r) => !/https?:\/\//.test(r)), 'both face rules point nowhere remote');
+  ok(adminFaces.every((r) => !/https?:\/\//.test(r)), 'the face rule points nowhere remote');
   ok(!/Space\+Grotesk/.test(admin) && !/Space Grotesk/.test(admin),
      'Admin.html asks for Space Grotesk nowhere');
   // The shell and the panels must not fetch a font at all; the one exception in

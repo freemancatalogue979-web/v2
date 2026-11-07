@@ -656,15 +656,16 @@ downloading a big page instead of having it cancelled halfway.
 
 ## The mission-control console: how `Admin.html` is drawn
 
-The admin panel is a black & white ops console, not a form: the dark theme
-is a near-black room with a hairline grid and CRT scanlines where every text
-is white, and the light theme (the default) is its exact inverse — black on
-white. There is no accent hue anywhere. Every shape is round: the **tab rail**
-is a row of pill keys (the active one filled with the accent), **every modal
-is a rounded dialog** with a blinking header lamp and pill keys, and a radar
-scope sweeps behind the live view. **Corptic** (embedded, see the font
-section) sets *every* text in the panel, oblique across the chrome and
-upright in machine output.
+The admin panel is a black & white ops console, not a form: it **opens in
+the dark theme** — a near-black room with a hairline grid and CRT scanlines
+where every text is white — and the light theme is its exact inverse, black on
+white, one toggle away. There is no accent hue anywhere. Every shape is
+round: the **tab rail** is a row of pill keys (the active one filled with the
+accent), **every modal is a rounded dialog** with a blinking header lamp and
+pill keys, and a radar scope sweeps behind the live view. **Courier** (the
+system font, nothing embedded) sets *every* text in the panel, oblique across
+the chrome and upright in machine output; **numbers** are the one exception,
+set in the embedded Montserrat digit subset (see the font section).
 
 It is **one stylesheet** — `<style id=\"shf-reactor-shell\">`, the last thing in
 `<head>` so it wins the cascade — plus two decorative elements. That shape is
@@ -675,7 +676,7 @@ describes how existing elements look and never renames one.
 |---|---|
 | palette, pills, rounded corners, type | CSS custom properties on `:root`, strict monochrome (grays only), with a full `[data-theme=\"light\"]` counterpart |
 | the console mark | inline SVG inside the existing `.logo-icon` (a round reticle, CSS rings around it) |
-| the face for every text | Corptic DEMO (Pandeka Foundry), embedded as a data: URI in `<style id=\"shf-corptic-face\">` and applied to every element with `!important`; the demo is letters-only, so **numbers** fall through to the embedded Montserrat digit subset (`<style id=\"shf-montserrat-face\">`) and any other punctuation to Helvetica per glyph. **Machine output** (logs, terminal, code, textareas) is the one exception: `font-family: "Courier", monospace; font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase`, upright — Courier is a system font, so nothing is embedded for it |
+| the face for every text | the system **Courier** (`--mc-font: Montserrat, "Courier", monospace`, applied to every element with `!important`); the stack leads with the embedded Montserrat digit subset (`<style id=\"shf-montserrat-face\">`), which has no letters, so **numbers** land in Montserrat and every letter in Courier per glyph. **Machine output** (logs, terminal, code, textareas) repeats `font-family: "Courier", monospace` at `font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase`, upright — Courier is a system font, so the only embed is the digit subset |
 | the sign-in airlock | the login is a round glass card over concentric rings, with a porthole reticle, pill fields and one pill key — deliberately none of the angular cuts |
 | the console stage | `.lx-stage` (dot field + scanlines) and an inline `.mc-radar` scope — rings, degree ticks, a sweep and blips, all in `currentColor` so the scope is white on black and black on white |
 | the tab rail | `.top-tabs` / `.top-tab`: uppercase oblique pill keys (`border-radius: 999px`), the active one filled with the accent |
@@ -692,19 +693,19 @@ dressed up as a redesign:
   still exists. `tests/fixtures/admin_shell_contract.json` is that contract,
   captured before the reskin; `tests/test_admin_cockpit.cjs` fails if any entry
   disappears.
-* **One face for every text, Courier for machine output.** Corptic is applied
-  to every element with `!important` — the panel's own `* { font-family: … !important }`
+* **One face for every text: Courier.** The system Courier is applied to
+  every element with `!important` — the panel's own `* { font-family: … !important }`
   reset claims every element, so the skin lists the message classes explicitly
-  to win that fight. Logs, the terminal, code fields and `<textarea>` are set
-  in **Courier** (system font) instead — 11px, weight 500, `letter-spacing: 0.1em`,
+  to win that fight. Logs, the terminal, code fields and `<textarea>` repeat
+  the same Courier at 11px, weight 500, `letter-spacing: 0.1em`,
   `text-transform: uppercase`, still upright (`font-style: normal`).
 * **Motion is optional.** The reticle ring turns, the lamps blink and the radar
   sweeps; under `prefers-reduced-motion: reduce` all of them stop and the
   design still reads.
 
-The panel **opens in the light theme by default** — literal black text on
-white (`--mc-text: #000000` on `--mc-void: #ffffff`) — and the black theme
-(white on black) stays one toggle away (`data-theme` + the `admin-theme` saved
+The panel **opens in the dark theme by default** — literal white text on
+black (`--mc-text: #ffffff` on `--mc-void: #000000`) — and the light theme
+(black on white) stays one toggle away (`data-theme` + the `admin-theme` saved
 choice). Every token has both values; the palette is pure black and white, so
 there is no hue to re-tune.
 
@@ -1174,15 +1175,15 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 (the streamed browser) deliberately does *not* restyle what it captures: a page
 is shown with the exact fonts of the page captured.
 
-**The admin console is set in Corptic too.** `Admin.html` draws every text —
-body, labels, keys, titles, the sign-in, even the log lines — in **Corptic
-DEMO** by Pandeka Foundry, embedded as a data: URI, oblique across the
-chrome and upright in machine output. The one thing Corptic cannot draw is
-numbers (the demo ships letters only), so **every digit falls through to
-Montserrat Regular**, embedded as a digits-only subset in
-`<style id=\"shf-montserrat-face\">`; any remaining punctuation falls to
-Helvetica per glyph. Machine output — logs, the terminal, code fields — is
-set in the system **Courier** at 11px / 500 / 0.1em / uppercase, upright.
+**The admin console is set in Courier too.** `Admin.html` draws every text —
+body, labels, keys, titles, the sign-in, even the log lines — in the system
+**Courier**, oblique across the chrome and upright in machine output, with
+nothing embedded for it. The one thing worth embedding is the **numbers**:
+**every digit falls through to Montserrat Regular**, embedded as a digits-only
+subset in `<style id=\"shf-montserrat-face\">` (the subset has no letters, so
+the stack `Montserrat, "Courier", monospace` puts digits in Montserrat and
+everything else in Courier, per glyph). Machine output — logs, the terminal,
+code fields — repeats the Courier at 11px / 500 / 0.1em / uppercase, upright.
 See *The mission-control console* below.
 
 The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
@@ -1191,7 +1192,7 @@ The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
 | Surface | How it gets the font |
 |---|---|
 | `client.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
-| `Admin.html` | every element: Corptic DEMO in `<style id=\"shf-corptic-face\">` as a data: URI, applied with `!important`; every digit: Montserrat Regular digit subset in `<style id=\"shf-montserrat-face\">` as a data: URI; machine output: the system Courier, no embed needed (licences: `assets/fonts/LICENSE-Corptic.txt`, `LICENSE-Montserrat.txt`) |
+| `Admin.html` | every element: the system Courier via `--mc-font`, applied with `!important`; every digit: Montserrat Regular digit subset in `<style id=\"shf-montserrat-face\">` as a data: URI; machine output: the same system Courier at 11px/500/0.1em/uppercase (licence: `assets/fonts/LICENSE-Montserrat.txt`) |
 | the live mirror | **nothing** — the captured document is streamed as-is and renders in the exact fonts it was captured with. (It used to splice a ~45 KB data-URI `@font-face` plus `!important` font rules into every capture and re-assert them on `load`; that per-page font work was a measurable bottleneck in the capture pipeline, so it was removed.) |
 
 That means **no font stylesheet, no preconnect and nothing render-blocking** in
@@ -2045,7 +2046,7 @@ node tests/test_page_actions.cjs          # archive edit, click actions, retired
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
 node tests/test_mirror_font.cjs           # the mirror keeps captured fonts; only the LPV mono switch overrides, on request
 node tests/test_mirror_font_apply.cjs     # a captured page keeps its own font-family in a real DOM (jsdom)
-node tests/test_admin_cockpit.cjs         # the console skin: contract, monochrome palette, pills, Corptic everywhere, no fetch
+node tests/test_admin_cockpit.cjs         # the console skin: contract, monochrome palette, pills, Courier everywhere, dark default, no fetch
 node tests/test_slab_font.cjs             # the embedded face: one payload, three pages, no fetch
 python tests/test_boot_priority.py         # page first, patches never dropped
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages

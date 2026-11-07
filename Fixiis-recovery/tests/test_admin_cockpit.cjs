@@ -3,7 +3,7 @@
 // Admin.html is drawn as a black & white ops console: the dark theme is white
 // on black, the light theme (the default) is black on white — no accent hue
 // anywhere. Every shape is round: pill tabs and keys, rounded panels and
-// dialogs, no clip-path cuts, no corner brackets. Every text is Corptic
+// dialogs, no clip-path cuts, no corner brackets. Every text is Courier
 // (embedded once as a data: URI), oblique across the chrome, upright only in
 // machine output. The skin is one named block, last in <head>. None of that
 // may cost the panel its scripts, so this file guards:
@@ -13,7 +13,7 @@
 //      reskin (tests/fixtures/admin_shell_contract.json); a rename is a bug,
 //      not a redesign.
 //   2. THE DESIGN. The skin is present, last in the cascade, monochrome,
-//      rounded, Corptic throughout — not "roughly dark" and not angular.
+//      rounded, Courier throughout — not "roughly dark" and not angular.
 //   3. THE RULES IT MUST NOT BREAK. No network fetch of any kind for the look,
 //      machine output stays upright, the art is decoration only (aria-hidden,
 //      no pointer events), and motion is respectful.
@@ -113,9 +113,10 @@ const skin = admin.slice(skinStart, cssEnd);
   ok((radar.match(/currentColor/g) || []).length >= 6, 'rings, ticks, sweep and blips all follow the theme');
 
   // The panel opens in the light theme; the black theme stays one toggle away.
-  ok(/<html lang="en" data-theme="light">/.test(admin), 'the panel opens in the light theme by default');
-  ok(/localStorage\.getItem\('admin-theme'\)\s*\|\|\s*'light'/.test(admin),
+  ok(/<html lang="en" data-theme="dark">/.test(admin), 'the panel opens in dark mode (white on black) by default');
+  ok(/localStorage\.getItem\('admin-theme'\)\s*\|\|\s*'dark'/.test(admin),
     'and the JS fallback agrees (a saved choice still wins)');
+  ok(/\[data-theme="light"\]/.test(css), 'the light theme (black on white) stays one toggle away');
   ok(/function toggleTheme\(\)/.test(admin), 'the black theme is still one toggle away');
 }
 
@@ -149,20 +150,19 @@ const skin = admin.slice(skinStart, cssEnd);
 }
 
 // ---------------------------------------------------------------------------
-// 5. Corptic for every letter, Montserrat for every number — embedded, nothing fetched
+// 5. Courier for every letter, Montserrat for every number — one embedded face, nothing fetched
 // ---------------------------------------------------------------------------
 {
-  ok((admin.match(/@font-face\s*\{/g) || []).length === 2, 'Admin.html carries exactly two embedded faces');
-  ok(/<style id="shf-corptic-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*Corptic;/.test(admin),
-    'the letter face is Corptic (Pandeka Foundry), in its own block');
+  ok((admin.match(/@font-face\s*\{/g) || []).length === 1, 'Admin.html carries exactly one embedded face');
+  ok(!/Corptic/i.test(admin), 'no Corptic anywhere - the panel font is the system Courier, nothing embedded for letters');
   ok(/<style id="shf-montserrat-face">[\s\S]*?@font-face\s*\{\s*font-family:\s*Montserrat;/.test(admin),
     'and the digit face is Montserrat, subset to numbers, in its own block');
   ok(/src:\s*url\(data:font\/woff2;base64,/.test(admin), 'and they ship as data: URIs');
   const faceRules = admin.match(/@font-face\s*\{[\s\S]*?\}/g) || [];
-  ok(faceRules.length === 2 && faceRules.every((r) => !/https?:\/\//.test(r) && /data:font\/woff2;base64,/.test(r)),
-    'both face rules are local data: URIs, no remote URL');
-  ok(/--mc-font:\s*Corptic, Montserrat,/.test(css),
-    'the universal stack is Corptic for letters, Montserrat for numbers');
+  ok(faceRules.length === 1 && faceRules.every((r) => !/https?:\/\//.test(r) && /data:font\/woff2;base64,/.test(r)),
+    'the face rule is a local data: URI, no remote URL');
+  ok(/--mc-font:\s*Montserrat, "Courier", monospace/.test(css),
+    'the universal stack is the Montserrat digit subset first (numbers), then the system Courier (every letter)');
   ok(/font-family:\s*var\(--mc-font\)\s*!important/.test(css),
     'every text uses it, with !important over the panel\'s `*` reset');
   ok(/font-style:\s*italic/.test(css), 'the chrome is oblique');
@@ -176,19 +176,15 @@ const skin = admin.slice(skinStart, cssEnd);
   ok(/font-style:\s*normal/.test(machineRule), 'and still upright');
   const universalRule = (css.match(/html, body,[\s\S]*?font-family:\s*var\(--mc-font\)\s*!important;[\s\S]*?\}/) || [''])[0];
   ok(!/\.log-content|\.terminal|\[class\*="monospace"\]/.test(universalRule),
-    'the universal Corptic rule leaves machine output to the DM Mono rule');
+    'the universal Courier rule leaves machine output to its own stricter rule');
   ok(css.indexOf(machineRule) > css.indexOf(universalRule), 'and the DM Mono rule comes later, so it wins');
   ok(/!\s*var\(--mc-mono\)|Roboto Slab/.test(admin) === false, 'no mono lead and no other house face');
   ok(!/Roboto Slab/.test(admin), 'the panel asks for no other house face');
-  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')) &&
-     admin.includes(fs.readFileSync(path.join(root, 'assets', 'fonts', 'corptic-demo-regular.woff2')).toString('base64')),
-    'the embedded Corptic is byte-identical to the asset in assets/fonts');
   ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'montserrat-digits-400.woff2')) &&
      admin.includes(fs.readFileSync(path.join(root, 'assets', 'fonts', 'montserrat-digits-400.woff2')).toString('base64')),
     'and so is the embedded Montserrat digit subset');
-  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Corptic.txt')) &&
-     fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Montserrat.txt')),
-    'and both licences travel with their fonts');
+  ok(fs.existsSync(path.join(root, 'assets', 'fonts', 'LICENSE-Montserrat.txt')),
+    'and its licence travels with it');
 }
 
 // ---------------------------------------------------------------------------
@@ -300,21 +296,21 @@ const skin = admin.slice(skinStart, cssEnd);
       'the whole skin parses (' + (sheet ? sheet.cssRules.length : 0) + ' rules)');
     ok(/@media/.test(Array.from(sheet.cssRules).map((r) => r.cssText).join('').slice(0, 40000)),
       'including its media queries');
-    ok(doc.getElementById('shf-corptic-face').sheet.cssRules.length === 1, 'the Corptic face parses as one rule');
+    ok(doc.getElementById('shf-montserrat-face').sheet.cssRules.length === 1, 'the Montserrat digit face parses as one rule');
     ok(doc.getElementById('shf-montserrat-face').sheet.cssRules.length === 1, 'and so does the Montserrat digit face');
 
     const style = (sel, prop) => {
       const el = doc.querySelector(sel);
       return el ? dom.window.getComputedStyle(el)[prop] : null;
     };
-    ok(doc.documentElement.getAttribute('data-theme') === 'light', 'the panel computes as light by default');
+    ok(doc.documentElement.getAttribute('data-theme') === 'dark', 'the panel computes as dark by default');
     ok(style('body', 'fontStyle') === 'italic', 'the panel computes as oblique');
-    ok(/Corptic/.test(style('body', 'fontFamily') || '') && /Montserrat/.test(style('body', 'fontFamily') || ''),
-      'every text computes to the Corptic + Montserrat stack');
+    ok(/Courier/.test(style('body', 'fontFamily') || '') && /Montserrat/.test(style('body', 'fontFamily') || ''),
+      'every text computes to the Courier + Montserrat stack');
     ok(/Montserrat/.test(dom.window.getComputedStyle(doc.documentElement).getPropertyValue('--mc-font') || ''),
-      'the --mc-font stack offers Montserrat after Corptic');
-    ok(/Corptic/.test(style('.top-tab', 'fontFamily') || '') && style('.top-tab', 'fontStyle') === 'italic',
-      'the nav is Corptic and oblique');
+      'the --mc-font stack offers Montserrat digits, then Courier');
+    ok(/Courier/.test(style('.top-tab', 'fontFamily') || '') && style('.top-tab', 'fontStyle') === 'italic',
+      'the nav is Courier and oblique');
     ok(style('.logo-text', 'fontStyle') === 'italic', 'the title is oblique');
     ok(style('textarea', 'fontStyle') === 'normal', 'a textarea is upright');
     ok(/Courier/.test(style('textarea', 'fontFamily') || ''), 'a textarea computes to Courier');
