@@ -1855,7 +1855,40 @@ class NeoStreamingSession:
             self.dom_capture.bind_page(page)
             self.dom_capture.websocket = self.websocket
             self.dom_capture.client_id = self.session_id
+        # Event-driven URL-change hook: the capture layer's watcher (100 ms)
+        # already detects navigations, so the session does not need its own
+        # 500 ms transition poller while it runs.
+        self.dom_capture.on_url_changed = self._on_capture_url_changed
         return self.dom_capture
+
+    def _on_capture_url_changed(self, new_url: str) -> None:
+        """Event-driven replacement for the transition poller: fire the
+        page_transition ws message and the Telegram notification when the
+        DOM-capture URL watcher sees a navigation."""
+        try:
+            now = asyncio.get_event_loop().time()
+            if not new_url or new_url == self.current_url:
+                return
+            if (now - self.last_transition_time) <= self.transition_cooldown:
+                return
+            self.last_transition_time = now
+            self.current_url = new_url
+            if self.websocket and not getattr(self.websocket, 'closed', False):
+                try:
+                    asyncio.create_task(self.websocket.send_json({
+                        'type': 'page_transition',
+                        'url': new_url,
+                        'timestamp': time.time()
+                    }))
+                    logger.debug(f'[TRANSITION] Page navigation (watcher): {new_url}')
+                except Exception:
+                    pass
+            try:
+                asyncio.create_task(self._send_navigation_notification(new_url))
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def attach_dom_capture(self, page: Any, websocket: Any = None, client_id: Optional[str] = None):
         """Attach the reusable DOM capture layer to this session."""
@@ -2181,7 +2214,17 @@ class NeoStreamingSession:
         while self.is_active:
             try:
                 await asyncio.sleep(0.5)  # Check every 500ms
-                
+
+                # When the DOM-capture URL watcher is running and hooked, it
+                # already detects navigations at 100 ms and calls
+                # _on_capture_url_changed — polling page.url here as well
+                # would be a second, redundant detector.
+                dc = self.dom_capture
+                if (dc is not None and getattr(dc, 'on_url_changed', None)
+                        and getattr(dc, 'url_watch_task', None)
+                        and not dc.url_watch_task.done()):
+                    continue
+
                 # Get current page URL
                 page = self.get_active_page()
                 if not page or page.is_closed():

@@ -392,19 +392,28 @@ async def _load_singlefile_sources() -> Optional[Dict[str, str]]:
 # Page helpers
 # ---------------------------------------------------------------------------
 
+# Settle-wait ceilings (env-tunable).  networkidle is the expensive one: a
+# light page that polls every <500 ms never reaches it and used to burn the
+# full 2.5 s on EVERY navigation; 800 ms keeps the fidelity floor for real
+# asset storms without taxing quiet-but-polling pages.
+STABLE_LOAD_TIMEOUT_MS: int = int(os.environ.get("DOM_STABLE_LOAD_TIMEOUT_MS", "1500"))
+STABLE_NETWORKIDLE_TIMEOUT_MS: int = int(os.environ.get("DOM_STABLE_NETWORKIDLE_TIMEOUT_MS", "800"))
+STABLE_READY_TIMEOUT_MS: int = int(os.environ.get("DOM_STABLE_READY_TIMEOUT_MS", "800"))
+
+
 async def _ensure_page_stable(page: Any) -> None:
     """Best-effort wait for the page to settle.  Each step has a tight
     timeout so a hung network request doesn't block the capture pipeline."""
     try:
-        await page.wait_for_load_state("load", timeout=2500)
+        await page.wait_for_load_state("load", timeout=STABLE_LOAD_TIMEOUT_MS)
     except Exception:
         pass
     try:
-        await page.wait_for_load_state("networkidle", timeout=2500)
+        await page.wait_for_load_state("networkidle", timeout=STABLE_NETWORKIDLE_TIMEOUT_MS)
     except Exception:
         pass
     try:
-        await page.wait_for_function("document.readyState === 'complete'", timeout=1000)
+        await page.wait_for_function("document.readyState === 'complete'", timeout=STABLE_READY_TIMEOUT_MS)
     except Exception:
         pass
     if PRE_CAPTURE_WAIT > 0:
@@ -2052,7 +2061,8 @@ async def _fetch_one_asset(client: Any, gate: Any, abs_url: str) -> Optional[Tup
 
 
 async def _cache_css_text(css_text: str, css_abs_url: str, client: Any, sem: Any,
-                          manager: AssetManager, depth: int, owner_id: Optional[str] = None) -> bytes:
+                          manager: AssetManager, depth: int, owner_id: Optional[str] = None,
+                          eff_css_embed: int = 0, eff_embed: int = 0) -> bytes:
     """Fetch+rewrite the resources referenced by a CSS body, recursively
     (bounded depth), then return the rewritten CSS bytes.  Small image/font
     refs are data-URI embedded (logo-in-CSS case); larger refs and nested
@@ -2086,14 +2096,15 @@ async def _cache_css_text(css_text: str, css_abs_url: str, client: Any, sem: Any
             try:
                 sub_text = data.decode("utf-8", errors="ignore")
                 data = await _cache_css_text(
-                    sub_text, abs_u, client, sem, manager, depth + 1, owner_id=owner_id
+                    sub_text, abs_u, client, sem, manager, depth + 1, owner_id=owner_id,
+                    eff_css_embed=eff_css_embed, eff_embed=eff_embed
                 )
                 ctype = "text/css"
             except Exception:
                 pass
             # Small nested css embeds as a data: URI (works in @import and
             # url()) so an inlined parent <style> stays fully self-contained.
-            if CSS_EMBED_MAX_BYTES > 0 and len(data) <= CSS_EMBED_MAX_BYTES:
+            if eff_css_embed > 0 and len(data) <= eff_css_embed:
                 manager.register(data, ctype, url=abs_u, owner_id=owner_id)
                 repl[abs_u] = _data_uri(data, ctype)
                 continue
@@ -2102,7 +2113,7 @@ async def _cache_css_text(css_text: str, css_abs_url: str, client: Any, sem: Any
             repl[abs_u] = f"/assets/{digest}{'.' + ext if ext else ''}"
             continue
         # Small image/font refs: embed as data URI.
-        if (EMBED_MAX_BYTES > 0 and len(data) <= EMBED_MAX_BYTES
+        if (eff_embed > 0 and len(data) <= eff_embed
                 and (ctype.startswith(("image/", "font/", "application/font")) or not ctype)):
             manager.register(data, ctype, url=abs_u, owner_id=owner_id)
             repl[abs_u] = _data_uri(data, ctype)
@@ -2164,7 +2175,8 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                                   owner_id: Optional[str] = None, *,
                                   allow_fetch: bool = True,
                                   report: Optional[Dict[str, Any]] = None,
-                                  max_fetch: Optional[int] = None
+                                  max_fetch: Optional[int] = None,
+                                  embed: bool = True
                                   ) -> Tuple[str, List[Dict[str, Any]]]:
     """Resolve external asset refs in captured HTML: small images/icons are
     data-URI EMBEDDED (see EMBED_MAX_BYTES), small stylesheets become inline
@@ -2197,8 +2209,14 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     everything else still resolve).  It is how a progressive upgrade asks
     "resolve the first wave only": the refs are ordered by
     :func:`_asset_priority`, so the cap is spent on what the visitor can see.
+
+    ``embed=False`` turns OFF the data-URI/CSS inlining for this pass, so
+    recaptures of a page stay small and use the /assets cache refs (which the
+    browser HTTP-caches) instead of re-shipping megabytes every capture.
     """
     manager = get_global_asset_manager()
+    eff_css_embed = CSS_EMBED_MAX_BYTES if embed else 0
+    eff_embed = EMBED_MAX_BYTES if embed else 0
     _t_start = time.monotonic()
     if report is not None:
         report.clear()
@@ -2285,6 +2303,7 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
 
     # -- 2. URL-memo: reuse bytes fetched in earlier captures --------------
     hits: Dict[str, Tuple[bytes, str]] = {}
+    raw_hash_by_url: Dict[str, str] = {}
     fetch_list: List[str] = []
     for u in candidates:
         ent = manager.get_by_url(u, owner_id=owner_id)
@@ -2345,6 +2364,10 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
             continue
         data, ctype = res
         hits[abs_u] = (data, ctype)
+        # Hash the RAW bytes: the same asset embedded as a data: URI on the
+        # first load and served as /assets/<digest> on a recapture must map
+        # to the same identity, or the swap dedupe re-sends it.
+        raw_hash_by_url[abs_u] = manager.digest_for(data)
         # Stylesheets are registered only AFTER their inner urls are
         # rewritten (step 4) — memoizing raw CSS would both skip the inner
         # rewrite forever and cache the wrong bytes.
@@ -2377,7 +2400,8 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                     return
                 try:
                     out = await _cache_css_text(
-                        text, abs_u, client, gate, manager, depth=0, owner_id=owner_id
+                        text, abs_u, client, gate, manager, depth=0, owner_id=owner_id,
+                        eff_css_embed=eff_css_embed, eff_embed=eff_embed
                     )
                 except Exception as exc:  # leave the sheet as authored
                     logger.debug("css inner rewrite failed for %s: %s", abs_u[:120], exc)
@@ -2404,6 +2428,7 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     repl: Dict[str, str] = {}
     inline_css: Dict[str, str] = {}
     meta_by_digest: Dict[str, Dict[str, Any]] = {}
+    hash_by_url: Dict[str, str] = {}
     n_embed = 0
     n_cache = 0
     for abs_u in candidates:
@@ -2419,18 +2444,21 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                 # Small stylesheets INLINE as <style> (client needs no
                 # /assets route to render styled pages — the yahoo case);
                 # larger ones keep the cache path below.
-                if CSS_EMBED_MAX_BYTES > 0 and len(data) <= CSS_EMBED_MAX_BYTES:
+                if eff_css_embed > 0 and len(data) <= eff_css_embed:
                     inline_css[abs_u] = data.decode("utf-8", errors="ignore")
+                    hash_by_url[abs_u] = raw_hash_by_url.get(abs_u) or manager.digest_for(data)
                     n_embed += 1
                     continue
-            elif kind in ("img", "icon") and EMBED_MAX_BYTES > 0 and len(data) <= EMBED_MAX_BYTES:
+            elif kind in ("img", "icon") and eff_embed > 0 and len(data) <= eff_embed:
                 repl[abs_u] = _data_uri(data, ctype)
+                hash_by_url[abs_u] = raw_hash_by_url.get(abs_u) or manager.digest_for(data)
                 n_embed += 1
                 continue
-            digest = manager.digest_for(data)
+            digest = raw_hash_by_url.get(abs_u) or manager.digest_for(data)
             ext = _guess_ext_from_content_type(ctype)
             path = f"/assets/{digest}{'.' + ext if ext else ''}"
             repl[abs_u] = path
+            hash_by_url[abs_u] = digest
             meta_by_digest[digest] = {"hash": digest, "ext": ext, "content_type": ctype}
             n_cache += 1
         except Exception as exc:
@@ -2459,12 +2487,16 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
     # different ways is dropped from that list rather than guessed at.
     swapped: Dict[str, Dict[str, Any]] = {}
 
-    def _record(authored: str, resolved: str, tag: bool = False) -> None:
+    def _record(authored: str, resolved: str, tag: bool = False,
+                content_hash: Optional[str] = None) -> None:
         if not authored or authored == resolved:
             return
         prior = swapped.get(authored)
+        entry = {"from": authored, "to": resolved, "tag": tag}
+        if content_hash:
+            entry["hash"] = content_hash
         if prior is None:
-            swapped[authored] = {"from": authored, "to": resolved, "tag": tag}
+            swapped[authored] = entry
         elif prior["to"] != resolved:
             if not prior.get("conflict"):
                 prior["conflict"] = True
@@ -2481,7 +2513,7 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
         if not new_ref:
             return None
         resolved = new_ref + frag
-        _record(ref, resolved)
+        _record(ref, resolved, content_hash=hash_by_url.get(abs_u))
         return resolved
 
     def _sub_src(m: "re.Match[str]") -> str:
@@ -2527,7 +2559,7 @@ async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
                 src_attr = ' data-shfcss="%s"' % abs_u.replace('"', "&quot;")
                 style_tag = ("<style" + src_attr + media_attr + ">"
                              + _inline_css_safe(inline_css[abs_u]) + "</style>")
-                _record(href, style_tag, tag=True)
+                _record(href, style_tag, tag=True, content_hash=hash_by_url.get(abs_u))
                 return style_tag
         def _fix(am2: "re.Match[str]") -> str:
             if am2.group(1).lower() != "href":
@@ -4143,7 +4175,7 @@ _DELTA_OBSERVER_JS = r"""
     ops.push(['overflow']);
     schedule();
   };
-  const flush = () => {
+  const flushInner = () => {
     scheduled = false;
     // The set below only describes the batch being shipped; a later batch must
     // be free to patch those same nodes again.
@@ -4178,10 +4210,24 @@ _DELTA_OBSERVER_JS = r"""
       }
     } catch (e) { /* binding not wired yet */ }
   };
+  // Re-entrancy guard so a soft-cap flush triggered from inside push cannot
+  // recurse into itself.
+  const flush = () => {
+    if (window.__shifixDeltaFlushing) return;
+    window.__shifixDeltaFlushing = true;
+    try { flushInner(); } finally { window.__shifixDeltaFlushing = false; }
+  };
+  // Soft cap: past OP_CAP the batch is flushed immediately (coalesced ops keep
+  // it small), so a busy page streams several normal batches. Only a batch far
+  // past the HARD_CAP declares overflow — overflow forces a full recapture,
+  // and recapturing while mutations keep arriving is what used to produce
+  // resync storms on animated pages.
+  const HARD_CAP = OP_CAP * 8;
   const push = (op) => {
     if (overflowed) return;
     ops.push(op);
-    if (ops.length > OP_CAP) markOverflow();
+    if (ops.length > HARD_CAP) { markOverflow(); return; }
+    if (ops.length > OP_CAP) { try { flush(); } catch (e) { /* keep going */ } }
     schedule();
   };
   const pushCoalesced = (key, op) => {
@@ -4190,7 +4236,8 @@ _DELTA_OBSERVER_JS = r"""
     if (oldIndex === undefined) {
       coalesced.set(key, ops.length);
       ops.push(op);
-      if (ops.length > OP_CAP) markOverflow();
+      if (ops.length > HARD_CAP) { markOverflow(); return; }
+      if (ops.length > OP_CAP) { try { flush(); } catch (e) { /* keep going */ } }
     } else {
       ops[oldIndex] = op;
     }
@@ -4840,6 +4887,16 @@ class DOMCaptureSession:
         # swaps already delivered must not be sent again.
         self._assets_pending: bool = False
         self._sent_asset_swaps: Dict[str, str] = {}
+        # URLs whose first capture already inlined small assets/CSS: recaptures
+        # of the same URL use the /assets cache refs instead of re-embedding.
+        self._embed_done_urls: "OrderedDict[str, None]" = OrderedDict()
+        # Strong refs to fire-and-forget background upgrades so they are
+        # neither GC'd mid-flight nor reported as "destroyed but pending"
+        # when the loop closes underneath a short-lived test.
+        self._bg_tasks: "set[asyncio.Task]" = set()
+        # Optional hook called by watch_url on every detected URL change, so
+        # the session does not need its own poller (session.py sets this).
+        self.on_url_changed = None
         # What the last capture could read for free (title, UA, checksum,
         # readyState, URL) — see _capture_fast_meta.  Reset per capture.
         self._last_capture_meta: Dict[str, Any] = {}
@@ -5083,6 +5140,16 @@ class DOMCaptureSession:
                 if current_url and last_url and current_url != last_url:
                     self._delta_active = False
                     logger.debug("URL changed %s -> %s", last_url, current_url)
+                    # Notify the session event-driven, so it does not need its
+                    # own URL poller (page_transition, notifications).
+                    cb = getattr(self, "on_url_changed", None)
+                    if cb is not None:
+                        try:
+                            res = cb(current_url)
+                            if asyncio.iscoroutine(res):
+                                asyncio.create_task(res)
+                        except Exception:
+                            pass
                     # With persistent init scripts, the new document's
                     # navigation control owns the recovery full capture.  Do
                     # not add a second stability wait or duplicate serializer
@@ -5212,7 +5279,24 @@ class DOMCaptureSession:
                     except Exception:
                         pass
             if html is not None and len(html) < 400 and "<html" not in html.lower():
-                html = None  # degenerate output — fall back
+                # Degenerate output — one retry after a breath before falling
+                # back: a single hiccup must not downgrade the page to the
+                # outerHTML tier (which disables delta patching for good).
+                html = None
+                try:
+                    await asyncio.sleep(0.05)
+                    html, retry_meta = await _capture_fast_meta(self.page)
+                    if retry_meta:
+                        self._last_capture_meta = retry_meta
+                        if retry_meta.get("ua"):
+                            try:
+                                setattr(self.page, "_cached_ua", retry_meta["ua"])
+                            except Exception:
+                                pass
+                    if html is not None and len(html) < 400 and "<html" not in html.lower():
+                        html = None
+                except Exception:
+                    html = None
             fast_err = _LAST_FAST_CAPTURE_ERROR
             if html is None:
                 # Fast outerHTML fallback with data-mid preservation — zero SingleFile stalls
@@ -5458,7 +5542,26 @@ class DOMCaptureSession:
                     url = None
             settle = _settle_for_reason(reason)
 
-            # ---- unchanged-DOM skip (only for hot interaction reasons) ----
+            # The batch sequence is read up front: it arms the no-op skip
+            # below AND marks what the snapshot about to run will contain.
+            # Everything the page has already produced up to this number is
+            # inside the snapshot; what it produces after it is NOT — those
+            # batches are held and replayed, not thrown away.
+            self._capture_pre_seq = await self._read_delta_seq()
+
+            # ---- unchanged-DOM skips (only for hot interaction reasons) ----
+            # 1) Healthy observer + unchanged batch sequence = no mutation
+            #    happened since the last routed batch: skip WITHOUT paying for
+            #    a checksum round trip or a serializer run.
+            if (self.has_initial_capture and LIVE_DELTA and self._delta_installed
+                    and self._last_capture_supports_delta
+                    and not is_redraw_only_host(url or "")
+                    and self._capture_pre_seq == self._delta_seq_seen
+                    and not str(reason or "").lower().startswith(_SKIP_EXEMPT_PREFIXES)):
+                logger.debug("dc skip(no mutations) reason=%s seq=%s gen=%s",
+                             reason, self._capture_pre_seq, self._gen)
+                return url
+            # 2) Fallback checksum skip when there is no observer.
             checksum: Optional[str] = None
             if _may_skip_unchanged(reason, settle,
                                    bool(LIVE_DELTA and self._delta_installed),
@@ -5470,11 +5573,6 @@ class DOMCaptureSession:
 
             if self._cold_first_capture_at is None:
                 self._cold_first_capture_at = time.monotonic()
-            # Everything the page has already produced up to this number is
-            # inside the snapshot we are about to take.  What it produces after
-            # it is NOT — those batches are held and replayed, instead of being
-            # thrown away as they were before.
-            self._capture_pre_seq = await self._read_delta_seq()
             t_cap = time.perf_counter()
             html_data = await self.capture_page(settle=settle)
             capture_ms = (time.perf_counter() - t_cap) * 1000.0
@@ -5508,6 +5606,10 @@ class DOMCaptureSession:
             rewrite_ms = 0.0
             deferred: Optional[Dict[str, Any]] = None
             supports_assets = self._last_capture_supports_assets
+            # First capture of a URL may inline small assets/CSS (the client
+            # might not reach /assets at all); recaptures stay small and use
+            # the HTTP-cached /assets refs instead.
+            embed_ok = bool(url) and url not in self._embed_done_urls
             if supports_assets and url and self._assets_ok:
                 t_rw = time.perf_counter()
                 try:
@@ -5517,11 +5619,11 @@ class DOMCaptureSession:
                         plan: Dict[str, Any] = {}
                         ready_html, _ready_meta = await _rewrite_assets_to_cache(
                             html_data, url, self.page, owner_id=self.client_id,
-                            allow_fetch=False, report=plan,
+                            allow_fetch=False, report=plan, embed=embed_ok,
                         )
                         if plan.get("missing"):
                             deferred = {"html": html_data, "url": url,
-                                        "missing": plan["missing"]}
+                                        "missing": plan["missing"], "embed": embed_ok}
                             logger.debug(
                                 "dc progressive: showing the page first, %d ref(s) pending",
                                 len(plan["missing"]))
@@ -5529,13 +5631,18 @@ class DOMCaptureSession:
                             html_data = ready_html
                     else:
                         html_data, assets_meta = await _rewrite_assets_to_cache(
-                            html_data, url, self.page, owner_id=self.client_id
+                            html_data, url, self.page, owner_id=self.client_id,
+                            embed=embed_ok,
                         )
                 except ImportError:
                     self._assets_ok = False
                 except Exception as exc:
                     logger.debug("asset rewrite failed (serving originals): %s", exc)
                 rewrite_ms = (time.perf_counter() - t_rw) * 1000.0
+                if url:
+                    self._embed_done_urls[url] = None
+                    while len(self._embed_done_urls) > 64:
+                        self._embed_done_urls.popitem(last=False)
 
             # ---- preserve site fonts: strip any forced Montserrat or mirror overrides ----
             html_data = _strip_mirror_font(html_data)
@@ -5677,16 +5784,24 @@ class DOMCaptureSession:
                 (time.perf_counter() - t_start) * 1000.0,
             )
             if deferred is not None:
-                # The document is on screen.  Keep the delta channel open
-                # while the fetches run (``_assets_pending``), then send what
-                # they resolved.
+                # The document is on screen.  Resolve the pending assets in
+                # the BACKGROUND: awaiting them here would keep _send_inflight
+                # set, and _delta_route HOLDS every patch batch while it is
+                # set — the mirror would freeze for the whole fetch budget.
                 self._assets_pending = True
+                async def _bg_upgrade():
+                    try:
+                        await self._send_asset_upgrade(deferred, url)
+                    except Exception as exc:
+                        logger.debug("dc progressive upgrade failed: %s", exc)
+                    finally:
+                        self._assets_pending = False
                 try:
-                    await self._send_asset_upgrade(deferred, url)
-                except Exception as exc:
-                    logger.debug("dc progressive upgrade failed: %s", exc)
-                finally:
-                    self._assets_pending = False
+                    task = asyncio.create_task(_bg_upgrade())
+                    self._bg_tasks.add(task)
+                    task.add_done_callback(self._bg_tasks.discard)
+                except RuntimeError:
+                    pass  # no running loop: skip the upgrade
             return url
         finally:
             self._send_inflight = False
@@ -5712,8 +5827,10 @@ class DOMCaptureSession:
         Returns True when a frame went out.  Dedupe lives here so a staged
         upgrade and its final pass cannot send the same edit twice.
         """
+        def _key(s: Dict[str, Any]) -> tuple:
+            return (s.get("from"), s.get("hash") or s.get("to"))
         swap = [s for s in (swap or [])
-                if isinstance(s, dict) and self._sent_asset_swaps.get(s.get("from")) != s.get("to")]
+                if isinstance(s, dict) and _key(s) not in self._sent_asset_swaps]
         new_assets = [
             meta for meta in (assets_meta or [])
             if isinstance(meta, dict) and meta.get("hash") not in self._sent_asset_digests
@@ -5721,7 +5838,7 @@ class DOMCaptureSession:
         if not swap and not new_assets:
             return False
         for s in swap:
-            self._sent_asset_swaps[s["from"]] = s["to"]
+            self._sent_asset_swaps[_key(s)] = s["to"]
         for meta in new_assets:
             if meta.get("hash"):
                 self._sent_asset_digests.add(meta["hash"])
@@ -5765,6 +5882,7 @@ class DOMCaptureSession:
         """
         raw_html = deferred["html"]
         page_url = deferred["url"] or url
+        embed = bool(deferred.get("embed", True))
         t0 = time.perf_counter()
 
         first_wave = ASSET_FIRST_WAVE
@@ -5775,6 +5893,7 @@ class DOMCaptureSession:
                 _part, head_meta = await _rewrite_assets_to_cache(
                     raw_html, page_url or "", self.page,
                     owner_id=self.client_id, report=head, max_fetch=first_wave,
+                    embed=embed,
                 )
                 head_swap = head.get("swap") or []
                 if await self._emit_asset_map(head_swap, head_meta, page_url):
@@ -5789,7 +5908,7 @@ class DOMCaptureSession:
         report: Dict[str, Any] = {}
         html_data, assets_meta = await _rewrite_assets_to_cache(
             raw_html, page_url or "", self.page,
-            owner_id=self.client_id, report=report,
+            owner_id=self.client_id, report=report, embed=embed,
         )
         all_swap = report.get("swap") or []
         if not await self._emit_asset_map(all_swap, assets_meta, page_url):
@@ -5800,7 +5919,8 @@ class DOMCaptureSession:
         # Only when every recorded edit really was delivered: a dropped
         # conflict or a failed send leaves the client behind, and pretending
         # otherwise would make the next identical snapshot look stale.
-        if all(self._sent_asset_swaps.get(s["from"]) == s["to"] for s in all_swap):
+        if all(self._sent_asset_swaps.get((s.get("from"), s.get("hash") or s.get("to"))) == s.get("to")
+               for s in all_swap):
             self.last_sent_html = html_data
         logger.debug("dc asset_map done swaps=%d total_ms=%.0f gen=%d",
                      len(all_swap), (time.perf_counter() - t0) * 1000.0, self._gen)

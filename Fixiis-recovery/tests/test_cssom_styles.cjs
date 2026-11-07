@@ -52,7 +52,7 @@ ok(deltaSrc.includes("pushCoalesced('s|0', ['s', 0, adopted])"),
 // Structural, not whitespace-sensitive: the CSSOM check must run inside the
 // flush, before the ops are taken off the queue.
 {
-  const flushStart = deltaSrc.indexOf('const flush = () => {');
+  const flushStart = deltaSrc.indexOf('const flushInner = () => {');
   const flushEnd = deltaSrc.indexOf('const push = (op)', flushStart);
   const body = flushStart >= 0 && flushEnd > flushStart
     ? deltaSrc.slice(flushStart, flushEnd) : '';
@@ -60,6 +60,8 @@ ok(deltaSrc.includes("pushCoalesced('s|0', ['s', 0, adopted])"),
   const sendAt = body.indexOf('ops.splice');
   ok(cssomAt > 0 && (sendAt < 0 || cssomAt < sendAt),
     'every batch looks at the CSSOM first');
+  ok(/const flush = \(\) => \{[\s\S]*?__shifixDeltaFlushing[\s\S]*?flushInner\(\)/.test(deltaSrc),
+    'flush is re-entrancy guarded and delegates to the batch body');
 }
 ok(deltaSrc.includes('setInterval(') && deltaSrc.indexOf('setInterval(') > deltaSrc.indexOf('window.__shifixDeltaFlush = flush;'),
   'and a slow timer catches growth that never coincides with a DOM change');
