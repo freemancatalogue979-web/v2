@@ -98,6 +98,17 @@ the remote context as the source of session data.  Wiring:
   while proxy mode owns the iframe; a 10s load watchdog falls back to the
   capture mirror if a proxied page fails to load.
 
+## DOM capture stands down in proxy mode
+
+With the proxy mirror owning the live view, the DOM-capture pipeline is
+inactive by default (`is_capture_enabled()` = `not is_proxy_enabled()`;
+override with `MIRROR_CAPTURE=1/0`): proactive captures and navigation
+captures are skipped, `handle_navigation` in proxy mode is just a light
+`page.goto` (the URL watcher still sends `page_transition` so the client
+iframe redirects to `/m/<url>`), and capture only runs when the client
+explicitly asks (`resync_request` — the 10s proxy-load-failure fallback).
+Dead-browser capture failures log as warnings (session recovery owns them).
+
 ## Operational notes (bugs found in the field, fixed)
 
 - `/m/` targets are **percent-encoded** (`quote(target, safe="/:")` — slashes

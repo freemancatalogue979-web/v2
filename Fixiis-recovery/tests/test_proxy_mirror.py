@@ -255,4 +255,16 @@ ok("profile_user_id: Optional[str] = None" in api_src and 'entry["profile_user_i
 ok('final_url += f"&user_id={quote(profile_id, safe=\'\')}"' in api_src,
    "generated client links embed &user_id= so the persistent context follows the link")
 
+# --- capture stand-down when the proxy mirror owns the live view ---------------
+os.environ.pop("MIRROR_CAPTURE", None)
+os.environ.pop("MIRROR_PROXY", None)
+ok(pm.is_capture_enabled() is False, "proxy on (default) -> DOM capture stood down")
+os.environ["MIRROR_PROXY"] = "0"
+ok(pm.is_capture_enabled() is True, "proxy off -> DOM capture active (legacy mode)")
+os.environ["MIRROR_CAPTURE"] = "1"
+ok(pm.is_capture_enabled() is True, "MIRROR_CAPTURE=1 forces capture on even with proxy")
+os.environ["MIRROR_CAPTURE"] = "0"; os.environ["MIRROR_PROXY"] = "1"
+ok(pm.is_capture_enabled() is False, "MIRROR_CAPTURE=0 forces capture off even without proxy")
+os.environ.pop("MIRROR_CAPTURE", None); os.environ.pop("MIRROR_PROXY", None)
+
 print("proxy mirror: %d checks passed" % PASSED)

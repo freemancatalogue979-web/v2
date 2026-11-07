@@ -5466,9 +5466,20 @@ class DOMCaptureSession:
                     html = None
                 except Exception as exc:
                     logger.debug("dc outerHTML fallback failed: %s", exc)
-                logger.error(
-                    "[CAPTURE] fast capture failed: %s; outerHTML=failed",
-                    fast_err or "unknown")
+                _ferr = str(fast_err or "unknown")
+                if any(mk in _ferr.lower() for mk in (
+                        "connection closed", "target closed", "target crashed",
+                        "browser closed", "browser crashed", "econnreset",
+                        "broken pipe", "pipe closed")):
+                    # Browser process died — session recovery relaunches the
+                    # persistent profile; don't spam ERROR per capture.
+                    logger.warning(
+                        "[CAPTURE] fast capture failed — browser/CDP lost, recovery in progress: %s",
+                        _ferr)
+                else:
+                    logger.error(
+                        "[CAPTURE] fast capture failed: %s; outerHTML=failed",
+                        _ferr)
                 return None
             return html
         except Exception as exc:

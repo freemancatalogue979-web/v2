@@ -42,6 +42,19 @@ def is_proxy_enabled() -> bool:
     return os.environ.get("MIRROR_PROXY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+def is_capture_enabled() -> bool:
+    """Is the DOM-capture mirror active?
+
+    The proxy mirror owns the live view when enabled, so DOM capture stands
+    down and only runs as the explicit fallback (client resync_request).
+    MIRROR_CAPTURE=1 forces capture on, =0 forces it off, regardless of proxy.
+    """
+    v = os.environ.get("MIRROR_CAPTURE")
+    if v is not None:
+        return v.strip().lower() not in ("0", "false", "no", "off")
+    return not is_proxy_enabled()
+
+
 def proxied_path(target_url: str, sid: str = "") -> str:
     """Encode a full target URL into a single /m/ path (slashes stay raw).
 

@@ -78,4 +78,17 @@ ast.parse(session_src)
 ast.parse(api_src)
 ok(True, "session.py + api.py parse")
 
+# --- DOM capture stands down while the proxy mirror owns the live view ----------
+dom_src = open(os.path.join(ROOT, "dom_capture.py"), encoding="utf-8").read()
+ok("def _dom_capture_suppressed" in session_src and "is_capture_enabled()" in session_src,
+   "session gates capture on proxy mode")
+cap_body = session_src[session_src.index("async def capture_remote_page"):]
+ok('reason != "resync_request" and not force' in cap_body,
+   "proactive captures skipped in proxy mode; client resync (fallback) still allowed")
+nav_body = session_src[session_src.index("async def handle_navigation"):]
+ok("_dom_capture_suppressed()" in nav_body and "wait_until='commit'" in nav_body,
+   "navigate in proxy mode = light goto only (no capture); watcher sends page_transition for the /m/ redirect")
+ok("browser/CDP lost, recovery in progress" in dom_src and "logger.warning" in dom_src,
+   "dead-browser capture failure logged as warning (recovery owns it), not ERROR spam")
+
 print("browser recovery: %d checks passed" % PASSED)

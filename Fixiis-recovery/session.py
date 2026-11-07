@@ -2007,7 +2007,23 @@ class NeoStreamingSession:
             logger.error("[RECOVERY] session %s: relaunch failed: %s", self.session_id, exc)
             return False
 
+    def _dom_capture_suppressed(self) -> bool:
+        """True when the proxy mirror owns the live view: DOM capture stands
+        down (no proactive captures, no ERROR spam on a dead browser) and only
+        runs as the explicit fallback when the client asks for a resync."""
+        try:
+            from proxy_mirror import is_capture_enabled
+            return not is_capture_enabled()
+        except Exception:
+            return False
+
     async def capture_remote_page(self, reason: Optional[str] = None, force: bool = False):
+        # Proxy mirror active: the client reads the live page through /m/… —
+        # only an explicit client resync (proxy load failed) needs a capture.
+        if (self._dom_capture_suppressed()
+                and reason != "resync_request" and not force):
+            logger.debug("[CAPTURE] suppressed (proxy mirror active): reason=%s", reason)
+            return None
         # Interaction reasons the live delta observer already carries as
         # 16 ms patches — a full capture here would only add latency.
         _DELTA_OWNED_INTERACTION_REASONS = frozenset((
@@ -3069,6 +3085,18 @@ class NeoStreamingSession:
             await self.dom_capture.handle_click(selector=selector, mid=mid)
 
     async def handle_navigation(self, url: str):
+        if self._dom_capture_suppressed():
+            # Proxy mirror active: just put the remote browser on the page
+            # (persistent context accumulates cookies/storage); the URL
+            # watcher sends page_transition so the client iframe redirects
+            # to /m/<url>.  No capture.
+            page = self.get_active_page() or getattr(self, 'page', None)
+            if page is not None and not page.is_closed():
+                try:
+                    await page.goto(url, wait_until='commit', timeout=30000)
+                except Exception as exc:
+                    logger.debug("[NAV] proxy-mode goto failed for %s: %s", str(url)[:120], exc)
+            return
         if self.dom_capture:
             self._apply_snapshot_preference(url)
             await self.dom_capture.handle_navigation(url)
