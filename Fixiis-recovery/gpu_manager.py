@@ -37,7 +37,9 @@ class GPUManager:
         self._runtime_profiles: Dict[str, str] = {}
         self._sessions_lock = threading.RLock()
         self.max_sessions = getattr(config, 'max_sessions', 20)
-        self.min_free_memory_mb = int(os.environ.get('MIN_FREE_MEMORY_MB', 56 if is_windows() else 512))
+        # Minimum free RAM required before accepting/reserving a session (MB).
+        # Overridable via MIN_FREE_MEMORY_MB env.
+        self.min_free_memory_mb = int(os.environ.get('MIN_FREE_MEMORY_MB', 128))
         self.min_free_disk_gb = 2  # Minimum free disk space required
 
     def get_gpu_for_session(self) -> int:
