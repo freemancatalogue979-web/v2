@@ -377,50 +377,6 @@
         
         
 
-    #transition-overlay {
-        position: fixed;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(0,0,0,0.15);
-        opacity: 0;
-        visibility: hidden;
-        transition: opacity 0.3s ease;
-        pointer-events: none;
-        z-index: 1000;
-    }
-    #transition-overlay.visible {
-        opacity: 1;
-        visibility: visible;
-        pointer-events: auto;
-    }
-    #transition-overlay.hidden {
-        opacity: 0;
-        visibility: hidden;
-    }
-    .orbit {
-        position: relative;
-        width: 48px;
-        height: 48px;
-    }
-    .orbit i {
-        position: absolute;
-        width: 8px;
-        height: 8px;
-        background: #888;
-        border-radius: 50%;
-        animation: orbit 1.2s linear infinite;
-    }
-    .orbit i:nth-child(1) { top:0; left:50%; transform: translateX(-50%); animation-delay:0s; }
-    .orbit i:nth-child(2) { top:50%; right:0; transform: translateY(-50%); animation-delay:0.3s; }
-    .orbit i:nth-child(3) { bottom:0; left:50%; transform: translateX(-50%); animation-delay:0.6s; }
-    .orbit i:nth-child(4) { top:50%; left:0; transform: translateY(-50%); animation-delay:0.9s; }
-    @keyframes orbit {
-        0% { transform: scale(0.8); opacity:0.3; }
-        50% { transform: scale(1.2); opacity:1; }
-        100% { transform: scale(0.8); opacity:0.3; }
-    }
 
     /* Mobile dynamic viewport height: the replay must fill the FULL
        browser height — no white band when the phone's URL bar
@@ -453,11 +409,6 @@
         <div class="page-container" id="pageContainer"></div>
     </div>
 
-    <div id="transition-overlay" class="hidden">
-        <div class="orbit">
-            <i></i><i></i><i></i><i></i>
-        </div>
-    </div>
 
     <script>
         window.__MIRROR_BUILD = '2026-10-28-mirror-assets';
@@ -550,8 +501,6 @@ function applySpinnerColor(colorOrR, g, b, forceWorkflow = false) {
         logo.style.width = '80px';
         logo.style.height = '80px';
     }
-    const dots = document.querySelectorAll('#transition-overlay .orbit i');
-    dots.forEach(dot => dot.style.background = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`);
 
     // Also propagate the brand color to the LPV runtime (spinner ring + status
     // dot) so the LPV overlay matches the rest of the UI. We do this by writing
@@ -570,22 +519,6 @@ function applySpinnerColor(colorOrR, g, b, forceWorkflow = false) {
     } catch (e) { /* ignore */ }
 }
 
-function showTransitionOverlay() {
-    const overlay = document.getElementById('transition-overlay');
-    if (overlay) {
-        overlay.classList.remove('hidden');
-        overlay.classList.add('visible');
-        applySpinnerColor(currentBrandColor);
-    }
-}
-
-function hideTransitionOverlay() {
-    const overlay = document.getElementById('transition-overlay');
-    if (overlay) {
-        overlay.classList.remove('visible');
-        overlay.classList.add('hidden');
-    }
-}
             window.addEventListener('error', (e) => {
                 dbg('[CLIENT ERROR]', { message: e.message, source: e.filename, line: e.lineno, column: e.colno });
             });
@@ -9993,13 +9926,17 @@ function applySpinnerColorFromHex(hexColor) {
             // dom_patch case in the message switch buffers ops instead of
             // applying them.  endNavigationTransition runs once the
             // full_document has been committed by renderPageSnapshot +
-            // rebuildMirrorIdMap: it drops the overlay and flushes the
-            // buffer onto the freshly-seeded midmap so the user does not
-            // see a one-render lag where the buffered changes are lost.
+            // rebuildMirrorIdMap: it flushes the buffer onto the
+            // freshly-seeded midmap so the user does not see a one-render
+            // lag where the buffered changes are lost.
+            //
+            // The page that is already on screen STAYS on screen during the
+            // transition — no spinner, no dimmed overlay, no hidden iframes;
+            // the new document simply swaps in when it arrives.
             //
             // Safety net: if no full_document arrives within 5s (server
-            // hung, transport hiccup) we drop the buffer and re-show the
-            // old iframe rather than getting stuck on a spinner forever.
+            // hung, transport hiccup) we drop the buffer and make sure the
+            // old iframe is visible.
             function beginNavigationTransition(newUrl) {
                 if (state._navPending) {
                     // Already in a transition; just refresh the watchdog.
@@ -10012,21 +9949,9 @@ function applySpinnerColorFromHex(hexColor) {
                 state._navPatchBuffer = [];
                 state._navBufferedGen = null;
                 state._navBufferedDoc = null;
-                // Hide both visible iframes so the user sees only the
-                // spinner; whichever the server sends next will be
-                // re-promoted in endNavigationTransition via the normal
-                // onload swap path.
-                try {
-                    if (mirrorFrameA) {
-                        mirrorFrameA.style.visibility = 'hidden';
-                        mirrorFrameA.style.pointerEvents = 'none';
-                    }
-                    if (mirrorFrameB) {
-                        mirrorFrameB.style.visibility = 'hidden';
-                        mirrorFrameB.style.pointerEvents = 'none';
-                    }
-                } catch (e) { /* ignore */ }
-                showTransitionOverlay();
+                // The visible iframe is deliberately left alone: no
+                // spinner overlay, the mirrored page just stays put until
+                // the next full_document swaps the frame in.
                 state._navWatchdog = setTimeout(navTransitionTimeout, 5000);
                 try { dbg('[NAV] begin nav-pending -> ' + (newUrl || '?')); } catch (e) {}
             }
@@ -10038,9 +9963,8 @@ function applySpinnerColorFromHex(hexColor) {
                 state._navPatchBuffer = [];
                 state._navBufferedGen = null;
                 state._navBufferedDoc = null;
-                hideTransitionOverlay();
-                // Re-show whatever is the active frame (whatever the
-                // server eventually sent, or the original frame if it
+                // Make sure whatever frame is active is visible (whatever
+                // the server eventually sent, or the original frame if it
                 // never sent anything).
                 try {
                     if (frame) {
@@ -10062,7 +9986,6 @@ function applySpinnerColorFromHex(hexColor) {
                 const pendingGen = state._navBufferedGen;
                 state._navBufferedGen = null;
                 try { dbg('[NAV] end nav-pending, flushing ' + buf.length + ' buffered ops'); } catch (e) {}
-                hideTransitionOverlay();
                 // The new full_document has already created the new
                 // iframe (applyFullDocument) and seeded _deltaGen /
                 // _midmap.  Now drain buffered patches in order.  We
@@ -11047,7 +10970,6 @@ function stripDeadMirrorNodes(root) {
                         elements.loadingScreen.style.display = 'none';
                     }
                 }
-                hideTransitionOverlay();
                 if (elements.streamContainer) {
                     elements.streamContainer.classList.add('visible');
                 }
@@ -11317,7 +11239,6 @@ function stripDeadMirrorNodes(root) {
                             restoreSavedInputsImpl(d, savedInputs);
                             reapplyTypedValues(d);
                             rebuildMirrorIdMap();
-                            hideTransitionOverlay();
                         }
                         // Streaming iframe MUST get the same html/body reset
                         // the LPV path injects (see the LPV showPage block).
