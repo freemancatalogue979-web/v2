@@ -206,4 +206,62 @@ out, meta0 = run(dom_capture._rewrite_assets_to_cache(plain, BASE))
 ok(out == plain and meta0 == [], "a page with no external refs is untouched")
 ok(dom_capture._LAST_REWRITE_STATS.get("refs") == 0, "and the stats say so")
 
+# ---------------------------------------------------------------------------
+# 7. Regression: an URL change must NEVER be swallowed by the seq no-op skip
+#    (SPA pushState: same document, unchanged batch seq, new URL — the new
+#    content has to go out as a full document, or the mirror stays stuck on
+#    the old page).
+# ---------------------------------------------------------------------------
+class FakeWS:
+    def __init__(self):
+        self.frames = []
+    async def send_text(self, frame):
+        self.frames.append(frame)
+
+
+class FakeNavPage:
+    url = "https://new.example/page"
+    async def title(self):
+        return "new"
+    async def evaluate(self, *a, **k):
+        return None
+
+
+def make_nav_session(ws):
+    sess = dom_capture.DOMCaptureSession(FakeNavPage(), websocket=ws, client_id="nav")
+    sess.has_initial_capture = True
+    sess._delta_installed = True
+    sess._last_capture_supports_delta = True
+    sess._last_capture_supports_assets = False   # keep the rewrite out of the way
+    sess._delta_active = True
+    sess._delta_seq_seen = 42
+    sess.last_sent_url = "https://old.example/"
+    sess.last_sent_html = "<html>old</html>"
+
+    async def _seq():
+        return 42                                # unchanged batch sequence
+    sess._read_delta_seq = _seq
+
+    async def _capture(settle=None):
+        return "<html><body>new page content</body></html>"
+    sess.capture_page = _capture
+    return sess
+
+
+ws = FakeWS()
+sess = make_nav_session(ws)
+run(sess._send_full("https://new.example/page", reason="url_change"))
+ok(any('"full_document"' in f and "new page content" in f for f in ws.frames),
+   "url_change with an unchanged seq still sends the new document (got %r)"
+   % ([f[:60] for f in ws.frames],))
+
+# ...and the no-op skip still works for a genuine same-page no-op
+ws2 = FakeWS()
+sess2 = make_nav_session(ws2)
+sess2.last_sent_url = "https://new.example/page"
+sess2.page.url = "https://new.example/page"
+run(sess2._send_full("https://new.example/page", reason="click"))
+ok(not any('"full_document"' in f for f in ws2.frames),
+   "a same-URL no-mutation capture is still skipped")
+
 print("capture pipeline: %d checks passed" % PASSED)

@@ -1504,7 +1504,7 @@ _COLD_REASONS = frozenset((
 # the same to the checksum" is not evidence that it IS the same.
 _SKIP_EXEMPT_PREFIXES = (
     "delta_overflow", "navigation", "coalesce:delta_overflow",
-    "coalesce:navigation", "resync",
+    "coalesce:navigation", "url_change", "coalesce:url_change", "resync",
 )
 
 
@@ -5556,6 +5556,7 @@ class DOMCaptureSession:
             if (self.has_initial_capture and LIVE_DELTA and self._delta_installed
                     and self._last_capture_supports_delta
                     and not is_redraw_only_host(url or "")
+                    and url == self.last_sent_url
                     and self._capture_pre_seq == self._delta_seq_seen
                     and not str(reason or "").lower().startswith(_SKIP_EXEMPT_PREFIXES)):
                 logger.debug("dc skip(no mutations) reason=%s seq=%s gen=%s",
