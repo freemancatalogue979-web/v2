@@ -267,4 +267,22 @@ os.environ["MIRROR_CAPTURE"] = "0"; os.environ["MIRROR_PROXY"] = "1"
 ok(pm.is_capture_enabled() is False, "MIRROR_CAPTURE=0 forces capture off even without proxy")
 os.environ.pop("MIRROR_CAPTURE", None); os.environ.pop("MIRROR_PROXY", None)
 
+# --- single-slash scheme typos (https:/x) are proxied, not DNS-hit directly ----
+ok(pm.rewrite_ref("https:/favicon.ico", TARGET, "S") == "/m/S/https://favicon.ico",
+   "single-slash scheme ref normalized and proxied")
+ok(pm.rewrite_ref("http:/x.example.com/a", TARGET) == "/m/http://x.example.com/a",
+   "http:/ single-slash normalized")
+rjs2 = pm.build_router_script("S", TARGET)
+ok("u.match(/^(https?):" in rjs2, "router JS handles single-slash scheme typos too")
+if shutil.which("node"):
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(rjs2)
+        tmpr2 = f.name
+    r = subprocess.run(["node", "--check", tmpr2], capture_output=True)
+    ok(r.returncode == 0, "router script still valid after single-slash patch")
+
+# --- WAF 400/403 clean-header retry wiring --------------------------------------
+ok("clean-header retry" in api_src and 'resp.status_code in (400, 403)' in api_src,
+   "route retries upstream 400/403 once with clean minimal headers (Yahoo WAF case)")
+
 print("proxy mirror: %d checks passed" % PASSED)

@@ -109,6 +109,20 @@ iframe redirects to `/m/<url>`), and capture only runs when the client
 explicitly asks (`resync_request` — the 10s proxy-load-failure fallback).
 Dead-browser capture failures log as warnings (session recovery owns them).
 
+## Field fixes: Yahoo "Will be right back" 400 + icon parsing
+
+- Upstream **400/403 (WAF) retry**: on a 400/403 the `/m/` route retries once
+  with a clean minimal header set (UA + Accept + Accept-Language + Cookie) —
+  Yahoo's error page was a WAF rejecting odd forwarded headers.
+- **`/m/` URLs are unwrapped before hostname parsing** on the client
+  (`unwrapProxyUrl`): the proxied iframe's `<base>`/baseURI is
+  `/m/<sid>/<target>`, and parsing it raw leaked `domain=https:` to
+  `/api/site/icon` (400) and `https://https/...`-style favicon candidates
+  (ERR_NAME_NOT_RESOLVED).  Bogus scheme-as-host candidates are dropped.
+- **Single-slash scheme typos** (`https:/favicon.ico`) are normalized and
+  proxied instead of falling through to relative/direct resolution — both in
+  the python rewriter and the injected router JS.
+
 ## Operational notes (bugs found in the field, fixed)
 
 - `/m/` targets are **percent-encoded** (`quote(target, safe="/:")` — slashes

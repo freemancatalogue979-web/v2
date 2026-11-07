@@ -86,4 +86,12 @@ ok(/function setupIframeEventListeners\(d\) \{\s*[^]*?if \(state\.proxyMode\) re
 ok(/urlParams\.get\('user_id'\)/.test(client), 'client reads ?user_id= from the link');
 ok(/state\.userId = userIdParam/.test(client), 'user_id param becomes the session profile identity');
 
+// /m/ URLs must be unwrapped before hostname/domain parsing (else the icon API
+// gets domain=https: and bogus https://https/... favicon candidates hit DNS)
+ok(/function unwrapProxyUrl\(u\)/.test(client), 'unwrapProxyUrl exists');
+ok(/unwrapProxyUrl\(href\)/.test(client) && /unwrapProxyUrl\(bu\)/.test(client),
+  'mirrorPageBase unwraps /m/<sid>/<target> base/baseURI to the real URL');
+ok(/unwrapProxyUrl\(String\(pageBase/.test(client), 'site icon API parses the unwrapped target URL');
+ok(client.includes('scheme-as-host'), 'bogus scheme-as-host icon candidates dropped');
+
 console.log('proxy mirror client: %d checks passed', checks);

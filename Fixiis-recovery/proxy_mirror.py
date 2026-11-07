@@ -114,6 +114,11 @@ def rewrite_ref(ref: Optional[str], base_target: str, sid: str = "") -> Optional
     low = ref.lower()
     if ref.startswith(("/m/", "/api/", "/assets/")):
         return None  # already on our origin — never double-proxy
+    # Tolerate single-slash scheme typos in page refs (https:/x -> https://x)
+    # so they don't fall through to relative handling / direct DNS hits.
+    _ms = re.match(r"^(https?):/(?!/)(.*)$", ref, re.I)
+    if _ms:
+        return proxied_path(f"{_ms.group(1)}://{_ms.group(2)}", sid)
     if low.startswith("http://") or low.startswith("https://"):
         return proxied_path(ref, sid)
     if ref.startswith("//"):
@@ -203,6 +208,7 @@ def build_router_script(sid: str, target_url: str) -> str:
         "function enc(u){return encodeURIComponent(u).replace(/%2F/g,'/').replace(/%3A/g,':');}"
         "function rw(u){if(u==null)return u;u=String(u);if(!u)return u;"
         "if(/^(data:|blob:|javascript:|mailto:|tel:|about:|#)/i.test(u))return u;"
+        "var ms=u.match(/^(https?):\/(?!\/)(.*)$/i);if(ms)return P.prefix+(P.sid?P.sid+'/':'')+enc(ms[1]+'://'+ms[2]);"
         r"if(/^\/(m|api|assets)\//.test(u))return u;"
         r"if(/^https?:\/\//i.test(u))return P.prefix+(P.sid?P.sid+'/':'')+enc(u);"
         "if(u.indexOf('//')===0)return P.prefix+(P.sid?P.sid+'/':'')+enc('https:'+u);"

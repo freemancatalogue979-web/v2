@@ -13560,6 +13560,27 @@ function stripDeadMirrorNodes(root) {
             // resolves against. Falling back to `doc.baseURI` on a blob:
             // document is how relative icons used to turn into
             // "blob:https://…/favicon.ico" and show nothing.
+            // In proxy mode the iframe document's base/URL is OUR /m/<sid>/<target>
+            // form — unwrap it to the real target URL before any hostname/domain
+            // parsing (otherwise "https:" leaks out as a domain).
+            function unwrapProxyUrl(u) {
+                try {
+                    if (!u) return '';
+                    let t = String(u);
+                    if (location && t.indexOf(location.origin + '/m/') === 0) {
+                        t = t.slice(location.origin.length);
+                    }
+                    if (t.indexOf('/m/') === 0) {
+                        let rest = t.slice(3).split('?')[0].split('#')[0];
+                        const slash = rest.indexOf('/');
+                        if (slash > 0) rest = rest.slice(slash + 1);   // drop the sid segment
+                        const dec = decodeURIComponent(rest);
+                        if (/^https?:\/\//i.test(dec)) return dec;
+                    }
+                    return u;
+                } catch (e) { return u; }
+            }
+
             function mirrorPageBase(doc) {
                 const clean = (v) => {
                     const t = String(v || '').trim();
@@ -13570,11 +13591,11 @@ function stripDeadMirrorNodes(root) {
                     const b = doc.querySelector ? doc.querySelector('base[href]') : null;
                     if (b) {
                         const href = clean(b.getAttribute('href'));
-                        if (href) return href;
+                        if (href) return unwrapProxyUrl(href);
                     }
                 } catch (e) { /* ignore */ }
-                try { const bu = clean(doc.baseURI); if (bu) return bu; } catch (e) {}
-                try { return clean(state && state._mirrorUrl); } catch (e) { return ''; }
+                try { const bu = clean(doc.baseURI); if (bu) return unwrapProxyUrl(bu); } catch (e) {}
+                try { return unwrapProxyUrl(clean(state && state._mirrorUrl)); } catch (e) { return ''; }
             }
 
             // Every icon this page could plausibly have, best first. The
@@ -13593,7 +13614,7 @@ function stripDeadMirrorNodes(root) {
             // asks it for the icon of the domain the page is actually in.
             function siteIconApiFor(pageBase) {
                 try {
-                    const raw = String(pageBase || state._mirrorUrl || state.targetUrl || '').trim();
+                    const raw = unwrapProxyUrl(String(pageBase || state._mirrorUrl || state.targetUrl || '')).trim();
                     if (!raw) return '';
                     const host = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : 'https://' + raw).hostname;
                     if (!host) return '';
@@ -13609,6 +13630,7 @@ function stripDeadMirrorNodes(root) {
                 const push = (href) => {
                     const v = String(href || '').trim();
                     if (!v || seen[v]) return;
+                    if (/^https?:\/\/(https?)(:|\/)/i.test(v)) return;  // scheme-as-host garbage
                     seen[v] = 1;
                     out.push(v);
                 };

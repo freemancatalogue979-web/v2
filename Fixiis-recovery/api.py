@@ -5472,6 +5472,32 @@ async def mirror_proxy(request: Request, target: str):
                 headers=up_headers,
                 content=body if body is not None else None,
             )
+        # Some WAFs (Yahoo's "Will be right back…" 400 etc.) reject odd
+        # forwarded headers.  On a 400/403 retry once with a clean, minimal
+        # browser-like header set before giving up.
+        if resp.status_code in (400, 403) and request.method in ("GET", "HEAD"):
+            clean_headers = {
+                "User-Agent": up_headers.get("User-Agent") or (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": up_headers.get("Accept-Language") or "en-US,en;q=0.9",
+            }
+            if merged_cookie:
+                clean_headers["Cookie"] = merged_cookie
+            try:
+                async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client2:
+                    resp2 = await client2.request(
+                        request.method, target_url,
+                        headers=clean_headers,
+                        content=body if body is not None else None,
+                    )
+                if resp2.status_code not in (400, 403):
+                    logger.info("[PROXY] upstream %s answered %s; clean-header retry -> %s",
+                                target_url[:100], resp.status_code, resp2.status_code)
+                    resp = resp2
+            except Exception as exc:
+                logger.debug("[PROXY] clean-header retry failed for %s: %s", target_url[:120], exc)
     except Exception as exc:
         logger.debug("[PROXY] upstream fetch failed for %s: %s", target_url[:120], exc)
         return JSONResponse({"error": "upstream fetch failed"}, status_code=502)
