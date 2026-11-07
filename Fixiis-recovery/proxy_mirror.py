@@ -23,7 +23,9 @@ PROXY_PREFIX = "/m/"
 
 
 def is_proxy_enabled() -> bool:
-    return os.environ.get("MIRROR_PROXY", "0").strip().lower() in ("1", "true", "yes", "on")
+    # Default ON: the proxy mirror is the primary live path ("real site in the
+    # iframe"). Set MIRROR_PROXY=0 to fall back to the capture mirror only.
+    return os.environ.get("MIRROR_PROXY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 def proxied_page_url(target_url: str, sid: str = "") -> str:

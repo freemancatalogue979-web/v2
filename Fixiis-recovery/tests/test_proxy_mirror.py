@@ -98,6 +98,10 @@ ok(recs == [{"name": "SID", "value": "xyz", "url": TARGET}, {"name": "n", "value
    f"Set-Cookie parsed to context records (domain dropped): {recs!r}")
 
 ok(pm.proxied_page_url(TARGET, "s1") == "/m/" + TARGET + "?sid=s1", "proxied url carries sid")
-ok(pm.is_proxy_enabled() is False, "proxy disabled by default (env kill switch)")
+ok(pm.is_proxy_enabled() is True, "proxy enabled by default (MIRROR_PROXY=0 is the kill switch)")
+for _v in ("0", "false", "no", "off"):
+    os.environ["MIRROR_PROXY"] = _v
+    ok(pm.is_proxy_enabled() is False, "MIRROR_PROXY=%s disables" % _v)
+os.environ.pop("MIRROR_PROXY", None)
 
 print("proxy mirror: %d checks passed" % PASSED)

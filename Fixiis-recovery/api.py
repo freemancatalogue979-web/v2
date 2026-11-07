@@ -5328,7 +5328,7 @@ async def serve_asset_options(hash_hex: str):
 # ---------------------------------------------------------------------------
 # /m/{target} — proxy mirror ("redirect from browser to client")
 #
-# When MIRROR_PROXY=1, the client iframe loads the site through this same-origin
+# Proxy mirror is ON by default (MIRROR_PROXY=0 disables): the client iframe loads the site through this same-origin
 # route instead of waiting on the DOM-capture pipeline: the server fetches the
 # target with the persistent remote context's cookies, rewrites every reference
 # to /m/..., and serves the document from OUR origin.  The site's own JS then

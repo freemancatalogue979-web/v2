@@ -36,7 +36,7 @@ Same DOM *by construction* (same bytes, same origin), no screencast, no capture
 round-trip in the control loop. Heavy JS sites (YouTube/TikTok) render natively
 — the snapshot-host workaround becomes unnecessary in proxy mode.
 
-## What exists now (P0, behind `MIRROR_PROXY=1`)
+## What exists now (P0, on by default)
 
 - `proxy_mirror.py` — pure, unit-tested rewrite/cookie helpers
   (`rewrite_ref`, `rewrite_html_for_proxy`, `rewrite_css_for_proxy`,
@@ -61,8 +61,9 @@ round-trip in the control loop. Heavy JS sites (YouTube/TikTok) render natively
   proxied page owns the iframe. If the proxied page doesn't load in 10 s, the
   client falls back to the capture mirror automatically.
 
-Kill switch / rollback: `MIRROR_PROXY=0` (default) → route 404s, no
-`proxy_prefix` advertised, client behaves exactly as before. The DOM-capture
+Default ON: the proxy mirror is the primary live path. Kill switch / rollback:
+`MIRROR_PROXY=0` → route 404s, no `proxy_prefix` advertised, client behaves
+exactly as the capture-mirror-only build did. The DOM-capture
 pipeline (fast serializer + deltas + snapshot hosts) remains fully intact as
 the fallback and for archives (PCM/LPV/SingleFile/MHTML).
 
