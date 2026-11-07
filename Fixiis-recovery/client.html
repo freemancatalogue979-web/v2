@@ -9877,12 +9877,13 @@ function applySpinnerColorFromHex(hexColor) {
                 // the resync is being requested).
                 state._lastDocHtml = null;
                 // A resync for a generation we already requested in the last
-                // 5 s is a loop, not a recovery: one missed full_document must
-                // not turn into a storm of forced full captures.
+                // 1.5 s is a loop, not a recovery: one missed full_document
+                // must not turn into a storm, but a page whose patches keep
+                // failing must recover in ~1.5 s, not sit stale for 5 s.
                 try {
                     const nowMs = performance.now();
                     if (state._lastResyncGen === currentGen
-                            && (nowMs - (state._lastResyncAt || 0)) < 5000) return;
+                            && (nowMs - (state._lastResyncAt || 0)) < 1500) return;
                     state._lastResyncGen = currentGen;
                     state._lastResyncAt = nowMs;
                 } catch (e) { /* keep the old behaviour */ }

@@ -1896,6 +1896,13 @@ class NeoStreamingSession:
         return self.dom_capture
 
     async def capture_remote_page(self, reason: Optional[str] = None, force: bool = False):
+        # Interaction reasons the live delta observer already carries as
+        # 16 ms patches — a full capture here would only add latency.
+        _DELTA_OWNED_INTERACTION_REASONS = frozenset((
+            "text", "keydown", "capture_first_input", "click", "mouseup",
+            "mousedown", "tap", "touchstart", "touchend", "input", "change",
+            "submit", "wheel", "scroll",
+        ))
         """Capture the current page and transmit it to the connected client.
 
         Args:
@@ -1927,13 +1934,16 @@ class NeoStreamingSession:
                 and not getattr(capture, "_explicit_navigation_in_progress", False)):
             logger.debug("[CAPTURE] %s navigation is owned by the delta document signal", reason)
             return None
-        # Typing while the delta observer is live must NOT trigger a full
-        # capture per keystroke: the observer streams 'v' (value) ops to the
-        # client live.  A full full_document every keystroke reloads the
-        # mirrored iframe, drops input focus (typing becomes impossible),
-        # and storms the CDP channel — on the SB backend that storm could
-        # wedge the driver channel and tear the browser down with it.
-        if (reason in ("text", "keydown", "capture_first_input")
+        # ANY interaction while the delta observer is live must NOT trigger a
+        # full capture: the observer streams the resulting DOM ops to the
+        # client within ~16 ms.  A full_document per click/keystroke reloads
+        # the whole mirrored iframe (hundreds of ms, focus loss, scroll jump)
+        # and storms the CDP channel — that is exactly the "updates feel slow"
+        # on otherwise healthy pages.  Typing, clicks, taps, wheel: all owned
+        # by the patch channel.  Full captures stay for navigation, resync,
+        # session lifecycle reasons — and remain the fallback whenever the
+        # delta channel is not active (observer missing / capture downgraded).
+        if (reason in _DELTA_OWNED_INTERACTION_REASONS
                 and LIVE_DELTA and getattr(capture, "_delta_active", False)):
             logger.debug("[CAPTURE] %s recapture owned by delta observer — skipping full capture", reason)
             return None
