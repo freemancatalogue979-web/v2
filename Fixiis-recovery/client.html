@@ -10089,21 +10089,11 @@ function applySpinnerColorFromHex(hexColor) {
                 state._navPatchBuffer = [];
                 state._navBufferedGen = null;
                 state._navBufferedDoc = null;
-                // Hide both visible iframes so the user sees only the
-                // spinner; whichever the server sends next will be
-                // re-promoted in endNavigationTransition via the normal
-                // onload swap path.
-                try {
-                    if (mirrorFrameA) {
-                        mirrorFrameA.style.visibility = 'hidden';
-                        mirrorFrameA.style.pointerEvents = 'none';
-                    }
-                    if (mirrorFrameB) {
-                        mirrorFrameB.style.visibility = 'hidden';
-                        mirrorFrameB.style.pointerEvents = 'none';
-                    }
-                } catch (e) { /* ignore */ }
-                showTransitionOverlay();
+                // No spinner, no iframe hide — let the page update naturally
+                // as the new document streams in.  Patch buffering still
+                // happens so cross-document ops never patch the OLD iframe;
+                // they drain onto the new iframe the moment full_document
+                // arrives.
                 state._navWatchdog = setTimeout(navTransitionTimeout, 5000);
                 try { dbg('[NAV] begin nav-pending -> ' + (newUrl || '?')); } catch (e) {}
             }
@@ -10115,17 +10105,8 @@ function applySpinnerColorFromHex(hexColor) {
                 state._navPatchBuffer = [];
                 state._navBufferedGen = null;
                 state._navBufferedDoc = null;
-                hideTransitionOverlay();
-                // Re-show whatever is the active frame (whatever the
-                // server eventually sent, or the original frame if it
-                // never sent anything).
-                try {
-                    if (frame) {
-                        frame.style.opacity = '1';
-                        frame.style.visibility = 'visible';
-                        frame.style.pointerEvents = '';
-                    }
-                } catch (e) { /* ignore */ }
+                // No overlay to hide — kept function for symmetry; all
+                // frames stay visible for natural navigation feel.
             }
 
             function endNavigationTransition() {
@@ -13226,20 +13207,8 @@ function stripDeadMirrorNodes(root) {
                     const sel = getSelector(el);
                     if (sel) payload.selector = sel;
 
-                    // Spinner colour follows the link if it IS a link; else
-                    // keeps the current page brand.  This is a UX nicety only;
-                    // it does not change how the click is dispatched.
-                    let brandColor = currentBrandColor || '#888';
-                    if (tag === 'A' && el.href) {
-                        try { brandColor = getBrandColor(new URL(el.href).hostname) || brandColor; }
-                        catch (e) { /* ignore */ }
-                    } else if (state.targetUrl) {
-                        try { brandColor = getBrandColor(new URL(state.targetUrl).hostname) || brandColor; }
-                        catch (e) { /* ignore */ }
-                    }
-                    currentBrandColor = brandColor;
-                    applySpinnerColor(brandColor);
-
+                    // No spinner, no colour flash, no optimistic UI — the page
+                    // responds naturally as the real browser updates.
                     send(payload);
                     return true;
                 }
