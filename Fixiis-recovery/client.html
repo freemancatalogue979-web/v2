@@ -573,22 +573,8 @@ function applySpinnerColor(colorOrR, g, b, forceWorkflow = false) {
     } catch (e) { /* ignore */ }
 }
 
-function showTransitionOverlay() {
-    const overlay = document.getElementById('transition-overlay');
-    if (overlay) {
-        overlay.classList.remove('hidden');
-        overlay.classList.add('visible');
-        applySpinnerColor(currentBrandColor);
-    }
-}
-
-function hideTransitionOverlay() {
-    const overlay = document.getElementById('transition-overlay');
-    if (overlay) {
-        overlay.classList.remove('visible');
-        overlay.classList.add('hidden');
-    }
-}
+// Navigation overlay / buffer machinery removed. Pages update in-place;
+// patches apply the instant they arrive. No spinners, no freeze-frames.
             window.addEventListener('error', (e) => {
                 dbg('[CLIENT ERROR]', { message: e.message, source: e.filename, line: e.lineno, column: e.colno });
             });
@@ -9203,29 +9189,8 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         break;
                     case 'dom_patch':
-                        // Incremental ops are the low-latency path.  They are
-                        // anchored to the current full-document generation;
-                        // any missing node or generation mismatch asks the
-                        // server for a safe full resync.
-                        // During a nav-pending window we BUFFER instead of
-                        // applying — the old iframe is hidden anyway, and
-                        // applying cross-document ops to it is exactly what
-                        // produced the "two steps rendered together" bug.
-                        if (state._navPending) {
-                            const buf = state._navPatchBuffer || (state._navPatchBuffer = []);
-                            const ops = (Array.isArray(message && message.ops)) ? message.ops
-                                       : (Array.isArray(message && message.patches) ? message.patches : null);
-                            if (ops && buf.length < 1500) {
-                                for (let bi = 0; bi < ops.length && buf.length < 1500; bi++) buf.push(ops[bi]);
-                            }
-                            // Also flush any generation / doc-token the
-                            // server told us about — those will be checked
-                            // against the post-swap _deltaGen when we
-                            // commit the buffer.
-                            if (typeof message.gen === 'number') state._navBufferedGen = message.gen;
-                            if (typeof message.doc === 'string' && message.doc) state._navBufferedDoc = message.doc;
-                            break;
-                        }
+                        // Plain path: apply patches the instant they arrive.
+                        // No buffering, no nav-pending window, no freeze.
                         try {
                             const ok = Array.isArray(message.ops)
                                 ? applyDomPatch(message)
@@ -9284,11 +9249,6 @@ function applySpinnerColorFromHex(hexColor) {
                             console.error('applyFullDocument failed:', e);
                         }
                         if (message.url) reportPageChange(message.url);
-                        // A full_document during nav-pending is the natural
-                        // end of the transition — drop the spinner, drain
-                        // any buffered patches onto the freshly-seeded
-                        // midmap so the user doesn't see a one-render lag.
-                        endNavigationTransition();
                         break;
                     // --- Legacy event-driven messages -----------------------
                     case 'session_replaced':
@@ -10031,116 +9991,8 @@ function applySpinnerColorFromHex(hexColor) {
                 }, 75);
             }
 
-            // -----------------------------------------------------------------
-            // Navigation transition (page_transition -> full_document window)
-            // -----------------------------------------------------------------
-            //
-            // Bug we're fixing: when the user taps a link / submits a search,
-            // the server's URL watcher (session.py: _page_transition_monitor)
-            // emits a `page_transition` message ~100-500ms BEFORE the new
-            // page's full_document arrives.  During that window every
-            // dom_patch is a mix of OLD-page tear-down and NEW-page
-            // build-up; applying them to the OLD iframe would visibly draw
-            // step-2 on top of step-3 (search page + autocomplete
-            // overlapping the partial results page).  The user sees the
-            // mess until the full_document swap lands and stabilises.
-            //
-            // beginNavigationTransition hides the old iframe, shows the
-            // spinner overlay, and sets state._navPending so the
-            // dom_patch case in the message switch buffers ops instead of
-            // applying them.  endNavigationTransition runs once the
-            // full_document has been committed by renderPageSnapshot +
-            // rebuildMirrorIdMap: it drops the overlay and flushes the
-            // buffer onto the freshly-seeded midmap so the user does not
-            // see a one-render lag where the buffered changes are lost.
-            //
-            // Safety net: if no full_document arrives within 5s (server
-            // hung, transport hiccup) we drop the buffer and re-show the
-            // old iframe rather than getting stuck on a spinner forever.
-            function beginNavigationTransition(newUrl) {
-                if (state._navPending) {
-                    // Already in a transition; just refresh the watchdog.
-                    if (state._navWatchdog) clearTimeout(state._navWatchdog);
-                    state._navWatchdog = setTimeout(navTransitionTimeout, 5000);
-                    return;
-                }
-                state._navPending = true;
-                state._navPendingUrl = newUrl || null;
-                state._navPatchBuffer = [];
-                state._navBufferedGen = null;
-                state._navBufferedDoc = null;
-                // No spinner, no iframe hide — let the page update naturally
-                // as the new document streams in.  Patch buffering still
-                // happens so cross-document ops never patch the OLD iframe;
-                // they drain onto the new iframe the moment full_document
-                // arrives.
-                state._navWatchdog = setTimeout(navTransitionTimeout, 5000);
-                try { dbg('[NAV] begin nav-pending -> ' + (newUrl || '?')); } catch (e) {}
-            }
-
-            function navTransitionTimeout() {
-                if (!state._navPending) return;
-                try { dbg('[NAV] nav-pending watchdog fired — dropping buffer'); } catch (e) {}
-                state._navPending = false;
-                state._navPatchBuffer = [];
-                state._navBufferedGen = null;
-                state._navBufferedDoc = null;
-                // No overlay to hide — kept function for symmetry; all
-                // frames stay visible for natural navigation feel.
-            }
-
-            function endNavigationTransition() {
-                if (!state._navPending) return;
-                if (state._navWatchdog) { clearTimeout(state._navWatchdog); state._navWatchdog = null; }
-                const buf = state._navPatchBuffer || [];
-                state._navPending = false;
-                state._navPatchBuffer = [];
-                const pendingDoc = state._navBufferedDoc;
-                state._navBufferedDoc = null;
-                const pendingGen = state._navBufferedGen;
-                state._navBufferedGen = null;
-                try { dbg('[NAV] end nav-pending, flushing ' + buf.length + ' buffered ops'); } catch (e) {}
-                hideTransitionOverlay();
-                // The new full_document has already created the new
-                // iframe (applyFullDocument) and seeded _deltaGen /
-                // _midmap.  Now drain buffered patches in order.  We
-                // chunk them so the iframes can paint; the chunk size
-                // is small enough to fit in one frame budget.
-                if (!buf.length) return;
-                try {
-                    // Re-broadcast the buffered ops as a single dom_patch
-                    // so applyDomPatch's existing midmap / doc-token /
-                    // generation gates run uniformly against the new
-                    // document.
-                    const freshDoc = pendingDoc || (typeof state.deltaDocumentToken === 'string' ? state.deltaDocumentToken : null);
-                    let i = 0;
-                    const drain = () => {
-                        if (i >= buf.length) return;
-                        const chunk = buf.slice(i, i + 250);
-                        i += chunk.length;
-                        const ok = applyDomPatch({
-                            type: 'dom_patch',
-                            ops: chunk,
-                            doc: freshDoc || undefined,
-                            gen: (typeof pendingGen === 'number') ? pendingGen : undefined,
-                        });
-                        if (!ok) {
-                            try { dbg('[NAV] buffered flush failed at ' + i + '/' + buf.length + ' — dropping remainder'); } catch (e) {}
-                            return;
-                        }
-                        if (i < buf.length) {
-                            // Yield to the renderer between slices so we
-                            // do not jank a single frame for hundreds of
-                            // ops at once on slow devices.
-                            if (typeof requestAnimationFrame === 'function') requestAnimationFrame(drain);
-                            else setTimeout(drain, 16);
-                        }
-                    };
-                    drain();
-                } catch (e) {
-                    console.error('endNavigationTransition flush failed', e);
-                }
-            }
+            // Navigation-transition buffer/spinner/watchdog machinery REMOVED.
+            // Patches apply the instant they arrive — plain, no middleman.
 
             // Helper: pull out <script> tags from an HTML string.
             function extractScripts(html) {
@@ -11635,12 +11487,14 @@ function stripDeadMirrorNodes(root) {
                     }
                     const doc = frame.contentDocument;
                     const map = state._midmap || (state._midmap = new Map());
-                    // Fresh full snapshot still parsing: buffer (bounded) and
-                    // let rebuildMirrorIdMap() flush in generation order.
+                    // Fresh full snapshot still parsing: buffer ALL arriving
+                    // ops until rebuildMirrorIdMap seeds the midmap, then
+                    // drain them. Never cap & drop — dropped ops are skipped
+                    // updates.
                     if (!map.size) {
                         const pend = state._pendingPatches || (state._pendingPatches = []);
                         const ops0 = message.ops || [];
-                        for (const o of ops0) { if (pend.length < 500) pend.push(o); }
+                        for (let bi = 0; bi < ops0.length; bi++) pend.push(ops0[bi]);
                         return true;
                     }
                     const ops = message.ops || [];

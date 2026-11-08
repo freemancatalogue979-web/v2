@@ -4127,40 +4127,35 @@ _DELTA_OBSERVER_JS = r"""
     out.push('</', tag, '>');
   };
   const ops = [];
-  // Keep the first occurrence's position (important when a framework inserts
-  // a node and then mutates it), while replacing repeated writes to the same
-  // target with the latest value in this batch.
-  const coalesced = new Map();  // logical op key -> index in ops
+  // Plain batching: ship EVERY op, no coalescing. Coalescing was collapsing
+  // intermediate animation / transition frames and swallowing state updates
+  // (multiple writes to the same attribute within a 16ms window became one
+  // final write — exactly the "some updates are skipped" bug).
+  // We still batch within one microtask via setTimeout(0) so MutationObserver's
+  // microtask-queue callback doesn't produce one message per record, but we
+  // never drop or merge ops.
   let scheduled = false;
   let overflowed = false;
-  const OP_CAP = 5000;
+  const OP_CAP = 8000;
   const schedule = () => {
     if (scheduled) return;
     scheduled = true;
-    setTimeout(flush, __SHIFIX_DELTA_FLUSH_MS__);
+    // Use a microtask-batched flush: ship mutations as soon as the current
+    // JS turn ends, not after a fixed 16ms timeout that adds latency.
+    Promise.resolve().then(flush);
   };
   const markOverflow = () => {
     if (overflowed) return;
     overflowed = true;
     ops.length = 0;
-    coalesced.clear();
     ops.push(['overflow']);
     schedule();
   };
   const flush = () => {
     scheduled = false;
-    // The set below only describes the batch being shipped; a later batch must
-    // be free to patch those same nodes again.
     try { insertedSubtrees.clear(); } catch (e) { /* ignore */ }
-    // A stylesheet can grow with no DOM mutation at all (insertRule), so the
-    // batch is also the moment to look at the CSSOM.
     try { flushStyleOps(); } catch (e) { /* ignore */ }
-    // Silent form state (property writes with no event) lands here, after the
-    // mutation records that created those nodes.
     try { flushSilentState(); } catch (e) { /* ignore */ }
-    // A renamed tab or a new icon is a change with no patchable DOM target in
-    // the mirror, so it rides at the head of the batch. Never while overflowed:
-    // that control frame must stay byte-exact.
     if (!overflowed) {
       try {
         const meta = pendingMeta();
@@ -4169,7 +4164,6 @@ _DELTA_OBSERVER_JS = r"""
     }
     if (!ops.length) return;
     const batch = ops.splice(0, ops.length);
-    coalesced.clear();
     overflowed = false;
     try {
       if (typeof window.__domDelta === 'function') {
@@ -4181,20 +4175,11 @@ _DELTA_OBSERVER_JS = r"""
     if (overflowed) return;
     ops.push(op);
     if (ops.length > OP_CAP) markOverflow();
-    schedule();
+    else schedule();
   };
-  const pushCoalesced = (key, op) => {
-    if (overflowed) return;
-    const oldIndex = coalesced.get(key);
-    if (oldIndex === undefined) {
-      coalesced.set(key, ops.length);
-      ops.push(op);
-      if (ops.length > OP_CAP) markOverflow();
-    } else {
-      ops[oldIndex] = op;
-    }
-    schedule();
-  };
+  // pushCoalesced is now a plain push — every record ships so animations
+  // and rapid state changes stream frame-by-frame.
+  const pushCoalesced = (key, op) => { push(op); };
   // Mids whose whole subtree was serialized into an insert during this batch.
   // A batch is serialized AFTER all of its mutations have landed, so inserting
   // an ancestor already carries every descendant that exists by then; the
@@ -4491,13 +4476,12 @@ _DELTA_OBSERVER_JS = r"""
   document.addEventListener('input', onFormEvent, true);
   document.addEventListener('change', onFormEvent, true);
   window.__shifixDeltaFlush = flush;
-  // A component can insert its rules a moment after it mounts, with no
-  // further DOM change. 1.2 s of rule counting is cheap; a mirror missing a
-  // component's styles is not.
+  // Late-arriving <style>/insertRule rules (CSS-in-JS: Griffel, Emotion,
+  // styled-components) — check periodically and flush if anything changed.
   try {
     setInterval(() => {
       try { if (flushStyleOps()) flush(); } catch (e) { /* ignore */ }
-    }, 1200);
+    }, 500);
   } catch (e) { /* no timers */ }
   // A document can reload to the same URL.  Its token changes even when the
   // URL watcher cannot, so the server can force a full navigation resync

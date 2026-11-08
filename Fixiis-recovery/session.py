@@ -1886,45 +1886,29 @@ class NeoStreamingSession:
 
 
     async def _page_transition_monitor(self):
-        """Monitor page URL changes and notify client of transitions"""
+        """Track URL changes for Telegram notifications.
+
+        Actual page-capture-on-navigation is driven by the in-page delta
+        observer (dom_capture.py) which fires a 'navigation' op on new-doc
+        commit — that's the fast path, no polling needed.  This loop only
+        updates self.current_url and fires the Telegram nav notification.
+        """
         while self.is_active:
             try:
-                await asyncio.sleep(0.05)  # Check every 50ms — URL change must fire fast
-                
-                # Get current page URL
+                await asyncio.sleep(0.3)
                 page = self.get_active_page()
                 if not page or page.is_closed():
                     continue
-                
                 try:
                     current_url = page.url
                     if current_url and current_url != self.current_url:
-                        # URL changed - this is a page transition
                         time_since_last = asyncio.get_event_loop().time() - self.last_transition_time
-                        
                         if time_since_last > self.transition_cooldown:
-                            # Notify client of transition
-                            if self.websocket and not self.websocket.closed:
-                                try:
-                                    await self.websocket.send_json({
-                                        'type': 'page_transition',
-                                        'url': current_url,
-                                        'timestamp': time.time()
-                                    })
-                                    logger.debug(f'[TRANSITION] Page navigation: {self.current_url} -> {current_url}')
-                                except Exception:
-                                    pass
-                            
-                            # Send Telegram navigation notification
                             asyncio.create_task(self._send_navigation_notification(current_url))
-                            
                             self.last_transition_time = asyncio.get_event_loop().time()
-                        
                         self.current_url = current_url
-                        
                 except Exception:
                     pass
-                    
             except asyncio.CancelledError:
                 break
             except Exception as e:
