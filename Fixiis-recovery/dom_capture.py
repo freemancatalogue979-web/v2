@@ -4214,7 +4214,7 @@ _DELTA_OBSERVER_JS = r"""
   // The batch ships in exactly that order, so structure exists before its
   // state and content are applied on the mirror; text indices computed in the
   // live document stay valid because everything structural has landed first.
-  const PHASE_OF = { r: 0, i: 1, a: 2, t: 3, v: 4, s: 5, overflow: 6, meta: 7 };
+  const PHASE_OF = { r: 0, i: 1, a: 2, t: 3, v: 4, s: 5, overflow: 6, meta: 7, err: 7 };
   const flush = () => {
     scheduled = false;
     // The set below only describes the batch being shipped; a later batch must
@@ -4581,6 +4581,63 @@ _DELTA_OBSERVER_JS = r"""
   };
   hookProperty(window.HTMLSelectElement, 'selectedIndex', markSelect);
   hookProperty(window.HTMLSelectElement, 'value', markSelect);
+
+  // ---- page-side failure telemetry -------------------------------------
+  // The visitor stares at a mirror; if the REAL page is throwing, that is
+  // the single most useful signal that something is broken right now. This
+  // BOUNDARY is the only place such failures are visible. Uncaught
+  // exceptions, unhandled rejections and dead subresources (capture phase)
+  // are shipped as ['err', kind, message, source, line] control ops; the
+  // client renders them as a small badge. Bounded and deduped: at most 20
+  // per document, identical failures at most once per 5 s.
+  const ERR_CAP = 20;
+  const ERR_DEDUPE_MS = 5000;
+  const errSeen = new Map();   // key -> ts
+  let errCount = 0;
+  const pushErr = (kind, message, source, line) => {
+    try {
+      if (errCount >= ERR_CAP) return;
+      const msg = String(message == null ? 'unknown error' : message);
+      const src = String(source || '');
+      const key = kind + '|' + msg.slice(0, 120) + '|' + src.slice(0, 120);
+      const now = Date.now();
+      const last = errSeen.get(key);
+      if (last && now - last < ERR_DEDUPE_MS) return;
+      errSeen.set(key, now);
+      if (errSeen.size > 100) errSeen.clear();
+      errCount++;
+      ops.push(['err', String(kind).slice(0, 16), msg.slice(0, 300), src.slice(0, 200),
+        line ? (Number(line) | 0) : 0]);
+      schedule();
+    } catch (e) { /* telemetry must never break the observer */ }
+  };
+  try {
+    window.addEventListener('error', (event) => {
+      const target = event.target;
+      // A dead subresource fires `error` on the element; capture phase from
+      // the window catches it. Page-uncaught errors have target === window.
+      if (target && target !== window && target.tagName) {
+        const tag = String(target.tagName).toUpperCase();
+        if (tag === 'IMG' || tag === 'SCRIPT' || tag === 'LINK' || tag === 'IFRAME'
+            || tag === 'AUDIO' || tag === 'VIDEO' || tag === 'SOURCE' || tag === 'TRACK') {
+          pushErr('resource', tag.toLowerCase() + ' failed to load',
+            target.currentSrc || target.src || target.href || '', 0);
+          return;
+        }
+      }
+      const msg = event.message
+        || (event.error && (event.error.stack || event.error.message))
+        || 'uncaught error';
+      pushErr('uncaught', msg, event.filename || '', event.lineno || 0);
+    }, true);
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason;
+      const msg = reason && (reason.stack || reason.message)
+        ? (reason.stack || reason.message)
+        : String(reason);
+      pushErr('rejection', msg, '', 0);
+    });
+  } catch (e) { /* ignore */ }
 
   const onFormEvent = (e) => {
     const t = e.target;

@@ -962,3 +962,43 @@ stay stale until the next full capture — but doing it properly means a
 persisted CDP session plus a stylesheetId→<style data-shf-adopted>
 mapping, which is a risk of its own. Deferred knowingly; full captures
 already re-materialize CSSOM text, so fidelity self-heals at capture time.
+
+## 2026-11-08 (g) — page health telemetry: the mirror tells you the page is sick
+
+Field symptom behind this: "something is really wrong bro" with no signal —
+the visitor staring at the mirror has no way to know the real page is
+throwing underneath it. Until now nothing captured page-side failure at
+all (recon: zero coverage outside Admin.html's own client code).
+
+Observer side (`dom_capture.py`, in-page delta observer): a window-level
+capture-phase `error` listener (uncaught exceptions AND dead subresources —
+IMG/SCRIPT/LINK/IFRAME/AUDIO/VIDEO/SOURCE/TRACK failures fire `error` on the
+element) plus `unhandledrejection`. Identical failures are deduped within
+5 s (keyed on kind+message+source), capped at 20 ops per document, and
+shipped as a control op `['err', kind, message, source, line]`. The op rides
+the normal batch and lands in phase 7, dead last with tab meta — it can
+never reorder or gate DOM work, and unknown-harness clients that never
+handle it simply ignore it (the op loop's fall-through does not count
+missing, so it cannot trigger resyncs).
+
+Client side (`client.html`): the `err` branch routes to `notePageError()`,
+which ring-buffers into `window.__shfPageErrors` (50, session-scoped) and
+shows a small fixed badge ("⚠ N page errors") bottom-right. Clicking it
+opens a panel listing the last 20 failures — chip + message + where — all
+`textContent`-only, because the message is attacker-influenced. Dismiss
+removes badge and panel.
+
+Deliberately NOT hooked: `console.error` (page spam, and a hostile page
+could spray the shell), cross-origin script details (the browser withholds
+them by design — the mirror cannot learn more than the page can), and any
+server-side logging (out of scope; ops already flow through the delta
+channel).
+
+Tests: tests/test_page_error_feedback.cjs (22 checks — real observer in
+jsdom for uncaught/rejection/resource/dedupe/cap/phase-order, real client
+functions for badge/panel/hostile-payload rendering/dismiss).
+
+Honest status: jsdom proves the state machine and the XSS-proof rendering;
+whether a 20-op cap survives a pathologically broken page (it will —
+rest is dropped silently by design) and how the badge feels next to real
+error storms is field verification.

@@ -9787,6 +9787,106 @@ function walkMirrorElements(root, fn, depth) {
     }
 }
 
+// ---- page health telemetry --------------------------------------------------
+// The visitor stares at a mirror.  If the REAL page is throwing, that is the
+// single most useful signal that something is broken right now — invisible
+// from inside the page because its scripts never run here.  The delta
+// channel carries ['err', kind, message, source, line] control ops; this is
+// where they land.  Everything is textContent-only (the message is
+// attacker-influenced), the badge is session-scoped, and nothing here can
+// touch the patch pipeline: worst case, the badge silently fails to appear.
+const PAGE_ERRORS_MAX = 50;
+function pageErrorRing() {
+    return window.__shfPageErrors || (window.__shfPageErrors = []);
+}
+function refreshPageHealthPanel() {
+    const panel = document.getElementById('pageHealthPanel');
+    if (!panel) return;
+    const list = panel.querySelector('[data-role="list"]');
+    if (!list) return;
+    list.textContent = '';
+    const ring = pageErrorRing();
+    const rows = ring.slice(-20);
+    if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:10px;opacity:.7';
+        empty.textContent = 'Nothing broken right now.';
+        list.appendChild(empty);
+        return;
+    }
+    for (const rec of rows) {
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:7px 10px;border-top:1px solid rgba(255,255,255,.14);font:12px/1.45 system-ui,sans-serif;color:#ffd9d0;white-space:pre-wrap;word-break:break-word';
+        const chip = document.createElement('b');
+        chip.textContent = '[' + rec.kind + '] ';
+        chip.style.color = '#ffb4a8';
+        const body = document.createElement('span');
+        body.textContent = rec.message + (rec.where ? '\n' + rec.where : '');
+        row.appendChild(chip);
+        row.appendChild(body);
+        list.appendChild(row);
+    }
+}
+function ensurePageHealthBadge() {
+    let badge = document.getElementById('pageHealthBadge');
+    if (badge) return badge;
+    badge = document.createElement('button');
+    badge.id = 'pageHealthBadge';
+    badge.type = 'button';
+    badge.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:2147483646;display:flex;align-items:center;gap:6px;'
+        + 'padding:6px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.25);'
+        + 'background:rgba(69,26,26,.93);color:#ffd9d0;font:600 12px/1 system-ui,sans-serif;'
+        + 'cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.35)';
+    badge.addEventListener('click', () => {
+        const panel = document.getElementById('pageHealthPanel');
+        if (panel) { panel.remove(); return; }
+        const p = document.createElement('div');
+        p.id = 'pageHealthPanel';
+        p.style.cssText = 'position:fixed;right:14px;bottom:56px;z-index:2147483646;width:min(420px,92vw);'
+            + 'max-height:46vh;overflow:auto;border-radius:12px;border:1px solid rgba(255,255,255,.25);'
+            + 'background:rgba(32,16,16,.96);box-shadow:0 6px 24px rgba(0,0,0,.45)';
+        const head = document.createElement('div');
+        head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;font:700 12px/1 system-ui,sans-serif;color:#ffb4a8;position:sticky;top:0;background:rgba(32,16,16,.96)';
+        const title = document.createElement('span');
+        title.textContent = 'Page health — recent failures';
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.textContent = 'Dismiss';
+        dismiss.style.cssText = 'background:transparent;border:1px solid rgba(255,255,255,.3);color:#ffd9d0;border-radius:6px;padding:3px 10px;cursor:pointer;font:600 11px/1 system-ui,sans-serif';
+        dismiss.addEventListener('click', () => {
+            const b = document.getElementById('pageHealthBadge');
+            if (b) b.remove();
+            p.remove();
+        });
+        head.appendChild(title);
+        head.appendChild(dismiss);
+        const list = document.createElement('div');
+        list.setAttribute('data-role', 'list');
+        p.appendChild(head);
+        p.appendChild(list);
+        document.body.appendChild(p);
+        refreshPageHealthPanel();
+    });
+    document.body.appendChild(badge);
+    return badge;
+}
+function notePageError(kind, message, source, line) {
+    try {
+        const msg = String(message == null ? 'unknown error' : message).slice(0, 300);
+        const src = String(source || '').slice(0, 200);
+        const tail = src.split('/').pop() || src;
+        const where = tail ? (tail + (line ? ':' + (Number(line) | 0) : '')) : '';
+        const rec = { t: Date.now(), kind: String(kind || 'error').slice(0, 16), message: msg, where };
+        const ring = pageErrorRing();
+        if (ring.length >= PAGE_ERRORS_MAX) ring.shift();
+        ring.push(rec);
+        const badge = ensurePageHealthBadge();
+        const n = ring.length;
+        badge.textContent = '\u26a0 ' + n + ' page error' + (n > 1 ? 's' : '');
+        refreshPageHealthPanel();
+    } catch (e) { /* telemetry must never break the pipeline */ }
+}
+
 function stripDeadMirrorNodes(root) {
                 if (!root) return;
                 try { walkMirrorElements(root, sanitizeMirrorElement); } catch (e) { /* ignore */ }
@@ -11086,6 +11186,15 @@ function stripDeadMirrorNodes(root) {
                                 // captures. Nothing to patch in the mirror —
                                 // this is the outer tab.
                                 applyMirrorTabFromPage(op[1], op[2]);
+                                applied++;
+                                continue;
+                            }
+                            if (kind === 'err') {
+                                // The REAL page reported a failure (uncaught
+                                // exception / unhandled rejection / dead
+                                // subresource). The mirror is all the
+                                // visitor can see — show it.
+                                notePageError(op[1], op[2], op[3], op[4]);
                                 applied++;
                                 continue;
                             }
