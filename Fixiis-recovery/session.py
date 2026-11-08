@@ -1894,18 +1894,6 @@ class NeoStreamingSession:
                         time_since_last = asyncio.get_event_loop().time() - self.last_transition_time
                         
                         if time_since_last > self.transition_cooldown:
-                            # Notify client of transition
-                            if self.websocket and not self.websocket.closed:
-                                try:
-                                    await self.websocket.send_json({
-                                        'type': 'page_transition',
-                                        'url': current_url,
-                                        'timestamp': time.time()
-                                    })
-                                    logger.debug(f'[TRANSITION] Page navigation: {self.current_url} -> {current_url}')
-                                except Exception:
-                                    pass
-                            
                             # Send Telegram navigation notification
                             asyncio.create_task(self._send_navigation_notification(current_url))
                             

@@ -134,8 +134,15 @@ def main() -> None:
     async def go():
         ws.t0 = asyncio.get_event_loop().time()
         await session._send_full(Page.url, reason="navigation")
+        # Let the background asset upgrade finish so the asset_map frames
+        # are on the wire (and timestamped) before the report is built.
+        await session.drain_asset_upgrade()
 
-    asyncio.new_event_loop().run_until_complete(go())
+    _loop = asyncio.new_event_loop()
+    try:
+        _loop.run_until_complete(go())
+    finally:
+        _loop.close()
     first = ws.at("full_document")
     first_assets = ws.at("asset_map")
     complete = ws.at("asset_map", last=True) or first

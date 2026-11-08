@@ -110,7 +110,11 @@ def run(fn):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(fn())
+        result = loop.run_until_complete(fn())
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        return result
     finally:
         loop.close()
 

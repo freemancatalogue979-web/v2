@@ -156,6 +156,14 @@ def run(fn):
         loop.close()
 
 
+def send_and_drain(session):
+    """Send and wait for the background asset upgrade (tests only)."""
+    async def go():
+        await session._send_full(NEXT, reason="navigation")
+        await session.drain_asset_upgrade()
+    return run(go)
+
+
 # ---------------------------------------------------------------------------
 # 1. THE CLAIM: the page after a prefetch needs no upgrade at all
 # ---------------------------------------------------------------------------
@@ -171,7 +179,7 @@ def test_a_prefetched_page_arrives_complete():
     session.capture_page = capture
     session.page.url = NEXT
     ws.sent = []
-    run(lambda: session._send_full(NEXT, reason="navigation"))
+    send_and_drain(session)
 
     ok(ws.types() == ["full_document"],
        "a prefetched navigation still needed an upgrade: %r" % (ws.types(),))
@@ -287,7 +295,7 @@ def test_a_navigation_resets_the_budget():
 
     session.capture_page = capture
     session._prefetch_count = dom_capture.PREFETCH_MAX_PER_PAGE
-    run(lambda: session._send_full(NEXT, reason="navigation"))
+    send_and_drain(session)
     session.page.url = NEXT
     ok(session._prefetch_count == 0,
        "the prefetch budget did not reset on a new page: %r" % session._prefetch_count)

@@ -170,6 +170,18 @@ def run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+def send_and_drain(session, url=URL, reason="navigation"):
+    """Send a capture and wait for the background asset upgrade.
+
+    The upgrade runs as its own task; tests that assert on the asset_map
+    frames must drain it (production code never waits for it).
+    """
+    async def go():
+        await session._send_full(url, reason=reason)
+        await session.drain_asset_upgrade()
+    run(go())
+
+
 def replay(html, swap):
     """Exactly what client.html's applyAssetSwapsToHtml does, in Python."""
     for entry in swap:
@@ -188,7 +200,7 @@ def test_document_arrives_before_the_fetches():
     FETCH_LOG.clear()
     ws = FakeWebSocket()
     session = make_session(ws)
-    run(session._send_full(URL, reason="navigation"))
+    send_and_drain(session)
 
     ok(ws.types() == ["full_document", "asset_map"],
        "expected the document and then the map, got %r" % (ws.types(),))
@@ -222,13 +234,13 @@ def test_the_upgrade_reproduces_the_document_exactly():
     # reason that has nothing to do with assets).
     old_ws = FakeWebSocket()
     old_session = make_session(old_ws, progressive=False)
-    run(old_session._send_full(URL, reason="navigation"))
+    send_and_drain(old_session)
     complete = old_ws.first("full_document")["html"]
 
     # What the new path sends, in two pieces.
     ws = FakeWebSocket()
     session = make_session(ws, progressive=True)
-    run(session._send_full(URL, reason="navigation"))
+    send_and_drain(session)
     reconstructed = replay(ws.first("full_document")["html"], ws.first("asset_map")["swap"])
 
     ok(reconstructed == complete,
@@ -239,7 +251,7 @@ def test_the_upgrade_reproduces_the_document_exactly():
 def test_the_edits_actually_change_something():
     ws = FakeWebSocket()
     session = make_session(ws)
-    run(session._send_full(URL, reason="navigation"))
+    send_and_drain(session)
     upgrade = ws.first("asset_map")
     swaps = upgrade["swap"]
     ok(len(swaps) >= 3, "expected the font, the images and the sprite: %r" % swaps)
@@ -269,25 +281,29 @@ def test_delta_patches_keep_flowing_while_assets_load():
         ws = FakeWebSocket()
         session = make_session(ws)
 
-        async def watch():
-            await asyncio.sleep(0.02)
+        async def both():
+            await session._send_full(URL, reason="navigation")
+            # The document is already on the wire.  The fetch belongs to the
+            # background upgrade now, so the capture slot is FREE — a patch
+            # arriving between this line and the upgrade settling is either
+            # applied (delta installed, no full send in flight) or folded
+            # into the snapshot the client is already showing.
             seen["inflight"] = session._send_inflight
             seen["pending"] = session._assets_pending
-
-        async def both():
-            task = asyncio.ensure_future(watch())
-            await session._send_full(URL, reason="navigation")
-            await task
+            await session.drain_asset_upgrade()
+            seen["done_pending"] = session._assets_pending
 
         run(both())
     finally:
         mod.AsyncClient = real
 
-    ok(seen.get("inflight") is True, "the capture should still be in flight")
+    ok(seen.get("inflight") is False,
+       "the capture slot must be free the moment the document is sent — "
+       "the asset fetch no longer holds it")
     ok(seen.get("pending") is True,
        "while assets are loading the delta channel must be open (a patch "
        "arriving then would have been dropped by the old gate)")
-    ok(session._assets_pending is False, "the flag must be cleared when the upgrade is done")
+    ok(seen.get("done_pending") is False, "the flag must be cleared when the upgrade is done")
     # And the gate itself: a patch during the fetch is not swallowed.
     session._send_inflight = True
     session._assets_pending = True
@@ -301,10 +317,10 @@ def test_delta_patches_keep_flowing_while_assets_load():
 def test_a_warm_capture_sends_one_complete_document():
     ws = FakeWebSocket()
     session = make_session(ws)
-    run(session._send_full(URL, reason="navigation"))      # cold: doc + map
+    send_and_drain(session)      # cold: doc + map
     ws2 = FakeWebSocket()
     session.websocket = ws2
-    run(session._send_full(URL, reason="click"))           # warm
+    send_and_drain(session, reason="click")           # warm
     ok(ws2.types() == ["full_document"],
        "a capture with every asset already cached must be one message, got %r"
        % (ws2.types(),))
@@ -317,7 +333,7 @@ def test_a_warm_capture_sends_one_complete_document():
 def test_the_same_swap_is_not_sent_twice():
     ws = FakeWebSocket()
     session = make_session(ws)
-    run(session._send_full(URL, reason="navigation"))
+    send_and_drain(session)
     first = ws.first("asset_map")["swap"]
     ok(len(first) >= 3, "the first document should have produced swaps")
 
@@ -326,7 +342,7 @@ def test_the_same_swap_is_not_sent_twice():
     # and re-sending a font's base64 would be pure waste.
     dom_capture._GLOBAL_ASSET_MANAGER = dom_capture.AssetManager()
     ws.sent = []
-    run(session._send_full(URL, reason="navigation"))
+    send_and_drain(session)
     ok(ws.types()[0] == "full_document", "the document must still go first")
     map_msg = ws.first("asset_map")
     ok(map_msg is None or map_msg["swap"] == [],
@@ -339,7 +355,7 @@ def test_a_new_page_gets_the_whole_edit_list_again():
     # everything (the same authored text means a different file on a new site).
     ws = FakeWebSocket()
     session = make_session(ws)
-    run(session._send_full(URL, reason="navigation"))
+    send_and_drain(session)
     ok(len(ws.first("asset_map")["swap"]) >= 3, "cold page has swaps")
 
     class OtherPage(FakePage):
@@ -350,7 +366,7 @@ def test_a_new_page_gets_the_whole_edit_list_again():
     # in which the edit list is rebuilt at all.
     dom_capture._GLOBAL_ASSET_MANAGER = dom_capture.AssetManager()
     ws.sent = []
-    run(session._send_full("https://site.example/second", reason="navigation"))
+    send_and_drain(session, url="https://site.example/second")
     second = ws.first("asset_map")
     ok(second is not None and len(second["swap"]) >= 3,
        "a new page must be sent the edits again, got %r"
@@ -364,7 +380,7 @@ def test_a_new_page_gets_the_whole_edit_list_again():
 def test_the_kill_switch_restores_the_old_path():
     ws = FakeWebSocket()
     session = make_session(ws, progressive=False)
-    run(session._send_full(URL, reason="navigation"))
+    send_and_drain(session)
     ok(ws.types() == ["full_document"], "kill switch: expected one message, got %r" % (ws.types(),))
     doc = ws.first("full_document")
     ok("assets_pending" not in doc, "kill switch: nothing may be deferred")
@@ -386,7 +402,7 @@ def test_a_failed_upgrade_leaves_a_working_page():
     try:
         ws = FakeWebSocket()
         session = make_session(ws)
-        run(session._send_full(URL, reason="navigation"))
+        send_and_drain(session)
     finally:
         mod.AsyncClient = real
     ok(ws.types()[0] == "full_document", "the document must still arrive")
@@ -452,7 +468,7 @@ def test_the_first_wave_is_the_visible_half():
     try:
         ws = FakeWebSocket()
         session = heavy_session(ws, wave=10)
-        run(session._send_full(URL, reason="navigation"))
+        send_and_drain(session)
     finally:
         FakeClient.latency = old_latency
         dom_capture.ASSET_FIRST_WAVE = old_wave
@@ -483,7 +499,7 @@ def test_the_split_costs_no_extra_download():
     try:
         ws = FakeWebSocket()
         session = heavy_session(ws, wave=5)
-        run(session._send_full(URL, reason="navigation"))
+        send_and_drain(session)
     finally:
         dom_capture.ASSET_FIRST_WAVE = old_wave
     ok(len(FETCH_LOG) == 24, "expected 24 downloads, got %d" % len(FETCH_LOG))
@@ -499,14 +515,14 @@ def test_both_waves_replay_to_the_one_piece_document():
         old_ws = FakeWebSocket()
         old_session = heavy_session(old_ws)
         dom_capture.PROGRESSIVE_ASSETS = False
-        run(old_session._send_full(URL, reason="navigation"))
+        send_and_drain(old_session)
         dom_capture.PROGRESSIVE_ASSETS = True
         complete = old_ws.first("full_document")["html"]
         ok(old_ws.types() == ["full_document"], "the baseline must be one message")
 
         ws = FakeWebSocket()
         session = heavy_session(ws, wave=10)
-        run(session._send_full(URL, reason="navigation"))
+        send_and_drain(session)
         html = ws.first("full_document")["html"]
         for _t, m in ws.sent:
             if m["type"] == "asset_map":
@@ -531,7 +547,7 @@ def test_a_stylesheet_in_the_first_wave_brings_its_own_refs():
         ws = FakeWebSocket()
         session = heavy_session(ws, wave=4,
                                 html=heavy_page(1, 20, stylesheet=True))
-        run(session._send_full(URL, reason="navigation"))
+        send_and_drain(session)
     finally:
         dom_capture.ASSET_FIRST_WAVE = old_wave
 
@@ -561,13 +577,13 @@ def test_a_page_with_a_stylesheet_still_replays_exactly():
         old_ws = FakeWebSocket()
         old_session = heavy_session(old_ws, html=page)
         dom_capture.PROGRESSIVE_ASSETS = False
-        run(old_session._send_full(URL, reason="navigation"))
+        send_and_drain(old_session)
         dom_capture.PROGRESSIVE_ASSETS = True
         complete = old_ws.first("full_document")["html"]
 
         ws = FakeWebSocket()
         session = heavy_session(ws, wave=3, html=page)
-        run(session._send_full(URL, reason="navigation"))
+        send_and_drain(session)
         html = ws.first("full_document")["html"]
         for _t, m in ws.sent:
             if m["type"] == "asset_map":
@@ -587,7 +603,7 @@ def test_wave_zero_keeps_the_whole_upgrade_in_one_message():
     try:
         ws = FakeWebSocket()
         session = heavy_session(ws, wave=0)
-        run(session._send_full(URL, reason="navigation"))
+        send_and_drain(session)
     finally:
         dom_capture.ASSET_FIRST_WAVE = old_wave
     ok(ws.types() == ["full_document", "asset_map"],
@@ -600,7 +616,7 @@ def test_a_small_page_is_never_split():
     """Below one wave there is nothing to gain: the map goes out whole."""
     ws = FakeWebSocket()
     session = make_session(ws)          # the 4-ref PAGE_HTML, wave default 10
-    run(session._send_full(URL, reason="navigation"))
+    send_and_drain(session)
     ok(ws.types() == ["full_document", "asset_map"],
        "a page that fits one wave must stay two messages, got %r" % (ws.types(),))
 

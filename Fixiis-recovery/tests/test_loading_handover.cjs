@@ -279,7 +279,6 @@ function withRuntime(fn) {
     ok(late.redirectHidden,
       'a loading page that finishes after the page does NOT paint over it');
     ok(late.spinnerHidden === true, 'and the ring does not flash either');
-  }
 
     // (c) the socket comes back, the server repeats its branding, and a page
     //     is already on screen: the loading screen must NOT come back
@@ -356,6 +355,7 @@ function withRuntime(fn) {
       ok(!ls || ls.style.display === 'none', 'the branded loader stays away');
     }
 
+  }
   console.log('loading hand-over: ' + checks + ' checks passed');
   // The page keeps websocket/reconnect timers alive; nothing else to do here.
   process.exit(0);

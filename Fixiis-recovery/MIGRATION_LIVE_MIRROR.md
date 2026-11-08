@@ -612,3 +612,128 @@ headed on it.
 - Order-of-operations proof on VPS logs to expect:
   `[Xvfb] installing virtual display server: apt-get install -y xvfb` →
   `[Xvfb] Xvfb installed successfully` → `session launch mode: xvfb`.
+## 2026-11-08 — transitions that never get stuck + a fully decoupled capture pipeline
+
+**Symptom.** After tapping a link the visitor sat on the transition spinner
+"until the server found a reason to update", and every full document paid for
+the *previous* page's asset downloads before it could go out.
+
+Root causes fixed, in order of impact:
+
+1. **The asset upgrade held the capture slot.** `_send_full` awaited
+   `_send_asset_upgrade` inline, so `_send_inflight` stayed true for the
+   whole asset round trip. Any capture requested during that window (a
+   navigation, an interaction, a resync) was coalesced away until the
+   slowest font came back — the transition overlay then had nothing to swap
+   in. The upgrade now runs as an INDEPENDENT supervised background task
+   (`_start_asset_upgrade`): it shares nothing but the websocket send lock,
+   fetches through the fetch-once memo + per-client digest dedupe, and
+   pushes `asset_map` edits as its waves resolve. A new generation cancels
+   the stale upgrade at the commit point (its edits would be dead on
+   arrival); `bind_page`/`shutdown` hard-cancel; `_asset_upgrade_gen`
+   guarantees only the owner task clears the flags — never `current_task()`,
+   which crashes at loop teardown (it did, in tests).
+2. **Conditional update filters removed.** The checksum-equal unchanged-DOM
+   skip (blind to attribute-only changes) and the snapshot-mode
+   byte-identical skip are gone from the send path — EVERY trigger pushes.
+   `DOM_CAPTURE_SKIP_UNCHANGED` is a deprecated no-op; `_may_skip_unchanged`
+   remains only for the diagnostics/tests that pin it. Coalescing (latest
+   reason wins, at most one capture in flight + one follow-up) stays — it
+   bounds load without filtering content.
+3. **The live path actually emits `page_transition`.** The notification
+   existed only in the WebRTC streaming loop (now dead code), so the mirror
+   had no transition signal at all. `DOMCaptureSession.watch_url` now
+   emits `page_transition` BEFORE starting the recovery capture, under the
+   shared send lock so the notice always precedes the document; explicit
+   `handle_navigation` (mirror URL bar) does the same, and the (deprecated)
+   session URL monitor now also kicks `_capture_navigation_once('url_change')`
+   as a fallback instead of only notifying. Dedupe: the navigation lock +
+   last-sent-URL check in `_capture_navigation_once` — only one capture per
+   change, no double documents.
+4. **The client no longer hides the page during a transition.** The old
+   `beginNavigationTransition` set `visibility:hidden` on both mirror frames
+   and showed a full-screen overlay (pointer-events:auto, blocking input).
+   It now keeps the CURRENT frame on screen, dimmed to 0.45 opacity with
+   pointer-events:none — a better placeholder than a black wall — while the
+   double-buffered swap promotes the new document. The dimmed frame is
+   flagged (`data-navDimmed`) so the restore in `endNavigationTransition` /
+   the watchdog only ever un-dims THE placeholder — never a newer buffer
+   frame that renderPageSnapshot swapped in synchronously (which must keep
+   its `visibility:hidden` until onload finishes the html/body reset) — and
+   also covers the no-swap path (identity skip / re-sent unchanged doc).
+   The overlay passes clicks through; the 5 s watchdog still drops the
+   buffer and undims as the final escape hatch. New `page_transition`
+   frames whose URL equals the newest committed document are ignored
+   client-side (`state.targetUrl`), closing the duplicate-notice race
+   between the observer path and the URL watcher.
+5. **`page_transition` always names the destination** and `full_document`
+   ordering behind it is guaranteed by the ws lock; the transition ends when
+   the document commits (or the watchdog fires), never "whenever the server
+   feels like it".
+
+Verified: all Python suites (asset upgrade incl. a new
+transition-before-document regression test, prefetch, capture round trips,
+pipeline, gate, inline assets, cold start, bench time-to-first-paint),
+all jsdom suites (215-check capture-convergence parity, asset-upgrade
+client, prefetch client, loading hand-over), `node --check` on the inline
+client script, and `py_compile`. Client build bumped to
+`2026-11-08-nav-transition-live`.
+
+## 2026-11-08 (b) — no transition UI at all: the mirror just flows, and the streaming contradictions are swept out of the client
+
+The dim-and-overlay transition from earlier today is superseded by removing
+transition handling entirely.  The mirrored pages are the product; they do
+not need a transition state machine — the double-buffered swap already makes
+full-document updates atomic and flash-free, and the delta pipeline keeps the
+page live.  A transition mode only added a buffer between the visitor and
+their own page, plus a risk of being stuck in it.
+
+**Client (`client.html`) — transition machinery removed.**
+`#transition-overlay` (+ orbit spinner CSS/HTML), `showTransitionOverlay` /
+`hideTransitionOverlay`, `applySpinnerColor`'s overlay-dot tint, the
+`page_transition` message case, the `dom_patch` nav-pending buffer (1500-op
+buffer, doc-token/gen stashing), the 5 s watchdog, and the `data-navDimmed`
+un-dim restore are all deleted.  `dom_patch` now applies through the normal
+generation gates and drops what does not belong (stale gen / missing midmap),
+the `full_document` commit path ends the hand-off implicitly by swapping, and
+the swap code is unchanged otherwise.  Cross-document mix-ups are prevented by
+the delta layer being disarmed during an explicit navigation
+(`_delta_active = False` server-side) and by the gen gates — the mirror's
+contract is that the swap IS the transition.
+
+**Client — streaming-era contradictions removed** (the server never sends
+these frames/messages; keeping them cost parse time and hid the real
+pipeline):
+
+- Binary page-frame path (`parsePageFrameHeader`, `handleBinaryFrame`) and the
+  `onMessage` binary branch — the live mirror is JSON text frames only; a
+  non-string frame is logged and dropped.
+- `state.ws.binaryType = 'arraybuffer'`; `state.rtc` + the WebRTC comment
+  block; dead canvas helpers (`getScaledDimensions`); dead state fields
+  (`canvas`, `ctx`, `streamStarted`, `lastFrameTime`, `lastActivityTime`,
+  `isUserPresent`, `lastFrameFingerprint`).
+- The duplicated, shadowed `case 'dom_patch'` (legacy `.patches` shape — the
+  live case above always won) — deleted.
+- Dead cases `case 'page'` and `case 'body_replace'` — no server ever sends
+  either; `applyBodyReplace()` (~150 lines) deleted with its protocol listing
+  updated.  `captureInputState` / `restoreInputState` /
+  `findElementByDescriptor` stay (used by the live swap and region paths).
+- Empty `case 'request_keyboard'` / `case 'close_keyboard'` and stale
+  canvas-era comments (`viewport_update`, `metadata`) cleaned up.
+
+**Server — the transition plumbing is gone.**
+`DOMCaptureSession._emit_page_transition` and both call sites removed
+(`watch_url` keeps the URL-watch fallback capture; explicit `handle_navigation`
+keeps just the goto+capture); `_page_transition_monitor` (which only ever ran
+inside the already-unreachable WebRTC streaming branch) no longer sends
+`page_transition` and the redundant capture kick is reverted.  NOTE: the WebRTC
+streaming stack in session.py (`_streaming_loop_independent` and its monitors)
+is dead code end-to-end — no caller anywhere — and is still untouched; removing
+it is a dedicated pass, not something to do blind inside this cleanup.
+
+**Tests / build.**  The transition-before-document regression test is gone
+with the overlay (the invariant it pinned no longer exists).
+`test_tab_identity.cjs` asserts the dead `body_replace` path stayed deleted
+and leans on the full-document commit check instead (137 checks).  Everything
+else is green, including capture-convergence (delta path == full capture).
+`window.__MIRROR_BUILD` is now `2026-11-08-live-mirror`.

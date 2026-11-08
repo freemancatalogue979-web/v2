@@ -124,6 +124,19 @@ class WS:
         self.events.append((time.perf_counter(), json.loads(text)["type"]))
 
 
+def _drive(coro):
+    """Run a coroutine, then let the background asset upgrade settle."""
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(coro)
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        return result
+    finally:
+        loop.close()
+
+
 def measure(rtt_ms: float, modern: bool) -> dict:
     rtt = rtt_ms / 1000.0
     page = TimedPage(rtt)
@@ -158,7 +171,7 @@ def measure(rtt_ms: float, modern: bool) -> dict:
             await page.evaluate("getElementsByTagName('*').length")
             return (time.perf_counter() - t0) * 1000.0
 
-        total = asyncio.new_event_loop().run_until_complete(run_old())
+        total = _drive(run_old())
     else:
         async def new_capture(settle="light"):
             await page.wait_for_function("document.readyState !== 'loading'")
@@ -173,7 +186,7 @@ def measure(rtt_ms: float, modern: bool) -> dict:
             await session._send_full(page.url, reason="navigation")
             return (time.perf_counter() - t0) * 1000.0
 
-        total = asyncio.new_event_loop().run_until_complete(run_new())
+        total = _drive(run_new())
 
     return {"ms": round(total), "round_trips": page.round_trips,
             "messages": [k for _t, k in ws.events]}

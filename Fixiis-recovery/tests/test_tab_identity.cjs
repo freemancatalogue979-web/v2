@@ -641,12 +641,11 @@ function makeSandbox(outer, mirror, extras = {}) {
   ok(/syncMirrorTabMeta\(d\)/.test(commitWindow),
     'a committed streamed document hands its title + icon to the tab');
 
-  const body = source.slice(source.indexOf('function applyBodyReplace(msg)'),
-    source.indexOf('function applyBodyReplace(msg)') + 9000);
-  ok(/syncMirrorTabMeta\(doc, newTitle/.test(body),
-    'a body swap carries the server title into the tab');
-  ok(/updateFavicon\(newUrl\)/.test(body) === false,
-    'a body swap no longer replaces the real icon with a hostname guess');
+  // body_replace was removed (no server ever sent it; the live pipe is
+  // full_document + dom_patch) — the same guarantee now lives in the
+  // full-document commit path asserted above, via syncMirrorTabMeta(d).
+  ok(!/\bbody_replace\b/.test(source) && !/function applyBodyReplace\(/.test(source),
+    'the dead body_replace path is gone entirely');
 
   const lpv = source.slice(source.indexOf('ensureMirrorScrolling(innerDoc, frame.contentWindow)'),
     source.indexOf('ensureMirrorScrolling(innerDoc, frame.contentWindow)') + 400);

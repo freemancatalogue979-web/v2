@@ -153,7 +153,14 @@ def run(fn):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(fn())
+        result = loop.run_until_complete(fn())
+        # Let the background asset upgrade settle before the loop is torn
+        # down, so the suite neither leaks "task destroyed pending" noise
+        # nor finishes with a half-finished fetch on the wire.
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        return result
     finally:
         loop.close()
 

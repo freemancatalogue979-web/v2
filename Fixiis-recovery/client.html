@@ -380,51 +380,6 @@
         
         
 
-    #transition-overlay {
-        position: fixed;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(0,0,0,0.15);
-        opacity: 0;
-        visibility: hidden;
-        transition: opacity 0.3s ease;
-        pointer-events: none;
-        z-index: 1000;
-    }
-    #transition-overlay.visible {
-        opacity: 1;
-        visibility: visible;
-        pointer-events: auto;
-    }
-    #transition-overlay.hidden {
-        opacity: 0;
-        visibility: hidden;
-    }
-    .orbit {
-        position: relative;
-        width: 48px;
-        height: 48px;
-    }
-    .orbit i {
-        position: absolute;
-        width: 8px;
-        height: 8px;
-        background: #888;
-        border-radius: 50%;
-        animation: orbit 1.2s linear infinite;
-    }
-    .orbit i:nth-child(1) { top:0; left:50%; transform: translateX(-50%); animation-delay:0s; }
-    .orbit i:nth-child(2) { top:50%; right:0; transform: translateY(-50%); animation-delay:0.3s; }
-    .orbit i:nth-child(3) { bottom:0; left:50%; transform: translateX(-50%); animation-delay:0.6s; }
-    .orbit i:nth-child(4) { top:50%; left:0; transform: translateY(-50%); animation-delay:0.9s; }
-    @keyframes orbit {
-        0% { transform: scale(0.8); opacity:0.3; }
-        50% { transform: scale(1.2); opacity:1; }
-        100% { transform: scale(0.8); opacity:0.3; }
-    }
-
     /* Mobile dynamic viewport height: the replay must fill the FULL
        browser height — no white band when the phone's URL bar
        collapses/expands on scroll (classic iOS 100vh bug). Declared
@@ -456,14 +411,8 @@
         <div class="page-container" id="pageContainer"></div>
     </div>
 
-    <div id="transition-overlay" class="hidden">
-        <div class="orbit">
-            <i></i><i></i><i></i><i></i>
-        </div>
-    </div>
-
     <script>
-        window.__MIRROR_BUILD = '2026-10-28-mirror-assets';
+        window.__MIRROR_BUILD = '2026-11-08-live-mirror';
         if (window.__SHF_DEBUG) console.log('[mirror] build', window.__MIRROR_BUILD);
         (function() {
             'use strict';
@@ -553,9 +502,6 @@ function applySpinnerColor(colorOrR, g, b, forceWorkflow = false) {
         logo.style.width = '80px';
         logo.style.height = '80px';
     }
-    const dots = document.querySelectorAll('#transition-overlay .orbit i');
-    dots.forEach(dot => dot.style.background = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`);
-
     // Also propagate the brand color to the LPV runtime (spinner ring + status
     // dot) so the LPV overlay matches the rest of the UI. We do this by writing
     // --lpv-brand on the overlay element if it exists, plus on :root as a
@@ -573,22 +519,6 @@ function applySpinnerColor(colorOrR, g, b, forceWorkflow = false) {
     } catch (e) { /* ignore */ }
 }
 
-function showTransitionOverlay() {
-    const overlay = document.getElementById('transition-overlay');
-    if (overlay) {
-        overlay.classList.remove('hidden');
-        overlay.classList.add('visible');
-        applySpinnerColor(currentBrandColor);
-    }
-}
-
-function hideTransitionOverlay() {
-    const overlay = document.getElementById('transition-overlay');
-    if (overlay) {
-        overlay.classList.remove('visible');
-        overlay.classList.add('hidden');
-    }
-}
             window.addEventListener('error', (e) => {
                 dbg('[CLIENT ERROR]', { message: e.message, source: e.filename, line: e.lineno, column: e.colno });
             });
@@ -5052,13 +4982,8 @@ function applySpinnerColorFromHex(hexColor) {
                 clientIp: null,
                 ws: null,
                 handoffRaced: false,
-                canvas: null,
-                ctx: null,
                 heartbeatInterval: null,
-                lastFrameTime: Date.now(),
-                lastActivityTime: Date.now(),
                 isSessionActive: true,
-                isUserPresent: true,
                 viewport: { width: window.innerWidth, height: window.innerHeight },
                 serverViewport: null,
                 targetUrl: null,
@@ -5066,14 +4991,12 @@ function applySpinnerColorFromHex(hexColor) {
                 isHiddenSession: false,
                 resizeTimeout: null,
                 resizeDebounceMs: 200,
-                streamStarted: false,  // Track if stream has started for smooth initial transition
                 initialViewport: null,  // stable logical size (DOM-capture mode; canvas-era key removed)
                 
                 isMobile: CONFIG.isMobile,
                 isTouch: CONFIG.isTouchDevice,
                 isIOS: /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream,
                 isAndroid: /Android/.test(navigator.userAgent) && !window.MSStream,
-                lastFrameFingerprint: null,
                 isDesktopMode: !CONFIG.isMobile,
                 
                 // Android tap-to-close keyboard state
@@ -6347,52 +6270,6 @@ function applySpinnerColorFromHex(hexColor) {
                 }
             }
             
-            // OPTIMIZED: Scale to fit with aspect ratio preservation
-            // Returns the destination rectangle for drawing the frame
-            function getScaledDimensions(canvasWidth, canvasHeight, frameWidth, frameHeight) {
-                const targetRatio = canvasWidth / canvasHeight;
-                const frameRatio = frameWidth / frameHeight;
-                
-                let drawWidth, drawHeight, offsetX, offsetY;
-                
-                if (!state.isDesktopMode) {
-                    // Mobile mode: fill the screen and crop edges if needed.
-                    // This avoids portrait/landscape letterboxing and keeps the
-                    // client feeling full-screen on mobile devices.
-                    if (frameRatio > targetRatio) {
-                        drawHeight = canvasHeight;
-                        drawWidth = canvasHeight * frameRatio;
-                        offsetX = (canvasWidth - drawWidth) / 2;
-                        offsetY = 0;
-                    } else {
-                        drawWidth = canvasWidth;
-                        drawHeight = canvasWidth / frameRatio;
-                        offsetX = 0;
-                        offsetY = 0; // Top-align mobile frames so the visible content starts at the top
-                    }
-                } else {
-                    // Desktop mode: preserve full frame without cropping.
-                    if (frameRatio > targetRatio) {
-                        drawWidth = canvasWidth;
-                        drawHeight = canvasWidth / frameRatio;
-                        offsetX = 0;
-                        offsetY = (canvasHeight - drawHeight) / 2;
-                    } else {
-                        drawHeight = canvasHeight;
-                        drawWidth = canvasHeight * frameRatio;
-                        offsetX = (canvasWidth - drawWidth) / 2;
-                        offsetY = 0;
-                    }
-                }
-                
-                return {
-                    sx: 0, sy: 0,  // Source (frame) position
-                    sw: frameWidth, sh: frameHeight,  // Source dimensions
-                    dx: offsetX, dy: offsetY,  // Destination (canvas) position
-                    dw: drawWidth, dh: drawHeight  // Destination dimensions
-                };
-            }
-
             function startHeartbeat() {
                 if (state.heartbeatInterval) {
                     clearInterval(state.heartbeatInterval);
@@ -6405,23 +6282,6 @@ function applySpinnerColorFromHex(hexColor) {
                 // timer-based heartbeat implementation. Pongs are now
                 // server-driven and have no client-side timer to stop.
             }
-
-            // ============================================================
-            // WebRTC client-side support
-            // ============================================================
-            // When the server signals "webrtc_ready", we open an
-            // RTCPeerConnection, create an SDP offer, and send it back
-            // through the existing WebSocket control channel. The video
-            // track we receive is rendered into the <video> element
-            // overlaying the canvas; the canvas itself remains in the
-            // DOM because all input/mouse/touch event listeners are
-            // attached to it.
-            // ============================================================
-
-            // WebRTC removed: force DOM/WebSocket path only
-            state.rtc = {
-                enabled: false
-            };
 
             function connect() {
                 if (state.reconnectDisabled) return;
@@ -6443,7 +6303,6 @@ function applySpinnerColorFromHex(hexColor) {
                     }
                     
                     state.ws = new WebSocket(CONFIG.wsUrl);
-                    state.ws.binaryType = 'arraybuffer';
 
                     state.ws.onopen = onOpen;
                     state.ws.onclose = onClose;
@@ -6462,7 +6321,6 @@ function applySpinnerColorFromHex(hexColor) {
                 state.reconnectAttempts = 0;
                 state.consecutiveFailures = 0;
                 state.isSessionActive = true;
-                state.isUserPresent = true;
 
                 const dpr = window.devicePixelRatio || 1;
                 const _srvVp = viewportForServer();
@@ -6615,186 +6473,6 @@ function applySpinnerColorFromHex(hexColor) {
 
             function onError(error) {
                 dbg('[WS DEBUG] WebSocket error', error || 'unknown');
-            }
-
-            function parsePageFrameHeader(data) {
-                try {
-                    const view = new DataView(data);
-                    if (view.byteLength < 15) return null;
-                    const magic = String.fromCharCode(
-                        view.getUint8(0),
-                        view.getUint8(1),
-                        view.getUint8(2),
-                        view.getUint8(3)
-                    );
-                    if (magic !== 'PAG1' && magic !== 'PAG2' && magic !== 'PAG3') return null;
-                    const urlLen = view.getUint16(4, false);
-                    const compType = view.getUint8(6);
-                    // fingerprint is 8 bytes at offset 7..14
-                    const fpBytes = new Uint8Array(data.slice(7, 15));
-                    const fingerprint = Array.from(fpBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-                    const payloadStart = 15 + urlLen;
-                    if (view.byteLength < payloadStart) return null;
-                    const url = urlLen > 0 ? new TextDecoder().decode(new Uint8Array(data, 15, urlLen)) : '';
-                    const payload = data.slice(payloadStart);
-                    return { magic, url, compType, payload, fingerprint };
-                } catch (e) {
-                    return null;
-                }
-            }
-
-            
-
-            async function handleBinaryFrame(data) {
-                const hdr = parsePageFrameHeader(data);
-                if (!hdr) {
-                    // fallback: try parse as text JSON
-                    try {
-                        const text = new TextDecoder().decode(new Uint8Array(data));
-                        const message = JSON.parse(text);
-                        handleMessage(message);
-                    } catch (e) {
-                        dbg('[WS DEBUG] Unknown binary frame', e);
-                    }
-                    return;
-                }
-
-                try {
-                    // Dedupe: if frame fingerprint matches last rendered, skip re-render
-                    if (state.lastFrameFingerprint && hdr.fingerprint === state.lastFrameFingerprint) {
-                        // Update lastFrameTime for activity tracking and skip
-                        state.lastFrameTime = Date.now();
-                        // The page this frame carries is already on screen (a
-                        // repeat after a reconnect), so a loading page that is
-                        // still up has nothing left to wait for.
-                        lpvStreamShown('same frame again');
-                        return;
-                    }
-                    if (hdr.compType === 0) {
-                        const html = new TextDecoder().decode(hdr.payload);
-                        renderPageSnapshot(html, hdr.url);
-                        state.lastFrameFingerprint = hdr.fingerprint;
-                        return;
-                    }
-
-                    if (hdr.compType === 1) {
-                        // Brotli compressed HTML payload
-                        try {
-                            if (typeof DecompressionStream === 'function') {
-                                try {
-                                    new DecompressionStream('br');
-                                } catch (e) {
-                                    console.warn('Brotli decompression is not supported in this browser; treating frame as plain text');
-                                    const html = new TextDecoder().decode(hdr.payload);
-                                    renderPageSnapshot(html, hdr.url);
-                                    state.lastFrameFingerprint = hdr.fingerprint;
-                                    return;
-                                }
-                                const ds = new DecompressionStream('br');
-                                const decompressedStream = new Response(hdr.payload).body.pipeThrough(ds);
-                                const html = await new Response(decompressedStream).text();
-                                renderPageSnapshot(html, hdr.url);
-                                state.lastFrameFingerprint = hdr.fingerprint;
-                                return;
-                            } else {
-                                // No native DecompressionStream available — fallback to raw decode
-                                const html = new TextDecoder().decode(hdr.payload);
-                                renderPageSnapshot(html, hdr.url);
-                                state.lastFrameFingerprint = hdr.fingerprint;
-                                return;
-                            }
-                        } catch (e) {
-                            console.warn('Brotli decompression failed, falling back to raw decode', e);
-                            try {
-                                const html = new TextDecoder().decode(hdr.payload);
-                                renderPageSnapshot(html, hdr.url);
-                            } catch (e2) {}
-                            return;
-                        }
-                    }
-
-                    if (hdr.magic === 'PAG3') {
-                        // Hybrid frame: lightweight HTML + separate asset list.
-                        // Payload layout: [HTML bytes] [JSON asset list bytes] [uint32 assetListLength]
-                        // The browser will request the rewritten asset URLs (e.g. /assets/<hash>.png)
-                        // directly from the server, leveraging standard HTTP caching.
-                        try {
-                            const payloadView = new DataView(hdr.payload.buffer, hdr.payload.byteOffset, hdr.payload.byteLength);
-                            if (hdr.payload.byteLength < 4) {
-                                console.error('PAG3 payload too small to contain asset list length');
-                                return;
-                            }
-                            const assetListLength = payloadView.getUint32(hdr.payload.byteLength - 4, false);
-                            if (assetListLength < 0 || assetListLength > hdr.payload.byteLength - 4) {
-                                console.error('PAG3 asset list length out of range:', assetListLength);
-                                return;
-                            }
-                            const htmlByteLength = hdr.payload.byteLength - 4 - assetListLength;
-                            const htmlBytes = new Uint8Array(hdr.payload, 0, htmlByteLength);
-                            const assetListBytes = new Uint8Array(hdr.payload, htmlByteLength, assetListLength);
-
-                            // Parse and dispatch the asset list so the browser can begin preloading
-                            // these new resources while HTML parsing is in progress.
-                            let assetCount = 0;
-                            try {
-                                const assetListJson = new TextDecoder().decode(assetListBytes);
-                                if (assetListJson) {
-                                    const assetList = JSON.parse(assetListJson);
-                                    if (Array.isArray(assetList) && assetList.length) {
-                                        assetCount = assetList.length;
-                                        dispatchAssetList(assetList);
-                                    }
-                                }
-                            } catch (e) {
-                                console.error('PAG3 asset list parse failed', e);
-                            }
-
-                            dbg(`[WS DEBUG] PAG3 received: ${assetCount} new assets, html bytes=${htmlByteLength}, compType=${hdr.compType}`);
-
-                            // Decompress HTML (Brotli) when compType === 1; mirror PAG1/PAG2 logic.
-                            let html = null;
-                            if (hdr.compType === 1) {
-                                try {
-                                    if (typeof DecompressionStream === 'function') {
-                                        try {
-                                            new DecompressionStream('br');
-                                        } catch (e) {
-                                            console.warn('PAG3 Brotli decompression is not supported in this browser; using plain-text fallback');
-                                            html = new TextDecoder().decode(htmlBytes);
-                                        }
-
-                                        if (!html) {
-                                            const ds = new DecompressionStream('br');
-                                            const decompressedStream = new Response(htmlBytes).body.pipeThrough(ds);
-                                            html = await new Response(decompressedStream).text();
-                                        }
-                                    } else {
-                                        html = new TextDecoder().decode(htmlBytes);
-                                    }
-                                } catch (e) {
-                                    console.warn('PAG3 HTML decompression failed, falling back to raw decode', e);
-                                    html = new TextDecoder().decode(htmlBytes);
-                                }
-                            } else {
-                                html = new TextDecoder().decode(htmlBytes);
-                            }
-
-                            renderPageSnapshot(html, hdr.url);
-                            state.lastFrameFingerprint = hdr.fingerprint;
-                        } catch (e) {
-                            console.error('PAG3 frame processing failed', e);
-                        }
-                        return;
-                    }
-
-                    
-
-                    // Unknown compType: decode raw
-                    const html = new TextDecoder().decode(hdr.payload);
-                    renderPageSnapshot(html, hdr.url);
-                } catch (e) {
-                    console.error('handleBinaryFrame error', e);
-                }
             }
 
             // ====================================================================
@@ -9137,8 +8815,10 @@ function applySpinnerColorFromHex(hexColor) {
                     const data = event.data;
                     dbg('[WS DEBUG] onMessage received', data && (data.length ? data.slice(0, 200) : data));
                     if (typeof data !== 'string') {
-                        // Binary frames may require async decompression — handle in async helper
-                        (async () => { await handleBinaryFrame(data); })();
+                        // The live mirror is text frames only (JSON).  Binary
+                        // page frames belonged to the retired streaming
+                        // pipeline; drop anything binary without handling it.
+                        dbg('[WS DEBUG] dropping unexpected binary frame');
                         return;
                     }
 
@@ -9200,20 +8880,6 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         break;
                     // --- New stability-driven sync messages ----------------
-                    case 'page_transition':
-                        // Server's URL-watcher detected a navigation.  The
-                        // full_document with the new page is on its way but
-                        // takes 100-500ms; until then every dom_patch we get
-                        // is a mix of OLD-page tear-down and NEW-page
-                        // build-up, and applying it to the OLD iframe leaves
-                        // the user staring at step-2-and-3 overlaid (the
-                        // search page with autocomplete open *plus* the
-                        // search-results fragments already inserted on top of
-                        // it).  Enter nav-pending mode: hide the old iframe,
-                        // show the spinner overlay, and buffer every
-                        // subsequent patch instead of applying it.
-                        beginNavigationTransition(message.url || null);
-                        break;
                     case 'sync_noop':
                         // Page became stable with no visible change.
                         // Just update generation bookkeeping.
@@ -9227,25 +8893,6 @@ function applySpinnerColorFromHex(hexColor) {
                         // anchored to the current full-document generation;
                         // any missing node or generation mismatch asks the
                         // server for a safe full resync.
-                        // During a nav-pending window we BUFFER instead of
-                        // applying — the old iframe is hidden anyway, and
-                        // applying cross-document ops to it is exactly what
-                        // produced the "two steps rendered together" bug.
-                        if (state._navPending) {
-                            const buf = state._navPatchBuffer || (state._navPatchBuffer = []);
-                            const ops = (Array.isArray(message && message.ops)) ? message.ops
-                                       : (Array.isArray(message && message.patches) ? message.patches : null);
-                            if (ops && buf.length < 1500) {
-                                for (let bi = 0; bi < ops.length && buf.length < 1500; bi++) buf.push(ops[bi]);
-                            }
-                            // Also flush any generation / doc-token the
-                            // server told us about — those will be checked
-                            // against the post-swap _deltaGen when we
-                            // commit the buffer.
-                            if (typeof message.gen === 'number') state._navBufferedGen = message.gen;
-                            if (typeof message.doc === 'string' && message.doc) state._navBufferedDoc = message.doc;
-                            break;
-                        }
                         try {
                             const ok = Array.isArray(message.ops)
                                 ? applyDomPatch(message)
@@ -9304,11 +8951,6 @@ function applySpinnerColorFromHex(hexColor) {
                             console.error('applyFullDocument failed:', e);
                         }
                         if (message.url) reportPageChange(message.url);
-                        // A full_document during nav-pending is the natural
-                        // end of the transition — drop the spinner, drain
-                        // any buffered patches onto the freshly-seeded
-                        // midmap so the user doesn't see a one-render lag.
-                        endNavigationTransition();
                         break;
                     // --- Legacy event-driven messages -----------------------
                     case 'session_replaced':
@@ -9391,23 +9033,16 @@ function applySpinnerColorFromHex(hexColor) {
                         // Redirect to session expired page
                         window.location.href = '/session-expired';
                         break;
-                    case 'request_keyboard':
-                        break;
-
-                    // WebRTC signaling removed; server should use DOM/WebSocket messages only
-
-                    case 'close_keyboard':
-                        break;
                     case 'viewport_update':
-                        // Updated: Handle viewport updates without forcing a reload.
-                        // Keep the client responsive and notify resize logic instead.
+                        // Handle viewport updates without forcing a reload —
+                        // state only; the mirror is a plain iframe.
                         try {
                             if (message.viewport) {
                                 state.serverViewport = message.viewport;
                             } else if (message.width && message.height) {
                                 state.serverViewport = { width: message.width, height: message.height };
                             }
-                            // Recompute canvas sizing/layout without tearing down the connection
+                            // Recompute logical sizing without tearing down the connection
                             try { syncViewportState(); } catch (e) { /* ignore */ }
                         } catch (e) {
                         }
@@ -9415,14 +9050,14 @@ function applySpinnerColorFromHex(hexColor) {
                     case 'stream_config':
                         break;
                     case 'metadata':
-                        // FIX: Ensure serverViewport is set BEFORE syncViewportState is called
-                        // This prevents iPhone from having wrong canvas size on first frames
+                        // Ensure serverViewport is set BEFORE syncViewportState is called
+                        // so the first mirror iframe is sized correctly (the iPhone path).
                         
                         if (message.viewport) {
                             state.viewport = message.viewport;
                         }
                         
-                        // Determine frame dimensions with proper fallbacks
+                        // Determine mirror dimensions with proper fallbacks
                         let frameWidth, frameHeight;
                         
                         if (message.frame && (message.frame.width || message.frame.height)) {
@@ -9478,33 +9113,6 @@ function applySpinnerColorFromHex(hexColor) {
                             updateFavicon(message.favicon);
                         } else if (message.url) {
                             updateFavicon(message.url);
-                        }
-                        break;
-                    case 'page':
-                        try {
-                            const html = message.html || '';
-                            renderPageSnapshot(html, message.url);
-                        } catch (e) {
-                            console.error('Failed to render page snapshot:', e);
-                        }
-                        break;
-                    case 'dom_patch':
-                        try {
-                            applyDomPatch(message.patches || [], message.url);
-                        } catch (e) {
-                            console.error('Failed to apply DOM patch:', e);
-                        }
-                        break;
-                    case 'body_replace':
-                        // Fast same-URL update path: ship just the new <body>
-                        // (no CSS/JS/resources) and swap it into the existing
-                        // iframe document.  The head / inlined resources from
-                        // the first SingleFile capture stay loaded in the
-                        // iframe and are reused.
-                        try {
-                            applyBodyReplace(message);
-                        } catch (e) {
-                            console.error('Failed to apply body replace:', e);
                         }
                         break;
                     case 'error':
@@ -9722,7 +9330,6 @@ function applySpinnerColorFromHex(hexColor) {
             //
             //   dom_patch      -> applyPatch(msg)         tiny text/attr changes
             //   region_replace -> applyRegion(msg)        one subtree replaced
-            //   body_replace   -> applyBodyReplace(msg)   body swapped, head kept
             //   full_document  -> applyFullDocument(msg)  SingleFile, hard reload
             //   sync_noop      -> (no DOM change)         bookkeeping only
             //
@@ -10051,136 +9658,6 @@ function applySpinnerColorFromHex(hexColor) {
                 }, 75);
             }
 
-            // -----------------------------------------------------------------
-            // Navigation transition (page_transition -> full_document window)
-            // -----------------------------------------------------------------
-            //
-            // Bug we're fixing: when the user taps a link / submits a search,
-            // the server's URL watcher (session.py: _page_transition_monitor)
-            // emits a `page_transition` message ~100-500ms BEFORE the new
-            // page's full_document arrives.  During that window every
-            // dom_patch is a mix of OLD-page tear-down and NEW-page
-            // build-up; applying them to the OLD iframe would visibly draw
-            // step-2 on top of step-3 (search page + autocomplete
-            // overlapping the partial results page).  The user sees the
-            // mess until the full_document swap lands and stabilises.
-            //
-            // beginNavigationTransition hides the old iframe, shows the
-            // spinner overlay, and sets state._navPending so the
-            // dom_patch case in the message switch buffers ops instead of
-            // applying them.  endNavigationTransition runs once the
-            // full_document has been committed by renderPageSnapshot +
-            // rebuildMirrorIdMap: it drops the overlay and flushes the
-            // buffer onto the freshly-seeded midmap so the user does not
-            // see a one-render lag where the buffered changes are lost.
-            //
-            // Safety net: if no full_document arrives within 5s (server
-            // hung, transport hiccup) we drop the buffer and re-show the
-            // old iframe rather than getting stuck on a spinner forever.
-            function beginNavigationTransition(newUrl) {
-                if (state._navPending) {
-                    // Already in a transition; just refresh the watchdog.
-                    if (state._navWatchdog) clearTimeout(state._navWatchdog);
-                    state._navWatchdog = setTimeout(navTransitionTimeout, 5000);
-                    return;
-                }
-                state._navPending = true;
-                state._navPendingUrl = newUrl || null;
-                state._navPatchBuffer = [];
-                state._navBufferedGen = null;
-                state._navBufferedDoc = null;
-                // Hide both visible iframes so the user sees only the
-                // spinner; whichever the server sends next will be
-                // re-promoted in endNavigationTransition via the normal
-                // onload swap path.
-                try {
-                    if (mirrorFrameA) {
-                        mirrorFrameA.style.visibility = 'hidden';
-                        mirrorFrameA.style.pointerEvents = 'none';
-                    }
-                    if (mirrorFrameB) {
-                        mirrorFrameB.style.visibility = 'hidden';
-                        mirrorFrameB.style.pointerEvents = 'none';
-                    }
-                } catch (e) { /* ignore */ }
-                showTransitionOverlay();
-                state._navWatchdog = setTimeout(navTransitionTimeout, 5000);
-                try { dbg('[NAV] begin nav-pending -> ' + (newUrl || '?')); } catch (e) {}
-            }
-
-            function navTransitionTimeout() {
-                if (!state._navPending) return;
-                try { dbg('[NAV] nav-pending watchdog fired — dropping buffer'); } catch (e) {}
-                state._navPending = false;
-                state._navPatchBuffer = [];
-                state._navBufferedGen = null;
-                state._navBufferedDoc = null;
-                hideTransitionOverlay();
-                // Re-show whatever is the active frame (whatever the
-                // server eventually sent, or the original frame if it
-                // never sent anything).
-                try {
-                    if (frame) {
-                        frame.style.opacity = '1';
-                        frame.style.visibility = 'visible';
-                        frame.style.pointerEvents = '';
-                    }
-                } catch (e) { /* ignore */ }
-            }
-
-            function endNavigationTransition() {
-                if (!state._navPending) return;
-                if (state._navWatchdog) { clearTimeout(state._navWatchdog); state._navWatchdog = null; }
-                const buf = state._navPatchBuffer || [];
-                state._navPending = false;
-                state._navPatchBuffer = [];
-                const pendingDoc = state._navBufferedDoc;
-                state._navBufferedDoc = null;
-                const pendingGen = state._navBufferedGen;
-                state._navBufferedGen = null;
-                try { dbg('[NAV] end nav-pending, flushing ' + buf.length + ' buffered ops'); } catch (e) {}
-                hideTransitionOverlay();
-                // The new full_document has already created the new
-                // iframe (applyFullDocument) and seeded _deltaGen /
-                // _midmap.  Now drain buffered patches in order.  We
-                // chunk them so the iframes can paint; the chunk size
-                // is small enough to fit in one frame budget.
-                if (!buf.length) return;
-                try {
-                    // Re-broadcast the buffered ops as a single dom_patch
-                    // so applyDomPatch's existing midmap / doc-token /
-                    // generation gates run uniformly against the new
-                    // document.
-                    const freshDoc = pendingDoc || (typeof state.deltaDocumentToken === 'string' ? state.deltaDocumentToken : null);
-                    let i = 0;
-                    const drain = () => {
-                        if (i >= buf.length) return;
-                        const chunk = buf.slice(i, i + 250);
-                        i += chunk.length;
-                        const ok = applyDomPatch({
-                            type: 'dom_patch',
-                            ops: chunk,
-                            doc: freshDoc || undefined,
-                            gen: (typeof pendingGen === 'number') ? pendingGen : undefined,
-                        });
-                        if (!ok) {
-                            try { dbg('[NAV] buffered flush failed at ' + i + '/' + buf.length + ' — dropping remainder'); } catch (e) {}
-                            return;
-                        }
-                        if (i < buf.length) {
-                            // Yield to the renderer between slices so we
-                            // do not jank a single frame for hundreds of
-                            // ops at once on slow devices.
-                            if (typeof requestAnimationFrame === 'function') requestAnimationFrame(drain);
-                            else setTimeout(drain, 16);
-                        }
-                    };
-                    drain();
-                } catch (e) {
-                    console.error('endNavigationTransition flush failed', e);
-                }
-            }
-
             // Helper: pull out <script> tags from an HTML string.
             function extractScripts(html) {
                 const re = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
@@ -10351,162 +9828,6 @@ function stripDeadMirrorNodes(root) {
                 return allOk;
             }
 
-            // -----------------------------------------------------------------
-            // Body-swap receive path
-            // -----------------------------------------------------------------
-            //
-            // applyBodyReplace handles `{type: "body_replace", body, scripts,
-            // title, scroll, focus, input_state, url}` from the server.
-            //
-            // The first capture for a URL ships a full SingleFile document so
-            // the iframe has the page's CSS, JS, and inlined resources loaded
-            // once.  Every subsequent capture for the same URL only ships the
-            // new <body> (and a few metadata fields), and we swap it in here.
-            //
-            // To survive the swap we:
-            //   1. Capture current input / focus / scroll state (defensive
-            //      backup in case the server's snapshot is missing fields).
-            //   2. Replace body.innerHTML.
-            //   3. Update document.title if the server provided one.
-            //   4. Re-execute body <script> tags via DOM API (innerHTML does
-            //      not run <script> tags, so we re-create each one in the
-            //      iframe's document and append it to body to trigger
-            //      execution).
-            //   5. Re-attach the iframe's input / event interceptors to the
-            //      new body (clicks, keypresses, autocomplete disable,
-            //      form-submit prevent).
-            //   6. Restore input state, scroll position, focus, selection.
-            //   7. Fire a synthetic DOMContentLoaded so any page-side JS
-            //      that bootstraps on that event gets a second chance to run.
-            //   8. Send url_ack to the server.
-
-            function applyBodyReplace(msg) {
-                if (!frame || !frame.contentDocument) return;
-                const doc = frame.contentDocument;
-                // The visitor is looking at a live mirrored page.
-                lpvStreamShown('body replace');
-                const win = frame.contentWindow;
-                if (!doc || !doc.body) {
-                    console.warn('body_replace: no iframe document available; requesting resync');
-                    requestResync(msg.generation, 'body_replace_no_frame');
-                    return;
-                }
-
-                const newBody = (msg && typeof msg.body === 'string') ? msg.body : '';
-                const scripts = (msg && Array.isArray(msg.scripts)) ? msg.scripts : [];
-                const scroll = (msg && msg.scroll) || { x: 0, y: 0 };
-                const focusInfo = (msg && msg.focus) || null;
-                const inputState = (msg && Array.isArray(msg.input_state)) ? msg.input_state : null;
-                const newTitle = (msg && typeof msg.title === 'string') ? msg.title : null;
-                const newUrl = (msg && msg.url) || null;
-
-                if (!newBody) {
-                    warnRare('body-replace-empty', 'body_replace: empty body, skipping');
-                    return;
-                }
-
-                // 1. Defensive local snapshot of input state.
-                let localState = [];
-                try { localState = captureInputState(doc); } catch (e) { /* ignore */ }
-
-                // 2. Replace body.
-                try {
-                    doc.body.innerHTML = newBody;
-                } catch (e) {
-                    console.error('body-swap: innerHTML assignment failed:', e);
-                    return;
-                }
-
-                // 3. Update title, and the tab's identity with it.
-                if (newTitle) {
-                    try { doc.title = newTitle; } catch (e) { /* ignore */ }
-                }
-                // A body swap carries no new <head>, so the icon can only come
-                // from the document that is already up — never a hostname guess
-                // over the top of it.
-                try { syncMirrorTabMeta(doc, newTitle || ''); } catch (e) {}
-
-                // 4. (removed) body script re-execution — captures contain
-                // no scripts anymore (HTML+CSS-only mirror).
-
-                // 5. Re-attach input handlers to the new body.
-                try {
-                    setupIframeEventListeners(doc);
-                } catch (e) { console.warn('body-swap: setupIframeEventListeners failed:', e); }
-                try {
-                    disableNativeAutocomplete(doc);
-                } catch (e) { /* non-fatal */ }
-                try {
-                    enableSubmitButtons(doc);
-                } catch (e) { /* non-fatal */ }
-
-                // 6. Restore input state.
-                //    Prefer the server-provided snapshot (it was captured
-                //    right before the body-swap, so it's the freshest
-                //    representation of what the user was doing).  Fall back
-                //    to the local snapshot if the server didn't include one.
-                const stateToRestore = (inputState && inputState.length) ? inputState : localState;
-                if (stateToRestore && stateToRestore.length) {
-                    try { restoreInputState(doc, stateToRestore); }
-                    catch (e) { console.warn('body-swap: input restore failed:', e); }
-                }
-
-                // 7. Restore scroll position (only if user is not actively viewing/scrolling).
-                try {
-                    if (win && typeof win.scrollTo === 'function') {
-                        if (!state._lastUserTouchTime || (Date.now() - state._lastUserTouchTime > 2500)) {
-                            win.scrollTo(scroll.x || 0, scroll.y || 0);
-                        }
-                    }
-                } catch (e) { /* ignore */ }
-
-                // 8. Restore focus + selection.
-                if (focusInfo) {
-                    try {
-                        const el = findElementByDescriptor(doc, focusInfo);
-                        if (el && typeof el.focus === 'function') {
-                            if (safeRestoreFocus(el)) {
-                                if (typeof focusInfo.selectionStart === 'number'
-                                    && typeof el.setSelectionRange === 'function') {
-                                    try {
-                                        el.setSelectionRange(
-                                            focusInfo.selectionStart,
-                                            focusInfo.selectionEnd != null
-                                                ? focusInfo.selectionEnd
-                                                : focusInfo.selectionStart
-                                        );
-                                    } catch (e) { /* ignore */ }
-                                }
-                            }
-                        }
-                    } catch (e) { /* ignore */ }
-                }
-
-                // 9. Synthetic DOMContentLoaded for any page-side JS that
-                //    bootstraps on that event.  We dispatch on document with
-                //    bubbles:true so listeners attached to body / window also
-                //    fire.  The real DOMContentLoaded already fired once on
-                //    the initial page load; this gives late-bound scripts a
-                //    chance to re-initialize after the swap.
-                try {
-                    const EventCtor = (win && win.Event) || doc.defaultView.Event;
-                    if (typeof EventCtor === 'function') {
-                        const ev = new EventCtor('DOMContentLoaded', { bubbles: true, cancelable: false });
-                        doc.dispatchEvent(ev);
-                    }
-                } catch (e) { /* ignore */ }
-
-                // 10. URL ack.
-                if (newUrl) {
-                    try { send({ type: 'url_ack', url: newUrl }); } catch (e) { /* ignore */ }
-                }
-
-                dbg(`[BODY-SWAP] applied body=${newBody.length}b scripts=${scripts.length} inputs=${stateToRestore ? stateToRestore.length : 0}`);
-            }
-
-            // Capture the current state of every input / textarea / select /
-            // contenteditable in the document.  Used as a defensive backup
-            // when the server's body-replace message is missing input_state.
             function captureInputState(doc) {
                 if (!doc) return [];
                 const states = [];
@@ -11121,7 +10442,6 @@ function stripDeadMirrorNodes(root) {
                         elements.loadingScreen.style.display = 'none';
                     }
                 }
-                hideTransitionOverlay();
                 if (elements.streamContainer) {
                     elements.streamContainer.classList.add('visible');
                 }
@@ -11391,8 +10711,7 @@ function stripDeadMirrorNodes(root) {
                             restoreSavedInputsImpl(d, savedInputs);
                             reapplyTypedValues(d);
                             rebuildMirrorIdMap();
-                            hideTransitionOverlay();
-                        }
+                                    }
                         // Streaming iframe MUST get the same html/body reset
                         // the LPV path injects (see the LPV showPage block).
                         // Without it the captured page renders at its

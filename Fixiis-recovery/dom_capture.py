@@ -30,9 +30,15 @@ serialization (WeakMap + counter page-side).
 
 Captures coalesce (``SEND_COALESCE=1``): at most one capture in
 flight per session; overlapping triggers produce exactly one
-follow-up send with the latest reason.  Unchanged-DOM checksums
-(``DOM_CAPTURE_SKIP_UNCHANGED=1``) suppress no-op recaptures before
-paying for them.
+follow-up send with the latest reason.  There is deliberately NO
+"unchanged DOM" gate on sends — every trigger pushes.  Delivery is
+fast because the work is split into independent stages, not because
+updates were filtered: the document goes out as soon as it is
+serialized, and the deferred asset fetch runs as its own background
+task (``drain_asset_upgrade`` awaits it in tests) that pushes
+``asset_map`` edits when they land.  Everything is fetch-once
+(the global memo + per-client digest dedupe), so resources are never
+downloaded twice and no stage waits on a later one.
 
 The caller drives capture timing: explicitly call ``send_page``
 when you want a fresh snapshot (initial, on navigation, on
@@ -163,8 +169,9 @@ DOM_CAPTURE_MODE: str = os.environ.get("DOM_CAPTURE_MODE", "fast").strip().lower
 # follow-up send carrying the latest reason.
 SEND_COALESCE: bool = os.environ.get("SEND_COALESCE", "1").strip().lower() not in ("0", "false", "no", "off")
 
-# Skip the capture entirely when the cheap DOM checksum hasn't moved since
-# the last send (hover/poll re-triggers become no-ops).
+# DEPRECATED no-op kept for env compatibility: the send path no longer consults
+# the DOM checksum as a gate (every trigger pushes).  The helper it used to
+# feed (``_may_skip_unchanged``) is retained for diagnostics/tests.
 SKIP_UNCHANGED: bool = os.environ.get("DOM_CAPTURE_SKIP_UNCHANGED", "1").strip().lower() not in ("0", "false", "no", "off")
 
 # Live-delta layer: in-page MutationObserver streams compact DOM ops between
@@ -4770,6 +4777,11 @@ class DOMCaptureSession:
         # Coalesce: at most one capture in flight; overlaps buffer the
         # latest reason and produce exactly one follow-up send.
         self._send_inflight: bool = False
+        # The background asset upgrade (PROGRESSIVE_ASSETS): the deferred
+        # fetch runs OUTSIDE the capture slot so it never holds a navigation
+        # or interaction capture hostage.  A new generation cancels it.
+        self._asset_upgrade_task: Optional[asyncio.Task] = None
+        self._asset_upgrade_gen: int = 0
         # Keep a delta frame and a full-document frame ordered on the same
         # websocket.  Without this, an already-validated patch task can yield
         # just as a recovery capture starts and arrive after its newer gen.
@@ -4783,7 +4795,8 @@ class DOMCaptureSession:
         # Generation counter — bumped on every full_document send; delta
         # patches carry the generation they apply to.
         self._gen: int = 0
-        # Last DOM checksum that produced a send (unchanged-DOM skip).
+        # Last DOM checksum the send path adopted (diagnostics only — never
+        # a gate on whether an update pushes).
         self._last_checksum: Optional[str] = None
         # Kill-switch once httpx turns out to be unavailable.
         self._assets_ok: bool = True
@@ -4852,7 +4865,7 @@ class DOMCaptureSession:
         # text ("/logo.png") means a different file on a different site, so a
         # reset here (rebind/replace) is what keeps the client's cache honest.
         self._sent_asset_swaps.clear()
-        self._assets_pending = False
+        self._cancel_asset_upgrade()
 
     async def start(self) -> None:
         """Install the generic interaction trigger.  Idempotent; safe
@@ -4891,6 +4904,7 @@ class DOMCaptureSession:
             except (asyncio.CancelledError, Exception):
                 pass
         self.url_watch_task = None
+        self._cancel_asset_upgrade()
         try:
             await get_global_asset_manager().release_session(self.client_id)
         except Exception:
@@ -5160,8 +5174,15 @@ class DOMCaptureSession:
         Coalesced (SEND_COALESCE): if a capture is already in flight the
         latest reason is buffered and exactly one follow-up is scheduled
         after the current send — captures never queue or overlap.
-        Unchanged pages (checksum-equal, interaction reasons only) are
-        skipped before paying for a capture.
+        Every trigger pushes: there is deliberately NO "the DOM looks
+        unchanged, skip it" gate here.  (The old checksum-equal skip was
+        blind to attribute-only changes — class swaps that recolor or hide
+        a block left all three numbers identical — so the mirror could go
+        stale with nothing to point at.)  Delivery is fast because the
+        work is split into independent stages, not because updates were
+        filtered out: the document goes out as soon as it is serialized,
+        and the asset fetch runs as its own background task that pushes
+        ``asset_map`` edits when they land.
         """
         if self.websocket is None:
             return None
@@ -5180,16 +5201,10 @@ class DOMCaptureSession:
                     url = None
             settle = _settle_for_reason(reason)
 
-            # ---- unchanged-DOM skip (only for hot interaction reasons) ----
-            checksum: Optional[str] = None
-            if _may_skip_unchanged(reason, settle,
-                                   bool(LIVE_DELTA and self._delta_installed),
-                                   self._last_checksum):
-                checksum = await self._dom_checksum()
-                if checksum and checksum == self._last_checksum:
-                    logger.debug("dc skip(unchanged) reason=%s gen=%s", reason, self._gen)
-                    return url
-
+            # No unchanged-DOM gate on send (every update pushes).  The
+            # checksum the capture already carries is still adopted below
+            # for diagnostics, but it is never consulted as a reason to
+            # drop a push.
             if self._cold_first_capture_at is None:
                 self._cold_first_capture_at = time.monotonic()
             t_cap = time.perf_counter()
@@ -5269,20 +5284,16 @@ class DOMCaptureSession:
                 and not is_redraw
             )
 
-            # Snapshot mode: skip byte-identical re-sends.  Hybrid delta
-            # patches handle the immediate mutation path; this avoids
-            # repeatedly parsing/switching an identical full document while
-            # retaining full captures for recovery and navigation.
-            _rs = str(reason)
-            if (self.snapshot_only and url == self.last_sent_url
-                    and html_data == self.last_sent_html
-                    and not _rs.startswith((
-                        "resync", "mirror_err", "recover", "delta_overflow",
-                        "navigation", "coalesce:delta_overflow", "coalesce:navigation",
-                    ))):
-                logger.debug("dc skip(identical snapshot) reason=%s", reason)
-                return url
-
+            # No byte-identical skip either: every push carries the document
+            # (navigation, resync, recapture).  The client double-buffer swap
+            # makes re-renders cheap and flash-free, so "identical bytes" is
+            # not a reason to withhold the update — the mirror's contract is
+            # that every capture reaches it, whatever changed.
+            # A new generation supersedes any asset upgrade still fetching
+            # for the previous document — its edits would be dead on arrival
+            # (the client drops maps whose gen no longer matches), so stop
+            # the work instead of letting it finish for nobody.
+            self._cancel_asset_upgrade()
             if url != self.last_sent_url:
                 # Different page: the client's cached edits are keyed by that
                 # page's URL, so a new page must be told everything again
@@ -5368,15 +5379,11 @@ class DOMCaptureSession:
                 except Exception:
                     pass
 
-            # A patch-capable generation no longer launches interaction full
-            # captures, so there is no hot-path unchanged check to seed.  Do
-            # not add a second browser round trip after every initial/nav
-            # document merely to compute a checksum that will not be used.
-            if checksum is None and not capture_delta_active:
-                # Free when the capture came with one (it did, unless the page
-                # refused the widened call).
-                checksum = _meta.get("checksum") or await self._dom_checksum()
-            self._last_checksum = checksum or self._last_checksum
+            # Checksum bookkeeping only (never a send gate, never a second
+            # browser round trip — the capture already carries one).
+            _free_checksum = _meta.get("checksum")
+            if _free_checksum:
+                self._last_checksum = _free_checksum
             self._capture_fail_streak = 0
             self._delta_active = capture_delta_active
             for meta in assets_to_send:
@@ -5394,16 +5401,13 @@ class DOMCaptureSession:
                 (time.perf_counter() - t_start) * 1000.0,
             )
             if deferred is not None:
-                # The document is on screen.  Keep the delta channel open
-                # while the fetches run (``_assets_pending``), then send what
-                # they resolved.
-                self._assets_pending = True
-                try:
-                    await self._send_asset_upgrade(deferred, url)
-                except Exception as exc:
-                    logger.debug("dc progressive upgrade failed: %s", exc)
-                finally:
-                    self._assets_pending = False
+                # The document is on screen and the patch channel is open.
+                # The asset fetch does NOT sit inside this capture's slot:
+                # it runs as its own background task that works, delivers and
+                # pushes (asset_map frames) on its own clock.  Everything is
+                # fetch-once (the global memo + per-client digest dedupe), so
+                # no capture ever waits on — or repeats — a download.
+                self._start_asset_upgrade(deferred, url)
             return url
         finally:
             self._send_inflight = False
@@ -5412,6 +5416,77 @@ class DOMCaptureSession:
             if SEND_COALESCE and pending and not self._stopped:
                 # Recompute URL/task state inside the follow-up.
                 asyncio.create_task(self._send_full(None, reason=f"coalesce:{pending}"))
+
+    def _cancel_asset_upgrade(self) -> None:
+        """Stop the background asset upgrade, if one is fetching.
+
+        Called when a new document generation commits (and on rebind/stop):
+        edits tagged with the old generation are dead on arrival — the client
+        drops maps whose gen no longer matches — so the downloads are stopped
+        rather than allowed to finish for nobody.  The delta channel flag is
+        cleared here too; a task that still owns the slot re-opens it.
+        """
+        self._asset_upgrade_gen += 1
+        task = self._asset_upgrade_task
+        self._asset_upgrade_task = None
+        self._assets_pending = False
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _start_asset_upgrade(self, deferred: Dict[str, Any],
+                             url: Optional[str]) -> None:
+        """Run the deferred asset fetch as an INDEPENDENT background task.
+
+        The old shape ``await``-ed the upgrade inside ``_send_full``, which
+        held ``_send_inflight`` for the whole asset round trip — every
+        capture requested during that window (a navigation, an interaction)
+        was coalesced away until the slowest image came back, which is what
+        "stuck on the transition until the server finds a reason to update"
+        felt like.  The upgrade now shares nothing but the websocket lock:
+        it fetches (fetch-once memo) and pushes asset_map frames as the
+        waves resolve, while the capture pipeline stays free for the next
+        document.
+        """
+        self._cancel_asset_upgrade()
+        self._assets_pending = True
+        gen = self._asset_upgrade_gen
+
+        async def _run() -> None:
+            try:
+                await self._send_asset_upgrade(deferred, url)
+            except asyncio.CancelledError:
+                # A newer generation superseded this fetch — die quietly.
+                raise
+            except Exception as exc:
+                logger.debug("dc progressive upgrade failed: %s", exc)
+            finally:
+                # Only the task that still OWNS the slot may clear the flag
+                # or drop the reference — an older, already-cancelled task
+                # must not clobber a newer upgrade's state (and must never
+                # touch the loop, which may already be closing).
+                if self._asset_upgrade_gen == gen:
+                    self._asset_upgrade_task = None
+                    self._assets_pending = False
+
+        try:
+            self._asset_upgrade_task = asyncio.create_task(_run())
+        except RuntimeError:
+            # No running loop (shutdown race): serve the document as-is.
+            self._assets_pending = False
+            logger.debug("dc progressive upgrade could not be scheduled")
+
+    async def drain_asset_upgrade(self) -> None:
+        """Await the background asset upgrade, if one is running.
+
+        Tests and diagnostics hook; production code must never depend on
+        the upgrade having finished — it is fire-and-forget by design.
+        """
+        task = self._asset_upgrade_task
+        if task is not None:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def _emit_asset_map(self, swap: List[Dict[str, Any]],
                               assets_meta: Optional[List[Dict[str, Any]]],
