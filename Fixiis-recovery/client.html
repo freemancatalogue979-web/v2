@@ -8928,6 +8928,13 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         break;
                     case 'full_document':
+                        // Rapid navigation: a full document OLDER than what
+                        // this client already applied must never replace the
+                        // newer one. Legacy servers send no generation — the
+                        // check degrades gracefully.
+                        if (typeof message.generation === 'number' && message.generation < state.lastGeneration) {
+                            break;
+                        }
                         // URL changed or major desync.  Apply as a fresh
                         // SingleFile-style render.
                         try {
@@ -11186,6 +11193,15 @@ function stripDeadMirrorNodes(root) {
                                 // captures. Nothing to patch in the mirror —
                                 // this is the outer tab.
                                 applyMirrorTabFromPage(op[1], op[2]);
+                                applied++;
+                                continue;
+                            }
+                            if (kind === 'nav') {
+                                // SPA route change (pushState/replaceState/
+                                // popstate/hashchange). The page is alive and
+                                // the URL moved — update it immediately, not
+                                // at the next capture cycle.
+                                if (typeof op[1] === 'string' && op[1]) { try { reportPageChange(op[1]); } catch (e) { /* ignore */ } }
                                 applied++;
                                 continue;
                             }

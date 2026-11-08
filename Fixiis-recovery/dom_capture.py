@@ -4214,7 +4214,7 @@ _DELTA_OBSERVER_JS = r"""
   // The batch ships in exactly that order, so structure exists before its
   // state and content are applied on the mirror; text indices computed in the
   // live document stay valid because everything structural has landed first.
-  const PHASE_OF = { r: 0, i: 1, a: 2, t: 3, v: 4, s: 5, overflow: 6, meta: 7, err: 7 };
+  const PHASE_OF = { r: 0, i: 1, a: 2, t: 3, v: 4, s: 5, overflow: 6, meta: 7, err: 7, nav: 7 };
   const flush = () => {
     scheduled = false;
     // The set below only describes the batch being shipped; a later batch must
@@ -4275,6 +4275,45 @@ _DELTA_OBSERVER_JS = r"""
       complain();
     } catch (e) { complain(); }
   };
+  // SPA navigation watcher: history.pushState/replaceState and
+  // popstate/hashchange move the URL with NO document load, so the full-
+  // document navigation control never fires and a URL poll would notice
+  // seconds too late. Wrap the history methods and listen for both events;
+  // the ['nav'] control op rides the very next batch (flush is scheduled
+  // synchronously), so the mirror's URL state tracks the page itself.
+  try {
+    if (!window.__shifixSpaNavWatched) {
+      window.__shifixSpaNavWatched = 1;
+      const spaNav = () => {
+        try {
+          const url = String(location.href || '');
+          if (!url || url === window.__shifixSpaNavLast) return;
+          window.__shifixSpaNavLast = url;
+          ops.push(['nav', url, 'spa']);
+          if (ops.length > OP_CAP) markOverflow();
+          schedule();
+        } catch (e) { /* ignore */ }
+      };
+      const wrapHistory = (name) => {
+        try {
+          const original = window.history[name];
+          if (typeof original !== 'function' || original.__shifixWrapped) return;
+          const wrapped = function () {
+            const ret = original.apply(this, arguments);
+            try { spaNav(); } catch (e) { /* ignore */ }
+            return ret;
+          };
+          wrapped.__shifixWrapped = 1;
+          window.history[name] = wrapped;
+        } catch (e) { /* ignore */ }
+      };
+      wrapHistory('pushState');
+      wrapHistory('replaceState');
+      window.addEventListener('popstate', spaNav, true);
+      window.addEventListener('hashchange', spaNav, true);
+    }
+  } catch (e) { /* ignore */ }
+
   const push = (op) => {
     if (overflowed) return;
     ops.push(op);

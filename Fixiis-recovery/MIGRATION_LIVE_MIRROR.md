@@ -1002,3 +1002,24 @@ Honest status: jsdom proves the state machine and the XSS-proof rendering;
 whether a 20-op cap survives a pathologically broken page (it will —
 rest is dropped silently by design) and how the badge feels next to real
 error storms is field verification.
+
+## 2026-11-08 (h) — SPA route sync rides the delta channel; stale full documents are refused
+
+Two deltas re-applied on top of the published pipeline (the fresh "capture
+independently" build was folded away by the user's explicit choice; the
+overlay ban, drop fix and delta priority machinery were already here):
+
+- SPA navigations — pushState/replaceState/popstate/hashchange — move the
+  URL with no document load, so the navigation control never fires and a
+  URL poll notices seconds too late. The in-page observer now wraps both
+  history methods and listens for both events (deduped by URL), pushing a
+  ['nav', url, 'spa'] control op that rides the next batch (flush is
+  scheduled synchronously; needs no DOM mutation). Client op loop applies
+  it immediately — URL state, favicon, heartbeat. Phase 7 (with meta and
+  err); it can never gate or reorder DOM work.
+- full_document carrying a generation OLDER than what this client has
+  already applied is refused outright — a late, stale document must never
+  clobber a newer navigation. Same-generation re-renders still apply;
+  legacy servers send no generation and degrade gracefully.
+
+Tests: tests/test_spa_nav_sync.cjs (19 checks, jsdom). NOT field-verified.
