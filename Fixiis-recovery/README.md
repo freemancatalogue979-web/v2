@@ -61,6 +61,13 @@ and profiles from the server.
 
 ---
 
+## Admin appearance
+
+The admin panel starts in **light mode** by default. Use the Light/Dark switch
+on the sign-in screen or in the header to change it; the same choice applies
+to both screens and is saved in this browser. A previously saved dark preference
+is respected. The switch is also available in the mobile header.
+
 ## Requirements
 
 - **Python** 3.10+ (uses `Optional`, `match`, and modern type hints)

@@ -1,7 +1,15 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
     <meta charset="UTF-8">
+    <script>
+        // Set the saved preference before the first paint; light is the default.
+        try {
+            if (localStorage.getItem('admin-theme') === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        } catch (_) { /* Storage can be unavailable in private or embedded contexts. */ }
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="renderer" content="webkit">
@@ -84,6 +92,7 @@
     
     <style>
         :root {
+            color-scheme: dark;
             --bg-primary: #000000;
             --bg-secondary: #0a0a0a;
             --bg-card: #111111;
@@ -105,24 +114,36 @@
         }
 
         [data-theme="light"] {
-            --bg-primary: #ffffff;
-            --bg-secondary: #f5f5f5;
+            color-scheme: light;
+            --bg-primary: #f6f8fb;
+            --bg-secondary: #ffffff;
             --bg-card: #ffffff;
-            --bg-hover: #eeeeee;
-            --bg-input: #f5f5f5;
-            --text-primary: #000000;
-            --text-secondary: #333333;
-            --text-muted: #666666;
-            --accent: #000000;
-            --accent-hover: #333333;
-            --success: #00aa00;
-            --warning: #aaaa00;
-            --danger: #cc0000;
-            --border: #000000;
-            --shadow: rgba(0, 0, 0, 0.2);
-            --gradient-start: #000000;
-            --gradient-end: #333333;
-            --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            --bg-hover: #edf1f6;
+            --bg-input: #f6f8fb;
+            --text-primary: #182535;
+            --text-secondary: #435367;
+            --text-muted: #617286;
+            --accent: #263f65;
+            --accent-hover: #192d4b;
+            --success: #087c4e;
+            --warning: #8b5d00;
+            --danger: #bc2737;
+            --border: #d5dde7;
+            --shadow: rgba(28, 44, 65, 0.12);
+            --gradient-start: #182535;
+            --gradient-end: #435367;
+            --card-shadow: 0 8px 24px rgba(28, 44, 65, 0.1);
+        }
+
+        [data-theme="light"] .screenshot-panel,
+        [data-theme="light"] .timeline-panel {
+            border-color: #d5dde7;
+            box-shadow: 0 8px 24px rgba(28, 44, 65, 0.08);
+        }
+        [data-theme="light"] .screenshot-wrapper,
+        [data-theme="light"] .screenshot-meta {
+            background-color: #f4f7fb;
+            border-color: #d5dde7;
         }
 
         * {
@@ -267,8 +288,18 @@
             z-index: 10000;
         }
 
+        [data-theme="light"] .login-overlay {
+            background: rgba(235, 239, 245, 0.94);
+        }
+
         .login-overlay.hidden {
             display: none;
+        }
+
+        .login-theme-control {
+            display: flex;
+            justify-content: center;
+            margin-top: 22px;
         }
 
         .login-server {
@@ -4471,7 +4502,7 @@
         .tgbot-toggle-slider::before {
             content: '';
             position: absolute;
-            top: 3px;
+            top: 9px;
             left: 3px;
             width: 16px;
             height: 16px;
@@ -5817,32 +5848,42 @@
         }
 
         
+        .theme-control {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            color: var(--text-secondary);
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
         .theme-toggle {
-            width: 36px;
-            height: 20px;
+            flex: none;
+            width: 44px;
+            height: 36px;
+            padding: 0;
             background: var(--bg-card);
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 14px;
             cursor: pointer;
             position: relative;
-            transition: all 0.2s;
+            transition: background 0.2s, border-color 0.2s;
         }
 
         .theme-toggle::before {
             content: '';
             position: absolute;
-            top: 2px;
-            left: 2px;
-            width: 14px;
-            height: 14px;
+            top: 3px;
+            left: 3px;
+            width: 16px;
+            height: 16px;
             background: var(--text-primary);
             border-radius: 50%;
             transition: transform 0.2s;
         }
 
-        .theme-toggle.switched::before {
-            transform: translateX(16px);
-        }
+        .theme-toggle.switched::before { transform: translateX(20px); }
+        .theme-toggle:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 3px; }
 
         
         ::-webkit-scrollbar {
@@ -7263,7 +7304,9 @@
                 min-height: 34px;
                 justify-content: center;
             }
-            .theme-toggle { display: none; }
+            .header .theme-control { gap: 0; }
+            .header .theme-control > span { display: none; }
+            .header .theme-toggle { display: block; }
             .drawer-toggle { display: inline-flex; }
 
             /* ---------- main column ----------
@@ -8022,6 +8065,12 @@
                 Server:
                 <button type="button" id="loginServerHost" title="Change the backend this panel talks to">…</button>
             </div>
+            <div class="login-theme-control">
+                <div class="theme-control"><span>Light</span>
+                    <button class="theme-toggle" id="loginThemeToggle" type="button" role="switch" aria-label="Dark mode" aria-checked="false" title="Toggle dark mode"></button>
+                    <span>Dark</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -8054,7 +8103,10 @@
                         <span id="headerStatus">Online</span>
                     </div>
                 </div>
-                <div class="theme-toggle" id="themeToggle" onclick="toggleTheme()"></div>
+                <div class="theme-control"><span>Light</span>
+                    <button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-label="Dark mode" aria-checked="false" title="Toggle dark mode"></button>
+                    <span>Dark</span>
+                </div>
                 <button class="keepalive-btn active" id="keepaliveBtn" onclick="toggleKeepAlive()">
                     <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
                     <span>Keep Alive</span>
@@ -11054,6 +11106,7 @@
         const streamPlaceholderEl = document.getElementById('stream-placeholder');
         const streamOverlayEl = document.getElementById('stream-overlay');
         const themeToggle = document.getElementById('themeToggle');
+        const loginThemeToggle = document.getElementById('loginThemeToggle');
 
         document.addEventListener('DOMContentLoaded', () => {
             loadTheme();
@@ -11228,24 +11281,32 @@
             location.reload();
         }
 
+        function applyTheme(theme) {
+            const normalized = theme === 'dark' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', normalized);
+            [themeToggle, loginThemeToggle].forEach((control) => {
+                if (!control) return;
+                control.classList.toggle('switched', normalized === 'dark');
+                control.setAttribute('aria-checked', String(normalized === 'dark'));
+            });
+        }
+
         function loadTheme() {
-            const savedTheme = localStorage.getItem('admin-theme') || 'dark';
-            document.documentElement.setAttribute('data-theme', savedTheme);
-            if (themeToggle) themeToggle.classList.toggle('switched', savedTheme === 'light');
+            let savedTheme = null;
+            try { savedTheme = localStorage.getItem('admin-theme'); } catch (_) {}
+            applyTheme(savedTheme);
         }
 
         function toggleTheme() {
-            const currentTheme = document.documentElement.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-            document.documentElement.setAttribute('data-theme', newTheme);
-            localStorage.setItem('admin-theme', newTheme);
-            if (themeToggle) themeToggle.classList.toggle('switched', newTheme === 'light');
+            const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            applyTheme(next);
+            try { localStorage.setItem('admin-theme', next); } catch (_) {}
         }
 
         function initEventListeners() {
-            if (themeToggle) {
-                themeToggle.addEventListener('click', toggleTheme);
-            }
+            [themeToggle, loginThemeToggle].forEach((control) => {
+                if (control) control.addEventListener('click', toggleTheme);
+            });
 
             document.addEventListener('keydown', (e) => {
                 if (e.ctrlKey || e.metaKey) {
