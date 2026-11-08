@@ -1,0 +1,63 @@
+[Unit]
+Description=Fixiis / Neo Browser Stream
+Documentation=https://github.com/freemancatalogue979-web/v2
+After=network-online.target
+Wants=network-online.target
+
+# A restart loop should back off instead of hammering the box.
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=fixiis
+Group=fixiis
+WorkingDirectory=/opt/fixiis
+
+# .env holds the secrets; main.py loads it at startup.
+EnvironmentFile=/opt/fixiis/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/fixiis
+# Let main.py heal a deploy that added a dependency: if a package from
+# requirements.txt is missing it installs it before starting, instead of
+# failing the boot. pip is a no-op when everything is already satisfied.
+Environment=FIXIIS_AUTO_SETUP=1
+Environment=PIP_DISABLE_PIP_VERSION_CHECK=1
+# Auto update is controlled by config.py, never by the environment, so the
+# switch lives in exactly one place.
+Environment=AUTO_UPDATE=
+
+ExecStart=/opt/fixiis/venv/bin/python /opt/fixiis/main.py
+
+# Restart=always also covers a crash or an OOM kill, so the box recovers
+# without anyone logging in.
+#
+# Deploys: `systemctl restart fixiis`, or set `auto_update = True` in
+# config.py once and the app restarts itself when its files change (it
+# re-execs in place, so this unit keeps tracking the same PID).
+#
+# There is deliberately no ExecReload: the app has no SIGHUP handler, so
+# `systemctl reload` would kill it. Use `systemctl restart fixiis`.
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# Hardening. The app needs to spawn Chrome, so it cannot be fully locked
+# down, but it does not need device access beyond what it is given.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/fixiis
+
+# Give the browser pool room to breathe (each session opens many fds).
+LimitNOFILE=65535
+LimitNPROC=8192
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fixiis
+
+[Install]
+WantedBy=multi-user.target

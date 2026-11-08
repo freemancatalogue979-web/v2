@@ -1,0 +1,647 @@
+/* ==========================================================================
+   SHF ADMIN — DESIGN SYSTEM
+   --------------------------------------------------------------------------
+   One design language for the whole panel: tokens, then the primitives every
+   screen is built from (surfaces, buttons, fields, badges, tables, drawers,
+   sheets, toasts, skeletons, empty states).
+
+   Rules this file follows, because the panel is a working instrument:
+
+     * colour is a SIGNAL, not decoration — the accent marks the active thing,
+       success/warning/danger mean exactly those things and nothing else;
+     * every surface is one of four levels (bg / raised / elevated / glass),
+       so depth always reads the same way;
+     * motion is short, cheap and optional (`prefers-reduced-motion`);
+     * nothing here changes behaviour. Presentation only.
+
+   Inlined into Admin.html by deploy/build-admin.py — never edit the copy in
+   the HTML by hand.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------- tokens */
+:root {
+    /* --- the four background levels ------------------------------------- */
+    --shf-bg: #080D16;          /* page */
+    --shf-bg-2: #0D1522;        /* rails, header, panels behind content */
+    --shf-surface: #121E2E;     /* cards */
+    --shf-glass: rgba(19, 34, 51, 0.82);   /* floating: menus, sheets */
+    --shf-elevated: #16273D;    /* hover / raised row */
+    --shf-input: #0A111C;
+    --shf-scrim: rgba(3, 7, 12, 0.72);
+
+    /* --- the signal palette --------------------------------------------- */
+    --shf-accent: #39C9FF;      /* primary: active, focus, primary action */
+    --shf-accent-soft: rgba(57, 201, 255, 0.14);
+    --shf-accent-2: #E83D4D;    /* secondary: alerts, destructive accents */
+    --shf-accent-2-soft: rgba(232, 61, 77, 0.14);
+    --shf-reactor: #38E6FF;     /* the core */
+    --shf-success: #27D99B;
+    --shf-success-soft: rgba(39, 217, 155, 0.14);
+    --shf-warning: #FFB84D;
+    --shf-warning-soft: rgba(255, 184, 77, 0.14);
+    --shf-danger: #FF5364;
+    --shf-danger-soft: rgba(255, 83, 100, 0.14);
+
+    /* --- type ------------------------------------------------------------ */
+    --shf-text: #EAF3FF;
+    --shf-text-2: #93A7BE;
+    --shf-text-3: #6B7F96;
+    --shf-font: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --shf-mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', 'Roboto Mono', Menlo, monospace;
+
+    /* --- lines, radii, elevation ---------------------------------------- */
+    --shf-border: rgba(120, 180, 220, 0.15);
+    --shf-border-strong: rgba(120, 180, 220, 0.28);
+    --shf-line: 1px solid var(--shf-border);
+    --shf-r-sm: 8px;
+    --shf-r: 12px;
+    --shf-r-lg: 16px;
+    --shf-r-pill: 999px;
+
+    --shf-shadow-1: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+    --shf-shadow-2: 0 18px 48px rgba(0, 0, 0, 0.55);
+    --shf-glow: 0 0 0 1px rgba(57, 201, 255, 0.35), 0 0 24px rgba(57, 201, 255, 0.18);
+
+    /* --- spacing scale (4 px base) -------------------------------------- */
+    --shf-s1: 4px;
+    --shf-s2: 8px;
+    --shf-s3: 12px;
+    --shf-s4: 16px;
+    --shf-s5: 20px;
+    --shf-s6: 24px;
+    --shf-s7: 32px;
+    --shf-s8: 40px;
+
+    /* --- shell metrics --------------------------------------------------- */
+    --shf-nav-w: 264px;
+    --shf-ctx-w: 330px;
+    --shf-top-h: 64px;
+    --shf-bottom-h: 62px;
+
+    /* --- motion ---------------------------------------------------------- */
+    --shf-fast: 120ms;
+    --shf-med: 200ms;
+    --shf-slow: 320ms;
+    --shf-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* ---------------------------------------------------------------- themes */
+/* Dark is the product's identity; the legacy tokens are mapped onto the new
+   palette so every existing rule in Admin.html follows automatically. */
+html,
+[data-theme="dark"] {
+    --bg-primary: var(--shf-bg);
+    --bg-secondary: var(--shf-bg-2);
+    --bg-card: var(--shf-surface);
+    --bg-hover: var(--shf-elevated);
+    --bg-input: var(--shf-input);
+    --text-primary: var(--shf-text);
+    --text-secondary: var(--shf-text-2);
+    --text-muted: var(--shf-text-3);
+    --accent: var(--shf-accent);
+    --accent-hover: #5CD6FF;
+    --success: var(--shf-success);
+    --warning: var(--shf-warning);
+    --danger: var(--shf-danger);
+    --border: var(--shf-border);
+    --shadow: rgba(0, 0, 0, 0.45);
+    --gradient-start: var(--shf-accent);
+    --gradient-end: var(--shf-accent-2);
+    --card-shadow: var(--shf-shadow-1);
+    --shf-scheme: dark;
+}
+
+/* Daylight variant: the same instrument in a bright room. Kept because the
+   panel already has a theme switch and an operator on a laptop outdoors needs
+   it; the palette stays the same family. */
+[data-theme="light"] {
+    --shf-bg: #EEF3F9;
+    --shf-bg-2: #FFFFFF;
+    --shf-surface: #FFFFFF;
+    --shf-glass: rgba(255, 255, 255, 0.9);
+    --shf-elevated: #E8EFF7;
+    --shf-input: #F4F8FC;
+    --shf-scrim: rgba(12, 22, 34, 0.35);
+    --shf-text: #0A1522;
+    --shf-text-2: #46596F;
+    --shf-text-3: #6C8098;
+    --shf-border: rgba(20, 60, 100, 0.14);
+    --shf-border-strong: rgba(20, 60, 100, 0.26);
+    --shf-shadow-1: 0 1px 2px rgba(10, 30, 50, 0.06), 0 10px 26px rgba(10, 30, 50, 0.08);
+    --shf-shadow-2: 0 20px 48px rgba(10, 30, 50, 0.16);
+    --shf-accent: #0A82AC;
+    --shf-accent-soft: rgba(10, 130, 172, 0.12);
+    --shf-accent-2: #D42A3C;
+    --shf-success: #0E9E6E;
+    --shf-warning: #B4741A;
+    --shf-danger: #D22E42;
+
+    --bg-primary: var(--shf-bg);
+    --bg-secondary: var(--shf-bg-2);
+    --bg-card: var(--shf-surface);
+    --bg-hover: var(--shf-elevated);
+    --bg-input: var(--shf-input);
+    --text-primary: var(--shf-text);
+    --text-secondary: var(--shf-text-2);
+    --text-muted: var(--shf-text-3);
+    --accent: var(--shf-accent);
+    --accent-hover: #0A6E92;
+    --success: var(--shf-success);
+    --warning: var(--shf-warning);
+    --danger: var(--shf-danger);
+    --border: var(--shf-border);
+    --shadow: rgba(10, 30, 50, 0.12);
+    --gradient-start: var(--shf-accent);
+    --gradient-end: var(--shf-accent-2);
+    --card-shadow: var(--shf-shadow-1);
+    --shf-scheme: light;
+}
+
+/* ------------------------------------------------------------- base bits */
+html { color-scheme: var(--shf-scheme, dark); }
+
+body {
+    background:
+        radial-gradient(1100px 620px at 78% -12%, rgba(57, 201, 255, 0.07), transparent 62%),
+        radial-gradient(820px 520px at 8% 108%, rgba(232, 61, 77, 0.05), transparent 60%),
+        var(--shf-bg);
+    color: var(--shf-text);
+    font-family: var(--shf-font);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+[data-theme="light"] body {
+    background:
+        radial-gradient(1000px 560px at 82% -14%, rgba(10, 130, 172, 0.10), transparent 60%),
+        radial-gradient(760px 460px at 4% 106%, rgba(212, 42, 60, 0.06), transparent 58%),
+        var(--shf-bg);
+}
+
+::selection { background: rgba(57, 201, 255, 0.28); color: var(--shf-text); }
+
+/* Scrollbars: thin, quiet, never a bright stripe in a dark room. */
+* { scrollbar-width: thin; scrollbar-color: rgba(120, 180, 220, 0.28) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: rgba(120, 180, 220, 0.22);
+    border-radius: var(--shf-r-pill);
+    border: 3px solid transparent;
+    background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: rgba(120, 180, 220, 0.4); }
+
+/* Focus: visible, consistent, never a default blue ring. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--shf-accent);
+    outline-offset: 2px;
+    border-radius: var(--shf-r-sm);
+}
+
+/* --------------------------------------------------------------- surfaces */
+.shf-card {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%), var(--shf-surface);
+    border: var(--shf-line);
+    border-radius: var(--shf-r-lg);
+    box-shadow: var(--shf-shadow-1);
+    position: relative;
+    overflow: hidden;
+}
+
+/* A hairline of accent along the top edge: the "powered" look, used once per
+   screen — not on every card. */
+.shf-card--lit::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--shf-accent), transparent);
+    opacity: 0.55;
+}
+
+.shf-card-pad { padding: var(--shf-s5); }
+
+.shf-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--shf-s3);
+    padding: var(--shf-s4) var(--shf-s5);
+    border-bottom: var(--shf-line);
+    min-height: 52px;
+}
+
+.shf-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--shf-text-2);
+    display: flex;
+    align-items: center;
+    gap: var(--shf-s2);
+    min-width: 0;
+}
+
+.shf-card-title svg { width: 16px; height: 16px; fill: var(--shf-accent); flex: 0 0 auto; }
+.shf-card-actions { display: flex; align-items: center; gap: var(--shf-s2); flex: 0 0 auto; }
+.shf-card-body { padding: var(--shf-s5); }
+.shf-card-body--flush { padding: 0; }
+
+/* ---------------------------------------------------------------- typography */
+.shf-eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+    font-weight: 600;
+}
+
+.shf-num {
+    font-family: var(--shf-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+}
+
+.shf-muted { color: var(--shf-text-2); }
+.shf-dim { color: var(--shf-text-3); }
+.shf-small { font-size: 12px; }
+.shf-tiny { font-size: 11px; }
+.shf-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --------------------------------------------------------------- buttons */
+.shf-btn {
+    --shf-btn-bg: transparent;
+    --shf-btn-fg: var(--shf-text);
+    --shf-btn-line: var(--shf-border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--shf-s2);
+    height: 36px;
+    padding: 0 14px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid var(--shf-btn-line);
+    background: var(--shf-btn-bg);
+    color: var(--shf-btn-fg);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--shf-fast) var(--shf-ease),
+                border-color var(--shf-fast) var(--shf-ease),
+                transform var(--shf-fast) var(--shf-ease),
+                box-shadow var(--shf-fast) var(--shf-ease);
+    user-select: none;
+}
+.shf-btn svg { width: 16px; height: 16px; fill: currentColor; flex: 0 0 auto; }
+.shf-btn:hover { background: var(--shf-elevated); border-color: var(--shf-border-strong); }
+.shf-btn:active { transform: translateY(1px); }
+.shf-btn[disabled], .shf-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+.shf-btn--primary {
+    --shf-btn-bg: linear-gradient(180deg, rgba(57, 201, 255, 0.22), rgba(57, 201, 255, 0.10));
+    --shf-btn-line: rgba(57, 201, 255, 0.55);
+    --shf-btn-fg: #DDF6FF;
+    box-shadow: 0 0 0 1px rgba(57, 201, 255, 0.08), 0 6px 18px rgba(57, 201, 255, 0.12);
+}
+.shf-btn--primary:hover { --shf-btn-bg: linear-gradient(180deg, rgba(57, 201, 255, 0.32), rgba(57, 201, 255, 0.16)); }
+
+.shf-btn--danger { --shf-btn-fg: var(--shf-danger); --shf-btn-line: rgba(255, 83, 100, 0.4); }
+.shf-btn--danger:hover { background: var(--shf-danger-soft); }
+
+.shf-btn--ghost { --shf-btn-line: transparent; }
+.shf-btn--ghost:hover { background: var(--shf-elevated); }
+
+.shf-btn--sm { height: 30px; padding: 0 10px; font-size: 12px; }
+.shf-btn--icon { width: 36px; padding: 0; }
+
+/* A circular icon button for the top bar: quiet, glows on hover. */
+.shf-icon-btn {
+    position: relative;
+    width: 38px;
+    height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--shf-text-2);
+    cursor: pointer;
+    transition: background var(--shf-fast) var(--shf-ease), color var(--shf-fast) var(--shf-ease),
+                border-color var(--shf-fast) var(--shf-ease);
+}
+.shf-icon-btn svg { width: 19px; height: 19px; fill: currentColor; }
+.shf-icon-btn:hover { background: var(--shf-elevated); color: var(--shf-text); border-color: var(--shf-border); }
+.shf-icon-btn.is-on { color: var(--shf-accent); border-color: rgba(57, 201, 255, 0.35); background: var(--shf-accent-soft); }
+
+/* ---------------------------------------------------------------- badges */
+.shf-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 9px;
+    border-radius: var(--shf-r-pill);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border: 1px solid var(--shf-border);
+    color: var(--shf-text-2);
+    background: rgba(255, 255, 255, 0.03);
+    white-space: nowrap;
+}
+.shf-badge--ok { color: var(--shf-success); border-color: rgba(39, 217, 155, 0.35); background: var(--shf-success-soft); }
+.shf-badge--warn { color: var(--shf-warning); border-color: rgba(255, 184, 77, 0.35); background: var(--shf-warning-soft); }
+.shf-badge--bad { color: var(--shf-danger); border-color: rgba(255, 83, 100, 0.35); background: var(--shf-danger-soft); }
+.shf-badge--info { color: var(--shf-accent); border-color: rgba(57, 201, 255, 0.35); background: var(--shf-accent-soft); }
+
+/* A dot that means "live" — the only thing allowed to pulse. */
+.shf-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--shf-text-3);
+    flex: 0 0 auto;
+    position: relative;
+}
+.shf-dot--ok { background: var(--shf-success); box-shadow: 0 0 0 3px rgba(39, 217, 155, 0.16); }
+.shf-dot--warn { background: var(--shf-warning); box-shadow: 0 0 0 3px rgba(255, 184, 77, 0.16); }
+.shf-dot--bad { background: var(--shf-danger); box-shadow: 0 0 0 3px rgba(255, 83, 100, 0.16); }
+.shf-dot--live::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    color: var(--shf-success);
+    animation: shf-ping 2.4s var(--shf-ease) infinite;
+}
+
+@keyframes shf-ping {
+    0% { transform: scale(0.7); opacity: 0.8; }
+    70% { transform: scale(1.6); opacity: 0; }
+    100% { transform: scale(1.6); opacity: 0; }
+}
+
+/* ---------------------------------------------------------------- fields */
+.shf-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.shf-label {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+    font-weight: 600;
+}
+.shf-input,
+.shf-select,
+.shf-textarea {
+    width: 100%;
+    min-height: 38px;
+    padding: 8px 12px;
+    background: var(--shf-input);
+    border: 1px solid var(--shf-border);
+    border-radius: var(--shf-r-sm);
+    color: var(--shf-text);
+    font-family: inherit;
+    font-size: 13.5px;
+    transition: border-color var(--shf-fast) var(--shf-ease), box-shadow var(--shf-fast) var(--shf-ease),
+                background var(--shf-fast) var(--shf-ease);
+}
+.shf-input::placeholder, .shf-textarea::placeholder { color: var(--shf-text-3); }
+.shf-input:hover, .shf-select:hover, .shf-textarea:hover { border-color: var(--shf-border-strong); }
+.shf-input:focus, .shf-select:focus, .shf-textarea:focus {
+    outline: none;
+    border-color: rgba(57, 201, 255, 0.6);
+    box-shadow: 0 0 0 3px rgba(57, 201, 255, 0.12);
+}
+.shf-textarea { min-height: 96px; resize: vertical; font-family: var(--shf-mono); font-size: 12.5px; }
+.shf-hint { font-size: 11.5px; color: var(--shf-text-3); }
+.shf-hint--bad { color: var(--shf-danger); }
+.shf-hint--ok { color: var(--shf-success); }
+
+/* A search field with a leading icon. */
+.shf-search { position: relative; display: flex; align-items: center; min-width: 0; }
+.shf-search svg {
+    position: absolute;
+    left: 11px;
+    width: 16px;
+    height: 16px;
+    fill: var(--shf-text-3);
+    pointer-events: none;
+}
+.shf-search .shf-input { padding-left: 34px; }
+
+/* ---------------------------------------------------------------- tables */
+.shf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.shf-table th {
+    text-align: left;
+    padding: 10px 14px;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+    font-weight: 600;
+    border-bottom: 1px solid var(--shf-border);
+    background: rgba(255, 255, 255, 0.02);
+    white-space: nowrap;
+}
+.shf-table td {
+    padding: 11px 14px;
+    border-bottom: 1px solid rgba(120, 180, 220, 0.08);
+    color: var(--shf-text);
+    vertical-align: middle;
+}
+.shf-table tbody tr:last-child td { border-bottom: 0; }
+.shf-table tbody tr { transition: background var(--shf-fast) var(--shf-ease); }
+.shf-table tbody tr:hover { background: rgba(57, 201, 255, 0.05); }
+.shf-table-wrap { width: 100%; overflow-x: auto; }
+
+/* -------------------------------------------------------- empty / loading */
+.shf-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--shf-s2);
+    padding: var(--shf-s7) var(--shf-s4);
+    text-align: center;
+    color: var(--shf-text-3);
+}
+.shf-empty svg { width: 34px; height: 34px; fill: currentColor; opacity: 0.5; }
+.shf-empty-title { font-size: 13.5px; font-weight: 600; color: var(--shf-text-2); }
+.shf-empty-text { font-size: 12px; max-width: 34ch; }
+
+.shf-skeleton {
+    position: relative;
+    overflow: hidden;
+    background: rgba(120, 180, 220, 0.08);
+    border-radius: var(--shf-r-sm);
+    min-height: 12px;
+}
+.shf-skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(120, 180, 220, 0.16), transparent);
+    animation: shf-shimmer 1.4s infinite;
+}
+@keyframes shf-shimmer { 100% { transform: translateX(100%); } }
+
+/* ------------------------------------------------------------------ menus */
+.shf-menu {
+    position: absolute;
+    min-width: 220px;
+    padding: var(--shf-s2);
+    background: var(--shf-glass);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid var(--shf-border-strong);
+    border-radius: var(--shf-r);
+    box-shadow: var(--shf-shadow-2);
+    z-index: 60;
+    transform-origin: top right;
+}
+.shf-menu[hidden] { display: none; }
+.shf-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: var(--shf-r-sm);
+    background: transparent;
+    color: var(--shf-text);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+.shf-menu-item svg { width: 16px; height: 16px; fill: var(--shf-text-2); }
+.shf-menu-item:hover { background: var(--shf-elevated); }
+.shf-menu-sep { height: 1px; margin: var(--shf-s1) 0; background: var(--shf-border); }
+
+/* ------------------------------------------------------------ toast restyle */
+#toast-stack {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 400;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: min(420px, calc(100vw - 36px));
+    pointer-events: none;
+}
+.toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    background: var(--shf-glass);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--shf-border-strong);
+    border-left: 3px solid var(--shf-accent);
+    border-radius: var(--shf-r);
+    box-shadow: var(--shf-shadow-2);
+    color: var(--shf-text);
+    font-size: 13px;
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+    transition: opacity var(--shf-med) var(--shf-ease), transform var(--shf-med) var(--shf-ease);
+}
+.toast.visible { opacity: 1; transform: none; }
+.toast.toast-leaving { opacity: 0; transform: translateY(6px); }
+.toast.success { border-left-color: var(--shf-success); }
+.toast.error { border-left-color: var(--shf-danger); }
+.toast.warning { border-left-color: var(--shf-warning); }
+.toast.info, .toast.keylog, .toast.event { border-left-color: var(--shf-accent); }
+.toast-icon { width: 18px; height: 18px; flex: 0 0 auto; fill: currentColor; opacity: 0.9; }
+.toast.success .toast-icon { fill: var(--shf-success); }
+.toast.error .toast-icon { fill: var(--shf-danger); }
+.toast.warning .toast-icon { fill: var(--shf-warning); }
+.toast.info .toast-icon, .toast.keylog .toast-icon, .toast.event .toast-icon { fill: var(--shf-accent); }
+.toast span { flex: 1 1 auto; line-height: 1.45; word-break: break-word; }
+.toast-close {
+    border: 0;
+    background: transparent;
+    color: var(--shf-text-3);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+}
+.toast-close:hover { color: var(--shf-text); }
+
+/* --------------------------------------------------------------- dialogs */
+.shf-sheet-scrim {
+    position: fixed;
+    inset: 0;
+    background: var(--shf-scrim);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 300;
+    opacity: 0;
+    transition: opacity var(--shf-med) var(--shf-ease);
+}
+.shf-sheet-scrim.open { opacity: 1; }
+
+/* Bottom sheet: the mobile version of every dialog. */
+.shf-sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 310;
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--shf-glass);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border-top: 1px solid var(--shf-border-strong);
+    border-radius: 20px 20px 0 0;
+    box-shadow: var(--shf-shadow-2);
+    transform: translateY(102%);
+    transition: transform var(--shf-slow) var(--shf-ease);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+}
+.shf-sheet.open { transform: none; }
+.shf-sheet-grip {
+    width: 42px;
+    height: 4px;
+    border-radius: var(--shf-r-pill);
+    background: var(--shf-border-strong);
+    margin: 10px auto 4px;
+}
+.shf-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--shf-s3);
+    padding: var(--shf-s3) var(--shf-s5);
+    border-bottom: var(--shf-line);
+}
+.shf-sheet-title { font-size: 14px; font-weight: 600; }
+.shf-sheet-body { padding: var(--shf-s5); overflow-y: auto; }
+
+/* ---------------------------------------------------------------- motion */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+    .shf-dot--live::after { display: none; }
+}

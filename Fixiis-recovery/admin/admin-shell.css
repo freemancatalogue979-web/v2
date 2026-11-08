@@ -1,0 +1,1440 @@
+/* ==========================================================================
+   SHF ADMIN — APPLICATION SHELL
+   --------------------------------------------------------------------------
+   The frame the whole panel lives in, then the per-screen adjustments that
+   make every tab read as one product:
+
+       [ nav rail ] [ top command bar .................. ]
+       [ nav rail ] [ workspace ................. ][ ctx ]
+
+   `ctx` is the contextual column (active sessions + selected session), which
+   becomes a drawer on tablet and disappears behind the bottom bar on phones.
+
+   Every rule here is presentation. No IDs are used for styling that the app
+   also needs; the layout targets classes the shell adds.
+   ========================================================================== */
+
+/* ------------------------------------------------------------ the frame */
+body.authenticated .main-app {
+    display: grid;
+    grid-template-columns: var(--shf-nav-w) minmax(0, 1fr) var(--shf-ctx-w);
+    grid-template-rows: var(--shf-top-h) minmax(0, 1fr);
+    grid-template-areas:
+        "nav top top"
+        "nav main ctx";
+    height: 100vh;
+    height: 100dvh;
+    width: 100%;
+    background: transparent;
+    gap: 0;
+}
+/* Layout is declared once, on the authenticated shell only; the pre-login
+   state keeps the original `display: none` gate. */
+.main-app { isolation: isolate; }
+
+.header {
+    grid-area: top;
+    height: var(--shf-top-h);
+    display: flex;
+    align-items: center;
+    gap: var(--shf-s3);
+    padding: 0 var(--shf-s5);
+    background: linear-gradient(180deg, rgba(13, 21, 34, 0.94), rgba(8, 13, 22, 0.86));
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border-bottom: 1px solid var(--shf-border);
+    z-index: 40;
+}
+[data-theme="light"] .header {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.86));
+}
+
+/* The rail ------------------------------------------------------------- */
+.shf-nav {
+    grid-area: nav;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background:
+        linear-gradient(180deg, rgba(57, 201, 255, 0.05), transparent 22%),
+        var(--shf-bg-2);
+    border-right: 1px solid var(--shf-border);
+    z-index: 50;
+}
+
+.shf-nav-brand {
+    display: flex;
+    align-items: center;
+    gap: var(--shf-s3);
+    height: var(--shf-top-h);
+    padding: 0 var(--shf-s5);
+    border-bottom: 1px solid var(--shf-border);
+    text-decoration: none;
+    color: var(--shf-text);
+    flex: 0 0 auto;
+}
+.shf-nav-brand .shf-brand-mark {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle at 50% 45%, rgba(56, 230, 255, 0.34), rgba(57, 201, 255, 0.06) 60%, transparent 70%);
+    border: 1px solid rgba(57, 201, 255, 0.32);
+    box-shadow: 0 0 18px rgba(56, 230, 255, 0.18);
+    flex: 0 0 auto;
+}
+.shf-nav-brand .shf-brand-mark svg { width: 18px; height: 18px; fill: var(--shf-reactor); }
+.shf-brand-text { display: flex; flex-direction: column; line-height: 1.1; min-width: 0; }
+.shf-brand-name {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+.shf-brand-name b { color: var(--shf-accent); font-weight: 700; }
+.shf-brand-sub {
+    font-size: 9.5px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+}
+
+.shf-nav-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--shf-s4) var(--shf-s3) var(--shf-s5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--shf-s4);
+}
+
+.shf-nav-group { display: flex; flex-direction: column; gap: 2px; }
+.shf-nav-group-label {
+    padding: 0 10px 6px;
+    font-size: 9.5px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+    font-weight: 600;
+}
+.shf-nav-items { display: flex; flex-direction: column; gap: 2px; }
+
+/* The existing .top-tab buttons live here now, so every listener the app
+   already registered keeps working untouched. */
+.shf-nav .top-tab {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    height: 40px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: var(--shf-r-sm);
+    background: transparent;
+    color: var(--shf-text-2);
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--shf-fast) var(--shf-ease), color var(--shf-fast) var(--shf-ease);
+}
+.shf-nav .top-tab svg {
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+    opacity: 0.85;
+    flex: 0 0 auto;
+}
+.shf-nav .top-tab span {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13.5px;
+}
+.shf-nav .top-tab:hover { background: rgba(120, 180, 220, 0.08); color: var(--shf-text); }
+.shf-nav .top-tab.active {
+    color: #EAF9FF;
+    background: linear-gradient(90deg, rgba(57, 201, 255, 0.20), rgba(57, 201, 255, 0.04));
+    border-color: rgba(57, 201, 255, 0.28);
+    box-shadow: inset 0 0 0 1px rgba(57, 201, 255, 0.06);
+}
+.shf-nav .top-tab.active svg { fill: var(--shf-accent); opacity: 1; }
+/* The lit rail on the active item: the single strongest "you are here". */
+.shf-nav .top-tab.active::before {
+    content: '';
+    position: absolute;
+    left: -12px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--shf-accent);
+    box-shadow: 0 0 12px var(--shf-accent);
+}
+
+.shf-nav-footer {
+    flex: 0 0 auto;
+    padding: var(--shf-s3) var(--shf-s4);
+    border-top: 1px solid var(--shf-border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--shf-s2);
+}
+.shf-nav-status {
+    display: flex;
+    align-items: center;
+    gap: var(--shf-s2);
+    font-size: 12px;
+    color: var(--shf-text-2);
+}
+.shf-nav-status .shf-badge { margin-left: auto; }
+.shf-nav-version { font-size: 10.5px; color: var(--shf-text-3); letter-spacing: 0.08em; }
+
+/* The top bar ---------------------------------------------------------- */
+.topbar-left { display: flex; align-items: center; gap: var(--shf-s3); min-width: 0; flex: 1 1 auto; }
+.topbar-right { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+
+/* The old logo block is redundant next to the rail brand on desktop; it is
+   what carries the panel's identity on mobile, where the rail is a drawer. */
+.header .logo-section { display: none; }
+
+.shf-search { width: min(420px, 46vw); }
+.shf-search .shf-input { height: 36px; min-height: 36px; background: rgba(10, 17, 28, 0.72); }
+[data-theme="light"] .shf-search .shf-input { background: #fff; }
+.shf-search-kbd {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--shf-mono);
+    font-size: 10px;
+    color: var(--shf-text-3);
+    border: 1px solid var(--shf-border);
+    border-radius: 5px;
+    padding: 1px 5px;
+    pointer-events: none;
+}
+
+.shf-search-panel {
+    position: absolute;
+    top: calc(var(--shf-top-h) - 6px);
+    left: var(--shf-s5);
+    width: min(520px, calc(100vw - 32px));
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--shf-glass);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid var(--shf-border-strong);
+    border-radius: var(--shf-r);
+    box-shadow: var(--shf-shadow-2);
+    padding: var(--shf-s2);
+    z-index: 70;
+}
+.shf-search-panel[hidden] { display: none; }
+.shf-search-group-label {
+    padding: 8px 10px 4px;
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+}
+.shf-search-hit {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: var(--shf-r-sm);
+    background: transparent;
+    color: var(--shf-text);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+.shf-search-hit svg { width: 16px; height: 16px; fill: var(--shf-accent); flex: 0 0 auto; }
+.shf-search-hit small { margin-left: auto; color: var(--shf-text-3); font-size: 11px; }
+.shf-search-hit:hover, .shf-search-hit.is-cursor { background: var(--shf-elevated); }
+
+/* Status chips: CPU / memory / link. Real numbers, small type. */
+.shf-chips { display: flex; align-items: center; gap: 6px; }
+.header-stats-bar { display: flex; align-items: center; gap: 6px; }
+.header-stats-bar .stats-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 9px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid var(--shf-border);
+    background: rgba(255, 255, 255, 0.02);
+    font-family: var(--shf-mono);
+    font-size: 11.5px;
+    color: var(--shf-text-2);
+}
+.header-stats-bar .stats-item svg { width: 13px; height: 13px; fill: currentColor; opacity: 0.7; }
+.header-stats-bar .stats-item.cpu svg { fill: var(--shf-accent); opacity: 1; }
+.header-stats-bar .stats-item.memory svg { fill: var(--shf-accent-2); opacity: 1; }
+.header-stats-bar .stats-item.status { font-family: var(--shf-font); font-size: 12px; }
+.header-stats-bar .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--shf-success);
+    box-shadow: 0 0 0 3px rgba(39, 217, 155, 0.15);
+}
+
+/* The old theme switch is a pill drawn with borders; keep the element (the
+   app calls toggleTheme() on it) and give it the new look. */
+.theme-toggle {
+    width: 46px;
+    height: 26px;
+    border-radius: var(--shf-r-pill);
+    border: 1px solid var(--shf-border);
+    background: rgba(10, 17, 28, 0.8);
+    position: relative;
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: background var(--shf-fast) var(--shf-ease), border-color var(--shf-fast) var(--shf-ease);
+}
+.theme-toggle::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: linear-gradient(180deg, #9EE8FF, var(--shf-accent));
+    box-shadow: 0 0 12px rgba(57, 201, 255, 0.5);
+    transition: transform var(--shf-med) var(--shf-ease), background var(--shf-med) var(--shf-ease);
+}
+[data-theme="light"] .theme-toggle::after {
+    transform: translateX(20px);
+    background: linear-gradient(180deg, #FFD79A, #F2A63B);
+    box-shadow: 0 0 12px rgba(242, 166, 59, 0.5);
+}
+
+/* Keep-alive and logout are real controls; hide their verbose labels on
+   narrow desktop widths but keep them reachable. */
+.keepalive-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 11px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid var(--shf-border);
+    background: transparent;
+    color: var(--shf-text-2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+.keepalive-btn svg { width: 15px; height: 15px; fill: currentColor; }
+.keepalive-btn.active { color: var(--shf-success); border-color: rgba(39, 217, 155, 0.35); background: var(--shf-success-soft); }
+.keepalive-btn:hover { border-color: var(--shf-border-strong); }
+
+.logout-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid rgba(255, 83, 100, 0.32);
+    background: transparent;
+    color: var(--shf-danger);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+.logout-btn svg { width: 15px; height: 15px; fill: currentColor; }
+.logout-btn:hover { background: var(--shf-danger-soft); }
+
+/* Profile block in the top bar. */
+.shf-profile {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 38px;
+    padding: 0 8px 0 6px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--shf-text);
+    font: inherit;
+    cursor: pointer;
+}
+.shf-profile:hover { background: var(--shf-elevated); border-color: var(--shf-border); }
+.shf-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(145deg, rgba(57, 201, 255, 0.28), rgba(232, 61, 77, 0.22));
+    border: 1px solid rgba(57, 201, 255, 0.35);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #EAF9FF;
+    flex: 0 0 auto;
+}
+.shf-profile-meta { display: flex; flex-direction: column; line-height: 1.15; text-align: left; }
+.shf-profile-name { font-size: 12.5px; font-weight: 600; }
+.shf-profile-role { font-size: 10px; color: var(--shf-text-3); letter-spacing: 0.06em; text-transform: uppercase; }
+
+/* Notification centre. */
+.shf-notif-wrap { position: relative; }
+.shf-notif-count {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: var(--shf-r-pill);
+    background: var(--shf-accent-2);
+    color: #fff;
+    font-size: 9.5px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    box-shadow: 0 0 0 2px var(--shf-bg-2);
+}
+.shf-notif-count[hidden] { display: none; }
+.shf-notif-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: min(360px, calc(100vw - 24px));
+    max-height: 62vh;
+    overflow-y: auto;
+    background: var(--shf-glass);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid var(--shf-border-strong);
+    border-radius: var(--shf-r);
+    box-shadow: var(--shf-shadow-2);
+    z-index: 80;
+}
+.shf-notif-panel[hidden] { display: none; }
+.shf-notif-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--shf-s3) var(--shf-s4);
+    border-bottom: var(--shf-line);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+}
+.shf-notif-item {
+    display: flex;
+    gap: 10px;
+    padding: 11px var(--shf-s4);
+    border-bottom: 1px solid rgba(120, 180, 220, 0.07);
+    font-size: 12.5px;
+}
+.shf-notif-item:last-child { border-bottom: 0; }
+.shf-notif-item .shf-dot { margin-top: 5px; }
+.shf-notif-body { min-width: 0; flex: 1 1 auto; }
+.shf-notif-text { color: var(--shf-text); line-height: 1.4; word-break: break-word; }
+.shf-notif-time { color: var(--shf-text-3); font-size: 10.5px; margin-top: 3px; font-family: var(--shf-mono); }
+
+/* ------------------------------------------------------- the workspace */
+.main-content {
+    grid-area: main;
+    display: none;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: transparent;
+    overflow: hidden;
+    position: relative;
+}
+.main-content.visible { display: flex; }
+
+/* The old horizontal tab strip is gone — the rail owns navigation now. The
+   container stays in the DOM (it holds the hidden monitor menu) but takes no
+   space. */
+.top-tabs { display: none; }
+
+.tab-content {
+    display: none;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: var(--shf-s5) var(--shf-s6) var(--shf-s7);
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+}
+.tab-content.active {
+    display: flex;
+    animation: shf-fade-in var(--shf-med) var(--shf-ease) both;
+}
+@keyframes shf-fade-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
+}
+
+/* Injected page header: every screen starts the same way. */
+.shf-page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--shf-s4);
+    margin: 0 0 var(--shf-s5);
+    flex-wrap: wrap;
+}
+.shf-page-heading { min-width: 0; }
+.shf-page-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+    color: var(--shf-text);
+}
+.shf-page-title svg { width: 20px; height: 20px; fill: var(--shf-accent); }
+.shf-page-sub { font-size: 13px; color: var(--shf-text-2); max-width: 78ch; line-height: 1.5; }
+.shf-page-actions { display: flex; align-items: center; gap: var(--shf-s2); flex-wrap: wrap; }
+
+/* The contextual column ------------------------------------------------- */
+.shf-context {
+    grid-area: ctx;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--shf-bg-2);
+    border-left: 1px solid var(--shf-border);
+    overflow: hidden;
+}
+.shf-context-tabs {
+    display: flex;
+    gap: 4px;
+    padding: var(--shf-s2) var(--shf-s3);
+    border-bottom: 1px solid var(--shf-border);
+    flex: 0 0 auto;
+}
+.shf-context-tab {
+    flex: 1 1 0;
+    height: 30px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--shf-text-3);
+    font: inherit;
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+.shf-context-tab.is-on {
+    color: var(--shf-accent);
+    background: var(--shf-accent-soft);
+    border-color: rgba(57, 201, 255, 0.3);
+}
+.shf-context-body { flex: 1 1 auto; min-height: 0; position: relative; }
+
+/* Both legacy panels live inside the column now. */
+.shf-context .sidebar,
+.shf-context .right-sidebar {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: auto;
+    border: 0;
+    background: transparent;
+    padding: var(--shf-s3);
+    overflow-y: auto;
+    overflow-x: hidden;
+    transform: none;
+    display: none;
+}
+.shf-context[data-pane="sessions"] .sidebar { display: block; }
+.shf-context[data-pane="details"] .right-sidebar { display: block; }
+
+.sidebar-title {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+    padding: 4px 2px 10px;
+    font-weight: 600;
+}
+
+/* Session rows in the context column. */
+.client-item {
+    border: 1px solid var(--shf-border);
+    border-radius: var(--shf-r);
+    background: rgba(255, 255, 255, 0.02);
+    padding: 10px 11px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: border-color var(--shf-fast) var(--shf-ease), background var(--shf-fast) var(--shf-ease);
+}
+.client-item:hover { border-color: var(--shf-border-strong); background: rgba(57, 201, 255, 0.05); }
+.client-item.active { border-color: rgba(57, 201, 255, 0.5); background: rgba(57, 201, 255, 0.1); }
+
+.detail-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--shf-s3);
+    padding: 7px 2px;
+    border-bottom: 1px dashed rgba(120, 180, 220, 0.1);
+    font-size: 12.5px;
+}
+.detail-label { color: var(--shf-text-3); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+.detail-value { color: var(--shf-text); font-family: var(--shf-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.detail-section + .detail-section { margin-top: var(--shf-s4); }
+
+/* ------------------------------------------------------------- dashboard */
+.shf-dash { display: flex; flex-direction: column; gap: var(--shf-s4); }
+
+/* Hero: reactor + identity + live core numbers. */
+.shf-hero {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(200px, 300px) minmax(0, 1fr) minmax(240px, 320px);
+    align-items: center;
+    gap: var(--shf-s6);
+    padding: var(--shf-s6);
+    border-radius: var(--shf-r-lg);
+    border: 1px solid var(--shf-border);
+    background:
+        radial-gradient(680px 320px at 12% 50%, rgba(57, 201, 255, 0.16), transparent 70%),
+        radial-gradient(520px 300px at 96% -10%, rgba(232, 61, 77, 0.12), transparent 70%),
+        linear-gradient(180deg, rgba(18, 30, 46, 0.9), rgba(13, 21, 34, 0.92));
+    overflow: hidden;
+    box-shadow: var(--shf-shadow-1);
+}
+.shf-hero::after {
+    /* one hairline of light across the top */
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(57, 201, 255, 0.75), transparent);
+}
+
+.shf-reactor-host {
+    position: relative;
+    aspect-ratio: 1;
+    width: 100%;
+    max-width: 300px;
+    display: grid;
+    place-items: center;
+    margin: 0 auto;
+}
+.shf-reactor-host canvas { width: 100%; height: 100%; display: block; }
+/* Static stand-in when canvas is missing or motion is off: no JS needed. */
+.shf-reactor-fallback {
+    position: absolute;
+    inset: 8%;
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 50% 50%, rgba(56, 230, 255, 0.95), rgba(57, 201, 255, 0.35) 28%, transparent 62%),
+        radial-gradient(circle at 50% 50%, transparent 52%, rgba(57, 201, 255, 0.35) 53%, transparent 56%),
+        radial-gradient(circle at 50% 50%, transparent 70%, rgba(57, 201, 255, 0.22) 71%, transparent 73%);
+    filter: drop-shadow(0 0 26px rgba(56, 230, 255, 0.35));
+}
+.shf-reactor-host.has-canvas .shf-reactor-fallback { display: none; }
+
+.shf-hero-copy { min-width: 0; }
+.shf-hero-eyebrow {
+    font-size: 10.5px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--shf-accent);
+    margin-bottom: 8px;
+}
+.shf-hero-title {
+    font-size: clamp(24px, 3.2vw, 34px);
+    line-height: 1.1;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 8px;
+}
+.shf-hero-title b { color: var(--shf-accent); }
+.shf-hero-sub { font-size: 13.5px; color: var(--shf-text-2); max-width: 52ch; line-height: 1.55; }
+.shf-hero-meta {
+    margin-top: var(--shf-s4);
+    display: flex;
+    align-items: center;
+    gap: var(--shf-s3);
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--shf-text-3);
+    font-family: var(--shf-mono);
+}
+
+/* Core readouts inside the hero. */
+.shf-core {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--shf-s4);
+    border-radius: var(--shf-r);
+    border: 1px solid var(--shf-border);
+    background: rgba(8, 13, 22, 0.55);
+    backdrop-filter: blur(6px);
+}
+[data-theme="light"] .shf-core { background: rgba(255, 255, 255, 0.72); }
+.shf-core-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 10px;
+    margin-bottom: 6px;
+    border-bottom: var(--shf-line);
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+}
+.shf-core-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--shf-s3);
+    padding: 6px 0;
+    font-size: 12px;
+    color: var(--shf-text-2);
+}
+.shf-core-row b {
+    font-family: var(--shf-mono);
+    font-size: 13px;
+    color: var(--shf-text);
+    font-weight: 600;
+}
+
+/* Metric cards. */
+.shf-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: var(--shf-s3);
+}
+.shf-metric {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: var(--shf-s4);
+    border-radius: var(--shf-r);
+    border: 1px solid var(--shf-border);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 60%), var(--shf-surface);
+    overflow: hidden;
+    transition: border-color var(--shf-fast) var(--shf-ease), transform var(--shf-fast) var(--shf-ease);
+}
+.shf-metric:hover { border-color: var(--shf-border-strong); transform: translateY(-1px); }
+.shf-metric-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.shf-metric-label {
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+    font-weight: 600;
+}
+.shf-metric-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    background: var(--shf-accent-soft);
+    border: 1px solid rgba(57, 201, 255, 0.25);
+}
+.shf-metric-icon svg { width: 15px; height: 15px; fill: var(--shf-accent); }
+.shf-metric--rose .shf-metric-icon { background: var(--shf-accent-2-soft); border-color: rgba(232, 61, 77, 0.28); }
+.shf-metric--rose .shf-metric-icon svg { fill: var(--shf-accent-2); }
+.shf-metric--ok .shf-metric-icon { background: var(--shf-success-soft); border-color: rgba(39, 217, 155, 0.28); }
+.shf-metric--ok .shf-metric-icon svg { fill: var(--shf-success); }
+.shf-metric--warn .shf-metric-icon { background: var(--shf-warning-soft); border-color: rgba(255, 184, 77, 0.28); }
+.shf-metric--warn .shf-metric-icon svg { fill: var(--shf-warning); }
+.shf-metric-value {
+    font-family: var(--shf-mono);
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    color: var(--shf-text);
+}
+.shf-metric-value small { font-size: 13px; color: var(--shf-text-3); font-weight: 500; margin-left: 2px; }
+.shf-metric-foot { font-size: 11.5px; color: var(--shf-text-3); }
+.shf-metric-spark { height: 34px; margin-top: 2px; }
+.shf-metric-spark canvas { width: 100%; height: 100%; display: block; }
+
+/* Quick actions. */
+.shf-quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--shf-s3); }
+.shf-quick-btn {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 12px 14px;
+    border-radius: var(--shf-r);
+    border: 1px solid var(--shf-border);
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--shf-text);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--shf-fast) var(--shf-ease), background var(--shf-fast) var(--shf-ease),
+                transform var(--shf-fast) var(--shf-ease);
+}
+.shf-quick-btn:hover { border-color: rgba(57, 201, 255, 0.4); background: rgba(57, 201, 255, 0.07); transform: translateY(-1px); }
+.shf-quick-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    background: rgba(57, 201, 255, 0.12);
+    border: 1px solid rgba(57, 201, 255, 0.22);
+    flex: 0 0 auto;
+}
+.shf-quick-icon svg { width: 16px; height: 16px; fill: var(--shf-accent); }
+.shf-quick-label { display: flex; flex-direction: column; min-width: 0; }
+.shf-quick-label b { font-weight: 600; font-size: 13px; }
+.shf-quick-label span { font-size: 11px; color: var(--shf-text-3); }
+
+/* Two-column operational grid. */
+.shf-grid-2 { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: var(--shf-s4); align-items: start; }
+.shf-grid-2 > * { min-width: 0; }
+
+/* Health bars. */
+.shf-bar { display: flex; flex-direction: column; gap: 6px; }
+.shf-bar + .shf-bar { margin-top: var(--shf-s3); }
+.shf-bar-top { display: flex; align-items: baseline; justify-content: space-between; font-size: 12px; color: var(--shf-text-2); }
+.shf-bar-top b { font-family: var(--shf-mono); color: var(--shf-text); font-size: 12.5px; }
+.shf-bar-track {
+    height: 6px;
+    border-radius: var(--shf-r-pill);
+    background: rgba(120, 180, 220, 0.12);
+    overflow: hidden;
+}
+.shf-bar-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, rgba(57, 201, 255, 0.65), var(--shf-accent));
+    box-shadow: 0 0 12px rgba(57, 201, 255, 0.35);
+    transition: width var(--shf-slow) var(--shf-ease);
+}
+.shf-bar-fill--ok { background: linear-gradient(90deg, rgba(39, 217, 155, 0.6), var(--shf-success)); box-shadow: 0 0 12px rgba(39, 217, 155, 0.3); }
+.shf-bar-fill--warn { background: linear-gradient(90deg, rgba(255, 184, 77, 0.6), var(--shf-warning)); box-shadow: 0 0 12px rgba(255, 184, 77, 0.3); }
+.shf-bar-fill--bad { background: linear-gradient(90deg, rgba(255, 83, 100, 0.6), var(--shf-danger)); box-shadow: 0 0 12px rgba(255, 83, 100, 0.3); }
+
+/* Activity feed. */
+.shf-feed { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; }
+.shf-feed-item {
+    display: flex;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(120, 180, 220, 0.07);
+    font-size: 12.5px;
+}
+.shf-feed-item:last-child { border-bottom: 0; }
+.shf-feed-ico {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: rgba(57, 201, 255, 0.1);
+    flex: 0 0 auto;
+}
+.shf-feed-ico svg { width: 13px; height: 13px; fill: var(--shf-accent); }
+.shf-feed-body { min-width: 0; flex: 1 1 auto; }
+.shf-feed-text { color: var(--shf-text); line-height: 1.4; }
+.shf-feed-time { color: var(--shf-text-3); font-size: 10.5px; font-family: var(--shf-mono); margin-top: 2px; }
+
+/* --------------------------------------------------- legacy tab polish */
+/* Everything below forces the pre-redesign screens onto the same grid:
+   consistent headings, cards, tables and paddings. It would be dishonest to
+   call this a per-screen redesign — the screens that gained new structure are
+   the dashboard and the live-pages workspace; these rules are what stops the
+   rest looking like a different product. */
+
+.tab-content > h2,
+.tab-content > h3,
+.section-title,
+.panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--shf-text-2);
+    margin: 0 0 var(--shf-s3);
+}
+
+.card,
+.graph-card,
+.settings-group,
+.tgbot-section,
+.klg-stat-item,
+.lpv-panel,
+.dm-card,
+.profiles-section,
+.monitoring-stat {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 55%), var(--shf-surface);
+    border: 1px solid var(--shf-border);
+    border-radius: var(--shf-r);
+    box-shadow: var(--shf-shadow-1);
+}
+
+.lpv-panel, .settings-group, .tgbot-section, .profiles-section { padding: var(--shf-s4); }
+.lpv-panel-title, .graph-title {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--shf-text-2);
+    font-weight: 600;
+    margin-bottom: var(--shf-s3);
+}
+
+/* Form controls already in the markup. */
+.form-input,
+.form-select,
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="url"],
+input[type="email"],
+select,
+textarea {
+    background: var(--shf-input);
+    border: 1px solid var(--shf-border);
+    border-radius: var(--shf-r-sm);
+    color: var(--shf-text);
+    font-family: inherit;
+    transition: border-color var(--shf-fast) var(--shf-ease), box-shadow var(--shf-fast) var(--shf-ease);
+}
+.form-input:focus,
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    border-color: rgba(57, 201, 255, 0.6);
+    box-shadow: 0 0 0 3px rgba(57, 201, 255, 0.12);
+}
+.form-label {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+    font-weight: 600;
+}
+.form-hint { font-size: 11.5px; color: var(--shf-text-3); line-height: 1.45; }
+
+/* The panel's own button classes. */
+.btn, .logs-btn, .dm-btn, .access-btn, .file-toolbar-btn, .lpv-btn, .generate-btn, .copy-btn {
+    border-radius: var(--shf-r-sm);
+    border: 1px solid var(--shf-border);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--shf-text);
+    font-family: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: border-color var(--shf-fast) var(--shf-ease), background var(--shf-fast) var(--shf-ease);
+}
+.btn:hover, .logs-btn:hover, .dm-btn:hover, .access-btn:hover,
+.file-toolbar-btn:hover, .lpv-btn:hover, .generate-btn:hover, .copy-btn:hover {
+    border-color: var(--shf-border-strong);
+    background: var(--shf-elevated);
+}
+.btn.primary, .lpv-btn.primary, .generate-btn, .access-btn.primary {
+    background: linear-gradient(180deg, rgba(57, 201, 255, 0.22), rgba(57, 201, 255, 0.1));
+    border-color: rgba(57, 201, 255, 0.5);
+    color: #DDF6FF;
+}
+.btn.danger, .logs-btn.danger, .lpv-btn.danger, .access-btn.danger {
+    color: var(--shf-danger);
+    border-color: rgba(255, 83, 100, 0.35);
+}
+
+/* Cards that are really list rows. */
+.stat-card, .links-stat, .profiles-stat, .result-metric, .capacity-info-item {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 60%), var(--shf-surface);
+    border: 1px solid var(--shf-border);
+    border-radius: var(--shf-r);
+    padding: var(--shf-s4);
+}
+.stat-label, .links-stat-label, .profiles-stat-label, .result-metric-label, .capacity-label {
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--shf-text-3);
+    font-weight: 600;
+}
+.stat-value, .links-stat-value, .profiles-stat-value, .result-metric-value {
+    font-family: var(--shf-mono);
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--shf-text);
+    letter-spacing: -0.02em;
+}
+.stat-sub { font-size: 11.5px; color: var(--shf-text-3); }
+.dashboard-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--shf-s3);
+}
+
+/* LPV: the workspace gets the new segmented control. */
+.lpv-subtabs {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    border-radius: var(--shf-r);
+    border: 1px solid var(--shf-border);
+    background: rgba(255, 255, 255, 0.02);
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+.lpv-subtabs::-webkit-scrollbar { display: none; }
+.lpv-subtab {
+    height: 32px;
+    padding: 0 14px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--shf-text-2);
+    font: inherit;
+    font-size: 12.5px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.lpv-subtab:hover { background: rgba(120, 180, 220, 0.08); color: var(--shf-text); }
+.lpv-subtab.active {
+    color: var(--shf-accent);
+    background: var(--shf-accent-soft);
+    border-color: rgba(57, 201, 255, 0.3);
+}
+.lpv-header { display: flex; flex-direction: column; gap: var(--shf-s3); margin-bottom: var(--shf-s4); }
+.lpv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--shf-s3); align-items: start; }
+.lpv-title { font-size: 20px; font-weight: 700; }
+.lpv-sub { font-size: 12.5px; color: var(--shf-text-2); }
+.lpv-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: var(--shf-r-pill);
+    border: 1px solid var(--shf-border);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--shf-text-2);
+}
+.lpv-empty, .links-empty, .profiles-empty, .empty-state, .lpv-empty-state {
+    padding: var(--shf-s5);
+    text-align: center;
+    color: var(--shf-text-3);
+    font-size: 12.5px;
+}
+
+/* Logs / KLG event lists read as data, so they get the mono face. */
+.log-time, .klg-log-time, .term-k, .log-details {
+    font-family: var(--shf-mono);
+    font-size: 11.5px;
+    color: var(--shf-text-3);
+}
+.logs-entry, .klg-log-entry {
+    border-bottom: 1px solid rgba(120, 180, 220, 0.08);
+    padding: 10px 0;
+}
+
+/* ------------------------------------------------------------- login */
+.login-overlay {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: var(--shf-s5);
+    z-index: 500;
+    background:
+        radial-gradient(900px 600px at 50% 22%, rgba(57, 201, 255, 0.12), transparent 60%),
+        radial-gradient(600px 400px at 86% 88%, rgba(232, 61, 77, 0.1), transparent 60%),
+        var(--shf-bg);
+}
+.login-modal {
+    width: min(420px, 100%);
+    padding: var(--shf-s7) var(--shf-s6) var(--shf-s6);
+    border-radius: var(--shf-r-lg);
+    border: 1px solid var(--shf-border-strong);
+    background: var(--shf-glass);
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+    box-shadow: var(--shf-shadow-2);
+    position: relative;
+    overflow: hidden;
+}
+.login-modal::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--shf-accent), transparent);
+}
+.login-logo { display: flex; align-items: center; gap: 12px; margin-bottom: var(--shf-s5); }
+.login-logo .logo-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle at 50% 45%, rgba(56, 230, 255, 0.3), transparent 70%);
+    border: 1px solid rgba(57, 201, 255, 0.35);
+}
+.login-logo .logo-icon svg { width: 22px; height: 22px; fill: var(--shf-reactor); }
+.login-logo .logo-text {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+.login-title { font-size: 13px; color: var(--shf-text-2); margin-bottom: var(--shf-s5); }
+.login-modal .form-group { margin-bottom: var(--shf-s4); }
+.login-btn {
+    width: 100%;
+    height: 44px;
+    margin-top: var(--shf-s2);
+    border-radius: var(--shf-r-sm);
+    border: 1px solid rgba(57, 201, 255, 0.55);
+    background: linear-gradient(180deg, rgba(57, 201, 255, 0.26), rgba(57, 201, 255, 0.12));
+    color: #E6FAFF;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: filter var(--shf-fast) var(--shf-ease);
+}
+.login-btn:hover { filter: brightness(1.12); }
+.login-error {
+    margin-top: var(--shf-s3);
+    padding: 10px 12px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid rgba(255, 83, 100, 0.35);
+    background: var(--shf-danger-soft);
+    color: var(--shf-danger);
+    font-size: 12.5px;
+    display: none;
+}
+.login-error.show { display: block; }
+.login-server {
+    margin-top: var(--shf-s5);
+    padding-top: var(--shf-s4);
+    border-top: var(--shf-line);
+    font-size: 11.5px;
+    color: var(--shf-text-3);
+}
+
+/* The bottom bar only exists on phones (built by the shell, hidden by
+   default so a wide screen never renders a stray bar under the workspace). */
+.shf-bottom { display: none; }
+
+/* ------------------------------------------------------------- responsive */
+/* Tablet: the contextual column folds into a drawer, the rail stays. */
+@media (max-width: 1280px) {
+    :root { --shf-nav-w: 232px; --shf-ctx-w: 300px; }
+    .shf-search { width: min(300px, 34vw); }
+    .shf-grid-2 { grid-template-columns: minmax(0, 1fr); }
+    .shf-hero { grid-template-columns: minmax(160px, 220px) minmax(0, 1fr); }
+    .shf-core { grid-column: 1 / -1; }
+}
+
+@media (max-width: 1024px) {
+    body.authenticated .main-app {
+        grid-template-columns: var(--shf-nav-w) minmax(0, 1fr);
+        grid-template-areas:
+            "nav top"
+            "nav main";
+    }
+    .shf-context {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(360px, 92vw);
+        z-index: 260;
+        transform: translateX(102%);
+        transition: transform var(--shf-slow) var(--shf-ease);
+        box-shadow: var(--shf-shadow-2);
+    }
+    .shf-context.open { transform: none; }
+    .shf-nav .top-tab span { font-size: 12.5px; }
+}
+
+/* Phone: the rail becomes a drawer, a bottom bar owns primary destinations. */
+@media (max-width: 768px) {
+    :root { --shf-top-h: 56px; }
+
+    body.authenticated .main-app {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: var(--shf-top-h) minmax(0, 1fr);
+        grid-template-areas:
+            "top"
+            "main";
+    }
+
+    .header {
+        padding: 0 var(--shf-s3);
+        gap: var(--shf-s2);
+    }
+    .header .logo-section { display: flex; }
+    .header .logo-section .logo-icon { display: none; }
+    .header .logo-section .logo-text {
+        font-size: 12.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font-weight: 700;
+    }
+    .header-stats-bar { display: none; }
+    .keepalive-btn span { display: none; }
+    .keepalive-btn { width: 34px; padding: 0; justify-content: center; }
+    .logout-btn span { display: none; }
+    .shf-search { display: none; }
+    .shf-profile-meta { display: none; }
+
+    /* The rail slides in from the left. */
+    .shf-nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(308px, 86vw);
+        z-index: 270;
+        transform: translateX(-104%);
+        transition: transform var(--shf-slow) var(--shf-ease);
+        box-shadow: var(--shf-shadow-2);
+        padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+    .shf-nav.open { transform: none; }
+
+    .drawer-toggle { display: inline-flex; }
+
+    .main-content { padding-bottom: 0; }
+    .tab-content {
+        padding: var(--shf-s4) var(--shf-s3) calc(var(--shf-bottom-h) + var(--shf-s6) + env(safe-area-inset-bottom, 0));
+    }
+
+    /* Bottom navigation: the five places an operator actually goes. */
+    .shf-bottom {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 240;
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        height: calc(var(--shf-bottom-h) + env(safe-area-inset-bottom, 0));
+        padding-bottom: env(safe-area-inset-bottom, 0);
+        background: var(--shf-glass);
+        backdrop-filter: blur(18px) saturate(150%);
+        -webkit-backdrop-filter: blur(18px) saturate(150%);
+        border-top: 1px solid var(--shf-border-strong);
+    }
+    .shf-bottom-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 3px;
+        border: 0;
+        background: transparent;
+        color: var(--shf-text-3);
+        font: inherit;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        cursor: pointer;
+        padding: 0;
+        min-width: 44px;
+        min-height: 44px;
+    }
+    .shf-bottom-item svg { width: 20px; height: 20px; fill: currentColor; }
+    .shf-bottom-item.is-on { color: var(--shf-accent); }
+    .shf-bottom-item.is-on svg { filter: drop-shadow(0 0 8px rgba(57, 201, 255, 0.55)); }
+
+    /* Cards stack, hero collapses, everything is full width. */
+    .shf-hero {
+        grid-template-columns: minmax(0, 1fr);
+        padding: var(--shf-s4);
+        text-align: center;
+        gap: var(--shf-s3);
+    }
+    .shf-reactor-host { max-width: 190px; }
+    .shf-hero-sub { max-width: none; }
+    .shf-hero-meta { justify-content: center; }
+    .shf-metrics { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+    .shf-metric-value { font-size: 21px; }
+    .shf-quick { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+    .shf-page-title { font-size: 18px; }
+    .shf-page-sub { font-size: 12px; }
+
+    /* Tables become cards: the shell labels each cell from its header, and
+       this is what turns the labels into a stacked layout. */
+    .shf-table--cards thead { display: none; }
+    .shf-table--cards, .shf-table--cards tbody, .shf-table--cards tr, .shf-table--cards td {
+        display: block;
+        width: 100%;
+    }
+    .shf-table--cards tr {
+        border: 1px solid var(--shf-border);
+        border-radius: var(--shf-r);
+        background: var(--shf-surface);
+        margin-bottom: var(--shf-s2);
+        padding: 4px 2px;
+    }
+    .shf-table--cards td {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--shf-s3);
+        border-bottom: 0;
+        padding: 8px 12px;
+        text-align: right;
+    }
+    .shf-table--cards td::before {
+        content: attr(data-label);
+        flex: 0 0 auto;
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--shf-text-3);
+        text-align: left;
+    }
+
+    /* Dialogs become bottom sheets. */
+    .profile-modal, .klg-modal, .profiles-fullscreen-content {
+        width: 100% !important;
+        max-width: 100% !important;
+        max-height: 88vh;
+        border-radius: 18px 18px 0 0 !important;
+        position: fixed !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        top: auto !important;
+        margin: 0 !important;
+    }
+    .profile-modal-overlay, .klg-modal-overlay {
+        align-items: flex-end !important;
+        justify-content: center !important;
+        padding: 0 !important;
+    }
+
+    /* 16px inputs stop iOS from zooming the whole page on focus. */
+    input, select, textarea, .form-input, .lpv-input { font-size: 16px; }
+
+    #toast-stack {
+        left: 12px;
+        right: 12px;
+        bottom: calc(var(--shf-bottom-h) + 14px + env(safe-area-inset-bottom, 0));
+        max-width: none;
+    }
+}
+
+@media (max-width: 380px) {
+    .shf-quick { grid-template-columns: minmax(0, 1fr); }
+    .shf-metrics { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Touch targets on any touch device, regardless of width. */
+@media (hover: none) and (pointer: coarse) {
+    .shf-nav .top-tab { height: 44px; }
+    .shf-btn { height: 40px; }
+    .lpv-subtab { height: 36px; }
+}
+
+/* Print: the panel is not a document, but an operator sometimes needs a log. */
+@media print {
+    .shf-nav, .header, .shf-context, .shf-bottom, #toast-stack { display: none !important; }
+    .main-app { display: block !important; }
+    .tab-content { display: block !important; padding: 0; overflow: visible; }
+    body { background: #fff; color: #000; }
+}
+
+/* ------------------------------------------------- settings, per section */
+/* The settings groups carry their own inline padding/border from the old
+   design; !important is the honest way to override an inline style, and it is
+   confined to these five declarations. */
+.settings-group {
+    padding: var(--shf-s4) !important;
+    border: 1px solid var(--shf-border) !important;
+    border-radius: var(--shf-r) !important;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 55%), var(--shf-surface) !important;
+    margin-bottom: var(--shf-s4) !important;
+    box-shadow: var(--shf-shadow-1);
+}
+.settings-row {
+    border-radius: var(--shf-r-sm);
+    transition: background var(--shf-fast) var(--shf-ease);
+}
+.settings-row:hover { background: rgba(57, 201, 255, 0.04); }
+
+/* Section jump bar: the settings screen is long, so give it a map. */
+.shf-jump {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    gap: 6px;
+    padding: 8px 0 10px;
+    margin: -4px 0 14px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    background: linear-gradient(180deg, var(--shf-bg) 70%, transparent);
+}
+.shf-jump::-webkit-scrollbar { display: none; }
+.shf-jump-btn {
+    height: 30px;
+    padding: 0 12px;
+    border-radius: var(--shf-r-pill);
+    border: 1px solid var(--shf-border);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--shf-text-2);
+    font: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color var(--shf-fast) var(--shf-ease), border-color var(--shf-fast) var(--shf-ease);
+}
+.shf-jump-btn:hover { color: var(--shf-text); border-color: var(--shf-border-strong); }
+
+/* Desktop-only screens say so, once, on the screen that cannot work on a
+   phone — instead of the operator discovering it by touching a dead preview. */
+.shf-desktop-note {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: var(--shf-s3);
+    padding: 10px 12px;
+    border-radius: var(--shf-r-sm);
+    border: 1px solid rgba(255, 184, 77, 0.35);
+    background: var(--shf-warning-soft);
+    color: var(--shf-warning);
+    font-size: 12.5px;
+}
+@media (max-width: 768px) {
+    .shf-desktop-note { display: flex; }
+}

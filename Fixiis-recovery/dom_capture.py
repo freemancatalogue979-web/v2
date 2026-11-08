@@ -1,0 +1,6553 @@
+"""DOM capture engine for remote browser sessions.
+
+Design
+------
+Two-tier live-mirror pipeline (see MIGRATION_LIVE_MIRROR.md):
+
+1. **Fast capture** (default, ``DOM_CAPTURE_MODE=fast``): a single
+   CSP-immune ``page.evaluate`` serializes the live DOM in-page
+   (live form state materialized, open shadow roots emitted as
+   declarative shadow DOM, same-origin canvases as data-URL images).
+   External asset URLs are rewritten server-side to the
+   content-addressed ``/assets/<hash>`` cache (fetch-once, immutable)
+   so recaptures render from the browser HTTP cache.  Interaction
+   recaptures skip the legacy load/networkidle settle entirely.
+
+2. **Legacy SingleFile** (``DOM_CAPTURE_MODE=singlefile``): the
+   bundled MV3 SingleFile extension inlines every asset into one
+   self-contained document.  Kept for archive flows (PCM page
+   manager / LPV store) where self-containment is the point, and as
+   the automatic fallback whenever the fast serializer comes back
+   degenerate.
+
+Between full captures an in-page MutationObserver (``LIVE_DELTA=1``)
+streams compact DOM ops (``dom_patch`` frames) which the client
+applies in place instead of rebuilding the snapshot iframe.  This
+patch-first path is used for both live-preferred and snapshot-preferred
+hosts; full documents remain the navigation, overflow, and recovery
+floor.  Node identity is carried by ``data-mid`` stamps assigned during
+serialization (WeakMap + counter page-side).
+
+Captures coalesce **per lane** (``SEND_COALESCE=1``): one capture at a
+time within a lane, overlapping triggers producing exactly one
+follow-up with the latest reason.  The lanes are independent
+(``DOM_CAPTURE_CONCURRENT_LANES=1``): a navigation capture runs beside
+an interaction recapture of the page being left, and the older one's
+document is dropped as stale instead of being allowed to hold the
+newer one back.  Unchanged-DOM checksums
+(``DOM_CAPTURE_SKIP_UNCHANGED=1``) skip recaptures whose change the
+patch channel has already delivered - de-duplication, never
+suppression.
+
+The caller drives capture timing: explicitly call ``send_page``
+when you want a fresh snapshot (initial, on navigation, on
+demand).  Event handlers (handle_click / handle_navigation /
+handle_keypress / handle_submit_form) just dispatch to
+Playwright; they do not auto-capture.
+
+Four independent pipelines, one writer
+--------------------------------------
+A mirrored page has four things to say, and they become true at
+different moments: where it is (navigation), what its DOM is
+(document), what changed (patch), what its assets resolve to
+(``asset_map``).  They are produced independently and delivered
+through ``sync_pipeline.SyncPipeline``, which serialises the socket
+with ONE writer task and returns from ``publish`` immediately:
+
+    navigation  published the tick the change is seen (URL poll,
+                in-page pushState/replaceState/popstate/hashchange
+                hooks, document-commit control, explicit goto) and
+                carries nav_id + same_document, so the client can move
+                its tab and decide about its transition with no DOM;
+    document    captured on the navigation or content lane, with a
+                BOUNDED readyState wait (``DOM_CAPTURE_NAV_READY_MS``);
+                an early document is marked ``partial`` and a settled
+                follow-up converges it;
+    patch       relayed straight through, even while a capture runs;
+    assets      sent as edits once the document is on screen.
+
+Ordering discipline (the counterweight to all that concurrency):
+every frame carries ``nav_id`` (which navigation) and ``seq``
+(producer order).  A capture records the navigation it started under
+and is DROPPED at publish time if a newer navigation superseded it,
+so a slow serializer can never overwrite a newer page.  Full
+documents also carry the in-page document token, so a patch for a
+document the client is not showing is discarded rather than applied
+to the wrong page.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+from collections import OrderedDict
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+from urllib.parse import urljoin, urlsplit
+
+# Concurrent delivery + capture lanes (see sync_pipeline.py).  Kept in its own
+# module: it knows nothing about browsers, so the ordering rules can be tested
+# without one.
+from sync_pipeline import (
+    LANE_CONTENT,
+    LANE_NAVIGATION,
+    SyncPipeline,
+    lane_for_reason,
+    same_url,
+)
+
+# Shared JSON helper for CDP evaluation payloads.
+_json = json
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Configuration (env-overridable)
+# ---------------------------------------------------------------------------
+
+PRE_CAPTURE_WAIT: float = float(os.environ.get("DOM_CAPTURE_PRE_CAPTURE_WAIT", "0.0"))
+SINGLEFILE_TIMEOUT_S: int = int(os.environ.get("DOM_CAPTURE_SINGLEFILE_TIMEOUT_S", "60"))
+
+# Interaction recaptures are NOT throttled any more.  The old debounce dropped
+# a genuine recapture that arrived within ~0.08 s (0.25 s in snapshot mode) of
+# the previous one, which is a filter, not a de-duplication: the page really had
+# changed and the change was really lost.  Duplicate processing is prevented
+# where it belongs - the content lane runs one capture at a time and folds every
+# overlapping request into exactly one follow-up carrying the latest reason, so
+# a burst costs one extra document and loses nothing.  Both knobs are still
+# accepted for deployment compatibility and documented as inert.
+INTERACTION_CAPTURE_MIN_INTERVAL_S: float = float(
+    os.environ.get("DOM_CAPTURE_INTERACTION_MIN_INTERVAL_S", "0")
+)
+SNAPSHOT_CAPTURE_MIN_INTERVAL_S: float = float(
+    os.environ.get("DOM_SNAPSHOT_MIN_INTERVAL_S", "0")
+)
+
+# MutationObserver -> websocket batching.  16 ms matches a 60 Hz frame
+# so UI animations and transitions stream smoothly to the client.
+DELTA_FLUSH_MS: int = max(0, int(os.environ.get("DOM_DELTA_FLUSH_MS", "16")))
+
+# URL polling is local (page.url is cached on the adapters), so 100 ms catches
+# a navigation much sooner than the old 500 ms loop without a CDP round-trip.
+URL_WATCH_INTERVAL_S: float = max(
+    0.05, float(os.environ.get("DOM_URL_WATCH_INTERVAL_S", "0.1"))
+)
+
+# Hosts that prefer a full-document consistency cadence.  Every host can
+# still use the live delta (DOM-mutation) pipeline when LIVE_DELTA is enabled;
+# snapshot preference now means "keep full captures as the fidelity floor",
+# not "disable in-place patches".  Heavy sites remain on the more aggressive
+# live cadence (google/netflix/comcast/...).
+_LIVE_DOM_HOSTS_RAW = os.environ.get(
+    "DOM_LIVE_HOSTS", "google.com,netflix.com,comcast.com,youtube.com,gstatic.com"
+)
+_LIVE_DOM_HOSTS = tuple(
+    h.strip().lower() for h in _LIVE_DOM_HOSTS_RAW.split(",") if h.strip()
+)
+
+
+def prefer_snapshot_for_url(url: str) -> bool:
+    """True when the URL should keep full captures as its fidelity floor.
+
+    The return value no longer disables delta patches; it only selects the
+    more conservative full-capture cadence.  All hosts still get safe
+    in-place updates when LIVE_DELTA is enabled.
+    """
+    if not url:
+        return True
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
+    except Exception:
+        host = ""
+    if not host:
+        return True
+    for h in _LIVE_DOM_HOSTS:
+        if host == h or host.endswith("." + h):
+            return False
+    return True
+
+
+def is_redraw_only_host(url: str) -> bool:
+    """True when the URL should bypass incremental delta patching and redraw the
+    full page snapshot on interaction.
+
+    Kept as a stub — the citi.com special case has been removed: with the
+    lenient ``t``-op application + html/body reset in the streaming iframe,
+    the delta channel now survives citi-style cookie / sign-in flows
+    without forcing a full snapshot on every interaction.  Future
+    heavy-hosts can be added back here when they earn the override.
+    """
+    return False
+
+
+
+# ---------------------------------------------------------------------------
+# Fast-capture pipeline (see MIGRATION_LIVE_MIRROR.md)
+# ---------------------------------------------------------------------------
+#
+# Capture backend for the LIVE victim mirror:
+#   fast        — in-page serializer + asset-cache rewrite (default)
+#   singlefile  — legacy SingleFile extension round-trip (pre-overhaul)
+# Legacy Playwright/direct archive flows (PCM page manager, LPV store) keep
+# SingleFile regardless; the SeleniumBase path does not load the extension:
+# self-containment is the point there, not latency.
+DOM_CAPTURE_MODE: str = os.environ.get("DOM_CAPTURE_MODE", "fast").strip().lower()
+
+# Coalesce interaction captures: at most one capture in flight per session;
+# triggers that arrive mid-capture set a dirty bit and produce exactly one
+# follow-up send carrying the latest reason.
+SEND_COALESCE: bool = os.environ.get("SEND_COALESCE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Skip the capture entirely when the cheap DOM checksum hasn't moved since
+# the last send (hover/poll re-triggers become no-ops).
+SKIP_UNCHANGED: bool = os.environ.get("DOM_CAPTURE_SKIP_UNCHANGED", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Live-delta layer: in-page MutationObserver streams compact DOM ops between
+# full captures; client applies them in place instead of rebuilding the iframe.
+LIVE_DELTA: bool = os.environ.get("LIVE_DELTA", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Debug/rollback: force the legacy "load + networkidle + readyState" settle
+# on EVERY capture, including interaction recaptures.
+FULL_SETTLE: bool = os.environ.get("DOM_CAPTURE_FULL_SETTLE", "").strip().lower() in ("1", "true", "yes", "on")
+
+# ---------------------------------------------------------------------------
+# Concurrent navigation pipeline (see sync_pipeline.py)
+# ---------------------------------------------------------------------------
+# Publish the navigation frame the moment a URL change is detected - before,
+# and independently of, any capture.  With this on, the mirrored client learns
+# the new URL in the same tick as the source browser; roll back with
+# DOM_CAPTURE_NAV_IMMEDIATE=0 (the URL then arrives with the document, as it
+# used to).
+NAV_IMMEDIATE: bool = os.environ.get(
+    "DOM_CAPTURE_NAV_IMMEDIATE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# In-page history hooks.  pushState/replaceState/popstate/hashchange produce
+# neither a DOM mutation nor a document load, so without these the only way to
+# see a route change is the 100 ms URL poll.  On by default: a route change
+# then leaves for the client in the same tick, and is marked same_document so
+# the client can skip the transition animation entirely.
+NAV_HISTORY_HOOKS: bool = os.environ.get(
+    "DOM_CAPTURE_HISTORY_HOOKS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# How long a navigation capture waits for the new document to leave
+# 'loading' before serializing what is there.  Capturing a parsing document
+# used to be avoided at the cost of up to 5 s of nothing (the old
+# readyState/networkidle wait); instead we now take the early document, mark it
+# ``partial``, and schedule a settled follow-up capture once the parser is
+# done.  The client gets content fast AND converges to the final DOM.
+NAV_READY_MS: int = max(0, int(os.environ.get("DOM_CAPTURE_NAV_READY_MS", "400")))
+
+# Upper bound on that settled follow-up wait (ms).  A page that never finishes
+# parsing must not leave the mirror on the early document forever.
+NAV_SETTLE_MAX_MS: int = max(500, int(os.environ.get("DOM_CAPTURE_NAV_SETTLE_MS", "5000")))
+
+# Follow an early (partial) navigation document with a settled capture.
+# DOM_CAPTURE_NAV_SETTLE_FOLLOWUP=0 leaves the early document as final.
+NAV_SETTLE_FOLLOWUP: bool = os.environ.get(
+    "DOM_CAPTURE_NAV_SETTLE_FOLLOWUP", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Independent capture lanes: a navigation capture may run concurrently with a
+# content capture instead of queueing behind it.  DOM_CAPTURE_CONCURRENT_LANES=0
+# restores the single global "one capture at a time" barrier.
+CONCURRENT_LANES: bool = os.environ.get(
+    "DOM_CAPTURE_CONCURRENT_LANES", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Ceiling on navigation captures that may run at the same time.  Two covers the
+# real case (a slow capture of the page just left, plus the new page) without
+# letting a redirect chain spawn unlimited serializations.
+NAV_CAPTURE_CONCURRENCY: int = max(1, int(os.environ.get("DOM_CAPTURE_NAV_CAPTURES", "2")))
+
+# Do not hold the delta channel shut while a full document is being captured.
+# Patches carry the document token + generation they belong to, so the client
+# can apply the ones that still fit and discard the ones a newer document has
+# already superseded.  DOM_CAPTURE_PATCH_DURING_CAPTURE=0 restores the old
+# "drop every patch while a capture is in flight" gate.
+PATCH_DURING_CAPTURE: bool = os.environ.get(
+    "DOM_CAPTURE_PATCH_DURING_CAPTURE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Asset-cache fetcher bounds (server-side fetch-once rewrite).
+# Raised from 48 -> 256: the cap silently dropped assets from heavy pages
+# (yahoo: half the stylesheets just never got fetched — the mirror lost
+# "some of the CSS").  256 covers real-world pages; env to tune down.
+ASSET_MAX_PER_PAGE: int = int(os.environ.get("DOM_CAPTURE_ASSET_MAX_PER_PAGE", "256"))
+ASSET_FETCH_TIMEOUT_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_TIMEOUT_S", "6"))
+ASSET_MAX_BYTES: int = int(os.environ.get("DOM_CAPTURE_ASSET_MAX_BYTES", str(12 * 1024 * 1024)))
+CACHE_MAX_ITEMS: int = int(os.environ.get("DOM_CAPTURE_CACHE_MAX_ITEMS", "4000"))
+CACHE_MAX_BYTES: int = int(os.environ.get("DOM_CAPTURE_CACHE_MAX_BYTES", str(192 * 1024 * 1024)))
+
+# Images this size or smaller are EMBEDDED as data: URIs in the captured
+# HTML (logos, icons, SVGs, GIFs) instead of pointing at /assets/<hash> —
+# the mirror renders them even when the client can't reach the /assets
+# route (reverse proxies that only forward /ws, offline viewers, copied
+# HTML artifacts).  Larger images keep the cache path so recaptures don't
+# re-ship megabytes.  0 disables embedding entirely.
+EMBED_MAX_BYTES: int = int(os.environ.get("DOM_CAPTURE_EMBED_MAX_BYTES", str(1024 * 1024)))
+
+# Stylesheets this size or smaller are INLINED as <style> blocks in the
+# captured HTML (after their inner url()/@import refs are rewritten) instead
+# of staying <link href="/assets/<hash>"> — mirrored pages keep their CSS
+# even when the client can't reach the /assets route (yahoo-class pages
+# render naked without it).  Larger stylesheets keep the cache path.
+# 0 disables CSS inlining (back to pure cache refs).
+# 3 MB covers virtually every real stylesheet (app bundles included) — mirrors
+# must get ALL the CSS, since the client may not reach the /assets route.
+CSS_EMBED_MAX_BYTES: int = int(os.environ.get("DOM_CAPTURE_CSS_EMBED_MAX_BYTES", str(3 * 1024 * 1024)))
+
+
+_CSS_STYLE_CLOSE_RE = re.compile(r"</style", re.IGNORECASE)
+_ASSET_PATH_RE = re.compile(r"/assets/([0-9a-f]{64})(?:\.[a-z0-9]+)?", re.IGNORECASE)
+
+
+def _inline_css_safe(css_text: str) -> str:
+    """Make CSS safe to drop inside a <style> element: the HTML parser must
+    never see a literal '</style' from CSS strings/comments."""
+    return _CSS_STYLE_CLOSE_RE.sub("<\\/style", css_text)
+
+
+# ---------------------------------------------------------------------------
+# SingleFile source loading
+# ---------------------------------------------------------------------------
+
+_SINGLEFILE_SOURCES: Optional[Dict[str, str]] = None
+_SINGLEFILE_SOURCES_LOCK = asyncio.Lock()
+
+
+def _find_singlefile_lib_dir() -> Optional[Path]:
+    env_override = os.environ.get("SINGLEFILE_LIB_DIR")
+    if env_override:
+        p = Path(env_override)
+        if (p / "lib" / "single-file-script.js").is_file():
+            return p
+        logger.warning("SINGLEFILE_LIB_DIR=%r set but %s missing", env_override, p / "lib" / "single-file-script.js")
+
+    candidates: List[Path] = [
+        Path("/usr/lib/node_modules/single-file-cli"),
+        Path("/usr/local/lib/node_modules/single-file-cli"),
+        Path("/opt/homebrew/lib/node_modules/single-file-cli"),
+        Path.home() / ".npm-global" / "lib" / "node_modules" / "single-file-cli",
+        Path.home() / "n" / "lib" / "node_modules" / "single-file-cli",
+        Path.home() / ".linuxbrew" / "lib" / "node_modules" / "single-file-cli",
+    ]
+    nvm_root = Path.home() / ".nvm" / "versions" / "node"
+    if nvm_root.is_dir():
+        try:
+            for v in nvm_root.iterdir():
+                if v.is_dir():
+                    candidates.append(v / "lib" / "node_modules" / "single-file-cli")
+        except OSError:
+            pass
+    if os.name == "nt":
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        candidates.append(Path(pf) / "nodejs" / "node_modules" / "single-file-cli")
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "npm" / "node_modules" / "single-file-cli")
+
+    for c in candidates:
+        try:
+            if (c / "lib" / "single-file-script.js").is_file():
+                return c
+        except (OSError, PermissionError):
+            continue
+
+    npm_path = shutil.which("npm")
+    if npm_path:
+        try:
+            out = subprocess.run([npm_path, "root", "-g"], capture_output=True, text=True, timeout=5)
+            if out.returncode == 0 and out.stdout.strip():
+                root = Path(out.stdout.strip()) / "single-file-cli"
+                if (root / "lib" / "single-file-script.js").is_file():
+                    return root
+        except Exception:
+            pass
+
+    logger.error(
+        "single-file-cli not found. Install with `npm install -g single-file-cli` "
+        "or set SINGLEFILE_LIB_DIR."
+    )
+    return None
+
+
+async def _load_singlefile_sources_uncached() -> Optional[Dict[str, str]]:
+    global _SINGLEFILE_SOURCES
+    if _SINGLEFILE_SOURCES is not None:
+        return _SINGLEFILE_SOURCES
+
+    lib_dir = _find_singlefile_lib_dir()
+    if lib_dir is None:
+        # Fallback: use the shipped MV3 extension's bundled SingleFile
+        # sources directly so library-injection still works even when
+        # `single-file-cli` is not installed (e.g. in minimal Docker).
+        # This keeps Yahoo / strict-CSP fallback from being "hrabbinyme"
+        # when only the extension is present.
+        try:
+            candidates = [
+                Path(__file__).resolve().parent / "single",
+                Path.cwd() / "single",
+                Path.home() / "shifixsxs" / "single",
+                Path("/home/user/shifixsxs/single"),
+            ]
+            env_dir = os.environ.get("SINGLEFILE_EXT_DIR", "").strip()
+            if env_dir:
+                candidates.insert(0, Path(env_dir))
+            ext_lib = None
+            for cand in candidates:
+                cand_lib = Path(os.path.abspath(cand)) / "lib"
+                if (cand_lib / "single-file.js").is_file() and (cand_lib / "single-file-hooks-frames.js").is_file():
+                    ext_lib = cand_lib
+                    break
+            if ext_lib is not None:
+                hook_src = (ext_lib / "single-file-hooks-frames.js").read_text(encoding="utf-8", errors="ignore")
+                main_src = (ext_lib / "single-file.js").read_text(encoding="utf-8", errors="ignore")
+                zip_candidates = [ext_lib / "single-file-zip.js", ext_lib / "single-file-zip.min.js"]
+                zip_src = ""
+                for zc in zip_candidates:
+                    if zc.is_file():
+                        zip_src = zc.read_text(encoding="utf-8", errors="ignore")
+                        break
+                if hook_src and main_src:
+                    _SINGLEFILE_SOURCES = {"hook": hook_src, "main": main_src, "zip": zip_src}
+                    logger.debug("SingleFile lib: using extension bundled sources (no CLI) from %s", ext_lib)
+                    return _SINGLEFILE_SOURCES
+        except Exception as _e:
+            logger.debug("SingleFile lib: extension fallback failed: %s", _e)
+        return None
+
+    script_path = lib_dir / "lib" / "single-file-script.js"
+    script_uri = script_path.resolve().as_uri()
+    extractor = (
+        "import * as sf from %r;"
+        "const o = {"
+        "  hook: await sf.getHookScriptSource(),"
+        "  main: await sf.getScriptSource({}),"
+        "  zip: await sf.getZipScriptSource()"
+        "};"
+        "process.stdout.write('###SPLIT###' + JSON.stringify(o) + '###END###');"
+    ) % script_uri
+
+    def _run() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["node", "--input-type=module", "-e", extractor],
+            capture_output=True, text=True, timeout=30,
+        )
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        logger.error("Failed to extract single-file sources: %s", exc)
+        return None
+
+    out = result.stdout or ""
+    if "###SPLIT###" not in out or "###END###" not in out:
+        logger.error("single-file source extraction malformed (rc=%s)", result.returncode)
+        return None
+
+    payload = out.split("###SPLIT###", 1)[1].rsplit("###END###", 1)[0]
+    try:
+        parsed = json.loads(payload)
+    except Exception as exc:
+        logger.error("Failed to parse single-file sources: %s", exc)
+        return None
+
+    if not (isinstance(parsed, dict) and parsed.get("hook") and parsed.get("main") and parsed.get("zip")):
+        logger.error("single-file sources payload missing required fields")
+        return None
+
+    _SINGLEFILE_SOURCES = parsed
+    return _SINGLEFILE_SOURCES
+
+
+async def _load_singlefile_sources() -> Optional[Dict[str, str]]:
+    """Initialize the process-wide SingleFile sources exactly once."""
+    async with _SINGLEFILE_SOURCES_LOCK:
+        if _SINGLEFILE_SOURCES is not None:
+            return _SINGLEFILE_SOURCES
+        return await _load_singlefile_sources_uncached()
+
+
+# ---------------------------------------------------------------------------
+# Page helpers
+# ---------------------------------------------------------------------------
+
+async def _ensure_page_stable(page: Any) -> None:
+    """Best-effort wait for the page to settle.  Each step has a tight
+    timeout so a hung network request doesn't block the capture pipeline."""
+    try:
+        await page.wait_for_load_state("load", timeout=2500)
+    except Exception:
+        pass
+    try:
+        await page.wait_for_load_state("networkidle", timeout=2500)
+    except Exception:
+        pass
+    try:
+        await page.wait_for_function("document.readyState === 'complete'", timeout=1000)
+    except Exception:
+        pass
+    if PRE_CAPTURE_WAIT > 0:
+        await asyncio.sleep(PRE_CAPTURE_WAIT)
+
+
+# <base href="..."> injector.  SingleFile output usually has a <base> already;
+# we ensure the captured page's <head> has one so relative URLs in the
+# captured HTML resolve against the original page URL.
+_BASE_HREF_RE = re.compile(r"<base\b[^>]*\bhref=[\"'][^\"']*[\"'][^>]*>", re.IGNORECASE)
+
+# ---------------------------------------------------------------------------
+# Dead-subframe stripping
+# ---------------------------------------------------------------------------
+# When an iframe refuses to load (proxy block, X-Frame-Options, refused
+# connection — e.g. gpt.mail.yahoo.net), Chrome paints an error page inside
+# the frame ("<div id=\"sub-frame-error\"> ... refused to connect").  That
+# error markup must never reach the mirror: it renders as a broken page
+# island and the real frame content isn't there anyway.  Fast captures drop
+# such iframes in the serializer; this net covers SingleFile/delta-replayed
+# HTML too.  Same idea: whole chrome-error:// iframes and documents.
+
+_IFRAME_BLOCK_RE = re.compile(
+    r"<iframe\b(?P<attrs>[^>]*)(?:>(?P<body>.*?</iframe\s*>)|/?>)",
+    re.IGNORECASE | re.DOTALL,
+)
+_DEAD_ERROR_OPEN_RE = re.compile(
+    r"<div\b[^>]*\bid\s*=\s*[\"'](?:sub-frame-error|main-frame-error)[\"'][^>]*>",
+    re.IGNORECASE,
+)
+_DIV_TOKEN_RE = re.compile(r"</?div\b[^>]*>", re.IGNORECASE)
+_KNOWN_DEAD_FRAME_HOSTS = {"gpt.mail.yahoo.net"}
+_PROTECTED_HTML_RE = re.compile(
+    r"<!--.*?-->|<(?P<tag>script|style)\b[^>]*>.*?</(?P=tag)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _rewrite_html_outside_protected(html: str, transform: Any) -> str:
+    """Apply a markup transform without touching script/style text or comments."""
+    pieces: List[str] = []
+    cursor = 0
+    for protected in _PROTECTED_HTML_RE.finditer(html):
+        pieces.append(transform(html[cursor:protected.start()]))
+        pieces.append(protected.group(0))
+        cursor = protected.end()
+    pieces.append(transform(html[cursor:]))
+    return "".join(pieces)
+
+
+def _remove_chrome_error_blocks_plain(html: str) -> str:
+    """Remove Chrome error divs with balanced nested divs.
+
+    A non-greedy regex is not sufficient here: Chrome's error template has
+    changed its nesting over time, and stopping after two closing tags can
+    leave a visible ``</div>`` or the error details behind.
+    """
+    if not html:
+        return html
+    pieces: List[str] = []
+    cursor = 0
+    while True:
+        opening = _DEAD_ERROR_OPEN_RE.search(html, cursor)
+        if not opening:
+            pieces.append(html[cursor:])
+            break
+        pieces.append(html[cursor:opening.start()])
+        depth = 1
+        scan = opening.end()
+        end = len(html)
+        while depth and scan < len(html):
+            token = _DIV_TOKEN_RE.search(html, scan)
+            if not token:
+                end = len(html)
+                depth = 0
+                break
+            if token.group(0).startswith("</"):
+                depth -= 1
+            else:
+                depth += 1
+            scan = token.end()
+            if depth == 0:
+                end = scan
+        cursor = end
+    return "".join(pieces)
+
+
+def _remove_chrome_error_blocks(html: str) -> str:
+    return _rewrite_html_outside_protected(html, _remove_chrome_error_blocks_plain)
+
+
+def _remove_known_dead_frame_tags(html: str) -> str:
+    """Drop known failed embeds even when a caller has no page URL."""
+    def _replace(match: re.Match[str]) -> str:
+        attrs = match.group("attrs") or ""
+        src_match = re.search(r"\bsrc\s*=\s*([\"'])(.*?)\1", attrs,
+                              re.IGNORECASE | re.DOTALL)
+        if not src_match:
+            return match.group(0)
+        try:
+            host = (urlsplit(src_match.group(2).strip()).hostname or "").lower()
+            return "" if host in _KNOWN_DEAD_FRAME_HOSTS else match.group(0)
+        except Exception:
+            return match.group(0)
+
+    return _rewrite_html_outside_protected(
+        html, lambda part: _IFRAME_BLOCK_RE.sub(_replace, part)
+    )
+
+
+def _strip_dead_subframes(html: str, base_url: Optional[str] = None) -> str:
+    """Remove browser error documents and iframe shells that cannot mirror.
+
+    The fast serializer already omits cross-origin frames.  SingleFile and
+    fallback captures can still contain the opening iframe tag, however, and
+    the client may render Chrome's ``sub-frame-error`` page inside it.  Apply
+    the same policy to every full-capture tier, while retaining same-origin,
+    ``about:``, ``data:`` and ``srcdoc`` frames.
+    """
+    if not html:
+        return html
+    out = html
+    # Whole chrome-error iframes.  Keep this separate from the generic iframe
+    # pass so it also works when no page URL is available.
+    out = _rewrite_html_outside_protected(
+        out,
+        lambda part: re.sub(
+            r"<iframe\b[^>]*\bsrc=[\"\']chrome-error://[^\"\']*[\"\'][^>]*>(?:.*?</iframe>)?",
+            "", part, flags=re.IGNORECASE | re.DOTALL,
+        ),
+    )
+    # Chrome's error template is nested and has varied across Chrome builds;
+    # remove the balanced block rather than guessing how many div closers it
+    # contains.
+    out = _remove_chrome_error_blocks(out)
+    # Keep the Yahoo embed known to fail out of legacy callers that only pass
+    # HTML. With a page URL, the generic origin check below removes all such
+    # cross-origin frames, not only this host.
+    out = _remove_known_dead_frame_tags(out)
+
+    if not base_url:
+        return out
+    try:
+        page = urlsplit(base_url)
+        page_origin = (
+            page.scheme.lower(), page.hostname.lower() if page.hostname else "",
+            page.port or (443 if page.scheme.lower() == "https" else 80),
+        )
+    except Exception:
+        return out
+
+    def _frame_replacement(match: re.Match[str]) -> str:
+        attrs = match.group("attrs") or ""
+        src_match = re.search(r"\bsrc\s*=\s*([\"'])(.*?)\1", attrs,
+                              re.IGNORECASE | re.DOTALL)
+        if not src_match:
+            return match.group(0)  # srcdoc/about:blank/blob/data frames may be valid
+        src = src_match.group(2).strip()
+        if not src or src.lower().startswith(("about:", "data:", "blob:", "javascript:")):
+            return match.group(0)
+        try:
+            target = urlsplit(urljoin(base_url, src))
+            if target.scheme.lower() not in ("http", "https"):
+                return match.group(0)
+            target_origin = (
+                target.scheme.lower(), target.hostname.lower() if target.hostname else "",
+                target.port or (443 if target.scheme.lower() == "https" else 80),
+            )
+            if target_origin != page_origin:
+                return ""
+        except Exception:
+            return match.group(0)
+        return match.group(0)
+
+    return _rewrite_html_outside_protected(
+        out, lambda part: _IFRAME_BLOCK_RE.sub(_frame_replacement, part)
+    )
+
+
+def _inject_base_href(html: str, url: str) -> str:
+    if not html or not url:
+        return html
+    safe_url = url.replace('"', "&quot;")
+    injected = f'<base href="{safe_url}"><meta name="referrer" content="no-referrer">'
+    if _BASE_HREF_RE.search(html):
+        return _BASE_HREF_RE.sub(injected, html, count=1)
+    m = re.search(r"<head\b[^>]*>", html, re.IGNORECASE)
+    if m:
+        return html[: m.end()] + injected + html[m.end() :]
+    m = re.search(r"<html\b[^>]*>", html, re.IGNORECASE)
+    if m:
+        return html[: m.end()] + "<head>" + injected + "</head>" + html[m.end() :]
+    return injected + html
+
+
+# ---------------------------------------------------------------------------
+# Mirror-font handling: preserve original site typography
+# ---------------------------------------------------------------------------
+# Pages retain the target website's authentic fonts (e.g. Google Sans,
+# Amazon Ember, Segoe UI, Roboto, custom webfonts) instead of forcing
+# Montserrat. Any legacy or stale shfm-font style blocks are stripped so
+# the site's typography renders naturally, accurately, and without external font-fetching delays.
+
+def _strip_mirror_font(html: str) -> str:
+    """Ensure no legacy forced font overrides (shfm-font) clobber the target site's natural fonts."""
+    if not html or "shfm-font" not in html:
+        return html
+    return re.sub(r'<style\b[^>]*>/\*\s*shfm-font\s*\*/.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Content-addressed asset cache (server fetch-once ↔ /assets/<hash> endpoint)
+# ---------------------------------------------------------------------------
+
+class AssetEntry:
+    """One cached asset.  Fields match what api.py's /assets handler reads."""
+
+    __slots__ = ("data", "content_type", "size")
+
+    def __init__(self, data: bytes, content_type: str) -> None:
+        self.data = data
+        self.content_type = content_type or "application/octet-stream"
+        self.size = len(data)
+
+
+class AssetManager:
+    """Content-addressed cache with session leases.
+
+    A shared digest may be reused by many sessions, but eviction and explicit
+    clears never remove an asset while a live session still references it.
+    """
+
+    def __init__(self, max_items: int = CACHE_MAX_ITEMS, max_bytes: int = CACHE_MAX_BYTES) -> None:
+        self._items: "OrderedDict[str, AssetEntry]" = OrderedDict()
+        self._by_url: "OrderedDict[str, str]" = OrderedDict()
+        self._refs: Dict[str, set] = {}
+        # CSS can point at other cached assets.  Keep those dependency leases
+        # alive whenever the stylesheet itself is leased by a live session.
+        self._deps: Dict[str, set] = {}
+        self._lock = threading.RLock()
+        self._max_items = max_items
+        self._max_bytes = max_bytes
+        self._bytes = 0
+        self._hits = 0
+        self._misses = 0
+        self._evictions = 0
+        self._registered = 0
+
+    def register(self, data: bytes, content_type: str, url: Optional[str] = None,
+                 owner_id: Optional[str] = None) -> str:
+        digest = hashlib.sha256(data).hexdigest()
+        with self._lock:
+            existing = self._items.get(digest)
+            if existing is not None:
+                self._items.move_to_end(digest)
+            else:
+                entry = AssetEntry(data, content_type)
+                self._items[digest] = entry
+                self._bytes += entry.size
+                self._registered += 1
+            if (content_type or "").split(";", 1)[0].strip().lower() == "text/css":
+                deps = {m.group(1).lower() for m in _ASSET_PATH_RE.finditer(data.decode("utf-8", errors="ignore"))}
+                self._deps[digest] = deps
+            if owner_id:
+                self._retain_locked(digest, str(owner_id))
+            if url:
+                self._by_url[url] = digest
+                self._by_url.move_to_end(url)
+            self._evict_unreferenced_locked()
+            return digest
+
+    def _retain_locked(self, digest: str, owner: str, seen: Optional[set] = None) -> None:
+        if digest not in self._items:
+            return
+        seen = seen or set()
+        if digest in seen:
+            return
+        seen.add(digest)
+        self._refs.setdefault(digest, set()).add(owner)
+        for dependency in self._deps.get(digest, set()):
+            self._retain_locked(dependency, owner, seen)
+
+    def retain(self, digest: str, owner_id: Optional[str]) -> bool:
+        if not digest or not owner_id:
+            return False
+        with self._lock:
+            if digest not in self._items:
+                return False
+            self._retain_locked(digest, str(owner_id))
+            return True
+
+    def _evict_unreferenced_locked(self) -> None:
+        while self._items and (len(self._items) > self._max_items or self._bytes > self._max_bytes):
+            candidate = next(
+                ((digest, entry) for digest, entry in self._items.items()
+                 if not self._refs.get(digest)),
+                None,
+            )
+            if candidate is None:
+                # Every excess entry is still visible to a live session. Keep
+                # it rather than invalidating another session's mirror.
+                break
+            evict_digest, ev = candidate
+            self._items.pop(evict_digest, None)
+            self._bytes -= ev.size
+            self._refs.pop(evict_digest, None)
+            self._deps.pop(evict_digest, None)
+            self._evictions += 1
+            for url, digest in list(self._by_url.items()):
+                if digest == evict_digest:
+                    self._by_url.pop(url, None)
+        while len(self._by_url) > self._max_items:
+            self._by_url.popitem(last=False)
+
+    def get(self, digest: str) -> Optional[AssetEntry]:
+        with self._lock:
+            entry = self._items.get(digest)
+            if entry is None:
+                self._misses += 1
+                return None
+            self._hits += 1
+            self._items.move_to_end(digest)
+            return entry
+
+    def get_by_url(self, url: str, owner_id: Optional[str] = None) -> Optional[AssetEntry]:
+        with self._lock:
+            digest = self._by_url.get(url)
+            if digest and owner_id:
+                self._retain_locked(digest, str(owner_id))
+        return self.get(digest) if digest else None
+
+    def digest_for(self, data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    async def clear(self, owner_id: Optional[str] = None) -> None:
+        """Release one session, or prune only unreferenced global entries."""
+        with self._lock:
+            if owner_id is not None:
+                owner = str(owner_id)
+                for refs in self._refs.values():
+                    refs.discard(owner)
+            else:
+                # A global admin clear must not invalidate live sessions.
+                pass
+            self._evict_unreferenced_locked()
+
+    async def release_session(self, owner_id: str) -> None:
+        await self.clear(owner_id=owner_id)
+
+    def stats(self) -> Dict[str, Any]:
+        with self._lock:
+            referenced = sum(1 for refs in self._refs.values() if refs)
+            return {
+                "items": len(self._items),
+                "url_entries": len(self._by_url),
+                "bytes": self._bytes,
+                "max_items": self._max_items,
+                "max_bytes": self._max_bytes,
+                "hits": self._hits,
+                "misses": self._misses,
+                "evictions": self._evictions,
+                "registered": self._registered,
+                "referenced_items": referenced,
+            }
+
+
+_GLOBAL_ASSET_MANAGER: Optional[AssetManager] = None
+_GLOBAL_ASSET_MANAGER_LOCK = threading.Lock()
+
+
+def get_global_asset_manager() -> AssetManager:
+    """Process-wide singleton used by the capture pipeline and /assets."""
+    global _GLOBAL_ASSET_MANAGER
+    if _GLOBAL_ASSET_MANAGER is None:
+        with _GLOBAL_ASSET_MANAGER_LOCK:
+            if _GLOBAL_ASSET_MANAGER is None:
+                _GLOBAL_ASSET_MANAGER = AssetManager()
+    return _GLOBAL_ASSET_MANAGER
+
+
+_MIME_TO_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/svg+xml": "svg",
+    "image/x-icon": "ico",
+    "image/bmp": "bmp",
+    "text/css": "css",
+    "application/javascript": "js",
+    "text/javascript": "js",
+    "application/json": "json",
+    "font/woff": "woff",
+    "font/woff2": "woff2",
+    "font/ttf": "ttf",
+    "font/otf": "otf",
+    "application/font-woff": "woff",
+    "application/font-woff2": "woff2",
+    "application/vnd.ms-fontobject": "eot",
+}
+
+
+def _guess_ext_from_content_type(content_type: str) -> str:
+    """Reverse of api.py's _EXT_TO_MIME fallback table."""
+    return _MIME_TO_EXT.get((content_type or "").split(";", 1)[0].strip().lower(), "")
+
+
+# ---------------------------------------------------------------------------
+# Fast in-page serializer
+# ---------------------------------------------------------------------------
+#
+# One CSP-immune evaluate (Runtime.callFunctionOn) serializes the live DOM
+# to HTML.  Compared to SingleFile it is ~100x faster because it does NOT
+# fetch/inline resources: external URLs stay URLs and are rewritten into
+# the asset cache server-side.  Fidelity rules:
+#   * live form state (input.value / checked / option.selected / textarea)
+#     is materialized into attributes/text so the mirror renders what the
+#     victim sees;
+#   * open shadow roots serialize as declarative shadow DOM
+#     (<template shadowrootmode>); closed roots become a marker comment;
+#   * same-origin canvases are rasterized to data-URL <img>; tainted ones
+#     are left as-is;
+#   * <base> tags are dropped (the server injects its own);
+#   * when deltaIds is on, every element is stamped with a stable
+#     data-mid from a page-lifetime WeakMap — the delta observer reuses
+#     the same ids so client patches address the right nodes after a
+#     full resync.
+_FAST_SERIALIZE_JS = r"""
+(params) => {
+  const deltaIds = !!(params && params.deltaIds);
+  const MID = 'data-mid';
+  if (deltaIds) {
+    if (!window.__domMidMap) window.__domMidMap = new WeakMap();
+    if (!window.__domMidNext) window.__domMidNext = 1;
+    if (!window.__domMidOwner) window.__domMidOwner = new Map();
+    // Text-node counts per element, shared with the delta observer: when a
+    // page replaces three text nodes with one, the observer has to know how
+    // many the mirror is holding before it can blank the leftovers.
+    if (!window.__domTextCounts) window.__domTextCounts = new Map();
+  }
+  // A data-mid belongs to ONE live element.
+  //
+  // cloneNode() copies attributes, so a page that builds a list from a cached
+  // row (Google's autocomplete, every virtualised table, any React keyed list
+  // that reuses a template node) hands us a row that already carries its
+  // source's data-mid.  Adopting that attribute gave several live siblings the
+  // SAME mid: the mirror's querySelector('[data-mid="7"]') always found the
+  // first one, so patches, clicks and removals aimed at row 3 landed on row 1
+  // — the row sat there refusing to change.
+  //
+  // So an attribute mid is adopted only when no other live element owns it;
+  // otherwise the clone gets a fresh id and the attribute is rewritten.
+  const midOwner = (m) => {
+    const held = window.__domMidOwner.get(m);
+    if (!held) return null;
+    if (typeof WeakRef === 'function' && held instanceof WeakRef) {
+      const deref = held.deref();
+      if (!deref) { window.__domMidOwner.delete(m); return null; }
+      return deref;
+    }
+    return held;
+  };
+  // The owner map only knows about nodes we have already serialized. A clone
+  // can arrive before its source was ever touched (a template stamped in an
+  // earlier document, a fragment re-inserted from a cache), so ask the live
+  // tree as well: does any OTHER element already carry this mid?  The query
+  // runs only when an attribute mid is a candidate — nodes we stamped return
+  // from the WeakMap above and never reach here.
+  const midTaken = (el, m) => {
+    const other = midOwner(m);
+    if (other && other !== el) return true;
+    try {
+      // getRootNode() on a detached node returns the node itself, which would
+      // ask "is this id taken?" of the wrong tree. Fall back to the document.
+      let root = (el.getRootNode && el.getRootNode()) || null;
+      if (!root || root === el || !root.querySelector) root = el.ownerDocument || document;
+      const first = root.querySelector ? root.querySelector('[' + MID + '="' + m + '"]') : null;
+      if (first && first !== el) return true;
+    } catch (e) { /* unsupported selector */ }
+    return false;
+  };
+  // Fresh ids must clear every mid already live in the document.  The counter
+  // starts at 1, but a page can be holding ids stamped by an earlier capture
+  // (the full serializer stamps them), so the first allocation scans once and
+  // lifts the counter above all of them.  One query, then never again: the
+  // counter only moves up, so it can never hand out a live id afterwards.
+  let midFloored = false;
+  const midFloor = (el) => {
+    if (midFloored) return;
+    midFloored = true;
+    try {
+      const doc = (el && el.ownerDocument) || (typeof document !== 'undefined' ? document : null);
+      if (!doc || !doc.querySelectorAll) return;
+      const nodes = doc.querySelectorAll('[' + MID + ']');
+      for (let i = 0; i < nodes.length; i++) {
+        const v = parseInt(nodes[i].getAttribute(MID), 10);
+        if (v && v >= window.__domMidNext) window.__domMidNext = v + 1;
+      }
+    } catch (e) { /* no document, or a hostile selector */ }
+  };
+  const midOf = (el) => {
+    if (!el || el.nodeType !== 1) return 0;
+    let m = window.__domMidMap.get(el);
+    if (m) return m;
+    if (el.getAttribute) {
+      const parsed = parseInt(el.getAttribute(MID), 10);
+      if (parsed && !midTaken(el, parsed)) m = parsed;
+    }
+    if (!m) { midFloor(el); m = window.__domMidNext++; }
+    window.__domMidMap.set(el, m);
+    if (m >= window.__domMidNext) window.__domMidNext = m + 1;
+    try {
+      const weak = (typeof WeakRef === 'function');
+      window.__domMidOwner.set(m, weak ? new WeakRef(el) : el);
+      // Without WeakRef the map holds its elements strongly. Bound it: ids
+      // already in the document are still caught by midTaken()'s tree query,
+      // so a clear costs a few extra lookups, never a duplicate.
+      if (!weak && window.__domMidOwner.size > 50000) window.__domMidOwner.clear();
+    } catch (e) { /* no WeakRef, no Map: a fresh id is still correct */ }
+    try { el.setAttribute(MID, String(m)); } catch (e) {}
+    return m;
+  };
+  const escText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const escAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  // CSS-in-JS / constructable stylesheets (styled-components SSR-mode,
+  // Lit, MUI, Tailwind JIT injectors): rules living in
+  // ``adoptedStyleSheets`` have NO DOM node, so plain HTML serialization
+  // loses them.  We re-materialize them as <style> elements.
+  const adoptedCss = (root) => {
+    try {
+      const sheets = root.adoptedStyleSheets || [];
+      let css = '';
+      for (const sh of sheets) {
+        try { for (const r of sh.cssRules) css += r.cssText + '\n'; } catch (e) { /* cross-origin sheet */ }
+      }
+      return css;
+    } catch (e) { return ''; }
+  };
+  const adoptedStyleTag = (css) => css
+    ? '<style data-shf-adopted="1">' + css.replace(/<\//g, '<\\/') + '</style>'
+    : '';
+  // SingleFile technique: the CSSOM is the truth, DOM text is stale.
+  // <style> elements carry their ORIGINAL text even after page scripts
+  // insertRule()/deleteRule(); sheet.cssRules reflects the ACTUAL current
+  // cascade.  <link> stylesheets that are readable (same-origin or
+  // CORS-allowed) get materialized inline with recursive @import
+  // expansion, so their styling ships without a network fetch at all.
+  const rulesToCss = (rules, depth) => {
+    let css = '';
+    try {
+      for (const r of (rules || [])) {
+        if (r && r.type === 3 /* CSSRule.IMPORT_RULE */) {
+          try {
+            if (depth < 3 && r.styleSheet && r.styleSheet.cssRules) {
+              css += rulesToCss(r.styleSheet.cssRules, depth + 1);
+              continue;
+            }
+          } catch (e) { /* cross-origin import */ }
+        }
+        css += (r ? r.cssText : '') + '\n';
+      }
+    } catch (e) { /* sheet vanished */ }
+    return css;
+  };
+  const liveSheetCss = (sheet) => {
+    try { return (sheet && sheet.cssRules) ? rulesToCss(sheet.cssRules, 0) : ''; }
+    catch (e) { return ''; }  // SecurityError on cross-origin sheets
+  };
+  const styleSafe = (css) => css.replace(/<\//g, '<\\/');
+
+  const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+  const attrsFor = (el, tag) => {
+    let s = '';
+    const isFormCtl = (tag === 'input' || tag === 'option');
+    const list = el.attributes;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      const n = a.name;
+      if (n === MID) continue;
+      if (isFormCtl && (n === 'value' || n === 'checked' || n === 'selected')) continue;
+      s += ' ' + n + '="' + escAttr(a.value) + '"';
+    }
+    if (tag === 'input') {
+      const ty = (el.getAttribute('type') || 'text').toLowerCase();
+      if (ty === 'checkbox' || ty === 'radio') {
+        if (el.checked) s += ' checked';
+      } else if (ty !== 'file') {
+        s += ' value="' + escAttr(el.value == null ? '' : el.value) + '"';
+      }
+    } else if (tag === 'option') {
+      if (el.selected) s += ' selected';
+    }
+    // `disabled` / `readOnly` are PROPERTIES that do not reflect back to the
+    // attribute. A control the page switched off in script came out enabled
+    // in the mirror — visible, clickable, and wrong. State, not markup.
+    const ctl = tag === 'input' || tag === 'button' || tag === 'select'
+      || tag === 'textarea' || tag === 'option' || tag === 'fieldset' || tag === 'optgroup';
+    if (ctl) {
+      try {
+        if (el.disabled === true && !el.hasAttribute('disabled')) s += ' disabled';
+        if (el.readOnly === true && !el.hasAttribute('readonly')) s += ' readonly';
+      } catch (e) { /* ignore */ }
+    }
+    if (deltaIds) s += ' ' + MID + '="' + midOf(el) + '"';
+    return s;
+  };
+  // ---------------------------------------------------------------------
+  // Generated content (::before / ::after)
+  // ---------------------------------------------------------------------
+  // Icons, bullets, quotes, badges, arrows and menu carets on modern pages
+  // are frequently NOT elements: they are `content:` on a pseudo-element.
+  // An HTML serialization has no way to carry them, so those glyphs simply
+  // vanish from the mirror ("content still skipped").
+  //
+  // Rather than asking getComputedStyle for a pseudo-element on every node
+  // (thousands of forced style resolutions on a big page), we ask the
+  // stylesheets which elements could have one: only rules whose selector
+  // mentions ::before/::after are resolved at all.  That keeps the pass
+  // proportional to the number of generated-content rules, not to the DOM.
+  const PSEUDO_LIMIT = 400;
+  const pseudoMap = new Map();
+  const pseudoText = (cs) => {
+    if (!cs) return '';
+    try {
+      if (cs.display === 'none' || cs.visibility === 'hidden') return '';
+      // Absolute/fixed generated content is decoration positioned over the
+      // element (icon fonts, badges). Re-emitting it as a flow node would
+      // move it, so it is deliberately left out.
+      if (cs.position !== 'static') return '';
+      let c = cs.content;
+      if (!c || c === 'none' || c === 'normal') return '';
+      if (c.indexOf('url(') !== -1) return '';
+      const m = /^"([\s\S]*)"$/.exec(c) || /^'([\s\S]*)'$/.exec(c);
+      let text = m ? m[1] : c;
+      // CSS escape sequences (icon-font fallbacks, quotes, nbsp).
+      text = text.replace(/\\([0-9a-fA-F]{1,6})\s?/g, (all, hex) => {
+        try { return String.fromCodePoint(parseInt(hex, 16)); } catch (e) { return ''; }
+      }).replace(/\\([\s\S])/g, '$1');
+      if (!text) return '';
+      if (text.length > 120) return '';
+      return text;
+    } catch (e) { return ''; }
+  };
+  const PSEUDO_RE = /(::?)(before|after)\s*$/i;
+  const collectPseudoRules = (rules, out, depth) => {
+    if (!rules || depth > 3) return;
+    for (let i = 0; i < rules.length; i++) {
+      const r = rules[i];
+      if (!r) continue;
+      if (r.selectorText) {
+        // Grouped selectors: only the parts that end in a pseudo-element.
+        const parts = String(r.selectorText).split(',');
+        for (let j = 0; j < parts.length; j++) {
+          const sel = parts[j].trim();
+          const m = PSEUDO_RE.exec(sel);
+          if (!m) continue;
+          const base = sel.slice(0, m.index).trim();
+          if (!base) continue;     // bare `::before` — no element to attach to
+          // Skip selectors that themselves target a pseudo-class element
+          // state (`a:hover::after` matches nothing after capture anyway).
+          if (/::?[a-z-]+\s*\(?/i.test(base.replace(/:not\([^)]*\)/g, ''))) continue;
+          out.push([base, m[2].toLowerCase()]);
+        }
+      }
+      if (r.cssRules && r.cssRules.length && (r.type === 4 || r.type === 12 || r.type === 3)) {
+        collectPseudoRules(r.cssRules, out, depth + 1);
+      }
+    }
+  };
+  const buildPseudoMap = () => {
+    if (!window.getComputedStyle) return;
+    const pairs = [];
+    try {
+      const sheets = document.styleSheets || [];
+      for (let i = 0; i < sheets.length; i++) {
+        let rules = null;
+        try { rules = sheets[i].cssRules; } catch (e) { continue; }   // cross-origin
+        collectPseudoRules(rules, pairs, 0);
+      }
+    } catch (e) { return; }
+    let seen = 0;
+    for (let i = 0; i < pairs.length && seen < PSEUDO_LIMIT; i++) {
+      const base = pairs[i][0], which = pairs[i][1];
+      let els;
+      try { els = document.querySelectorAll(base); } catch (e) { continue; }
+      for (let k = 0; k < els.length && seen < PSEUDO_LIMIT; k++) {
+        const el = els[k];
+        let cs = null;
+        try { cs = window.getComputedStyle(el, '::' + which); } catch (e) { continue; }
+        const text = pseudoText(cs);
+        if (!text) continue;
+        seen++;
+        let entry = pseudoMap.get(el);
+        if (!entry) { entry = {}; pseudoMap.set(el, entry); }
+        if (!entry[which]) entry[which] = text;
+      }
+    }
+  };
+  buildPseudoMap();
+  const pseudoSpan = (el, which) => {
+    const entry = pseudoMap.get(el);
+    if (!entry || !entry[which]) return '';
+    return '<span data-shf-pseudo="' + which + '">' + escText(entry[which]) + '</span>';
+  };
+
+  const serialize = (node, out) => {
+    const t = node.nodeType;
+    if (t === 3) { out.push(escText(node.nodeValue)); return; }
+    if (t === 8) { out.push('<!--', String(node.nodeValue).replace(/--/g, '--'), '-->'); return; }
+    if (t !== 1) return;
+    const el = node;
+    const tag = (el.localName || el.tagName.toLowerCase());
+    if (tag === 'base') return;   // server injects its own <base href>
+    // A <source> in <picture> outranks the <img src> we chose. The image we
+    // resolved (currentSrc: the candidate the page's own viewport picked) is
+    // the accurate one, so the source list goes away and src speaks.
+    if (tag === 'source') {
+      try {
+        const par = el.parentElement;
+        if (par && (par.localName || '').toLowerCase() === 'picture') return;
+      } catch (e) { /* ignore */ }
+    }
+    if (tag === 'iframe') {
+      // Frames that wouldn't load must never reach the mirror (user policy):
+      //   * chrome-error documents (refused/blocked server-side) -> delete.
+      //   * cross-origin frames would fail to embed from the mirrored
+      //     page's origin anyway (X-Frame-Options / frame-ancestors) and
+      //     render as "refused to connect" error islands -> delete.
+      //   * same-origin / about: / srcdoc frames are kept.
+      let dead = false;
+      try {
+        const d = el.contentDocument;
+        if (d && d.URL && d.URL.indexOf('chrome-error:') === 0) dead = true;
+      } catch (e) { /* cross-origin child document: unreadable */ }
+      if (dead) return;
+      const fsrc = el.src || el.getAttribute('src') || '';
+      if (fsrc && fsrc.indexOf('about:') !== 0) {
+        try {
+          const loc = document.location;
+          if (new URL(fsrc, loc.href).origin !== loc.origin) return;
+        } catch (e) { /* unparseable src -> keep */ }
+      }
+    }
+    // Same-origin <link rel=stylesheet> -> materialize from the CSSOM
+    // (SingleFile's live-read); cross-origin links stay links and go
+    // through the server-side asset cache instead.
+    if (tag === 'link') {
+      const rel = (el.getAttribute('rel') || '').toLowerCase();
+      const asA = (el.getAttribute('as') || '').toLowerCase();
+      const onload = el.getAttribute('onload') || '';
+      // Async-CSS patterns that NEVER fire without JS (no-JS mirror):
+      //   <link rel="preload" as="style" onload="this.rel='stylesheet'">
+      //   <link rel="stylesheet" media="print" onload="this.media='all'">
+      // Detect them as stylesheets too, or normalize the rel/media below.
+      const styleish = rel.indexOf('stylesheet') !== -1
+        || (rel.indexOf('preload') !== -1 && asA === 'style');
+      if (styleish && !el.disabled) {
+        const css = liveSheetCss(el.sheet);
+        if (css) {
+          const media = el.getAttribute('media');
+          out.push('<style data-shf-fromlink="1"',
+                   media ? ' media="' + escAttr(media) + '"' : '',
+                   (el.title ? ' title="' + escAttr(el.title) + '"' : ''),
+                   '>', styleSafe(css), '</style>');
+          return;
+        }
+        // Not readable from the CSSOM (cross-origin) — emit a WORKING
+        // stylesheet link so the mirror browser loads it directly:
+        // rel is always stylesheet, swapped media becomes 'all', the
+        // onload swapper is dropped.
+        const href = el.getAttribute('href');
+        if (href) {
+          const media = /media\s*=/.test(onload) ? 'all' : el.getAttribute('media');
+          const xo = el.getAttribute('crossorigin');
+          out.push('<link rel="stylesheet" href="', escAttr(href), '"',
+                   media ? ' media="' + escAttr(media) + '"' : '',
+                   xo ? ' crossorigin="' + escAttr(xo) + '"' : '', '>');
+          return;
+        }
+      }
+    }
+    // Images: pick the URL the PAGE would actually display.  Lazy-load
+    // libraries (react-lazyload & co.) leave src empty / a 1x1 gif and
+    // swap via JS that never runs in the no-JS mirror.
+    if (tag === 'img') {
+      let pick = '';
+      try { pick = el.currentSrc || ''; } catch (e) { /* not ready */ }
+      const authored = el.getAttribute('src') || '';
+      if (!pick) pick = authored;
+      if (!pick || pick.indexOf('data:image/gif') === 0 || pick === 'about:blank') {
+        pick = el.getAttribute('data-src') || el.getAttribute('data-original')
+            || el.getAttribute('data-lazy-src') || el.getAttribute('data-image')
+            || el.getAttribute('data-deferred') || el.getAttribute('data-lsrc')
+            || el.getAttribute('data-url') || pick;
+      }
+      if (!pick) {
+        const ss = el.getAttribute('srcset') || el.getAttribute('data-srcset') || '';
+        if (ss) pick = ss.split(',')[0].trim().split(/\s+/)[0];
+      }
+      out.push('<img');
+      const list2 = el.attributes;
+      let authorStyle = '';
+      for (let i = 0; i < list2.length; i++) {
+        const a = list2[i];
+        if (a.name === 'src' || a.name === 'srcset' || a.name === MID) continue;
+        // Native lazy-loading would defer an image that is already in the
+        // viewport of the mirror; the capture is a photograph of a loaded
+        // page, so every image loads eagerly.
+        if (a.name === 'loading') continue;
+        if (a.name.indexOf('data-src') === 0 || a.name.indexOf('data-original') === 0
+            || a.name.indexOf('data-lazy') === 0 || a.name === 'data-image') continue;
+        if (a.name === 'style') { authorStyle = a.value || ''; continue; }
+        out.push(' ', a.name, '="', escAttr(a.value), '"');
+      }
+      // Capture the rendered box size as inline style.  Cross-origin CSS
+      // (e.g. google.com's profile picture rule "img { width: 32px;
+      // height: 32px }") is NOT in the captured cascade — without it the
+      // <img> renders at its raw bitmap dimensions, the surrounding
+      // topbar reflows around it, and the avatar appears "postponed" /
+      // oversized.  Stamping offsetWidth/offsetHeight as inline style
+      // makes the captured <img> self-sufficient: every other container
+      // rule still wins (the inline only locks the avatar's own box),
+      // and same-origin pages where the rule was already captured pay
+      // a tiny bytes-for-correctness cost.
+      //
+      // Skipped when:
+      //   * author already gave width/height attrs (browser uses them)
+      //   * the rendered box is zero (display:none / detached)
+      //   * the rendered box is the full viewport width (would clamp a
+      //     hero image to its parent unintentionally)
+      try {
+        const hasWAttr = el.hasAttribute && el.hasAttribute('width');
+        const hasHAttr = el.hasAttribute && el.hasAttribute('height');
+        if (!hasWAttr && !hasHAttr) {
+          const w = el.offsetWidth | 0;
+          const h = el.offsetHeight | 0;
+          const vw = (window.innerWidth || document.documentElement.clientWidth || 0) | 0;
+          if (w > 0 && h > 0 && w < vw && h < vw) {
+            // Compose with any author-supplied style fragment so we never
+            // clobber e.g. `border-radius` overrides.
+            const extra = 'width:' + w + 'px !important;height:' + h + 'px !important';
+            const composed = authorStyle
+              ? (authorStyle.replace(/;?\s*$/, ';') + extra)
+              : extra;
+            out.push(' style="', escAttr(composed), '"');
+          } else if (authorStyle) {
+            out.push(' style="', escAttr(authorStyle), '"');
+          }
+        } else if (authorStyle) {
+          out.push(' style="', escAttr(authorStyle), '"');
+        }
+      } catch (e) {
+        if (authorStyle) out.push(' style="', escAttr(authorStyle), '"');
+      }
+      if (deltaIds) out.push(' ', MID, '="', String(midOf(el)), '"');
+      if (pick) out.push(' src="', escAttr(pick), '"');
+      out.push('>');
+      return;
+    }
+    if (tag === 'textarea') {
+      out.push('<textarea', attrsFor(el, tag), '>', escText(el.value == null ? '' : el.value), '</textarea>');
+      return;
+    }
+    if (tag === 'canvas') {
+      try {
+        const dataUrl = el.toDataURL();
+        if (dataUrl && dataUrl.length > 50) {
+          out.push('<canvas');
+          let styleAdded = false;
+          const listC = el.attributes;
+          for (let i = 0; i < listC.length; i++) {
+            const a = listC[i];
+            if (a.name === MID) continue;
+            if (a.name === 'style') {
+              out.push(' style="background: url(' + dataUrl + ') center/contain no-repeat; ' + escAttr(a.value) + '"');
+              styleAdded = true;
+            } else {
+              out.push(' ', a.name, '="', escAttr(a.value), '"');
+            }
+          }
+          if (!styleAdded) {
+            out.push(' style="background: url(' + dataUrl + ') center/contain no-repeat;"');
+          }
+          if (deltaIds) out.push(' ', MID, '="' + midOf(el) + '"');
+          out.push('></canvas>');
+          return;
+        }
+      } catch (e) {}
+    }
+    out.push('<', tag);
+    out.push(attrsFor(el, tag));
+    out.push('>');
+    if (VOID.has(tag)) return;
+    // Generated content rides inside the element, in flow, exactly where
+    // the browser drew it.
+    if (pseudoMap.size) out.push(pseudoSpan(el, 'before'));
+    if (tag === 'script' || tag === 'style') {
+      let raw;
+      if (tag === 'style') {
+        // CSSOM wins over stale DOM text (script-mutated sheets).
+        raw = liveSheetCss(el.sheet) || el.textContent || '';
+        raw = styleSafe(raw);
+      } else {
+        raw = (el.textContent || '').replace(/<\/script/gi, '<\\/script');
+      }
+      out.push(raw, '</', tag, '>');
+      return;
+    }
+    const sr = el.shadowRoot;
+    if (sr) {
+      if (sr.mode === 'open') {
+        out.push('<template shadowrootmode="open">');
+        const srCss = adoptedCss(sr);
+        if (srCss) out.push(adoptedStyleTag(srCss));
+        for (const c of sr.childNodes) serialize(c, out);
+        out.push('</template>');
+      } else {
+        out.push('<!--shifix:closed-shadow-->');
+      }
+    }
+    if (deltaIds && window.__domTextCounts) {
+      let n = 0;
+      for (const c of el.childNodes) if (c.nodeType === 3) n++;
+      if (n) window.__domTextCounts.set(midOf(el), n);
+    }
+    for (const c of el.childNodes) serialize(c, out);
+    if (pseudoMap.size) out.push(pseudoSpan(el, 'after'));
+    out.push('</', tag, '>');
+  };
+  const de = document.documentElement;
+  if (!de) return null;
+  const out = [];
+  out.push('<!DOCTYPE html>\n');
+  serialize(de, out);
+  let html = out.join('');
+  const docCss = adoptedCss(document);
+  if (docCss) {
+    const tag = adoptedStyleTag(docCss);
+    html = /<head[^>]*>/i.test(html)
+      ? html.replace(/<head[^>]*>/i, (m) => m + tag)
+      : html.replace(/<html[^>]*>/i, (m) => m + tag);
+  }
+  return html;
+}
+"""
+
+
+# The serializer invoked as an IIFE expression (NOT as a function+args
+# callFunctionOn payload).  This makes Playwright and raw-CDP (SB) evaluate
+# it through the IDENTICAL mechanism (Runtime.evaluate-compatible) — the
+# callFunctionOn function+arguments shape is where the two backends
+# diverged on the live box (fast capture returned None on SB).
+_FAST_SERIALIZE_CALL_JS = (
+    "(() => { const fn = "
+    + _FAST_SERIALIZE_JS
+    + "; return fn(" + _json.dumps({"deltaIds": bool(LIVE_DELTA)}) + "); })();"
+)
+
+# The capture call, widened.
+#
+# A navigation used to cost a browser round trip for the document and then one
+# EACH for the title, the DOM checksum and the user agent — three separate
+# trips to the same page, milliseconds apart, to read things that were sitting
+# right there while the serializer was already walking the DOM.  They are now
+# returned together: one evaluate, one round trip, one answer.
+#
+# It is deliberately defensive: `html` is produced exactly as before (the same
+# serializer, the same params), and every extra field is a cheap read wrapped
+# so a page that somehow lacks one cannot break the capture.
+_FAST_CAPTURE_CALL_JS = (
+    "(() => {"
+    " const fn = " + _FAST_SERIALIZE_JS + ";"
+    " const out = {html: fn(" + _json.dumps({"deltaIds": bool(LIVE_DELTA)}) + ")};"
+    " try {"
+    "   const de = document.documentElement;"
+    "   out.title = document.title || '';"
+    "   out.ua = navigator.userAgent || '';"
+    "   out.ready = document.readyState || '';"
+    "   out.url = location.href || '';"
+    "   out.doc = window.__shifixDocToken || '';"
+    "   out.checksum = de ? (de.getElementsByTagName('*').length + ':'"
+    "     + (de.textContent ? de.textContent.length : 0) + ':'"
+    "     + (de.scrollHeight | 0)) : '';"
+    " } catch (e) { out.meta_error = String(e && e.message || e); }"
+    " return out;"
+    "})();"
+)
+
+# Last fast-capture failure, surfaced by capture_page when all tiers fail
+# (kept at module level: _capture_fast is a plain function).
+_LAST_FAST_CAPTURE_ERROR: str = ""
+
+
+async def _capture_fast_meta(page: Any) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Serialize the live DOM AND read the send path's metadata, in one call.
+
+    Returns ``(html, meta)``.  ``meta`` may be partial — a page whose title or
+    checksum could not be read simply omits the key, and the caller falls back
+    to asking for it separately.  ``html`` is None exactly when the old
+    serializer would have failed, including the case where the widened call
+    throws before producing a string.
+    """
+    global _LAST_FAST_CAPTURE_ERROR
+    meta: Dict[str, Any] = {}
+    if page is None:
+        _LAST_FAST_CAPTURE_ERROR = "page is None"
+        return None, meta
+    try:
+        url = page.url
+    except Exception as exc:
+        _LAST_FAST_CAPTURE_ERROR = f"page.url unreadable: {exc}"
+        return None, meta
+    if not url:
+        _LAST_FAST_CAPTURE_ERROR = "empty page url"
+        return None, meta
+    result: Any = None
+    try:
+        result = await page.evaluate(_FAST_CAPTURE_CALL_JS)
+    except Exception as exc:
+        _LAST_FAST_CAPTURE_ERROR = f"evaluate(meta): {exc}"
+        logger.debug("dc fast capture(meta) evaluate failed: %s", exc)
+    if isinstance(result, dict):
+        for key in ("title", "ua", "ready", "url", "checksum", "doc"):
+            val = result.get(key)
+            if isinstance(val, str) and val:
+                meta[key] = val
+        if result.get("meta_error"):
+            logger.debug("dc capture meta partial: %s", result.get("meta_error"))
+        html = result.get("html")
+        if isinstance(html, str) and html:
+            return html, meta
+        _LAST_FAST_CAPTURE_ERROR = f"serializer returned {type(html).__name__} (empty)"
+    # Older/odd page: fall back to the plain serializer, unchanged.
+    try:
+        html = await page.evaluate(_FAST_SERIALIZE_CALL_JS)
+    except Exception as exc:
+        _LAST_FAST_CAPTURE_ERROR = f"evaluate: {exc}"
+        logger.debug("dc fast serializer evaluate failed: %s", exc)
+        return None, meta
+    if not isinstance(html, str) or not html:
+        _LAST_FAST_CAPTURE_ERROR = f"serializer returned {type(html).__name__} (empty)"
+        return None, meta
+    return html, meta
+
+
+async def _capture_fast(page: Any) -> Optional[str]:
+    """Serialize the live DOM in-page via one evaluate round-trip.
+
+    Returns the HTML string (NOT yet base-href/asset rewritten), or None
+    when the page/evaluate is unavailable — the caller decides whether to
+    fall back to SingleFile / outerHTML.
+    """
+    html, _meta = await _capture_fast_meta(page)
+    return html
+
+
+# Cheap DOM checksum for the unchanged-skip.  Deliberately NOT computed
+# from the serialized HTML (that would defeat the point — serialization
+# is the expensive part we are trying to skip).  Node count + text length
+# + scroll height catches every user-visible class of change on mirrored
+# pages (element churn, text updates, reflow) at O(1)-ish cost.
+_DOM_CHECKSUM_JS = r"""
+() => {
+  const de = document.documentElement;
+  if (!de) return '';
+  const els = de.getElementsByTagName('*').length;
+  const tl = de.textContent ? de.textContent.length : 0;
+  const sh = de.scrollHeight | 0;
+  return els + ':' + tl + ':' + sh;
+}
+"""
+
+
+_COLD_REASONS = frozenset((
+    "click", "mouseup", "text", "keydown", "touchend", "tap", "delta_overflow",
+    # A settled follow-up runs AFTER the page reported itself complete: there is
+    # nothing left to wait for, and waiting again would add a full capture's
+    # worth of latency to the document the visitor is already looking at.
+    "nav_settle",
+))
+
+
+# Reasons where a checksum-equal DOM must still be captured: the mirror is
+# known to be behind (overflow / navigation / an explicit resync), so "looks
+# the same to the checksum" is not evidence that it IS the same.
+_SKIP_EXEMPT_PREFIXES = (
+    "delta_overflow", "navigation", "coalesce:delta_overflow",
+    "coalesce:navigation", "resync",
+)
+
+
+def _may_skip_unchanged(reason: Optional[str], settle: str,
+                        delta_installed: bool, last_checksum: Optional[str]) -> bool:
+    """May a checksum-equal DOM be treated as "nothing to send"?
+
+    Only when something ELSE is carrying the change.  With the live delta
+    observer installed, every patchable mutation already streamed as an op, so
+    a checksum-equal page has nothing new to say and the capture is pure cost.
+
+    Without the observer this recapture is the mirror's only source of truth,
+    and the checksum (element count : text length : scroll height) cannot see
+    an attribute-only change.  A class swap that recolours or hides a block
+    leaves all three numbers identical — so with delta off, or after a failed
+    observer install, the old code skipped forever and the mirror stayed
+    stale with no error to point at.
+    """
+    if not SKIP_UNCHANGED or not delta_installed or settle != "none":
+        return False
+    if last_checksum is None:
+        return False
+    return not str(reason or "").lower().startswith(_SKIP_EXEMPT_PREFIXES)
+
+
+def _settle_for_reason(reason: Optional[str]) -> str:
+    """Map a capture reason to a settle level.
+
+    Interaction-driven recaptures ("interaction:*", input forwards,
+    coalesced follow-ups, delta overflow) snapshot a page that is already
+    live — the legacy load/networkidle waits were pure latency.
+
+    Navigations get their own level, ``nav``: a SHORT bounded readyState wait.
+    Long enough that the common case still ships a parsed document, short
+    enough that a slow page cannot park the mirror on a spinner — if the parser
+    has not finished, the capture is taken anyway and flagged ``partial``, and a
+    settled follow-up capture converges it.  Everything else keeps the light
+    readyState wait.  DOM_CAPTURE_FULL_SETTLE=1 reverts globally.
+    """
+    if FULL_SETTLE:
+        return "full"
+    if not reason:
+        return "none"
+    r = reason.lower()
+    if r.startswith("coalesce:"):
+        r = r[len("coalesce:"):]
+    if r.startswith(("interaction:", "click", "input", "tap")) or r in _COLD_REASONS:
+        return "none"
+    if lane_for_reason(r) == LANE_NAVIGATION:
+        return "nav"
+    return "light"
+
+
+# ---------------------------------------------------------------------------
+# Asset rewrite: external URLs -> /assets/<sha256>[.<ext>]
+# ---------------------------------------------------------------------------
+#
+# Only applied to FAST captures.  SingleFile output is self-contained
+# already.  Every fetch is bounded (per-asset timeout + max bytes +
+# max-per-page fan-in + global time budget); any fetch failure simply
+# leaves the original URL in place — the injected <base href> then
+# resolves it against the origin, exactly like the pre-cache behavior.
+
+_IMG_SRC_RE = re.compile(r'(<img\b[^>]*?\ssrc\s*=\s*)(["\'])([^"\']*)\2', re.IGNORECASE)
+_SCRIPT_SRC_RE = re.compile(r'(<script\b[^>]*?\ssrc\s*=\s*)(["\'])([^"\']*)\2', re.IGNORECASE)
+_LINK_TAG_RE = re.compile(r'<link\b[^>]*?>', re.IGNORECASE)
+_LINK_ATTR_RE = re.compile(r'(\w[\w-]*)\s*=\s*(["\'])([^"\']*)\2')
+_LINK_CACHEABLE_REL_RE = re.compile(r'(stylesheet|icon|apple-touch-icon|mask-icon|manifest|shortcut)', re.IGNORECASE)
+_CSS_URL_RE = re.compile(r'url\(\s*(["\']?)([^"\')\s][^"\')]*?)\1\s*\)', re.IGNORECASE)
+_CSS_IMPORT_RE = re.compile(r'@import\s+(?:url\(\s*)?(["\'])([^"\']+)\1', re.IGNORECASE)
+# --- refs reachable only through CSS / SVG indirection ---------------------
+#
+# The collector below sees a URL when it is an attribute of <img>, <script> or
+# <link>.  Every other reference a page makes goes through indirection, and
+# those were left pointing at the SITE — which the mirror cannot use from its
+# own origin.  Each one fails differently, and all of them are silent:
+#
+#   * `@font-face { src: url(/f/x.woff2) }` inside the page's OWN <style>
+#     block.  Web fonts are always fetched in CORS mode.  A font on the site's
+#     origin, requested from the mirror's origin (a blob: document inherits
+#     ours), is BLOCKED unless the site sends Access-Control-Allow-Origin — and
+#     sites do not, for their own fonts.  Symptom: every page that declares its
+#     fonts inline renders in the fallback face, and nothing anywhere says why.
+#   * `style="background-image:url(/hero.jpg)"` and `url()` inside <style>:
+#     not CORS, but re-fetched from the site on every mirror load, so hotlink
+#     protection (Referer: ours) turns the hero into a blank box.
+#   * `<use href="/sprite.svg#icon">`: browsers refuse CROSS-ORIGIN references
+#     from <use> outright, so every icon in a sprite vanished.
+#   * `<video poster>`: same as a background image.
+#
+# Routing these through the asset cache (or embedding the small ones) makes
+# the mirror's own origin the source of truth, which is the only origin it is
+# allowed to read.
+_CSS_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style\s*>)", re.IGNORECASE | re.DOTALL)
+_CSS_ATTR_RE = re.compile(r"(\sstyle\s*=\s*)([\"'])(.*?)\2", re.IGNORECASE | re.DOTALL)
+_POSTER_RE = re.compile(r"(<(?:video|audio)\b[^>]*?\sposter\s*=\s*)([\"'])([^\"']*)\2", re.IGNORECASE)
+_USE_HREF_RE = re.compile(r"(<use\b[^>]*?\s(?:xlink:href|href)\s*=\s*)([\"'])([^\"']*)\2", re.IGNORECASE)
+_SVG_IMAGE_RE = re.compile(r"(<image\b[^>]*?\s(?:xlink:href|href)\s*=\s*)([\"'])([^\"']*)\2", re.IGNORECASE)
+_SCRIPT_OR_COMMENT_RE = re.compile(r"<!--.*?-->|<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DOTALL)
+
+# One cheap question asked before any of the work above: does this chunk even
+# mention a way to reference an asset from CSS or SVG?  Most documents do not,
+# and a recapture should then pay nothing for a feature it cannot use.
+#
+# This is deliberately five substring checks on a lowercased copy rather than
+# one regular expression with five alternatives.  An alternation whose
+# branches start with \s or \b cannot be anchored to a literal, so the engine
+# tries every branch at every character: measured at 24 ms on a 1 MB document,
+# against 0.4 ms for the substring checks.  It can only ever be a false
+# positive — a page that says "style" without a style attribute does the old
+# work — which is why this is safe to keep approximate.
+_DOC_REF_HINTS = ("url", "style", "<use", "<image", "poster")
+
+
+def _may_have_doc_refs(chunk: str) -> bool:
+    """Cheap, conservative: could this chunk hide a CSS/SVG asset ref?"""
+    low = chunk.lower()
+    for hint in _DOC_REF_HINTS:
+        if hint in low:
+            return True
+    return False
+
+
+def _doc_ref_spans(html: str) -> List[Tuple[int, int, str, str]]:
+    """(start, end, ref, kind) for every CSS/SVG indirection ref, in order.
+
+    Collected ONCE. The rewrite phase splices these exact character spans, so
+    a capture pays for the document twice (find, then replace those few
+    ranges) instead of running five substitutions over the whole thing. On a
+    1 MB page that was 23 ms of re-scanning per capture; with spans it is 8 ms
+    for the scan and microseconds to splice.
+
+    Nothing inside a comment or a <script> body is collected: a script is full
+    of string literals that look like refs (`el.style.background='url(' + x`),
+    and it is stripped from the mirror anyway. <style> bodies ARE collected —
+    CSS is the whole point.
+
+    'img' kind is fetchable and may be embedded as a data: URI; 'svg' must be
+    SERVED from /assets, because a data: URI in <use> is unreliable.
+    """
+    # The whole-document answer first: on the large majority of captures there
+    # is nothing here, and the script/comment split below is a full scan of its
+    # own. Cheap substring checks (~0.2 ms/MB) buy that scan back.
+    if not _may_have_doc_refs(html):
+        return []
+
+    spans: List[Tuple[int, int, str, str]] = []
+
+    def collect(start: int, end: int) -> None:
+        chunk = html[start:end]
+        if not _may_have_doc_refs(chunk):
+            return
+
+        def css_refs(base: int, body: str) -> None:
+            for cm in _CSS_URL_RE.finditer(body):
+                spans.append((base + cm.start(2), base + cm.end(2), cm.group(2), "img"))
+            for cm in _CSS_IMPORT_RE.finditer(body):
+                spans.append((base + cm.start(2), base + cm.end(2), cm.group(2), "img"))
+
+        for m in _CSS_BLOCK_RE.finditer(chunk):
+            css_refs(start + m.start(2), m.group(2))
+        for m in _CSS_ATTR_RE.finditer(chunk):
+            css_refs(start + m.start(3), m.group(3))
+        for m in _POSTER_RE.finditer(chunk):
+            spans.append((start + m.start(3), start + m.end(3), m.group(3), "img"))
+        for m in _USE_HREF_RE.finditer(chunk):
+            spans.append((start + m.start(3), start + m.end(3), m.group(3), "svg"))
+        for m in _SVG_IMAGE_RE.finditer(chunk):
+            spans.append((start + m.start(3), start + m.end(3), m.group(3), "img"))
+
+    cursor = 0
+    for protected in _SCRIPT_OR_COMMENT_RE.finditer(html):
+        collect(cursor, protected.start())
+        cursor = protected.end()
+    collect(cursor, len(html))
+    spans.sort()
+    return spans
+
+
+def _iter_document_refs(html: str) -> Iterator[Tuple[str, str]]:
+    """(ref, kind) for the indirection refs, in document order."""
+    for _start, _end, ref, kind in _doc_ref_spans(html):
+        yield ref, kind
+
+
+def _apply_doc_ref_spans(html: str, spans: List[Tuple[int, int, str, str]],
+                         lookup: Any) -> Tuple[str, int]:
+    """Replace the collected spans; returns (html, how many changed).
+
+    One pass, joined at the end.  Splicing the string per ref instead would
+    copy the whole document once per ref — 62 refs on a 1 MB page is 62 MB of
+    memcpy for a few kilobytes of change.
+
+    An overlapping span (a CSS body and a style attribute can both match the
+    same bytes when a page writes CSS inside an attribute) is skipped rather
+    than applied twice: a data: URI inside a data: URI corrupts the value.
+    """
+    pieces: List[str] = []
+    cursor = 0
+    applied = 0
+    for start, end, ref, _kind in spans:
+        if start < cursor:
+            continue
+        new = lookup(ref)
+        if not new:
+            continue
+        pieces.append(html[cursor:start])
+        pieces.append(new)
+        cursor = end
+        applied += 1
+    if not applied:
+        return html, 0
+    pieces.append(html[cursor:])
+    return "".join(pieces), applied
+
+
+# How many of the CSS/SVG indirection refs may enter one rewrite pass.
+# They are collected first because a miss on one of them is unrecoverable (a
+# CORS-blocked font, a refused cross-origin <use>), but a page with thousands
+# of inline background images must not eat the whole per-page budget and
+# starve the <img> tags that used to get it. 96 is far more than the fonts and
+# hero images a real page has, and leaves the rest of ASSET_MAX_PER_PAGE for
+# the tags the collector has always handled.
+DOC_REF_MAX: int = max(0, int(os.environ.get("DOM_CAPTURE_DOC_REF_MAX", "96")))
+
+# Send the page, then resolve its assets.
+#
+# The asset phase is the slow half of a capture: it fetches what the mirror
+# would otherwise request from the site (fonts, backgrounds, sprites) and can
+# take a second or more on a cold page.  The document used to wait for all of
+# it — nothing reached the viewer until the last font came back, and the live
+# patch channel was held closed for the same time (a full capture owns
+# ``_send_inflight``).  So a navigation felt like a freeze, not a page.
+#
+# Now the document goes out as soon as it is serialized, with the refs the
+# asset cache has never seen still pointing at the site (they resolve through
+# the injected <base href>, exactly as they did before the cache existed).
+# The rewrite then runs, and the refs it resolved are shipped as an
+# ``asset_map`` the client applies IN PLACE — no re-render, no flash, and a
+# ``data:`` URI or /assets/<hash> replaces the URL that was still loading.
+# Result on the client is byte-for-byte the document the old path would have
+# sent; it just arrives in two pieces instead of one late piece.
+PROGRESSIVE_ASSETS: bool = (
+    os.environ.get("DOM_CAPTURE_PROGRESSIVE_ASSETS", "1").strip().lower()
+    not in ("0", "false", "no", "off")
+)
+
+_REWRITE_GLOBAL_BUDGET_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_TOTAL_TIMEOUT_S", "10"))
+
+# How many asset downloads may be in flight at once — for the whole box, and
+# per SITE.
+#
+# Six was chosen for the old sequential-CSS path; a page with 12 stylesheets
+# spent most of its rewrite budget waiting rather than downloading, because the
+# stylesheet pass was a for-loop with a fresh HTTP client per sheet.  Both are
+# now one bounded pool, so the limit applies to real concurrent sockets.
+#
+# The global limit protects this box and its uplink.  The per-host limit
+# protects the SITE (and our reputation with it): thirty simultaneous
+# connections to one origin is how an asset fetch earns a 429, and a 429 here
+# means a font that never arrives — i.e. an accuracy loss, not just a slow
+# page.  So the per-host number is not a constant: it starts at
+# ASSET_PER_HOST_START, grows a slot per clean response burst, and halves the
+# moment a host says "too many".  A browser does the same thing with HTTP/2,
+# where all of those requests share one connection.
+def _h2_available() -> bool:
+    """Can httpx multiplex this page's assets over ONE connection?
+
+    This is the difference between "thirty parallel requests" and "thirty
+    TCP+TLS handshakes to the same origin".  A browser gets the first shape
+    for free; we only get it when the ``h2`` package is installed.  When it is
+    not, the per-host limit starts far lower, because fanning out that wide
+    over HTTP/1.1 is what earns a 429.
+    """
+    try:
+        import h2  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+HTTP2_ASSETS: bool = _h2_available()
+
+ASSET_FETCH_CONCURRENCY: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_CONCURRENCY", "32")))
+# Auto: browser-shaped when we can multiplex, cautious when we cannot.
+_ASSET_PER_HOST_AUTO = ASSET_FETCH_CONCURRENCY if HTTP2_ASSETS else 12
+ASSET_PER_HOST_START: int = max(1, int(os.environ.get(
+    "DOM_CAPTURE_ASSET_PER_HOST", str(_ASSET_PER_HOST_AUTO))))
+ASSET_PER_HOST_MAX: int = max(
+    ASSET_PER_HOST_START,
+    int(os.environ.get("DOM_CAPTURE_ASSET_PER_HOST_MAX", str(ASSET_FETCH_CONCURRENCY))),
+)
+ASSET_HOST_GROW_AFTER: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_HOST_GROW", "8")))
+ASSET_HOST_GROW_STEP: int = max(1, int(os.environ.get("DOM_CAPTURE_ASSET_HOST_GROW_STEP", "2")))
+
+# -- intent prefetch ------------------------------------------------------
+#
+# The viewer's cursor is a hint: the page below it is about to be asked for.
+# When the client says "the pointer is resting on this link", the server can
+# fetch that document and warm its assets into the fetch-once memo BEFORE the
+# click lands, so the navigation that follows arrives complete in one message.
+#
+# Three rules keep it honest: same-origin only (a mirror must never become a
+# proxy for arbitrary URLs), a hard budget per page, and one prefetch in
+# flight at a time so it can never compete with the capture that is on screen.
+PREFETCH_ENABLED: bool = os.environ.get("DOM_CAPTURE_PREFETCH", "1") not in ("0", "false", "False", "")
+PREFETCH_MAX_PER_PAGE: int = max(0, int(os.environ.get("DOM_CAPTURE_PREFETCH_MAX", "8")))
+PREFETCH_HTML_MAX_BYTES: int = int(os.environ.get("DOM_CAPTURE_PREFETCH_HTML_BYTES", str(1024 * 1024)))
+PREFETCH_TIMEOUT_S: float = float(os.environ.get("DOM_CAPTURE_PREFETCH_TIMEOUT_S", "5"))
+PREFETCH_REVISIT_S: float = float(os.environ.get("DOM_CAPTURE_PREFETCH_REVISIT_S", "90"))
+PREFETCH_MAX_REFS: int = max(1, int(os.environ.get("DOM_CAPTURE_PREFETCH_REFS", "40")))
+_LAST_PREFETCH: Dict[str, Any] = {}
+
+ASSET_HOST_COOLDOWN_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_HOST_COOLDOWN_S", "15"))
+ASSET_RETRY_AFTER_S: float = float(os.environ.get("DOM_CAPTURE_ASSET_RETRY_AFTER_S", "0.5"))
+# Status codes that mean "you are asking too fast", not "this asset is gone".
+# A 404/410 is an answer; these are a request to slow down, and the asset is
+# still there — so they are retried once, after backing off.
+ASSET_THROTTLE_STATUS = frozenset((429, 403, 503, 509))
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlsplit(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+class _AssetGate:
+    """Adaptive concurrency for asset downloads: one global cap, one per host.
+
+    A plain ``asyncio.Semaphore`` cannot express this, because the per-host
+    limit has to move WHILE a capture is running: it grows with clean
+    responses and halves when a host starts refusing.  So the limit is a
+    number, the waiters poll it on a short tick, and every state read/write
+    happens under one condition.  The tick is 5 ms — far below an asset
+    round trip, and it cannot deadlock the way a hand-rolled semaphore that
+    shrinks can.
+    """
+
+    def __init__(self) -> None:
+        self._inflight = 0
+        self._hosts: Dict[str, Dict[str, Any]] = {}
+        self._cond = asyncio.Condition()
+
+    def _host(self, host: str) -> Dict[str, Any]:
+        st = self._hosts.get(host)
+        if st is None:
+            st = {"limit": ASSET_PER_HOST_START, "inflight": 0,
+                  "clean": 0, "not_before": 0.0, "grow_after": 0.0,
+                  "throttled": 0}
+            self._hosts[host] = st
+        return st
+
+    def snapshot(self) -> Dict[str, Any]:
+        """What the gate currently thinks — for the capture log and tests."""
+        return {
+            "global_limit": ASSET_FETCH_CONCURRENCY,
+            "inflight": self._inflight,
+            "hosts": {h: {"limit": st["limit"], "inflight": st["inflight"],
+                          "throttled": st["throttled"]}
+                      for h, st in self._hosts.items()},
+        }
+
+    async def _wait_turn(self, host: str) -> Dict[str, Any]:
+        while True:
+            async with self._cond:
+                st = self._host(host)
+                if (self._inflight < ASSET_FETCH_CONCURRENCY
+                        and st["inflight"] < st["limit"]
+                        and time.monotonic() >= st["not_before"]):
+                    self._inflight += 1
+                    st["inflight"] += 1
+                    return st
+            await asyncio.sleep(0.005)
+
+    async def _release(self, st: Dict[str, Any]) -> None:
+        async with self._cond:
+            self._inflight = max(0, self._inflight - 1)
+            st["inflight"] = max(0, st["inflight"] - 1)
+            self._cond.notify_all()
+
+    async def fetch(self, client: Any, url: str) -> Optional[Tuple[bytes, str]]:
+        """One bounded, paced, retried asset download.  None on any failure."""
+        host = _host_of(url)
+        throttle_wait = 0.0
+        for attempt in (0, 1):
+            st = await self._wait_turn(host)
+            status = 0
+            try:
+                resp = await client.get(url, timeout=ASSET_FETCH_TIMEOUT_S)
+                status = int(getattr(resp, "status_code", 0) or 0)
+                now = time.monotonic()
+                if status in ASSET_THROTTLE_STATUS:
+                    async with self._cond:
+                        # Halve at once (that is the load the host just
+                        # refused), pause this host for one retry interval, and
+                        # suppress growth for the cooldown so we do not climb
+                        # straight back into the same 429.
+                        st["throttled"] += 1
+                        st["limit"] = max(2, st["limit"] // 2)
+                        st["clean"] = 0
+                        st["not_before"] = now + ASSET_RETRY_AFTER_S
+                        st["grow_after"] = now + ASSET_HOST_COOLDOWN_S
+                elif 200 <= status < 400:
+                    async with self._cond:
+                        st["clean"] += 1
+                        if (st["clean"] % ASSET_HOST_GROW_AFTER == 0
+                                and now >= st["grow_after"]
+                                and st["limit"] < ASSET_PER_HOST_MAX):
+                            st["limit"] = min(ASSET_PER_HOST_MAX,
+                                              st["limit"] + ASSET_HOST_GROW_STEP)
+            except Exception:
+                status = 0
+            finally:
+                await self._release(st)
+
+            if status in ASSET_THROTTLE_STATUS and attempt == 0:
+                # The site asked us to slow down, not to give up: the asset is
+                # still there, and leaving it unresolved would cost accuracy.
+                # One retry only, and the cooldown above keeps the rest of the
+                # page from hammering the same host meanwhile.
+                throttle_wait += ASSET_RETRY_AFTER_S
+                continue
+            if not (200 <= status < 400):
+                return None
+            try:
+                data = resp.content
+                if not data or len(data) > ASSET_MAX_BYTES:
+                    return None
+                ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                return (data, ctype)
+            except Exception:
+                return None
+        return None
+
+
+_ASSET_GATE: Optional[_AssetGate] = None
+
+
+def get_asset_gate() -> _AssetGate:
+    """The process-wide gate (one set of host limits, not one per capture)."""
+    global _ASSET_GATE
+    if _ASSET_GATE is None:
+        _ASSET_GATE = _AssetGate()
+    return _ASSET_GATE
+
+
+def _asset_client_kwargs(headers: Dict[str, str]) -> Dict[str, Any]:
+    """httpx kwargs for an asset fetch: HTTP/2 when the runtime can do it.
+
+    A browser fetches a page's assets over ONE multiplexed connection.  Over
+    HTTP/1.1 the same fan-out means N TCP+TLS handshakes to the same origin,
+    which is exactly what a rate limiter objects to.  When ``h2`` is installed
+    we ask for HTTP/2 and get the browser's shape for free; when it is not,
+    the call is unchanged (the per-host gate keeps us polite).
+    """
+    kwargs: Dict[str, Any] = {
+        "follow_redirects": True,
+        "headers": headers,
+    }
+    if HTTP2_ASSETS:
+        kwargs["http2"] = True
+    try:
+        import httpx as _httpx
+        kwargs["limits"] = _httpx.Limits(
+            max_connections=max(4, ASSET_FETCH_CONCURRENCY),
+            max_keepalive_connections=max(4, ASSET_FETCH_CONCURRENCY // 2),
+        )
+    except Exception:
+        pass
+    return kwargs
+
+# How many refs the FIRST wave of a progressive upgrade may download before the
+# client is told about them, instead of waiting for the whole page's assets.
+#
+# The number matters more than it looks: the fetch pool is
+# ASSET_FETCH_CONCURRENCY wide, so a first wave of exactly that size costs one
+# round trip and overlaps NOTHING — the second pass then finds those bytes in
+# the memo and starts its own wave immediately.  Any larger and the first wave
+# would queue behind itself and the page would finish later than it does
+# today; any smaller and the wave is not full.  Default: one full pool.
+ASSET_FIRST_WAVE: int = max(0, int(os.environ.get(
+    "DOM_CAPTURE_ASSET_FIRST_WAVE", str(ASSET_PER_HOST_START))))
+
+# Visual priority of one ref.  Fonts first: a wrong face moves every glyph on
+# the screen at once.  Then stylesheets, because until they land the page has
+# no layout to speak of.  Then images, in document order (the ones the capture
+# met first are overwhelmingly the ones above the fold).  Everything else —
+# media, iframes, downloadables — last.
+_FONT_EXT_RE = re.compile(r"\.(?:woff2?|ttf|otf|eot|ttc)(?:$|[?#])", re.IGNORECASE)
+_CSS_EXT_RE = re.compile(r"\.css(?:$|[?#])", re.IGNORECASE)
+
+
+def _asset_priority(abs_url: str, kind: str = "other") -> int:
+    """0 = font, 1 = stylesheet, 2 = image, 3 = everything else.
+
+    The kind alone cannot answer this: a font declared in an inline
+    ``@font-face`` arrives through the CSS collector and is tagged ``img``
+    (it is a url() like any other), so the extension decides fonts and
+    stylesheets and the kind only separates images from the rest.
+    """
+    low = (abs_url or "").split("#", 1)[0]
+    if _FONT_EXT_RE.search(low):
+        return 0
+    if kind == "css" or _CSS_EXT_RE.search(low):
+        return 1
+    if kind in ("img", "icon", "svg"):
+        return 2
+    return 3
+
+# Per-page timing of the asset phase, for the capture log ("why was this page
+# slow?").  Pure instrumentation: nothing reads it for control flow.
+_LAST_REWRITE_STATS: Dict[str, Any] = {}
+
+# Chrome UA fallback for cache fetches (real UA pulled from the page).
+_FETCH_UA_FALLBACK = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def _data_uri(data: bytes, content_type: str) -> str:
+    """data: URI for small embedded assets (images/logos/SVGs/fonts)."""
+    ct = (content_type or "").split(";")[0].strip() or "application/octet-stream"
+    return f"data:{ct};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _resolvable_url(ref: str, base_url: str) -> Optional[str]:
+    """Absolute http(s) URL for a page ref, or None when not cacheable."""
+    if not ref:
+        return None
+    ref = ref.strip()
+    if not ref or ref.startswith(('#', 'data:', 'blob:', 'javascript:', 'mailto:', 'tel:', 'about:', '/assets/')):
+        return None
+    abs_url = urljoin(base_url, ref)
+    if not abs_url.lower().startswith(('http://', 'https://')):
+        return None
+    return abs_url
+
+
+async def _fetch_one_asset(client: Any, gate: Any, abs_url: str) -> Optional[Tuple[bytes, str]]:
+    """Fetch one asset body with hard bounds, through the adaptive gate.
+
+    ``gate`` is an :class:`_AssetGate` (the shared one by default).  A plain
+    semaphore still works — the wrapper below keeps this signature usable from
+    older call sites and from tests.
+    """
+    if not isinstance(gate, _AssetGate):
+        async with gate:
+            try:
+                resp = await client.get(abs_url, timeout=ASSET_FETCH_TIMEOUT_S)
+                if resp.status_code >= 400:
+                    return None
+                data = resp.content
+                if not data or len(data) > ASSET_MAX_BYTES:
+                    return None
+                ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                return (data, ctype)
+            except Exception:
+                return None
+    return await gate.fetch(client, abs_url)
+
+
+async def _cache_css_text(css_text: str, css_abs_url: str, client: Any, sem: Any,
+                          manager: AssetManager, depth: int, owner_id: Optional[str] = None) -> bytes:
+    """Fetch+rewrite the resources referenced by a CSS body, recursively
+    (bounded depth), then return the rewritten CSS bytes.  Small image/font
+    refs are data-URI embedded (logo-in-CSS case); larger refs and nested
+    stylesheets go through the /assets cache."""
+    if depth > 2:
+        return css_text.encode("utf-8", errors="ignore")
+
+    refs: List[str] = []
+    for m in _CSS_URL_RE.finditer(css_text):
+        refs.append(m.group(2))
+    for m in _CSS_IMPORT_RE.finditer(css_text):
+        refs.append(m.group(2))
+    uniq: List[str] = []
+    seen = set()
+    for ref in refs:
+        abs_u = _resolvable_url(ref, css_abs_url)
+        if abs_u and abs_u not in seen:
+            seen.add(abs_u)
+            uniq.append(abs_u)
+    uniq = uniq[:96]  # was 24: inner CSS refs (sprites/fonts) were dropped on heavy pages
+
+    results = await asyncio.gather(*(_fetch_one_asset(client, sem, u) for u in uniq))
+    repl: Dict[str, str] = {}
+    for abs_u, res in zip(uniq, results):
+        if not res:
+            continue
+        data, ctype = res
+        # Nested stylesheet?  Recurse so its url()s also resolve locally.
+        is_css_ref = ctype in ("text/css", "") or abs_u.lower().split("?", 1)[0].endswith(".css")
+        if is_css_ref and depth < 2:
+            try:
+                sub_text = data.decode("utf-8", errors="ignore")
+                data = await _cache_css_text(
+                    sub_text, abs_u, client, sem, manager, depth + 1, owner_id=owner_id
+                )
+                ctype = "text/css"
+            except Exception:
+                pass
+            # Small nested css embeds as a data: URI (works in @import and
+            # url()) so an inlined parent <style> stays fully self-contained.
+            if CSS_EMBED_MAX_BYTES > 0 and len(data) <= CSS_EMBED_MAX_BYTES:
+                manager.register(data, ctype, url=abs_u, owner_id=owner_id)
+                repl[abs_u] = _data_uri(data, ctype)
+                continue
+            digest = manager.register(data, ctype, url=abs_u, owner_id=owner_id)
+            ext = _guess_ext_from_content_type(ctype)
+            repl[abs_u] = f"/assets/{digest}{'.' + ext if ext else ''}"
+            continue
+        # Small image/font refs: embed as data URI.
+        if (EMBED_MAX_BYTES > 0 and len(data) <= EMBED_MAX_BYTES
+                and (ctype.startswith(("image/", "font/", "application/font")) or not ctype)):
+            manager.register(data, ctype, url=abs_u, owner_id=owner_id)
+            repl[abs_u] = _data_uri(data, ctype)
+            continue
+        digest = manager.register(data, ctype, url=abs_u, owner_id=owner_id)
+        ext = _guess_ext_from_content_type(ctype)
+        repl[abs_u] = f"/assets/{digest}{'.' + ext if ext else ''}"
+
+    def _sub_url(m: "re.Match[str]") -> str:
+        orig = m.group(2)
+        abs_u = _resolvable_url(orig, css_abs_url)
+        new = repl.get(abs_u) if abs_u else None
+        if not new:
+            return m.group(0)
+        return m.group(0).replace(orig, new, 1)
+
+    def _sub_import(m: "re.Match[str]") -> str:
+        orig = m.group(2)
+        abs_u = _resolvable_url(orig, css_abs_url)
+        new = repl.get(abs_u) if abs_u else None
+        if not new:
+            return m.group(0)
+        return m.group(0).replace(orig, new, 1)
+
+    css_text = _CSS_URL_RE.sub(_sub_url, css_text)
+    css_text = _CSS_IMPORT_RE.sub(_sub_import, css_text)
+    return css_text.encode("utf-8", errors="ignore")
+
+
+# Strip JavaScript from captured pages (default ON, user-requested:
+# "html and css only").  The mirror is a RENDERER: the Playwright page
+# already ran all page JS, and every interaction is relayed to it, so
+# scripts baked into the capture only re-run in the viewer's context and
+# build URLs against the VIEWER'S origin (blob: docs inherit it) — the
+# root of the glued-host sub-frame failures.  Everything visual is
+# already in the DOM we captured; JS in the mirror is pure harm.
+DOM_CAPTURE_STRIP_SCRIPTS: bool = os.environ.get("DOM_CAPTURE_STRIP_SCRIPTS", "1") not in ("0", "false", "False")
+
+_SCRIPT_TAG_RE = re.compile(
+    r"<script\b[^>]*(?:/>|>[\s\S]*?</script\s*>)",
+    re.IGNORECASE,
+)
+
+
+def _strip_script_tags(html: str) -> str:
+    """Remove all <script> elements from captured HTML. HTML spec: script
+    bodies are raw-text until the FIRST literal '</script', so a
+    non-greedy match is spec-correct ('<\\/script>' escapes in JS strings
+    are exactly that — escaped — and cannot appear raw)."""
+    if not html:
+        return html
+    out, n = _SCRIPT_TAG_RE.subn("", html)
+    if n:
+        logger.debug("strip-scripts: removed %d <script> element(s) from capture", n)
+    return out
+
+
+async def _rewrite_assets_to_cache(html: str, base_url: str, page: Any = None,
+                                  owner_id: Optional[str] = None, *,
+                                  allow_fetch: bool = True,
+                                  report: Optional[Dict[str, Any]] = None,
+                                  max_fetch: Optional[int] = None
+                                  ) -> Tuple[str, List[Dict[str, Any]]]:
+    """Resolve external asset refs in captured HTML: small images/icons are
+    data-URI EMBEDDED (see EMBED_MAX_BYTES), small stylesheets become inline
+    <style> blocks with their inner refs rewritten (CSS_EMBED_MAX_BYTES),
+    scripts/large media/large stylesheets go to the fetch-once
+    ``/assets/<sha256>[.<ext>]`` cache.
+
+    Returns ``(new_html, assets_meta)`` where assets_meta lists only the
+    /assets-path refs (client pre-warms those; embedded refs need nothing).
+    Any fetch failure leaves the original URL — the injected <base href>
+    then resolves it against the origin exactly like pre-cache behavior.
+    ``ImportError`` (no httpx) propagates so the caller can kill-switch.
+
+    ``allow_fetch=False`` answers from the fetch-once memo only and never
+    touches the network: that is the "what can I show right now?" pass.  Any
+    ref it could not resolve is listed in ``report["missing"]`` so the caller
+    knows a real pass would still have work to do.
+
+    ``report``, when given, is filled with:
+
+      ``swap``     ``[{"from": authored, "to": replacement}]`` — the edits
+                   that turn the ORIGINAL html into the rewritten one. A
+                   client that already rendered the original can apply these
+                   in place instead of re-rendering.
+      ``missing``  absolute URLs that would need a network fetch, in visual
+                   priority order (fonts, stylesheets, images, the rest).
+      ``applied``  how many refs the swap covers.
+
+    ``max_fetch`` caps how many refs this pass may DOWNLOAD (memo hits and
+    everything else still resolve).  It is how a progressive upgrade asks
+    "resolve the first wave only": the refs are ordered by
+    :func:`_asset_priority`, so the cap is spent on what the visitor can see.
+    """
+    manager = get_global_asset_manager()
+    _t_start = time.monotonic()
+    if report is not None:
+        report.clear()
+        report.update({"swap": [], "missing": [], "applied": 0})
+
+    def _stats(**extra: Any) -> None:
+        """Record what this pass cost. Read by the capture log only."""
+        try:
+            _LAST_REWRITE_STATS.clear()
+            _LAST_REWRITE_STATS.update(extra)
+            _LAST_REWRITE_STATS["ms"] = round((time.monotonic() - _t_start) * 1000, 1)
+        except Exception:
+            pass
+
+    # -- 1. Collect refs with kinds --------------------------------------
+    candidates: List[str] = []
+    kind_by_url: Dict[str, str] = {}
+    seen: set = set()
+
+    def _add(ref: str, kind: str) -> None:
+        abs_u = _resolvable_url(ref, base_url)
+        # A fragment identifies a SYMBOL inside one file (sprite.svg#icon,
+        # font.eot?#iefix).  It is not part of what gets fetched, and treating
+        # it as one would download the same sprite once per icon and miss the
+        # cache every time.  The fragment is re-attached when the ref is
+        # rewritten (see _lookup).
+        if abs_u and "#" in abs_u:
+            abs_u = abs_u.split("#", 1)[0]
+        if abs_u and abs_u not in seen:
+            seen.add(abs_u)
+            candidates.append(abs_u)
+            kind_by_url[abs_u] = kind
+
+    # Indirection refs FIRST: they are the ones that cannot survive a miss
+    # (a CORS-blocked font, a cross-origin <use>), and the per-page cap
+    # truncates the tail of this list on very heavy pages.
+    doc_spans = _doc_ref_spans(html)
+    doc_refs = 0
+    for _span_start, _span_end, ref, kind in doc_spans:
+        if doc_refs >= DOC_REF_MAX:
+            break
+        before = len(candidates)
+        _add(ref, kind)
+        if len(candidates) > before:
+            doc_refs += 1
+    for m in _IMG_SRC_RE.finditer(html):
+        _add(m.group(3), "img")
+    if not DOM_CAPTURE_STRIP_SCRIPTS:
+        for m in _SCRIPT_SRC_RE.finditer(html):
+            _add(m.group(3), "script")
+    for tm in _LINK_TAG_RE.finditer(html):
+        tag = tm.group(0)
+        rel = None
+        href = None
+        for am in _LINK_ATTR_RE.finditer(tag):
+            name = am.group(1).lower()
+            if name == "rel":
+                rel = am.group(3)
+            elif name == "href":
+                href = am.group(3)
+        if rel and href and _LINK_CACHEABLE_REL_RE.search(rel):
+            rel_l = rel.lower()
+            kind = "css" if "stylesheet" in rel_l else ("icon" if "icon" in rel_l else "other")
+            _add(href, kind)
+
+    candidates = candidates[:ASSET_MAX_PER_PAGE]
+    if not candidates:
+        _stats(refs=0)
+        return html, []
+
+    if not allow_fetch:
+        # Memo-only pass.  Everything below this point may go to the network;
+        # this is the "what do I already have?" question, asked before the
+        # document is sent so the common recapture (every asset known) still
+        # goes out complete and in one piece.
+        missing = [u for u in candidates if manager.get_by_url(u, owner_id=owner_id) is None]
+        # Priority order: the caller's first wave is taken from the head.
+        missing.sort(key=lambda u: _asset_priority(u, kind_by_url.get(u, "other")))
+        if report is not None:
+            report["missing"] = missing
+        if missing:
+            _stats(refs=len(candidates), missing=len(missing), ms=0.0)
+            return html, []
+
+    # -- 2. URL-memo: reuse bytes fetched in earlier captures --------------
+    hits: Dict[str, Tuple[bytes, str]] = {}
+    fetch_list: List[str] = []
+    for u in candidates:
+        ent = manager.get_by_url(u, owner_id=owner_id)
+        if ent is not None:
+            hits[u] = (ent.data, ent.content_type)
+        else:
+            fetch_list.append(u)
+
+    # Fetch what the visitor can SEE first.  The pool starts tasks in list
+    # order, so this is what decides whether the first wave is the page's
+    # fonts or four analytics beacons and a favicon.  Order inside a tier is
+    # document order (list.sort is stable), i.e. top of the page first.
+    if fetch_list:
+        fetch_list.sort(key=lambda u: _asset_priority(u, kind_by_url.get(u, "other")))
+        if max_fetch is not None and max_fetch >= 0:
+            fetch_list = fetch_list[:max_fetch]
+
+    # -- 3. Fetch what the memo missed (bounded parallelism + budget) ------
+    import httpx  # NOTE: ImportError must propagate (caller kill-switch)
+
+    # User-agent evaluation is only needed when there is an actual network
+    # miss.  Cache hits are the normal recapture path and should not pay a
+    # browser round trip just to construct an unused HTTP client header.
+    ua = _FETCH_UA_FALLBACK
+    if fetch_list and page is not None:
+        try:
+            cached_ua = getattr(page, "_cached_ua", None)
+            if cached_ua:
+                ua = cached_ua
+            else:
+                got = await page.evaluate("() => navigator.userAgent")
+                if isinstance(got, str) and got:
+                    ua = got
+                    try:
+                        setattr(page, "_cached_ua", got)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    gate = get_asset_gate()
+
+    async def _run_fetches() -> List[Any]:
+        async with httpx.AsyncClient(**_asset_client_kwargs(
+                {"User-Agent": ua, "Referer": base_url,
+                 "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9"})) as client:
+            return await asyncio.gather(*(_fetch_one_asset(client, gate, u) for u in fetch_list))
+
+    fetched: List[Any] = []
+    if fetch_list:
+        try:
+            fetched = await asyncio.wait_for(_run_fetches(), timeout=_REWRITE_GLOBAL_BUDGET_S)
+        except Exception as exc:
+            logger.debug("asset rewrite: global fetch budget hit (%s) — partial reuse only", exc)
+            fetched = []
+    for abs_u, res in zip(fetch_list, fetched):
+        if not res:
+            continue
+        data, ctype = res
+        hits[abs_u] = (data, ctype)
+        # Stylesheets are registered only AFTER their inner urls are
+        # rewritten (step 4) — memoizing raw CSS would both skip the inner
+        # rewrite forever and cache the wrong bytes.
+        if kind_by_url.get(abs_u) != "css":
+            manager.register(data, ctype, url=abs_u, owner_id=owner_id)
+
+    # -- 3b. Stylesheets: inner-ref rewrite, all sheets at once -------------
+    # The old shape opened a brand-new HTTP client per stylesheet and awaited
+    # each rewrite inside the per-ref loop: N sheets on a page meant N client
+    # handshakes and N sequential network waits, all inside the 10 s budget.
+    # Fonts and background images inside CSS are announced last by the browser
+    # too, so this was the single worst stall in the rewrite phase.
+    fresh_css = [
+        u for u in candidates
+        if hits.get(u) is not None
+        and kind_by_url.get(u) == "css"
+        and manager.get_by_url(u, owner_id=owner_id) is None
+    ]
+    prepared: Dict[str, bytes] = {}
+    if fresh_css:
+        async def _prepare_css(client: Any) -> None:
+            async def one(abs_u: str) -> None:
+                # No second limiter here: the shared gate IS the limiter.
+                # Layering a per-sheet semaphore on top of the pool only made
+                # sheets queue behind each other.
+                raw, _ct = hits[abs_u]
+                try:
+                    text = raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    return
+                try:
+                    out = await _cache_css_text(
+                        text, abs_u, client, gate, manager, depth=0, owner_id=owner_id
+                    )
+                except Exception as exc:  # leave the sheet as authored
+                    logger.debug("css inner rewrite failed for %s: %s", abs_u[:120], exc)
+                    return
+                manager.register(out, "text/css", url=abs_u, owner_id=owner_id)
+                prepared[abs_u] = out
+
+            await asyncio.gather(*(one(u) for u in fresh_css), return_exceptions=True)
+
+        try:
+            async with httpx.AsyncClient(**_asset_client_kwargs(
+                    {"User-Agent": ua, "Referer": base_url,
+                     "Accept": "text/css,*/*", "Accept-Language": "en-US,en;q=0.9"})) as css_client:
+                await asyncio.wait_for(_prepare_css(css_client), timeout=_REWRITE_GLOBAL_BUDGET_S)
+        except Exception as exc:
+            # Whatever finished is already registered; the rest falls back to
+            # the authored CSS (same behaviour as any other failed asset).
+            logger.debug("css rewrite budget hit after %d/%d sheets (%s)",
+                         len(prepared), len(fresh_css), exc)
+        for abs_u, body in prepared.items():
+            hits[abs_u] = (body, "text/css")
+
+    # -- 4. Decision per ref: embed / cache / leave -------------------------
+    repl: Dict[str, str] = {}
+    inline_css: Dict[str, str] = {}
+    meta_by_digest: Dict[str, Dict[str, Any]] = {}
+    n_embed = 0
+    n_cache = 0
+    for abs_u in candidates:
+        res = hits.get(abs_u)
+        if not res:
+            continue
+        data, ctype = res
+        kind = kind_by_url.get(abs_u, "other")
+        try:
+            if kind == "css":
+                # Inner refs were rewritten in the concurrent pre-pass above
+                # (3b); `data`/`ctype` here are already the final bytes.
+                # Small stylesheets INLINE as <style> (client needs no
+                # /assets route to render styled pages — the yahoo case);
+                # larger ones keep the cache path below.
+                if CSS_EMBED_MAX_BYTES > 0 and len(data) <= CSS_EMBED_MAX_BYTES:
+                    inline_css[abs_u] = data.decode("utf-8", errors="ignore")
+                    n_embed += 1
+                    continue
+            elif kind in ("img", "icon") and EMBED_MAX_BYTES > 0 and len(data) <= EMBED_MAX_BYTES:
+                repl[abs_u] = _data_uri(data, ctype)
+                n_embed += 1
+                continue
+            digest = manager.digest_for(data)
+            ext = _guess_ext_from_content_type(ctype)
+            path = f"/assets/{digest}{'.' + ext if ext else ''}"
+            repl[abs_u] = path
+            meta_by_digest[digest] = {"hash": digest, "ext": ext, "content_type": ctype}
+            n_cache += 1
+        except Exception as exc:
+            logger.debug("asset decision failed for %s: %s", abs_u[:120], exc)
+            continue
+
+    if n_embed or n_cache:
+        logger.debug("asset rewrite: %d embedded, %d cached, %d untouched (memo_hits=%d)",
+                     n_embed, n_cache, len(candidates) - n_embed - n_cache,
+                     len(candidates) - len(fetch_list))
+    _stats(refs=len(candidates), doc_refs=doc_refs,
+           memo_hits=len(candidates) - len(fetch_list),
+           fetched=len(fetch_list), css_sheets=len(fresh_css),
+           embedded=n_embed, cached=n_cache)
+    if not repl and not inline_css:
+        return html, []
+
+    # -- 4. Rewrite HTML ---------------------------------------------------
+    # The indirection refs first, while the spans collected in step 1 still
+    # line up with this exact string (every substitution below changes the
+    # document's length).  One splice per ref, no re-scan.
+    #
+    # Every successful edit is also recorded as "this authored text became
+    # this" — that list is what lets a client apply the result to a document
+    # it ALREADY rendered (see PROGRESSIVE_ASSETS).  A text that resolves two
+    # different ways is dropped from that list rather than guessed at.
+    swapped: Dict[str, Dict[str, Any]] = {}
+
+    def _record(authored: str, resolved: str, tag: bool = False) -> None:
+        if not authored or authored == resolved:
+            return
+        prior = swapped.get(authored)
+        if prior is None:
+            swapped[authored] = {"from": authored, "to": resolved, "tag": tag}
+        elif prior["to"] != resolved:
+            if not prior.get("conflict"):
+                prior["conflict"] = True
+
+    def _lookup(ref: str) -> Optional[str]:
+        abs_u = _resolvable_url(ref, base_url)
+        if not abs_u:
+            return None
+        frag = ""
+        if "#" in abs_u:
+            abs_u, frag = abs_u.split("#", 1)
+            frag = "#" + frag
+        new_ref = repl.get(abs_u)
+        if not new_ref:
+            return None
+        resolved = new_ref + frag
+        _record(ref, resolved)
+        return resolved
+
+    def _sub_src(m: "re.Match[str]") -> str:
+        new = _lookup(m.group(3))
+        if not new:
+            return m.group(0)
+        return m.group(1) + m.group(2) + new + m.group(2)
+
+    html, doc_refs_applied = _apply_doc_ref_spans(html, doc_spans, _lookup)
+    if doc_refs_applied:
+        # Recorded after the fact: the timing in _stats was taken before the
+        # splice, and this count is what the capture log calls "how many refs
+        # the mirror would have had to reach the site for".
+        try:
+            _LAST_REWRITE_STATS["doc_applied"] = doc_refs_applied
+        except Exception:
+            pass
+
+    html = _IMG_SRC_RE.sub(_sub_src, html)
+    html = _SCRIPT_SRC_RE.sub(_sub_src, html)
+
+    def _sub_link(m: "re.Match[str]") -> str:
+        tag = m.group(0)
+        rel = None
+        href = None
+        media = None
+        for am in _LINK_ATTR_RE.finditer(tag):
+            name = am.group(1).lower()
+            if name == "rel":
+                rel = am.group(3)
+            elif name == "href":
+                href = am.group(3)
+            elif name == "media":
+                media = am.group(3)
+        if not rel or not _LINK_CACHEABLE_REL_RE.search(rel):
+            return tag
+        # Inline stylesheet?  Replace the whole <link> with a <style>
+        # carrying the rewritten CSS (media attribute preserved).
+        if href and inline_css:
+            abs_u = _resolvable_url(href, base_url)
+            if abs_u and abs_u in inline_css:
+                media_attr = ' media="%s"' % media.replace('"', "&quot;") if media else ""
+                src_attr = ' data-shfcss="%s"' % abs_u.replace('"', "&quot;")
+                style_tag = ("<style" + src_attr + media_attr + ">"
+                             + _inline_css_safe(inline_css[abs_u]) + "</style>")
+                _record(href, style_tag, tag=True)
+                return style_tag
+        def _fix(am2: "re.Match[str]") -> str:
+            if am2.group(1).lower() != "href":
+                return am2.group(0)
+            new = _lookup(am2.group(3))
+            if not new:
+                return am2.group(0)
+            return am2.group(1) + "=" + am2.group(2) + new + am2.group(2)
+        return _LINK_ATTR_RE.sub(_fix, tag)
+
+    html = _LINK_TAG_RE.sub(_sub_link, html)
+
+    # Published last: the <link> pass above is what records the
+    # stylesheet→<style> swap, so anything earlier would miss it.
+    if report is not None:
+        report["swap"] = [v for v in swapped.values() if not v.get("conflict")]
+        report["applied"] = doc_refs_applied
+
+    return html, list(meta_by_digest.values())
+
+
+# ---------------------------------------------------------------------------
+# MHTML capture (archive-quality single artifact via CDP)
+# ---------------------------------------------------------------------------
+
+async def capture_page_mhtml(page: Any, *, timeout: float = 15.0) -> Optional[str]:
+    """MHTML snapshot of the current page via CDP ``Page.captureSnapshot``.
+
+    Archive-quality single artifact (replaces the SingleFile extension
+    round-trip for archive flows when ``ARCHIVE_FORMAT=mhtml``).  NOT used
+    for the live mirror: browsers cannot reliably render MHTML inside the
+    viewer, and it carries the same base64 bloat as SingleFile.
+    """
+    cdp = None
+    try:
+        cdp = await page.context.new_cdp_session(page)
+        res = await asyncio.wait_for(
+            cdp.send("Page.captureSnapshot", {"format": "mhtml"}),
+            timeout=timeout,
+        )
+        data = (res or {}).get("data")
+        if isinstance(data, str) and data:
+            return data
+        return None
+    except Exception as exc:
+        logger.debug("MHTML capture failed: %s", exc)
+        return None
+    finally:
+        if cdp is not None:
+            try:
+                await cdp.detach()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# SingleFile full capture
+# ---------------------------------------------------------------------------
+
+async def _capture_with_single_file(
+    page: Any,
+    *,
+    timeout: int = SINGLEFILE_TIMEOUT_S,
+    max_attempts: int = 3,
+    extension_only: bool = False,
+) -> Optional[str]:
+    """Capture the current page using SingleFile.
+
+    Default mode is **extension** (the MV3 SingleFile we ship).  We open
+    a CDP session to the extension's background service worker, call
+    ``business.captureTab`` via the official ``capture-page`` external
+    message, and wait for the content script to return the inlined
+    HTML.
+
+    Set ``SINGLEFILE_CAPTURE_MODE=library`` to use the legacy JS-library
+    injection path instead, unless ``extension_only`` is true.
+    ``max_attempts`` lets callers bound one retry batch; callers that need to
+    wait for a browser extension may repeat batches while the page is alive.
+    """
+    if page is None:
+        return None
+    try:
+        url = page.url
+    except Exception:
+        return None
+    if not url:
+        return None
+
+    # Fast path: if both capture backends are disabled, don't even try.
+    if extension_only and not _is_extension_capture_enabled():
+        logger.warning("SingleFile extension capture is unavailable; returning None")
+        return None
+    if not _is_extension_capture_enabled() and not _is_live_library_enabled():
+        logger.warning(
+            "SingleFile capture is fully disabled "
+            "(ENABLE_EXTENSION_CAPTURE=0 and ENABLE_LIVE_LIBRARY=0); "
+            "returning None"
+        )
+        return None
+
+    mode = "extension" if extension_only else os.environ.get(
+        "SINGLEFILE_CAPTURE_MODE", "extension"
+    ).strip().lower()
+    if mode == "library" and not extension_only:
+        if not _is_live_library_enabled():
+            logger.warning(
+                "SingleFile library capture requested but "
+                "ENABLE_LIVE_LIBRARY is off; returning None"
+            )
+            return None
+        return await _capture_via_library_injection(page, timeout=timeout)
+
+    # Default & "extension": try the extension path with retries.
+    # Library fallback has been removed per user request — extension is now
+    # the single source of truth (system Chrome + bundled Chromium both load
+    # the MV3 via --load-extension, visible in chrome://extensions).
+    # This avoids the garbled CSP-bypass library path on Yahoo and the
+    # extra 8 MB capture fallback that was triggered on transient
+    # "message channel closed" errors.
+    if _is_extension_capture_enabled():
+        last_exc = None
+        attempts = max(1, int(max_attempts))
+        for attempt in range(attempts):
+            try:
+                html = await _capture_via_extension(page, timeout=timeout)
+                if html:
+                    if attempt > 0:
+                        logger.debug("SingleFile ext: capture succeeded on retry %s/%s (%d bytes)", attempt + 1, attempts, len(html))
+                    return html
+                last_exc = None
+                if attempt < attempts - 1:
+                    logger.debug("SingleFile ext: returned no content, retry %s/%s", attempt + 1, attempts)
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                logger.warning("SingleFile ext: returned no content after %s attempt(s) — not falling back to library (disabled)", attempts)
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc).lower()
+                # Transient "message channel closed" happens when the content
+                # script hasn't re-attached yet after navigation or when the
+                # service worker was idle. Retry instead of falling back to
+                # the garbled library injection.
+                if ("message channel closed" in msg or "receiving end does not exist" in msg or "could not establish connection" in msg) and attempt < attempts - 1:
+                    logger.debug("SingleFile ext: transient failure retry %s/%s: %s", attempt + 1, attempts, exc)
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                logger.warning("SingleFile ext: capture failed (%s)", exc)
+                break
+        # No library fallback — return None so caller can decide (avoids 8 MB duplicate + garbled Yahoo)
+        if last_exc:
+            logger.debug("SingleFile ext: giving up after %s attempt(s), last error: %s", attempts, last_exc)
+        return None
+    else:
+        logger.debug(
+            "SingleFile extension capture disabled "
+            "(CONFIG.enable_extension_capture=False)"
+        )
+
+    # Extension disabled and library not requested via SINGLEFILE_CAPTURE_MODE=library.
+    # Library fallback is disabled per user request; only use it when explicitly
+    # requested via mode=="library" above. Return None.
+    if _is_live_library_enabled():
+        logger.debug("SingleFile ext: extension disabled but live library is enabled — not using fallback (explicit mode=library required)")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Extension capture path
+# ---------------------------------------------------------------------------
+
+def _is_live_library_enabled() -> bool:
+    """True if the user has not disabled the in-page SingleFile JS library
+    fallback.  Source of truth is :mod:`server_settings` (admin-toggled
+    at runtime); we fall back to ``CONFIG.enable_live_library`` and the
+    legacy ``ENABLE_LIVE_LIBRARY`` env var for backward compatibility."""
+    try:
+        import server_settings as _ss
+        v = _ss.get_settings().enable_live_library
+        if v is False:
+            return False
+        if v is True:
+            return True
+    except Exception:
+        pass
+    # Fall back to UltraConfig + env
+    try:
+        from config import CONFIG as _CFG
+        return bool(getattr(_CFG, "enable_live_library", True))
+    except Exception:
+        return True
+
+
+def _extension_id_from_manifest() -> Optional[str]:
+    """Deterministic unpacked extension ID derived from manifest's ``key``.
+
+    Chrome derives the ID as: first 16 bytes of SHA-256(SPKI DER) →
+    each nibble mapped 0-15 → 'a'-'p' (32 chars).  The manifest we ship
+    has a stable ``key`` so the ID is ``ebclppejdflkgblgpoodlceeeabmlajo``.
+    Computing it lets us address the extension even when the service
+    worker is idle and ``Target.getTargets`` does not list it (or when a
+    stealth patch has overwritten ``window.chrome.runtime.id`` in MAIN
+    world).  Falls back to the known hard-coded ID if decode fails.
+    """
+    try:
+        import base64 as _b64
+        import hashlib as _hl
+        candidates = []
+        env_dir = os.environ.get("SINGLEFILE_EXT_DIR", "").strip()
+        if env_dir:
+            candidates.append(env_dir)
+        else:
+            # same order as browser_manager
+            candidates.append(str(Path(__file__).resolve().parent / "single"))
+            candidates.append(str(Path.cwd() / "single"))
+            candidates.append(str(Path.home() / "shifixsxs" / "single"))
+            candidates.append("/home/user/shifixsxs/single")
+        for cand in candidates:
+            cand_abs = os.path.abspath(cand)
+            mf = Path(cand_abs) / "manifest.json"
+            if mf.is_file():
+                try:
+                    data = json.loads(mf.read_text(encoding="utf-8") or "{}")
+                except Exception:
+                    continue
+                key = data.get("key") or ""
+                if key:
+                    try:
+                        der = _b64.b64decode(key)
+                        h = _hl.sha256(der).digest()
+                        hx = h[:16].hex()
+                        trans = str.maketrans("0123456789abcdef", "abcdefghijklmnop")
+                        return hx.translate(trans)
+                    except Exception:
+                        pass
+                # No key → cannot derive ID → try next candidate
+        # Hard-coded fallback for the manifest we ship (key above)
+        return "ebclppejdflkgblgpoodlceeeabmlajo"
+    except Exception:
+        return "ebclppejdflkgblgpoodlceeeabmlajo"
+
+
+def _is_extension_capture_enabled() -> bool:
+    """True if the user has not disabled extension capture AND a loadable
+    extension is on disk.
+
+    The master switch is :mod:`server_settings` (admin-toggled at runtime).
+    We fall back to ``CONFIG.enable_extension_capture`` and the legacy
+    ``SINGLEFILE_EXT_MODE`` env var for backward compatibility.
+    """
+    try:
+        import server_settings as _ss
+        if _ss.get_settings().enable_extension_capture is False:
+            return False
+    except Exception:
+        pass
+
+    if os.environ.get("SINGLEFILE_EXT_MODE", "1").strip() in ("0", "false", "no", "off"):
+        return False
+
+    d = os.environ.get("SINGLEFILE_EXT_DIR", "").strip()
+    if not d:
+        d = str(Path(__file__).resolve().parent / "single")
+    from pathlib import Path as _P
+    manifest = _P(d) / "manifest.json"
+    if not manifest.is_file():
+        try:
+            from singlefile_ext import _ensure_extracted
+            _ensure_extracted()
+        except Exception:
+            pass
+    return manifest.is_file()
+
+
+async def _capture_via_extension(page: Any, *, timeout: int) -> Optional[str]:
+    """
+    Capture the current page through the SingleFile extension.
+
+    IMPORTANT:
+    Do NOT try to convert a CDP targetId into a Chrome tab ID.
+
+    CDP target IDs look like:
+        0A5CCAD1203D610B8CD18E53A149EBE3
+
+    Chrome tab IDs are numeric:
+        123
+
+    Instead, this function uses the SingleFile page bridge. The bridge
+    runs inside the actual browser tab and sends the request to the
+    extension. Chrome then supplies the correct sender.tab.id to the
+    service worker automatically.
+    """
+
+    if page is None:
+        return None
+
+    try:
+        url = page.url
+    except Exception:
+        return None
+
+    if not url:
+        return None
+
+    # Quick pre-check: if the content-script bridge never injected, the
+    # extension is not loaded for this tab → skip CDP discovery entirely.
+    # The check runs in MAIN world; __singlefile_bridge_installed is set by
+    # lib/single-file-page-bridge.js (MAIN) which is injected at document_start.
+    try:
+        bridge_installed = await page.evaluate("() => !!window.__singlefile_bridge_installed")
+    except Exception:
+        bridge_installed = False
+    if not bridge_installed:
+        logger.debug("SingleFile ext: page bridge not yet installed (will try Target discovery anyway)")
+
+    # ---------------------------------------------------------------
+    # 1. Get the extension ID.
+    #    Preferred: Target.getTargets service_worker URL.
+    #    However system Chrome may have multiple extensions (e.g. fign...
+    #    plus our SingleFile ebcl...). The first service_worker in the
+    #    list may be the wrong extension, which then has no bridge and
+    #    forces a garbled library fallback. So we collect ALL IDs and
+    #    prefer the manifest-derived one (ebcl...) when it appears.
+    #    Fallback (1): deterministic ID from manifest key — works even
+    #                  when the service worker is idle (not listed).
+    #    Fallback (2): scripts with chrome-extension:// src.
+    # ---------------------------------------------------------------
+    extension_id: Optional[str] = None
+    discovered_via: str = ""
+    manifest_id: Optional[str] = _extension_id_from_manifest()
+    # Remember if we saw a mismatch so we can retry with manifest later
+    discovered_manifest_mismatch: bool = False
+    cdp = None
+    try:
+        try:
+            cdp = await page.context.new_cdp_session(page)
+        except Exception as exc:
+            logger.debug("SingleFile ext: could not open CDP session: %s", exc)
+            cdp = None
+
+        if cdp is not None:
+            try:
+                await cdp.send("Target.setDiscoverTargets", {"discover": True})
+                targets = await cdp.send("Target.getTargets")
+                target_list = targets.get("targetInfos") or []
+
+                # Collect all chrome-extension IDs; prefer manifest_id
+                all_ids = []
+                for target in target_list:
+                    ttype = target.get("type")
+                    turl = target.get("url") or ""
+                    if turl.startswith("chrome-extension://"):
+                        remainder = turl[len("chrome-extension://"): ]
+                        ext_id = remainder.split("/", 1)[0].split("?", 1)[0].strip()
+                        if ext_id and len(ext_id) >= 10:
+                            all_ids.append((ttype, ext_id, turl))
+                # Deduplicate preserving order
+                seen = set()
+                uniq = []
+                for ttype, eid, turl in all_ids:
+                    if eid not in seen:
+                        seen.add(eid)
+                        uniq.append((ttype, eid))
+                if uniq:
+                    logger.debug("SingleFile ext: all extension targets=%r manifest_id=%s", [(t, i) for t, i in uniq], manifest_id)
+                # Prefer manifest_id if it's among discovered
+                if manifest_id and any(eid == manifest_id for _, eid in uniq):
+                    extension_id = manifest_id
+                    for ttype, eid in uniq:
+                        if eid == manifest_id:
+                            discovered_via = ttype + "(manifest_match)"
+                            break
+                else:
+                    # Otherwise prefer any service_worker, then fallback
+                    for ttype, eid in uniq:
+                        if ttype == "service_worker":
+                            extension_id = eid
+                            discovered_via = "service_worker"
+                            break
+                    if not extension_id and uniq:
+                        extension_id = uniq[0][1]
+                        discovered_via = f"fallback:{uniq[0][0]}"
+                        logger.debug("SingleFile ext: extension ID from fallback type %s: %s", uniq[0][0], extension_id)
+
+                # Remember mismatch for later bridge retry
+                if manifest_id and extension_id and extension_id != manifest_id:
+                    discovered_manifest_mismatch = True
+                    logger.debug("SingleFile ext: discovered ID %s != manifest %s; will retry manifest if bridge missing", extension_id, manifest_id)
+
+                if not extension_id and manifest_id:
+                    if bridge_installed:
+                        extension_id = manifest_id
+                        discovered_via = "manifest+bridge"
+                        logger.debug("SingleFile ext: Target.getTargets found no extension; using manifest ID %s (bridge installed)", extension_id)
+                    else:
+                        try:
+                            ext_id_via_script = await page.evaluate('''() => {
+                                try {
+                                    const scripts = Array.from(document.querySelectorAll('script[src*="chrome-extension://"]'));
+                                    for (const s of scripts) {
+                                        const m = s.src.match(/chrome-extension:\\/\\/([^\\/]+)\\//);
+                                        if (m) return m[1];
+                                    }
+                                    const links = Array.from(document.querySelectorAll('link[href*="chrome-extension://"]'));
+                                    for (const l of links) {
+                                        const m = l.href.match(/chrome-extension:\\/\\/([^\\/]+)\\//);
+                                        if (m) return m[1];
+                                    }
+                                } catch(e) {}
+                                return null;
+                            }''')
+                            if ext_id_via_script and isinstance(ext_id_via_script, str) and len(ext_id_via_script) >= 10:
+                                extension_id = ext_id_via_script
+                                discovered_via = "script_src"
+                                logger.debug("SingleFile ext: extension ID via script[src] fallback: %s", extension_id)
+                            else:
+                                extension_id = manifest_id
+                                discovered_via = "manifest"
+                                logger.debug("SingleFile ext: Target.getTargets found no extension and no bridge signal; trying manifest ID %s anyway (extension may be starting)", extension_id)
+                        except Exception:
+                            extension_id = manifest_id
+                            discovered_via = "manifest"
+                            logger.debug("SingleFile ext: Target.getTargets found no extension; trying manifest ID %s", extension_id)
+
+                if not extension_id:
+                    try:
+                        dbg = [(t.get("type"), (t.get("url") or "")[:80]) for t in target_list[:10]]
+                        logger.debug("SingleFile ext: could not determine extension ID (targets=%r)", dbg)
+                    except Exception:
+                        logger.debug("SingleFile ext: could not determine extension ID")
+                    return None
+
+                logger.debug("SingleFile ext: extension ID = %s (via %s)", extension_id, discovered_via or "unknown")
+
+            except Exception as exc:
+                if not extension_id and manifest_id:
+                    if bridge_installed:
+                        extension_id = manifest_id
+                        discovered_via = "manifest+bridge(exc)"
+                        logger.debug("SingleFile ext: Target discovery failed (%s); using manifest ID %s (bridge installed)", exc, extension_id)
+                    else:
+                        logger.debug("SingleFile ext: failed to discover extension ID: %s", exc)
+                        return None
+                else:
+                    logger.debug("SingleFile ext: failed to discover extension ID: %s", exc)
+                    return None
+            finally:
+                try:
+                    await cdp.detach()
+                except Exception:
+                    pass
+        else:
+            if bridge_installed and manifest_id:
+                extension_id = manifest_id
+                discovered_via = "manifest(no_cdp)+bridge"
+                logger.debug("SingleFile ext: no CDP session; using manifest ID %s (bridge installed)", extension_id)
+            else:
+                logger.debug("SingleFile ext: no CDP session and no bridge signal — cannot capture via extension")
+                return None
+
+    except Exception as exc:
+        logger.debug("SingleFile ext: failed to discover extension ID: %s", exc)
+        if manifest_id and bridge_installed:
+            extension_id = manifest_id
+            discovered_via = "manifest(outer_exc)+bridge"
+            logger.debug("SingleFile ext: outer exception; falling back to manifest ID %s", extension_id)
+        else:
+            return None
+        if cdp is not None:
+            try:
+                await cdp.detach()
+            except Exception:
+                pass
+
+    if not extension_id:
+        if manifest_id and bridge_installed:
+            extension_id = manifest_id
+            discovered_via = "manifest(final)+bridge"
+            logger.debug("SingleFile ext: final fallback to manifest ID %s (bridge installed)", extension_id)
+        else:
+            logger.warning("SingleFile ext: extension ID still unknown after all discovery paths")
+            return None
+
+    if not bridge_installed:
+        try:
+            await page.wait_for_timeout(400)
+            bridge_installed = await page.evaluate("() => !!window.__singlefile_bridge_installed")
+        except Exception:
+            pass
+        # If bridge still not installed but we have a manifest mismatch,
+        # the discovered ID (e.g. fign...) is likely the wrong extension.
+        # Try the manifest ID (ebcl...) before giving up — it may be that
+        # Target.getTargets didn't list the idle SingleFile service_worker,
+        # but the content script (which sets the bridge) is actually from
+        # the manifest extension.
+        # If bridge still not installed, try manifest ID regardless of whether we
+        # discovered a mismatched ID or found nothing at all. This covers the
+        # case where Target.getTargets returned no chrome-extension targets
+        # (extension service_worker idle or not loaded) but the SingleFile
+        # content script *should* be there. Manual injection of the page bridge
+        # can recover.
+        if not bridge_installed and manifest_id:
+            if discovered_manifest_mismatch:
+                logger.debug("SingleFile ext: bridge not installed for discovered ID %s (via %s) — trying manifest ID %s", extension_id, discovered_via, manifest_id)
+            elif not extension_id:
+                logger.debug("SingleFile ext: bridge not installed and no extension targets found — trying manifest ID %s via manual bridge injection", manifest_id)
+            else:
+                logger.debug("SingleFile ext: bridge not installed for %s — trying manifest ID %s via manual injection", extension_id, manifest_id)
+            # Try to manually inject the SingleFile page bridge from disk so
+            # the extension can be addressed even if content_scripts didn't
+            # inject (e.g. world:MAIN not supported, or profile stale).
+            try:
+                import pathlib as _pl
+                _candidates = [
+                    _pl.Path(__file__).resolve().parent / "single" / "lib" / "single-file-page-bridge.js",
+                    _pl.Path.cwd() / "single" / "lib" / "single-file-page-bridge.js",
+                    _pl.Path.home() / "shifixsxs" / "single" / "lib" / "single-file-page-bridge.js",
+                    _pl.Path("/home/user/shifixsxs/single/lib/single-file-page-bridge.js"),
+                ]
+                _env = __import__('os').environ.get("SINGLEFILE_EXT_DIR", "").strip()
+                if _env:
+                    _candidates.insert(0, _pl.Path(_env) / "lib" / "single-file-page-bridge.js")
+                _bridge_src = None
+                _cand = None
+                for _cand in _candidates:
+                    if _cand.is_file():
+                        _bridge_src = _cand.read_text(encoding="utf-8", errors="ignore")
+                        break
+                if _bridge_src:
+                    await page.evaluate("(code) => { (0, eval)(code); }", _bridge_src)
+                    logger.debug("SingleFile ext: manually injected page bridge from %s", _cand)
+                    bridge_installed = await page.evaluate("() => !!window.__singlefile_bridge_installed")
+                    if bridge_installed:
+                        extension_id = manifest_id
+                        discovered_via = "manifest+manual_bridge"
+                        logger.debug("SingleFile ext: manual bridge injection succeeded, now using manifest ID %s", extension_id)
+            except Exception as _ibe:
+                logger.debug("SingleFile ext: manual bridge injection failed: %s", _ibe)
+        if not bridge_installed:
+            logger.warning("SingleFile ext: bridge not installed for %s (extension not loaded for this tab, ID was %s via %s) — falling back", url[:80], extension_id, discovered_via)
+            return None
+        else:
+            logger.debug("SingleFile ext: bridge appeared after short wait")
+
+    # ---------------------------------------------------------------
+    # 2. Ask the PAGE bridge to send the capture request.
+    #
+    # The bridge is already injected by:
+    #
+    #     lib/single-file-page-bridge.js
+    #
+    # It receives the window.postMessage(), calls
+    # chrome.runtime.sendMessage(), and posts the response back.
+    # ---------------------------------------------------------------
+
+    capture_config = {
+        "compressHTML": False,
+        "blockImages": False,
+        "blockFonts": False,
+        "removeHiddenElements": False,
+        "removeUnusedStyles": False,
+        "removeUnusedFonts": False,
+        "removeAlternativeFonts": False,
+        "removeAlternativeMedias": False,
+        "removeAlternativeImages": False,
+        "groupDuplicateImages": False,
+        "loadDeferredImages": True,
+        "loadDeferredImagesMaxIdleTime": 1500,
+        "removeFrames": False,
+        "compressCSS": False,
+        "moveStylesInHead": False,
+    }
+
+    timeout_ms = int(timeout * 1000)
+
+    expression = r"""
+    async ({ extensionId, captureConfig, timeoutMs }) => {
+        const REQUEST_KEY = "__singlefile_bridge_request";
+        const RESPONSE_KEY = "__singlefile_bridge_response";
+
+        // Make sure the bridge exists.
+        if (!window.__singlefile_bridge_installed) {
+            return {
+                __sf_err: "page_bridge_not_installed"
+            };
+        }
+
+        const requestId =
+            "__sf_" +
+            Date.now().toString(36) +
+            "_" +
+            Math.random().toString(36).slice(2);
+
+        return await new Promise((resolve) => {
+            let finished = false;
+
+            const cleanup = () => {
+                window.removeEventListener(
+                    "message",
+                    onMessage
+                );
+
+                if (timer) {
+                    clearTimeout(timer);
+                }
+            };
+
+            const finish = (value) => {
+                if (finished) {
+                    return;
+                }
+
+                finished = true;
+                cleanup();
+                resolve(value);
+            };
+
+            const onMessage = (event) => {
+                if (event.source !== window) {
+                    return;
+                }
+
+                const data = event.data;
+
+                if (!data ||
+                    data[RESPONSE_KEY] !== true ||
+                    data.requestId !== requestId) {
+                    return;
+                }
+
+                finish(data.resp || {
+                    __sf_err: "empty_bridge_response"
+                });
+            };
+
+            const timer = setTimeout(() => {
+                finish({
+                    __sf_err: "bridge_timeout"
+                });
+            }, timeoutMs + 5000);
+
+            window.addEventListener(
+                "message",
+                onMessage
+            );
+
+            window.postMessage(
+                {
+                    [REQUEST_KEY]: true,
+                    requestId,
+                    extId: extensionId,
+                    message: {
+                        method: "capture-page",
+                        trustedCaller: true,
+                        ...captureConfig
+                    }
+                },
+                "*"
+            );
+        });
+    }
+    """
+
+    try:
+        result = await page.evaluate(
+            expression,
+            {
+                "extensionId": extension_id,
+                "captureConfig": capture_config,
+                "timeoutMs": timeout_ms,
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "SingleFile ext: page bridge evaluation failed: %s",
+            exc,
+        )
+        return None
+
+    if not isinstance(result, dict):
+        logger.warning(
+            "SingleFile ext: invalid bridge result: %r",
+            result,
+        )
+        return None
+
+    if result.get("__sf_err"):
+        logger.warning(
+            "SingleFile ext: %s",
+            result["__sf_err"],
+        )
+        return None
+
+    content = result.get("content")
+
+    if not content:
+        logger.warning(
+            "SingleFile ext: bridge response contained no content: %r",
+            result,
+        )
+        return None
+
+    if not isinstance(content, str):
+        logger.warning(
+            "SingleFile ext: content was not a string: %s",
+            type(content).__name__,
+        )
+        return None
+
+    logger.debug(
+        "SingleFile ext: capture successful (%d bytes)",
+        len(content),
+    )
+
+    return content
+
+
+async def _capture_via_library_injection(page: Any, *, timeout: int) -> Optional[str]:
+    """Original library-injection path.  Kept as a fallback for environments
+    where the extension isn't loaded (or extension mode is off)."""
+    sources = await _load_singlefile_sources()
+    if not sources:
+        return None
+
+    # --- CSP bypass for Yahoo and other strict-CSP sites -----------------
+    # SingleFile's library injection uses inline <script> tags which are
+    # blocked by nonce/hash CSP (e.g. Yahoo: script-src 'nonce-...').
+    # Real browsers honor CSP, but Playwright can bypass it per-page via
+    # CDP. We enable bypass for this page only so the injection succeeds
+    # without flipping the global `bypass_csp` (which is a bot tell).
+    # We also strip CSP headers for future navigations and remove <meta
+    # http-equiv="Content-Security-Policy"> already in the DOM.
+    try:
+        cdp = await page.context.new_cdp_session(page)
+        try:
+            await cdp.send("Page.setBypassCSP", {"enabled": True})
+            logger.debug("SingleFile lib: CSP bypass via CDP enabled")
+        finally:
+            try:
+                await cdp.detach()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Strip CSP headers for subsequent requests (covers navigations after
+    # the initial document). Keep per-context and per-page handlers; both
+    # are tolerated to be registered multiple times.
+    try:
+        async def _strip_csp(route, _request):
+            try:
+                response = await route.fetch()
+                headers = {
+                    k: v for k, v in response.headers.items()
+                    if k.lower() not in (
+                        "content-security-policy",
+                        "content-security-policy-report-only",
+                        "x-content-security-policy",
+                    )
+                }
+                body = await response.body()
+                await route.fulfill(response=response, headers=headers, body=body)
+            except Exception:
+                try:
+                    await route.continue_()
+                except Exception:
+                    pass
+
+        # page-level route is most reliable for the current document;
+        # context-level is a safety net for new pages.
+        for target in (page, page.context):
+            try:
+                await target.route("**/*", _strip_csp)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Remove <meta http-equiv="Content-Security-Policy"> already parsed.
+    try:
+        await page.evaluate('''() => {
+            document.querySelectorAll('meta[http-equiv="Content-Security-Policy"], meta[http-equiv="content-security-policy"], meta[http-equiv="Content-Security-Policy-Report-Only"]')
+                .forEach(m => m.remove());
+        }''')
+    except Exception:
+        pass
+
+    # Inject SingleFile hook + main scripts.
+    # add_script_tag is blocked by nonce-CSP even after header stripping
+    # (the initial document's CSP is already enforced). Prefer a CDP
+    # evaluation path that is not subject to CSP, then fall back to
+    # nonce-aware script-tag injection and finally plain add_script_tag.
+    injected = False
+    last_exc = None
+
+    # 1) CDP Runtime evaluation (bypasses CSP) — most reliable.
+    # Playwright's page.evaluate is implemented via Runtime.callFunctionOn
+    # which is outside CSP. Evaluating the script source directly as an
+    # expression executes it in the page.
+    for key in ("hook", "main"):
+        code = sources.get(key)
+        if not code:
+            continue
+        try:
+            # Evaluate the script source as a program. Wrapping in an
+            # async IIFE ensures top-level await / return handling works
+            # while still executing for side effects (window.singlefile).
+            await page.evaluate("(code) => { (0, eval)(code); }", code)
+            injected = True
+            logger.debug("SingleFile lib: injected %s via evaluate", key)
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("SingleFile lib: evaluate inject %s failed: %s", key, exc)
+            injected = False
+            break
+
+    # Verify
+    try:
+        has_sf = await page.evaluate("() => !!window.singlefile")
+        if has_sf:
+            injected = True
+        else:
+            injected = False
+    except Exception:
+        injected = False
+
+    if not injected:
+        # 2) Nonce-aware <script> injection — reuses the page's own nonce
+        # so the inline script passes the nonce check.
+        try:
+            ok = await page.evaluate('''(codes) => {
+                const getNonce = () => {
+                    const s = document.querySelector('script[nonce]');
+                    if (s) return s.nonce || s.getAttribute('nonce') || s.getAttribute('data-nonce');
+                    // some Yahoo pages store nonce on the CSP meta or html
+                    const html = document.documentElement;
+                    if (html && html.getAttribute('nonce')) return html.getAttribute('nonce');
+                    return null;
+                };
+                const nonce = getNonce();
+                for (const code of codes) {
+                    const el = document.createElement('script');
+                    if (nonce) el.setAttribute('nonce', nonce);
+                    // also set data-nonce for frameworks that check it
+                    el.textContent = code;
+                    (document.head || document.documentElement).appendChild(el);
+                    el.remove();
+                }
+                return !!window.singlefile;
+            }''', [sources["hook"], sources["main"]])
+            if ok:
+                injected = True
+                logger.debug("SingleFile lib: injected via nonce-aware script tag")
+            else:
+                logger.debug("SingleFile lib: nonce-aware injection did not create window.singlefile")
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("SingleFile lib: nonce-aware injection failed: %s", exc)
+
+    if not injected:
+        # 3) Plain add_script_tag — last resort (will fail on strict nonce CSP)
+        try:
+            await page.add_script_tag(content=sources["hook"])
+            await page.add_script_tag(content=sources["main"])
+            injected = True
+            logger.debug("SingleFile lib: injected via add_script_tag fallback")
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("SingleFile lib: script injection failed: %s", exc)
+            # keep last_exc for warning below
+            pass
+
+    if not injected:
+        # Final verify before bailing
+        try:
+            has_sf2 = await page.evaluate("() => !!window.singlefile")
+            if has_sf2:
+                injected = True
+        except Exception:
+            pass
+
+    if not injected:
+        if last_exc is not None:
+            logger.warning("SingleFile lib: script injection failed: %s", last_exc)
+        else:
+            logger.warning("SingleFile lib: script injection failed: window.singlefile not present after injection")
+        return None
+
+    try:
+        page_data = await asyncio.wait_for(
+            page.evaluate(
+                """async (opts) => {
+                    if (!window.singlefile) {
+                        throw new Error('window.singlefile not present after injection');
+                    }
+                    return await window.singlefile.getPageData(opts);
+                }""",
+                {
+                    "zipScript": sources["zip"],
+                    "compressHTML": False,
+                    "blockImages": False,
+                    "blockFonts": False,
+                    "removeHiddenElements": False,
+                    "removeUnusedStyles": False,
+                    "removeUnusedFonts": False,
+                    "removeAlternativeFonts": False,
+                    "removeAlternativeMedias": False,
+                    "removeAlternativeImages": False,
+                    "groupDuplicateImages": False,
+                    "loadDeferredImages": True,
+                    "loadDeferredImagesMaxIdleTime": 1500,
+                    "removeFrames": False,
+                    "compressCSS": False,
+                    "moveStylesInHead": False,
+                },
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("SingleFile lib: getPageData timed out after %ss", timeout)
+        return None
+    except Exception as exc:
+        logger.warning("SingleFile lib: getPageData failed: %s", exc)
+        return None
+
+    if not page_data:
+        return None
+    if isinstance(page_data, dict):
+        return page_data.get("content") or page_data.get("html")
+    if isinstance(page_data, str):
+        return page_data
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Generic interaction-trigger detection
+# ---------------------------------------------------------------------------
+#
+# Goal: capture when the user ACTIVATES an interactive element, not
+# merely when the mouse moves or the page polls.  This JS snippet is
+# installed once per page and works for any site because:
+#
+#   * It uses a single delegated listener on `document` in the CAPTURE
+#     phase, so dynamically-added elements are picked up for free
+#     (no per-element registration, no MutationObserver).
+#
+#   * It decides "is this element actually interactive?" with a
+#     fully generic predicate -- native semantics, ARIA roles,
+#     tabindex, and inline event handlers.  No selectors, no class
+#     names, no per-site configuration.
+#
+#   * It resolves the rightmost *interactive* ancestor of the
+#     original event target using event.composedPath() so a click on
+#     an <svg> or <span> inside a <button>/<a> still resolves to the
+#     <button>/<a> -- without ever firing twice for a single user
+#     activation (dedupe is done with a per-event flag set in the
+#     capture phase).
+#
+#   * When a real activation is detected it calls the globally
+#     exposed `window.__domCaptureRequest(reason)`.  The Python side
+#     wires that to `DOMCaptureSession.send_page` (see
+#     `_install_interaction_trigger`).
+#
+# Mouse clicks are the obvious case, but the snippet also treats
+# keyboard activation of an interactive element (Enter / Space on a
+# button/anchor, Enter inside a contenteditable, etc.) as activation,
+# so a focus-and-Enter flow from the remote-control client also
+# triggers a recapture.
+
+_INTERACTION_TRIGGER_JS = r"""
+(() => {
+    if (window.__domCaptureTriggerInstalled) return;
+    window.__domCaptureTriggerInstalled = true;
+
+    // ----------------------------------------------------------------
+    // Track which elements have JS-attached interactive listeners.
+    // We can't enumerate addEventListener listeners from the page
+    // side, so we patch EventTarget.prototype.addEventListener once
+    // and record (element, type) pairs.  This catches React/Vue/etc.
+    // synthetic listeners, jQuery .on(), and any framework that uses
+    // addEventListener under the hood.  It does NOT require us to
+    // poll the DOM or to know about specific frameworks.
+    // ----------------------------------------------------------------
+    if (!window.__domCaptureListenerTrackerInstalled) {
+        window.__domCaptureListenerTrackerInstalled = true;
+        window.__domCaptureInteractiveListeners = new WeakSet();
+
+        const origAdd = EventTarget.prototype.addEventListener;
+        const origRemove = EventTarget.prototype.removeEventListener;
+        // Activation-bearing event types.  We only flag elements
+        // that have one of these -- a passive scroll listener doesn't
+        // make an element "interactive".
+        const ACTIVATION_TYPES = new Set([
+            "click", "mousedown", "mouseup", "pointerdown",
+            "pointerup", "keydown", "keyup", "keypress",
+            "touchstart", "touchend", "submit", "change", "input"
+        ]);
+
+        EventTarget.prototype.addEventListener = function (type, listener, options) {
+            try {
+                if (this && this.nodeType === 1 && ACTIVATION_TYPES.has(String(type))) {
+                    window.__domCaptureInteractiveListeners.add(this);
+                }
+            } catch (_) {}
+            return origAdd.apply(this, arguments);
+        };
+        EventTarget.prototype.removeEventListener = function (type, listener, options) {
+            // We don't bother removing from the WeakSet on remove --
+            // the element dropping the listener still won't be
+            // activated, the only effect of leaving it in the set is
+            // that we may flag it as interactive when it isn't.  Not
+            // a correctness problem because isVisible filters out
+            // detached / disabled elements; an extra capture is
+            // preferable to false negatives.
+            return origRemove.apply(this, arguments);
+        };
+    }
+
+    // ARIA roles that represent a genuinely interactive widget.
+    // Source: https://www.w3.org/TR/wai-aria-1.2/#widget_roles
+    // plus the roles in https://www.w3.org/TR/wai-aria-1.2/#document_structure_roles
+    // that are user-activated.  Anything not in this list is treated
+    // as non-interactive even if the element has role="...".
+    const INTERACTIVE_ROLES = new Set([
+        "button", "link", "menuitem", "menuitemcheckbox", "menuitemradio",
+        "checkbox", "radio", "switch", "tab", "option", "combobox",
+        "textbox", "searchbox", "spinbutton", "slider", "treeitem",
+        "rowheader", "columnheader", "gridcell", "row"
+    ]);
+
+    // <input> types that are actually clickable / activatable.  Things
+    // like type="hidden" or type="text" are NOT activation targets on
+    // their own (text inputs capture on commit, handled separately).
+    const CLICKABLE_INPUT_TYPES = new Set([
+        "submit", "reset", "button", "image", "checkbox", "radio",
+        "file", "color", "range"
+    ]);
+
+    function isVisible(node) {
+        if (!node || node.nodeType !== 1) return false;
+        // Element.isConnected check first so detached subtrees return
+        // false without crawling.
+        if (node.isConnected === false) return false;
+        // Honor disabled / aria-disabled.
+        if (node.disabled === true) return false;
+        if (node.getAttribute && node.getAttribute("aria-disabled") === "true") return false;
+        // Inline display:none / visibility:hidden make the element
+        // not actually clickable.  We check inline style only --
+        // we deliberately do NOT walk computed styles because that
+        // forces a layout and adds latency to every click handler.
+        // Sites that use CSS classes to hide things will still
+        // appear "visible" to us; the worst case is a false
+        // positive (a capture on a hidden element), not a false
+        // negative.
+        try {
+            if (node.style && (node.style.display === "none" ||
+                               node.style.visibility === "hidden")) {
+                return false;
+            }
+        } catch (_) { /* style object unavailable on some node types */ }
+        return true;
+    }
+
+    function isInteractive(node) {
+        if (!node || node.nodeType !== 1) return false;
+        const tag = node.tagName;
+
+        // 1. Native interactive elements.
+        if (tag === "A") {
+            // <a> is only interactive if it has an href, name, or is
+            // explicitly a control via role.
+            if (node.hasAttribute("href")) return true;
+            if (node.hasAttribute("role")) return true;
+            return false;
+        }
+        if (tag === "BUTTON" || tag === "SELECT" || tag === "TEXTAREA" ||
+            tag === "SUMMARY" || tag === "DETAILS" || tag === "LABEL" ||
+            tag === "OPTION" || tag === "OUTPUT") {
+            return true;
+        }
+        // Apple/iCloud renders some real controls as a custom host around a
+        // native button, for example <ui-button role="button"
+        // tabindex="0">.  Keep the explicit tag in the activation list even
+        // when a framework temporarily removes one of those ARIA/focus
+        // attributes; the host is still the element that owns the gesture.
+        if (tag === "UI-BUTTON") return true;
+        if (tag === "INPUT") {
+            const t = (node.getAttribute("type") || "text").toLowerCase();
+            return CLICKABLE_INPUT_TYPES.has(t);
+        }
+
+        // 2. tabindex >= 0 makes an element focusable and therefore
+        //    activatable.
+        const ti = node.getAttribute && node.getAttribute("tabindex");
+        if (ti !== null && ti !== undefined) {
+            const n = Number(ti);
+            if (!Number.isNaN(n) && n >= 0) return true;
+        }
+
+        // 3. ARIA role.
+        const role = (node.getAttribute && node.getAttribute("role") || "").toLowerCase().split(/\s+/)[0];
+        if (role && INTERACTIVE_ROLES.has(role)) return true;
+
+        // 4. Inline event-handler attributes: if the site wired a
+        //    click/mousedown/pointerdown/keydown/keypress handler
+        //    inline, the element is interactive by definition.
+        if (node.onclick || node.onmousedown || node.onpointerdown ||
+            node.onkeydown || node.onkeypress || node.onkeyup) {
+            return true;
+        }
+
+        // 5. JS-attached activation listeners (React onClick, jQuery
+        //    .on('click', ...), framework addEventListener('click'),
+        //    etc.).  We tracked these at install time via a one-time
+        //    EventTarget.prototype.addEventListener patch above.
+        try {
+            if (window.__domCaptureInteractiveListeners &&
+                window.__domCaptureInteractiveListeners.has(node)) {
+                return true;
+            }
+        } catch (_) { /* WeakSet not available in some sandboxes */ }
+
+        return false;
+    }
+
+    // Walk up the composed path (which crosses shadow boundaries) to
+    // find the rightmost interactive ancestor.  This is the key piece
+    // for "child of button resolves to button" -- we DO NOT use
+    // event.target blindly because the deepest element often isn't the
+    // actionable one (icons, spans, SVGs inside real controls).
+    function resolveInteractive(path) {
+        if (!path || path.length === 0) return null;
+        // First-pass: find the rightmost interactive element on the
+        // path.  If the event target itself is interactive, we prefer
+        // that (it's the most specific).  Otherwise we walk outward.
+        for (let i = 0; i < path.length; i++) {
+            const n = path[i];
+            if (isInteractive(n) && isVisible(n)) {
+                return n;
+            }
+        }
+        return null;
+    }
+
+    // Dedupe per user activation.  We set a flag on the first
+    // interactive element we find; the capture-phase listener sets
+    // a "consumed" sentinel on `event` so bubble-phase children of
+    // the same activation don't double-fire.
+    const CONSUMED = Symbol.for("__domCaptureConsumed");
+
+    function requestCapture(reason, target) {
+        try {
+            if (typeof window.__domCaptureRequest === "function") {
+                window.__domCaptureRequest(reason, target ? (target.tagName + (target.id ? "#" + target.id : "")) : "");
+            }
+        } catch (_) { /* host not wired -- ignore */ }
+    }
+
+    function handleActivation(reason) {
+        return function (event) {
+            // The flag is checked at the start of the handler.  The
+            // capture-phase listener for the SAME event type runs
+            // before any bubble-phase child listener, so we set it
+            // here on `event` directly -- no reliance on the target
+            // being the same node.
+            if (event[CONSUMED]) return;
+            event[CONSUMED] = true;
+
+            // composedPath includes shadow-DOM roots; walk all of them.
+            const path = (typeof event.composedPath === "function")
+                ? event.composedPath()
+                : [];
+            const interactive = resolveInteractive(path);
+
+            if (!interactive) {
+                // Real click/Enter, but on plain content.  Do nothing.
+                return;
+            }
+
+            requestCapture(reason, interactive);
+        };
+    }
+
+    // Capture-phase listeners.  Using capture (not bubble) means:
+    //   1. We see the activation before site handlers, so we never
+    //      miss it because stopPropagation() was called.
+    //   2. Dedupe via event[CONSUMED] is well-defined: a single
+    //      activation yields exactly one capture-phase event per type.
+    // We listen to `click` and `auxclick` only -- not pointerup or
+    // mousedown.  Listening to multiple activation-bearing events
+    // would fire the recapture once per event in the same gesture
+    // (a real click fires pointerdown -> pointerup -> click, three
+    // events).  `click` already covers normal left-click; `auxclick`
+    // covers middle/right-click on platforms that fire it.
+    document.addEventListener(
+        "click",
+        handleActivation("click"),
+        true
+    );
+    document.addEventListener(
+        "auxclick",
+        handleActivation("auxclick"),
+        true
+    );
+
+    // Keyboard activation: Enter / Space on a focused interactive
+    // element.  We don't recapture on every keydown -- only on keys
+    // that actually activate the focused control.  For keyboard
+    // events we walk from event.target up to the document root
+    // (rather than using composedPath) because keyboard events
+    // dispatched via the browser already target the focused
+    // element, and the synthetic-event case (test harnesses, some
+    // frameworks) may produce a composedPath that omits the
+    // actual target.
+    function buildPathFromTarget(t) {
+        const path = [];
+        let n = t;
+        while (n && n.nodeType === 1) {
+            path.push(n);
+            n = n.parentNode;
+            if (!n || n === document) { path.push(document); break; }
+        }
+        return path;
+    }
+
+    document.addEventListener(
+        "keydown",
+        function (event) {
+            const key = event.key;
+            if (key !== "Enter" && key !== " " && key !== "Spacebar") return;
+            const ae = event.target || document.activeElement;
+            if (!ae || ae.nodeType !== 1) return;
+            if (!isInteractive(ae) || !isVisible(ae)) return;
+            // For links, Enter activates.  For buttons, Enter or
+            // Space activates.  isInteractive already filtered
+            // anchors/buttons/roles; this branch just gates on the
+            // key.  We hand-built the path above because
+            // composedPath() may not include event.target for
+            // synthetic dispatch.
+            const path = buildPathFromTarget(ae);
+            if (event[CONSUMED]) return;
+            event[CONSUMED] = true;
+            const interactive = resolveInteractive(path);
+            if (!interactive) return;
+            requestCapture("keydown", interactive);
+        },
+        true
+    );
+})();
+"""
+
+
+# ---------------------------------------------------------------------------
+# Live-delta layer (LIVE_DELTA=1)
+# ---------------------------------------------------------------------------
+#
+# In-page MutationObserver that batches compact DOM ops between full
+# captures and ships them through the ``__domDelta`` binding.  Op grammar
+# (positional arrays, applied in order by client.html):
+#   ['a', mid, name, value|null]        attribute set / remove
+#   ['t', parentMid, textIndex, value]  characterData on n-th text child
+#   ['i', parentMid, refMid|0, html]    insert serialized subtree before ref
+#   ['r', mid]                          remove element
+#   ['v', mid, value, checked|null]     form control live state
+#   ['overflow']                        op budget blown → server recaptures
+#
+# Node identity: every serialized element carries a data-mid stamped from
+# the page-lifetime WeakMap (__domMidMap / __domMidNext) shared with the
+# fast full serializer, so ids stay valid across full resyncs.  Inserted
+# subtrees get fresh ids before serialization.
+#
+# Form values are mirrored from 'input'/'change' EVENTS (MutationObserver
+# cannot see property-only .value changes — the classic trap), coalesced
+# per node per batch so fast typing ships the latest value once.
+_DELTA_OBSERVER_JS = r"""
+(() => {
+  // Init scripts also run in child frames.  The live mirror serializes the
+  // main document, so child-frame observers would create colliding mids and
+  // false patches for content the client never received.
+  if (window.top !== window) return;
+  if (window.__shifixDeltaInstalled) return;
+  window.__shifixDeltaInstalled = true;
+  if (!window.__domMidMap) window.__domMidMap = new WeakMap();
+  if (!window.__domMidNext) window.__domMidNext = 1;
+  if (!window.__domMidOwner) window.__domMidOwner = new Map();
+  const MID = 'data-mid';
+  const DOC_TOKEN = (() => {
+    try {
+      return String(location.href || '') + '|' + String(performance.timeOrigin || Date.now());
+    } catch (e) { return String(Date.now()); }
+  })();
+  // The token identifies THIS document for the whole page lifetime. Patches
+  // carry it, and so does every full capture (the serializer reports it), so
+  // the server can tell "the client is showing this document" from "the client
+  // is showing a different one" without guessing.
+  try { window.__shifixDocToken = DOC_TOKEN; } catch (e) { /* ignore */ }
+
+  // ---- navigation signals -----------------------------------------------
+  // pushState / replaceState / popstate / hashchange change the URL without a
+  // DOM mutation and without a document load. The server's 100 ms URL poll
+  // could see them eventually; the visitor saw the address bar change
+  // immediately. Emit the new URL in the same tick instead, tagged
+  // sameDocument so the client knows it does NOT have to wait for a new
+  // document (no transition spinner) - the mirror is updated by the patch
+  // stream that follows.
+  const emitNav = (() => {
+    let lastHref = '';
+    let lastAt = 0;
+    return (href, sameDocument, source) => {
+      try {
+        const now = Date.now();
+        const url = String(href || '');
+        if (!url) return;
+        // A page that rewrites the URL in a loop must not become a frame loop.
+        if (url === lastHref && (now - lastAt) < 200) return;
+        lastHref = url;
+        lastAt = now;
+        if (typeof window.__domDelta === 'function') {
+          window.__domDelta(JSON.stringify([['nav', url, !!sameDocument, String(source || '')]]),
+                            DOC_TOKEN);
+        }
+      } catch (e) { /* binding not wired yet */ }
+    };
+  })();
+  // Resolved by the server at import time.  The guard is real, not decorative:
+  // test harnesses (and anyone reading the literal) run this script WITHOUT the
+  // substitution, and an undefined identifier would take the whole observer
+  // down - history hooks are a capability, not a prerequisite.
+  const HISTORY_HOOKS_ON = (typeof __SHIFIX_HISTORY_HOOKS__ === 'undefined')
+    ? true
+    : __SHIFIX_HISTORY_HOOKS__;
+  if (HISTORY_HOOKS_ON) {
+    try {
+      const hookHistory = (name) => {
+        const orig = history && history[name];
+        if (typeof orig !== 'function' || orig.__shifixNavHooked) return;
+        const wrapped = function (state, title, url) {
+          const out = orig.apply(this, arguments);
+          try {
+            const href = (url === undefined || url === null)
+              ? String(location.href)
+              : new URL(String(url), String(location.href)).href;
+            emitNav(href, true, 'history:' + name);
+          } catch (e) { /* relative/sandboxed URL: the poll still covers it */ }
+          return out;
+        };
+        wrapped.__shifixNavHooked = true;
+        history[name] = wrapped;
+      };
+      hookHistory('pushState');
+      hookHistory('replaceState');
+    } catch (e) { /* frozen history: the poll still covers it */ }
+    try {
+      window.addEventListener('popstate', () => emitNav(String(location.href), true, 'popstate'));
+      window.addEventListener('hashchange', () => emitNav(String(location.href), true, 'hashchange'));
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---- tab identity -----------------------------------------------------
+  // The visitor's tab shows the SITE's title and icon. A full capture carries
+  // both inside the document, but between captures a page can rename itself
+  // ("Inbox" -> "Inbox (3)") or swap its icon (an unread badge) with no DOM
+  // change the mirror can absorb. Those two facts travel as a control op,
+  // ['meta', title, icon], so the client can follow them immediately.
+  const tabMetaNow = () => {
+    let title = '';
+    try { title = String(document.title || '').trim(); } catch (e) { title = ''; }
+    let icon = '';
+    try {
+      const base = document.baseURI || location.href;
+      // Same ranking a browser applies: explicit icon over apple-touch-icon,
+      // declared size wins, svg wins a tie, later declarations win ties.
+      let best = -1;
+      const links = document.querySelectorAll('link[href]');
+      for (let i = 0; i < links.length; i++) {
+        const l = links[i];
+        const rel = String(l.getAttribute('rel') || '').toLowerCase();
+        if (rel.indexOf('icon') < 0) continue;
+        let href = l.getAttribute('href') || '';
+        if (!href || /^javascript:/i.test(href)) continue;
+        if (!/^(data:|https?:|\/\/)/i.test(href)) {
+          try { href = new URL(href, base).href; } catch (e) { /* keep as authored */ }
+        }
+        // Rank bands, not one big sum: a real icon outranks an
+        // apple-touch-icon whatever their pixel sizes say. Same order as the
+        // client's mirrorIconCandidate().
+        let score = (rel.indexOf('apple-touch-icon') >= 0) ? 10 : 100;
+        if (rel.indexOf('shortcut') >= 0) score += 5;
+        const sizes = String(l.getAttribute('sizes') || '').toLowerCase();
+        const m = /(\d+)\s*x\s*(\d+)/.exec(sizes);
+        if (m) score += Math.min(8, parseFloat(m[1]) / 64);
+        if (String(l.getAttribute('type') || '').toLowerCase().indexOf('svg') >= 0) score += 6;
+        if (score >= best) { best = score; icon = href; }
+      }
+      if (!icon) icon = new URL('/favicon.ico', base).href;
+    } catch (e) { /* no readable head */ }
+    return [title, icon];
+  };
+  let sentMeta = null;
+  try { const m0 = tabMetaNow(); sentMeta = m0[0] + '\u0001' + m0[1]; } catch (e) { sentMeta = null; }
+  const pendingMeta = () => {
+    let cur;
+    try { cur = tabMetaNow(); } catch (e) { return null; }
+    const sig = cur[0] + '\u0001' + cur[1];
+    if (sig === sentMeta) return null;
+    sentMeta = sig;
+    return cur;
+  };
+
+  // A data-mid belongs to ONE live element.  cloneNode() copies attributes,
+  // so a list built from a cached row (Google's autocomplete, virtualised
+  // tables, keyed lists reusing a template) arrives carrying its source's
+  // mid.  Adopting it blindly gave siblings the same id, and every patch for
+  // the clones landed on whichever one the mirror found first.
+  const midOwner = (m) => {
+    const held = window.__domMidOwner.get(m);
+    if (!held) return null;
+    if (typeof WeakRef === 'function' && held instanceof WeakRef) {
+      const deref = held.deref();
+      if (!deref) { window.__domMidOwner.delete(m); return null; }
+      return deref;
+    }
+    return held;
+  };
+  // The owner map only knows about nodes we have already serialized. A clone
+  // can arrive before its source was ever touched (a template stamped in an
+  // earlier document, a fragment re-inserted from a cache), so ask the live
+  // tree as well: does any OTHER element already carry this mid?  The query
+  // runs only when an attribute mid is a candidate — nodes we stamped return
+  // from the WeakMap above and never reach here.
+  const midTaken = (el, m) => {
+    const other = midOwner(m);
+    if (other && other !== el) return true;
+    try {
+      // getRootNode() on a detached node returns the node itself, which would
+      // ask "is this id taken?" of the wrong tree. Fall back to the document.
+      let root = (el.getRootNode && el.getRootNode()) || null;
+      if (!root || root === el || !root.querySelector) root = el.ownerDocument || document;
+      const first = root.querySelector ? root.querySelector('[' + MID + '="' + m + '"]') : null;
+      if (first && first !== el) return true;
+    } catch (e) { /* unsupported selector */ }
+    return false;
+  };
+  // Fresh ids must clear every mid already live in the document.  The counter
+  // starts at 1, but a page can be holding ids stamped by an earlier capture
+  // (the full serializer stamps them), so the first allocation scans once and
+  // lifts the counter above all of them.  One query, then never again: the
+  // counter only moves up, so it can never hand out a live id afterwards.
+  let midFloored = false;
+  const midFloor = (el) => {
+    if (midFloored) return;
+    midFloored = true;
+    try {
+      const doc = (el && el.ownerDocument) || (typeof document !== 'undefined' ? document : null);
+      if (!doc || !doc.querySelectorAll) return;
+      const nodes = doc.querySelectorAll('[' + MID + ']');
+      for (let i = 0; i < nodes.length; i++) {
+        const v = parseInt(nodes[i].getAttribute(MID), 10);
+        if (v && v >= window.__domMidNext) window.__domMidNext = v + 1;
+      }
+    } catch (e) { /* no document, or a hostile selector */ }
+  };
+  const midOf = (el) => {
+    if (!el || el.nodeType !== 1) return 0;
+    let m = window.__domMidMap.get(el);
+    if (m) return m;
+    if (el.getAttribute) {
+      const parsed = parseInt(el.getAttribute(MID), 10);
+      if (parsed && !midTaken(el, parsed)) m = parsed;
+    }
+    if (!m) { midFloor(el); m = window.__domMidNext++; }
+    window.__domMidMap.set(el, m);
+    if (m >= window.__domMidNext) window.__domMidNext = m + 1;
+    try {
+      const weak = (typeof WeakRef === 'function');
+      window.__domMidOwner.set(m, weak ? new WeakRef(el) : el);
+      // Without WeakRef the map holds its elements strongly. Bound it: ids
+      // already in the document are still caught by midTaken()'s tree query,
+      // so a clear costs a few extra lookups, never a duplicate.
+      if (!weak && window.__domMidOwner.size > 50000) window.__domMidOwner.clear();
+    } catch (e) { /* no WeakRef, no Map: a fresh id is still correct */ }
+    try { el.setAttribute(MID, String(m)); } catch (e) {}
+    return m;
+  };
+  const escText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const escAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+  // ---------------------------------------------------------------------
+  // CSSOM truth (delta channel)
+  // ---------------------------------------------------------------------
+  // Griffel (Fluent UI), Emotion, styled-components and every other
+  // insertRule() renderer add rules to an <style> element that ALREADY
+  // exists, without touching its text and without a DOM mutation. That is
+  // invisible to a MutationObserver, and `el.textContent` is stale — so a
+  // component rendered after the first capture reached the mirror with its
+  // classes but none of their rules. On a sign-in page that is exactly what a
+  // one-time-code step looks like in the mirror: six <input maxlength="1">
+  // boxes laid out as full-width default inputs, in the wrong place, instead
+  // of six small rounded cells.
+  //
+  // The rule COUNT is a cheap signature (O(sheets), no serialisation); when it
+  // changes the affected <style> elements are re-sent from the CSSOM.
+  const rulesToCss = (rules, depth) => {
+    let css = '';
+    try {
+      for (const r of (rules || [])) {
+        if (r && r.type === 3 /* IMPORT_RULE */) {
+          try {
+            if (depth < 3 && r.styleSheet && r.styleSheet.cssRules) {
+              css += rulesToCss(r.styleSheet.cssRules, depth + 1);
+              continue;
+            }
+          } catch (e) { /* cross-origin import */ }
+        }
+        css += (r ? r.cssText : '') + '\n';
+      }
+    } catch (e) { /* sheet vanished mid-walk */ }
+    return css;
+  };
+  const sheetRuleCount = (sheet) => {
+    try { return (sheet && sheet.cssRules) ? sheet.cssRules.length : 0; } catch (e) { return 0; }
+  };
+  const liveSheetCss = (sheet) => {
+    try { return (sheet && sheet.cssRules) ? rulesToCss(sheet.cssRules, 0) : ''; }
+    catch (e) { return ''; }        // SecurityError on a cross-origin sheet
+  };
+  const adoptedSheets = () => {
+    try { return document.adoptedStyleSheets || []; } catch (e) { return []; }
+  };
+  const adoptedLiveCss = () => {
+    let css = '';
+    for (const sh of adoptedSheets()) {
+      try { for (const r of sh.cssRules) css += r.cssText + '\n'; } catch (e) { /* cross-origin */ }
+    }
+    return css;
+  };
+  const adoptedRuleCount = () => {
+    let n = 0;
+    for (const sh of adoptedSheets()) n += sheetRuleCount(sh);
+    return n;
+  };
+  const styleElements = () => {
+    try { return document.querySelectorAll('style'); } catch (e) { return []; }
+  };
+  const cssSignature = () => {
+    let n = 0;
+    const els = styleElements();
+    for (let i = 0; i < els.length; i++) n += sheetRuleCount(els[i].sheet);
+    return n + '/' + els.length + '/' + adoptedRuleCount();
+  };
+  let lastCssSig = cssSignature();
+  const flushStyleOps = () => {
+    const sig = cssSignature();
+    if (sig === lastCssSig) return false;
+    lastCssSig = sig;
+    const els = styleElements();
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
+      const css = liveSheetCss(el.sheet);
+      if (!css) continue;                  // empty or cross-origin: nothing to add
+      const id = midOf(el);
+      if (!id) continue;
+      pushCoalesced('s|' + id, ['s', id, css]);
+    }
+    const adopted = adoptedLiveCss();
+    if (adopted) pushCoalesced('s|0', ['s', 0, adopted]);
+    return true;
+  };
+
+  // The full serializer has these; the delta serializer needs them too now
+  // that it can carry a shadow root. Local copies keep the two scripts
+  // independent (they run in the same page, but not in the same closure).
+  const adoptedCss = (root) => {
+    try {
+      const sheets = root.adoptedStyleSheets || [];
+      let css = '';
+      for (const sh of sheets) {
+        try { for (const r of sh.cssRules) css += r.cssText + '\n'; } catch (e) { /* cross-origin */ }
+      }
+      return css;
+    } catch (e) { return ''; }
+  };
+  const adoptedStyleTag = (css) => css
+    ? '<style data-shf-adopted="1">' + css.replace(/<\//g, '<\\/') + '</style>'
+    : '';
+  const serSubtree = (node, out) => {
+    const t = node.nodeType;
+    if (t === 3) { out.push(escText(node.nodeValue)); return; }
+    if (t === 8) { out.push('<!--', String(node.nodeValue).replace(/--/g, '--'), '-->'); return; }
+    if (t !== 1) return;
+    const el = node;
+    const tag = (el.localName || el.tagName.toLowerCase());
+    if (tag === 'base') return;
+    out.push('<', tag);
+    const isFormCtl = (tag === 'input' || tag === 'option');
+    const list = el.attributes;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (a.name === MID) continue;
+      if (isFormCtl && (a.name === 'value' || a.name === 'checked' || a.name === 'selected')) continue;
+      out.push(' ', a.name, '="', escAttr(a.value), '"');
+    }
+    // Live state, not markup: `disabled`/`readOnly` never reflect back to
+    // the attribute, so a patched subtree would otherwise resurrect controls
+    // the page had switched off.
+    if (tag === 'input' || tag === 'button' || tag === 'select' || tag === 'textarea'
+        || tag === 'option' || tag === 'fieldset' || tag === 'optgroup') {
+      try {
+        if (el.disabled === true && !el.hasAttribute('disabled')) out.push(' disabled');
+        if (el.readOnly === true && !el.hasAttribute('readonly')) out.push(' readonly');
+      } catch (e) { /* ignore */ }
+    }
+    out.push(' ', MID, '="', String(midOf(el)), '"');
+    if (tag === 'canvas') {
+      try {
+        const dataUrl = el.toDataURL();
+        if (dataUrl && dataUrl.length > 50) {
+          out.push(' style="background: url(' + dataUrl + ') center/contain no-repeat;"');
+        }
+      } catch (e) {}
+    }
+    if (tag === 'input') {
+      const ty = (el.getAttribute('type') || 'text').toLowerCase();
+      if (ty === 'checkbox' || ty === 'radio') { if (el.checked) out.push(' checked'); }
+      else if (ty !== 'file') out.push(' value="', escAttr(el.value == null ? '' : el.value), '"');
+    } else if (tag === 'option') {
+      if (el.selected) out.push(' selected');
+    }
+    out.push('>');
+    if (VOID.has(tag)) return;
+    if (tag === 'textarea') { out.push(escText(el.value == null ? '' : el.value), '</textarea>'); return; }
+    if (tag === 'script' || tag === 'style') {
+      // <style>: CSSOM wins (insertRule renderers leave the text empty).
+      let raw = (tag === 'style') ? (liveSheetCss(el.sheet) || el.textContent || '')
+                                 : (el.textContent || '');
+      if (tag === 'script') raw = raw.replace(/<\/script/gi, '<\\/script');
+      out.push(raw, '</', tag, '>');
+      return;
+    }
+    // A subtree inserted between captures can carry an open shadow root — a
+    // web component, a custom element defined just now, a Lit/Stencil widget.
+    // The full serializer emits it as declarative shadow DOM; the delta
+    // serializer used to emit only light-DOM children, so the element arrived
+    // in the mirror as an empty box with none of its content.
+    const sr = el.shadowRoot;
+    if (sr && sr.mode === 'open') {
+      out.push('<template shadowrootmode="open">');
+      const srCss = adoptedCss(sr);
+      if (srCss) out.push(adoptedStyleTag(srCss));
+      for (const c of sr.childNodes) serSubtree(c, out);
+      out.push('</template>');
+    } else if (sr) {
+      out.push('<!--shifix:closed-shadow-->');
+    }
+    for (const c of el.childNodes) serSubtree(c, out);
+    out.push('</', tag, '>');
+  };
+  const ops = [];
+  // Keep the first occurrence's position (important when a framework inserts
+  // a node and then mutates it), while replacing repeated writes to the same
+  // target with the latest value in this batch.
+  const coalesced = new Map();  // logical op key -> index in ops
+  let scheduled = false;
+  let overflowed = false;
+  const OP_CAP = 5000;
+  const schedule = () => {
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(flush, __SHIFIX_DELTA_FLUSH_MS__);
+  };
+  const markOverflow = () => {
+    if (overflowed) return;
+    overflowed = true;
+    ops.length = 0;
+    coalesced.clear();
+    ops.push(['overflow']);
+    schedule();
+  };
+  const flush = () => {
+    scheduled = false;
+    // The set below only describes the batch being shipped; a later batch must
+    // be free to patch those same nodes again.
+    try { insertedSubtrees.clear(); } catch (e) { /* ignore */ }
+    // A stylesheet can grow with no DOM mutation at all (insertRule), so the
+    // batch is also the moment to look at the CSSOM.
+    try { flushStyleOps(); } catch (e) { /* ignore */ }
+    // Silent form state (property writes with no event) lands here, after the
+    // mutation records that created those nodes.
+    try { flushSilentState(); } catch (e) { /* ignore */ }
+    // A renamed tab or a new icon is a change with no patchable DOM target in
+    // the mirror, so it rides at the head of the batch. Never while overflowed:
+    // that control frame must stay byte-exact.
+    if (!overflowed) {
+      try {
+        const meta = pendingMeta();
+        if (meta) ops.unshift(['meta', meta[0], meta[1]]);
+      } catch (e) { /* ignore */ }
+    }
+    if (!ops.length) return;
+    const batch = ops.splice(0, ops.length);
+    coalesced.clear();
+    overflowed = false;
+    try {
+      if (typeof window.__domDelta === 'function') {
+        window.__domDelta(JSON.stringify(batch), DOC_TOKEN);
+      }
+    } catch (e) { /* binding not wired yet */ }
+  };
+  const push = (op) => {
+    if (overflowed) return;
+    ops.push(op);
+    if (ops.length > OP_CAP) markOverflow();
+    schedule();
+  };
+  const pushCoalesced = (key, op) => {
+    if (overflowed) return;
+    const oldIndex = coalesced.get(key);
+    if (oldIndex === undefined) {
+      coalesced.set(key, ops.length);
+      ops.push(op);
+      if (ops.length > OP_CAP) markOverflow();
+    } else {
+      ops[oldIndex] = op;
+    }
+    schedule();
+  };
+  // Mids whose whole subtree was serialized into an insert during this batch.
+  // A batch is serialized AFTER all of its mutations have landed, so inserting
+  // an ancestor already carries every descendant that exists by then; the
+  // descendants' own insert records are then redundant, and replaying them
+  // duplicates the content. `div > div > … > text` built in one tick arrived
+  // with the text twice for exactly this reason.
+  const insertedSubtrees = new Set();
+  // How many text children each element had the last time the mirror was told
+  // about it. A shrink (three text nodes became one) would otherwise leave the
+  // leftovers on screen: nothing addresses them, so nothing clears them.
+  const textCounts = window.__domTextCounts || (window.__domTextCounts = new Map());
+  const insideInserted = (node) => {
+    let n = node;
+    for (let guard = 0; n && guard < 200; guard++) {
+      if (n.nodeType === 1) {
+        const m = window.__domMidMap.get(n);
+        if (m && insertedSubtrees.has(m)) return true;
+      }
+      n = n.parentNode || (n.nodeType === 11 ? n.host : null);
+    }
+    return false;
+  };
+  const pushAttr = (el, name) => {
+    const id = midOf(el);
+    if (!id) return;
+    pushCoalesced('a\\0' + id + '\\0' + name, ['a', id, name, el.getAttribute(name)]);
+  };
+  // A mutation can target a ShadowRoot, which is a container like an element
+  // but has no mid of its own. Its content belongs to the host, so the host's
+  // id addresses it and a marker says WHICH of the host's two trees the op is
+  // about. Before this, every mutation landing directly on a shadow root —
+  // the common case for a component that appends a row or rewrites its own
+  // label — was dropped for want of a mid, and the component sat frozen.
+  const containerOf = (node) => {
+    if (!node) return null;
+    if (node.nodeType === 1) {
+      const m = midOf(node);
+      return m ? { id: m, key: m, shadow: false } : null;
+    }
+    if (node.nodeType === 11 && node.host) {
+      const m = midOf(node.host);
+      return m ? { id: m, key: m + 's', shadow: true } : null;
+    }
+    return null;
+  };
+  const pushText = (parent, index, value) => {
+    const c = containerOf(parent);
+    if (!c) return;
+    pushCoalesced('t\\0' + c.key + '\\0' + index,
+      c.shadow ? ['t', c.id, index, value, 's'] : ['t', c.id, index, value]);
+  };
+  const pushVal = (el) => {
+    const id = midOf(el);
+    if (!id) return;
+    const checked = (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) ? !!el.checked : null;
+    pushCoalesced('v\\0' + id, ['v', id, (el.value == null ? '' : String(el.value)), checked]);
+  };
+  const mo = new MutationObserver((recs) => {
+    for (const r of recs) {
+      // A tab rename or an icon swap can produce no patchable op at all (the
+      // <title> text and the <link rel=icon> href have no target the mirror
+      // can absorb), and the meta op still has to go out — so any head churn
+      // schedules a flush of its own.
+      try {
+        const t = r.target;
+        const el = (t && t.nodeType === 1) ? t : (t && t.parentNode);
+        if (el && el.closest && el.closest('head')) schedule();
+      } catch (e) { /* ignore */ }
+      if (r.type === 'attributes') {
+        const el = r.target;
+        if (r.attributeName === MID) continue;   // our own stamping
+        pushAttr(el, r.attributeName);
+      } else if (r.type === 'characterData') {
+        const p = r.target.parentNode;
+        if (!p || (p.nodeType !== 1 && p.nodeType !== 11)) continue;
+        let idx = -1, i = 0;
+        for (const c of p.childNodes) {
+          if (c.nodeType === 3) { if (c === r.target) { idx = i; break; } i++; }
+        }
+        if (idx >= 0) pushText(p, idx, r.target.nodeValue);
+      } else if (r.type === 'childList') {
+        const box = containerOf(r.target);
+        if (!box) continue;
+        const pm = box.id;
+        // Nothing inside a subtree we just inserted needs its own ops: the
+        // insert already carried it, as it was at serialization time.
+        if (insideInserted(r.target)) continue;
+        for (const rem of r.removedNodes) {
+          if (rem.nodeType !== 1) continue;
+          let m = window.__domMidMap.get(rem);
+          // A node we never serialized (created and removed between captures)
+          // carries no meaning for the mirror. If it also carries a stale
+          // data-mid — the clone of a captured row — naming that id in a
+          // removal op would delete the row the visitor is still looking at.
+          if (!m && rem.getAttribute) {
+            const parsed = parseInt(rem.getAttribute(MID), 10);
+            if (parsed && !midTaken(rem, parsed)) m = parsed;
+          }
+          if (m) {
+            push(['r', m]);
+          } else if (rem.querySelectorAll) {
+            try {
+              const children = rem.querySelectorAll('[' + MID + ']');
+              for (let i = 0; i < children.length; i++) {
+                const cm = parseInt(children[i].getAttribute(MID), 10);
+                if (cm && !midTaken(children[i], cm)) push(['r', cm]);
+              }
+            } catch (e) {}
+          }
+        }
+        // ---- what the parent looks like now, in document order ----------
+        // `innerHTML = 'bold <b>word</b> here'` arrives as ONE childList: old
+        // text removed, [text, <b>, text] added. Emitting the text ops first
+        // and the inserts afterwards put every element at the END of the
+        // parent, so the mirror read "bold here <b>word</b>". Walking the
+        // parent's children in order — text as a text op, added elements as
+        // inserts — reproduces the page: an insert against a ref sibling
+        // lands in the right place, and a text index the mirror does not have
+        // yet appends at that point in the sequence, which is exactly where
+        // it belongs.
+        const added = [];
+        for (const a of r.addedNodes) if (a.nodeType === 1) added.push(a);
+        let textIndex = 0;
+        let touchedText = false;
+        for (const c of r.target.childNodes) {
+          if (c.nodeType === 3) {
+            if (!touchedText && insideInserted(r.target)) break;
+            pushText(r.target, textIndex, c.nodeValue);
+            touchedText = true;
+            textIndex++;
+            continue;
+          }
+          if (c.nodeType !== 1) continue;
+          if (added.indexOf(c) < 0) continue;          // already mirrored
+          let ref = c.nextSibling;
+          while (ref && ref.nodeType !== 1) ref = ref.nextSibling;
+          const refMid = ref ? midOf(ref) : 0;
+          const buf = [];
+          serSubtree(c, buf);
+          if (!buf.length) continue;
+          const mid = midOf(c);
+          push(box.shadow ? ['i', pm, refMid, buf.join(''), 's'] : ['i', pm, refMid, buf.join('')]);
+          if (mid) insertedSubtrees.add(mid);
+          // A component that mounts between captures brings its own shadow
+          // root; start watching it, or everything it renders from now on is
+          // invisible to the mirror.
+          try { watchShadowRoots(c, 0); } catch (e) { /* ignore */ }
+        }
+        // Text that went away without a replacement of the same length leaves
+        // a stale text node on screen; blank the tail.
+        if (touchedText) {
+          let live = 0;
+          for (const c of r.target.childNodes) if (c.nodeType === 3) live++;
+          const known = textCounts.get(box.key);
+          if (known !== undefined && known > live) {
+            for (let i = live; i < known; i++) pushText(r.target, i, '');
+          }
+          textCounts.set(box.key, live);
+        }
+      }
+    }
+  });
+  const OBSERVE_CFG = {
+    subtree: true, childList: true, attributes: true, characterData: true,
+    attributeOldValue: false, characterDataOldValue: false,
+  };
+  mo.observe(document, OBSERVE_CFG);
+  // A shadow root is NOT part of the document subtree, so nothing inside a web
+  // component was ever observed: the host rendered once at capture time and
+  // then froze, while the visitor's page kept updating. Every open root we can
+  // see gets the same observer; mids work inside them unchanged (the id map is
+  // per element, and getRootNode() resolves to the root).
+  const watchedRoots = (typeof WeakSet === 'function') ? new WeakSet() : null;
+  const watchOneHost = (el, depth) => {
+    const sr = el && el.shadowRoot;
+    if (!sr || sr.mode !== 'open') return 0;
+    if (watchedRoots) {
+      if (watchedRoots.has(sr)) return 0;
+      watchedRoots.add(sr);
+    }
+    let count = 0;
+    try { mo.observe(sr, OBSERVE_CFG); count = 1; } catch (e) { return 0; }
+    return count + watchShadowRoots(sr, depth + 1);
+  };
+  const watchShadowRoots = (node, depth) => {
+    if (!node || (depth || 0) > 8) return 0;
+    let count = 0;
+    // The node itself can be the host — a component inserted between captures
+    // carries its root on the element that was just appended, not on a
+    // descendant, and missing that case left the component frozen.
+    if (node.nodeType === 1) count += watchOneHost(node, depth || 0);
+    try {
+      const all = (node.querySelectorAll ? node.querySelectorAll('*') : []);
+      for (let i = 0; i < all.length; i++) count += watchOneHost(all[i], depth || 0);
+    } catch (e) { /* a hostile getter in a framework */ }
+    return count;
+  };
+  try { watchShadowRoots(document, 0); } catch (e) { /* ignore */ }
+  // ---- silent form state ------------------------------------------------
+  // `el.value = 'x'` and `el.checked = true` are PROPERTIES: they change what
+  // the visitor sees and fire no event at all, so a page that prefills, clears
+  // or rewrites a field between two captures left the mirror showing the old
+  // text. The setters are the only place that can see it. Everything here is
+  // wrapped: a page whose prototype refuses to be redefined keeps working, it
+  // just falls back to the event path.
+  // Writes are COLLECTED, not sent where they happen. A field can be set
+  // before its own insert reaches the mirror (`input.value` on an element
+  // appended in the same tick), and a value op that arrives ahead of the node
+  // it describes is a missing mid on the client — which triggers a full
+  // resync. Deferring to flush means every insert of this batch is already
+  // queued, the last write wins, and the value is read once.
+  const dirtyControls = new Set();
+  const dirtyOptions = new Set();
+  const markControl = (el) => {
+    try {
+      if (!el || el.isConnected === false) return;
+      dirtyControls.add(el);
+      schedule();
+    } catch (e) { /* ignore */ }
+  };
+  const markOption = (el) => {
+    try {
+      if (!el || el.isConnected === false) return;
+      dirtyOptions.add(el);
+      schedule();
+    } catch (e) { /* ignore */ }
+  };
+  // At flush: only send state for nodes the mirror can address. An element
+  // inside a closed shadow root never reaches the mirror, so naming it would
+  // buy nothing but a resync.
+  const flushSilentState = () => {
+    if (!dirtyControls.size && !dirtyOptions.size) return;
+    const controls = Array.from(dirtyControls);
+    const options = Array.from(dirtyOptions);
+    dirtyControls.clear();
+    dirtyOptions.clear();
+    for (const el of controls) {
+      try {
+        if (!el.isConnected || !window.__domMidMap.has(el)) continue;
+        pushVal(el);
+      } catch (e) { /* ignore */ }
+    }
+    for (const el of options) {
+      try {
+        if (!el.isConnected || !window.__domMidMap.has(el)) continue;
+        const id = midOf(el);
+        if (!id) continue;
+        // Setting .selected does NOT write the attribute, so reading that back
+        // would ship `null` and deselect the option. Send the attribute form
+        // the full capture writes.
+        pushCoalesced('a\\0' + id + '\\0selected',
+          ['a', id, 'selected', el.selected ? '' : null]);
+      } catch (e) { /* ignore */ }
+    }
+  };
+  const hookProperty = (Ctor, prop, after) => {
+    try {
+      if (!Ctor || !Ctor.prototype) return;
+      const desc = Object.getOwnPropertyDescriptor(Ctor.prototype, prop);
+      if (!desc || !desc.get || !desc.set) return;
+      if (desc.set.__shifixHooked) return;
+      const wrapped = function (value) {
+        const before = desc.get.call(this);
+        desc.set.call(this, value);
+        if (before === value) return;
+        try { after(this); } catch (e) { /* ignore */ }
+      };
+      wrapped.__shifixHooked = true;
+      Object.defineProperty(Ctor.prototype, prop, {
+        configurable: true, enumerable: desc.enumerable, get: desc.get, set: wrapped,
+      });
+    } catch (e) { /* frozen prototype: the event path still works */ }
+  };
+  hookProperty(window.HTMLInputElement, 'value', markControl);
+  hookProperty(window.HTMLInputElement, 'checked', markControl);
+  hookProperty(window.HTMLTextAreaElement, 'value', markControl);
+  hookProperty(window.HTMLOptionElement, 'selected', markOption);
+  // `select.selectedIndex = 1` and `select.value = 'b'` move the selection
+  // through the select's own algorithm: the <option> setter never runs, so the
+  // option hook above sees nothing and the mirror kept the old choice.
+  const markSelect = (sel) => {
+    try {
+      if (!sel || sel.isConnected === false || !sel.options) return;
+      for (let i = 0; i < sel.options.length; i++) markOption(sel.options[i]);
+    } catch (e) { /* ignore */ }
+  };
+  hookProperty(window.HTMLSelectElement, 'selectedIndex', markSelect);
+  hookProperty(window.HTMLSelectElement, 'value', markSelect);
+
+  const onFormEvent = (e) => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) pushVal(t);
+  };
+  document.addEventListener('input', onFormEvent, true);
+  document.addEventListener('change', onFormEvent, true);
+  window.__shifixDeltaFlush = flush;
+  // A component can insert its rules a moment after it mounts, with no
+  // further DOM change. 1.2 s of rule counting is cheap; a mirror missing a
+  // component's styles is not.
+  try {
+    setInterval(() => {
+      try { if (flushStyleOps()) flush(); } catch (e) { /* ignore */ }
+    }, 1200);
+  } catch (e) { /* no timers */ }
+  // A document can reload to the same URL.  Its token changes even when the
+  // URL watcher cannot, so the server can force a full navigation resync
+  // instead of letting new-document mids patch the old mirror.
+  setTimeout(() => {
+    try {
+      if (typeof window.__domDelta === 'function') {
+        window.__domDelta(JSON.stringify([['navigation']]), DOC_TOKEN);
+      }
+    } catch (e) { /* binding not wired yet */ }
+  }, 0);
+})();
+"""
+
+# Keep the browser-side timer configurable without rebuilding the large script
+# at each install.  The resolved script is persistent across navigations.
+_DELTA_OBSERVER_JS = _DELTA_OBSERVER_JS.replace(
+    "__SHIFIX_DELTA_FLUSH_MS__", str(DELTA_FLUSH_MS)
+)
+# The history hooks are a rollback-able capability: a page whose own router
+# misbehaves under a wrapped pushState can be taken off them without touching
+# the observer (the URL poll remains as the fallback either way).
+_DELTA_OBSERVER_JS = _DELTA_OBSERVER_JS.replace(
+    "__SHIFIX_HISTORY_HOOKS__", "true" if NAV_HISTORY_HOOKS else "false"
+)
+
+
+async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bool:
+    """Install the delta observer + ``__domDelta`` relay binding.
+
+    The binding and init script are installed once per page object.  Both
+    survive a normal navigation; only the immediate evaluate is repeated for
+    the current document.  Re-exposing a Playwright/SB binding on every URL
+    change is an avoidable CDP round trip and can fail with "already exists",
+    which used to leave the new document without live patches.
+    """
+    if not LIVE_DELTA or page is None or session is None:
+        return False
+
+    async def _on_delta(payload: Any, doc_token: Any = None) -> None:
+        try:
+            if session.page is not page:
+                return
+            if session.websocket is None or session._stopped:
+                return
+            if not isinstance(payload, str) or not payload or len(payload) > 1_000_000:
+                return
+            # JSON.stringify in the page always emits a compact array of
+            # operation arrays.  Shape-check the text and keep it intact for
+            # the normal path: parsing it in Python only to dump it again was
+            # pure CPU/memory churn.  The two control batches are exact strings
+            # emitted by this observer and are handled before the fast path.
+            payload_text = payload.strip()
+            if not payload_text.startswith("[[") or not payload_text.endswith(']]'):
+                return
+            if payload_text == '[["navigation"]]':
+                # The observer runs once per main document.  A reload can keep
+                # the same URL, so this control op is the navigation signal
+                # that the URL poller cannot provide.
+                #
+                # Order matters: announce first (a control frame, published in
+                # this tick), then let the capture run beside everything else.
+                # The old code did the capture inline, so the client only heard
+                # about the new document once it had been serialized.
+                token = str(doc_token)[:256] if doc_token is not None else None
+                if session.has_initial_capture and not session._explicit_navigation_in_progress:
+                    await session._on_document_signal(token)
+                else:
+                    # Initial bootstrap: the first sender owns the document.
+                    session._delta_active = False
+                return
+            if payload_text.startswith('[["nav"'):
+                # pushState / replaceState / popstate / hashchange (see the
+                # history hooks in the in-page script).  Same-document: the URL
+                # travels now, the patch stream carries the content, and no
+                # transition is started on the client.
+                try:
+                    op = _json.loads(payload_text)[0]
+                except Exception:
+                    return
+                href = str(op[1]) if len(op) > 1 and op[1] is not None else None
+                same_doc = bool(op[2]) if len(op) > 2 else True
+                source = str(op[3]) if len(op) > 3 else "history"
+                if not href:
+                    return
+                session._note_history_nav(href, same_doc)
+                await session._on_navigation_signal(
+                    href, same_document=same_doc, reason="url_change",
+                    source=source, doc=str(doc_token)[:256] if doc_token else None)
+                return
+            if payload_text == '[["overflow"]]':
+                if not session._delta_active:
+                    return
+                logger.debug("dc delta overflow -> full recapture (client %s)", session.client_id)
+                await session.send_page(reason="delta_overflow")
+                return
+            if payload_text == "[[]]":
+                return
+            if not session._delta_active:
+                return  # current full-capture tier cannot carry safe mids
+            if not PATCH_DURING_CAPTURE and session._send_inflight and not session._assets_pending:
+                # Rollback path only.  A patch is worth sending even while a
+                # capture runs: it carries the document token and generation it
+                # belongs to, so the client applies it when it still fits and
+                # discards it when a newer document has superseded it.  Holding
+                # the channel shut for a capture's whole lifetime was the
+                # "updates stop while it is busy" symptom.
+                return
+
+            # Patches for a document the client is no longer showing are
+            # superseded, not applicable: drop them here instead of making the
+            # client resync to discover it.
+            token = str(doc_token)[:256] if doc_token is not None else None
+            if token and session._last_doc_token and token != session._last_doc_token:
+                return
+
+            # The browser already paid for JSON.stringify(batch).  Wrap that
+            # exact JSON text instead of parsing and serializing the operation
+            # list a second time.
+            gen = int(session._gen)
+            doc_json = _json.dumps(token, ensure_ascii=False) if token is not None else "null"
+            frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + payload_text + '}'
+            await session._publish_patch_text(frame)
+        except Exception as exc:
+            logger.debug("delta relay failed: %s", exc)
+
+    if not getattr(session, "_delta_binding_installed", False):
+        try:
+            await page.expose_function("__domDelta", _on_delta)
+            session._delta_binding_installed = True
+        except Exception as exc:
+            logger.debug("expose_function(__domDelta) failed: %s", exc)
+            return False
+    if not getattr(session, "_delta_init_script_installed", False):
+        try:
+            await page.add_init_script(script=_DELTA_OBSERVER_JS)
+            session._delta_init_script_installed = True
+        except Exception as exc:
+            logger.debug("add_init_script(delta observer) failed: %s", exc)
+            return False
+    try:
+        await page.evaluate(_DELTA_OBSERVER_JS)
+    except Exception as exc:
+        logger.debug("install delta observer (immediate) failed: %s", exc)
+    return True
+
+
+async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") -> bool:
+    """Install the generic interaction-trigger on a Playwright page.
+
+    Idempotent: re-injection is a no-op (the JS guards itself with
+    a window flag).  Returns True on success, False on any failure
+    -- the page will still work, it just won't auto-recapture.
+    """
+    if page is None or session is None:
+        return False
+    try:
+        # Expose the Python-side handler to the page.  We pass the
+        # reason through; the JS side does the interactivity
+        # detection, this side just calls send_page.
+        async def _on_request(reason: str, target_desc: str) -> None:
+            try:
+                # Once the observer is installed, it is the single low-latency
+                # visual path.  Do not launch a full serializer after every
+                # safe click: full documents are reserved for navigation,
+                # observer overflow, structural desync, and explicit resync.
+                if getattr(session, "_delta_active", False):
+                    return
+
+                # No debounce.  On the no-delta fallback path a full document
+                # is the only way to reflect an activation, and the old
+                # minimum-interval check silently DROPPED an activation that
+                # landed too soon after the previous one.  Overlapping requests
+                # now coalesce in the content lane instead: one capture in
+                # flight, one follow-up with the latest reason, nothing lost.
+                session._last_interaction_capture_t = asyncio.get_event_loop().time()
+                full_reason = f"interaction:{reason}"
+                if target_desc:
+                    full_reason = f"{full_reason}:{target_desc}"
+
+                async def _delayed_send():
+                    if is_redraw_only_host(getattr(session, "last_sent_url", "")):
+                        await asyncio.sleep(0.18)
+                    await session.send_page(reason=full_reason)
+
+                asyncio.create_task(_delayed_send())
+            except Exception as exc:
+                logger.debug("interaction recapture dispatch failed: %s", exc)
+
+        if not getattr(session, "_interaction_binding_installed", False):
+            await page.expose_function(
+                "__domCaptureRequest",
+                _on_request,
+            )
+            session._interaction_binding_installed = True
+    except Exception as exc:
+        logger.debug("expose_function(__domCaptureRequest) failed: %s", exc)
+        return False
+
+    # Install the trigger via add_init_script so it runs at the very
+    # start of every page load, BEFORE any page script.  This is the
+    # only way to catch addEventListener registrations that happen at
+    # module top-level (React/Vue/Material bundle entry points).  If
+    # we used page.evaluate here, the patch would land AFTER the
+    # page's own scripts had already wired their listeners, and the
+    # WeakSet would miss them -- which manifests as "I clicked a
+    # Material button and got no recapture".
+    #
+    # add_init_script is idempotent in the JS-side: the
+    # __domCaptureTriggerInstalled guard short-circuits the second
+    # onward navigations where the script is re-injected by Playwright.
+    # We still attempt a one-time page.evaluate so the very first
+    # page (if it was already loaded before this function ran) gets
+    # the trigger immediately rather than waiting for the next nav.
+    if not getattr(session, "_interaction_init_script_installed", False):
+        try:
+            await page.add_init_script(script=_INTERACTION_TRIGGER_JS)
+            session._interaction_init_script_installed = True
+        except Exception as exc:
+            logger.debug("add_init_script(interaction trigger) failed: %s", exc)
+            return False
+
+    try:
+        await page.evaluate(_INTERACTION_TRIGGER_JS)
+    except Exception as exc:
+        # Not fatal -- the next navigation will re-inject via
+        # add_init_script and the JS-side guard handles that.
+        logger.debug("install interaction trigger (immediate) failed: %s", exc)
+
+    # Live-delta is also installed for snapshot-preferred hosts.  Those hosts
+    # still receive periodic/full recovery documents, but mutation patches
+    # keep the visible mirror current between them (hybrid mode).
+    try:
+        if await _install_delta_observer(page, session):
+            session._delta_installed = True
+    except Exception as exc:
+        logger.debug("delta observer install failed: %s", exc)
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# DOMCaptureSession
+# ---------------------------------------------------------------------------
+
+class DOMCaptureSession:
+    """Reusable single-shot capture helper for remote browser sessions.
+
+    Usage::
+
+        session = DOMCaptureSession(page, websocket=ws)
+        await session.send_page()       # full SingleFile capture -> ship
+        # ...user clicks, types, navigates...
+        await session.send_page()       # capture again (explicit)
+        await session.shutdown()
+
+    Sync strategy: full documents are the fidelity/recovery floor, while the
+    installed MutationObserver ships safe changes as in-place ``dom_patch``
+    frames.  The caller still triggers full captures for initial load,
+    navigation, overflow, and explicit recovery; ordinary interactions do
+    not rebuild the client iframe when the delta generation is healthy.
+    """
+
+    CAPTURE_STRATEGY: str = "single_capture"
+
+    @classmethod
+    def for_url(cls, page: Any, url: str, websocket: Any = None, client_id: Optional[str] = None) -> "DOMCaptureSession":
+        return cls(page, websocket=websocket, client_id=client_id)
+
+    def __init__(self, page: Any, websocket: Any = None, client_id: Optional[str] = None) -> None:
+        self.page = page
+        self.websocket = websocket
+        self.client_id = client_id
+        self.capture_strategy: str = self.CAPTURE_STRATEGY
+
+        self.last_sent_url: Optional[str] = None
+        self.last_sent_html: Optional[str] = None
+        self.has_initial_capture: bool = False
+        self._stopped = False
+        # URL watch task slot (kept here so session.py's getattr check is happy).
+        self.url_watch_task: Optional[asyncio.Task] = None
+        # Monotonic timestamp of the last interaction-driven recapture,
+        # used purely for flood control.  The actual decision about
+        # whether something is interactive is made in-page by
+        # _INTERACTION_TRIGGER_JS; this number just prevents an
+        # automated click-storm from melting the capture pipeline.
+        self._last_interaction_capture_t: float = 0.0
+        # The JS listeners/init scripts and exposed bindings are page-object
+        # scoped and survive ordinary navigations.  Install each once; repeat
+        # only the immediate evaluate for the new document.
+        self._interaction_trigger_installed: bool = False
+        self._interaction_binding_installed: bool = False
+        self._interaction_init_script_installed: bool = False
+        self._delta_binding_installed: bool = False
+        self._delta_init_script_installed: bool = False
+        # Whether the live-delta observer delivered at least install
+        # successfully — typing recaptures are redundant while patches
+        # ('v' value ops) carry the keystrokes to the client live.
+        self._delta_installed: bool = False  # observer/binding is ready
+        # Progressive assets: a document can go out before its fonts and
+        # backgrounds are fetched.  While that fetch runs the delta channel
+        # must stay open (the page is on screen and must keep moving), and the
+        # swaps already delivered must not be sent again.
+        self._assets_pending: bool = False
+        self._sent_asset_swaps: Dict[str, str] = {}
+        # What the last capture could read for free (title, UA, checksum,
+        # readyState, URL) — see _capture_fast_meta.  Reset per capture.
+        self._last_capture_meta: Dict[str, Any] = {}
+        # Cold-start timeline: when this helper was built, when the first
+        # capture started, and when the first document reached the socket.
+        # One INFO line per session (see _send_full) so "the first page took
+        # X ms" is answerable from the log instead of guessed at.
+        self._t_created = time.monotonic()
+        self._cold_first_capture_at: Optional[float] = None
+        self._cold_first_sent_at: Optional[float] = None
+        self._cold_logged = False
+
+        # Intent prefetch bookkeeping: which destinations were warmed, how
+        # many this page may warm, and whether one is running right now.
+        self._prefetch_seen: Dict[str, float] = {}
+        self._prefetch_count = 0
+        self._prefetch_running = False
+        self._delta_active: bool = False     # current client generation has data-mid
+        self._explicit_navigation_in_progress: bool = False
+        self._capture_install_lock = asyncio.Lock()
+        # ---- fast-pipeline state (MIGRATION_LIVE_MIRROR.md) ----
+        # Coalesce WITHIN a capture lane: at most one capture per lane in
+        # flight; overlaps buffer the latest reason and produce exactly one
+        # follow-up send.  Lanes are independent, so a navigation capture is
+        # never queued behind an interaction recapture of the page being left.
+        # ``_send_inflight`` is kept as the "any lane busy" summary for the
+        # paths (and tests) that ask the coarse question.
+        self._send_inflight: bool = False
+        self._lane_inflight: Dict[str, bool] = {LANE_NAVIGATION: False, LANE_CONTENT: False}
+        self._lane_pending: Dict[str, Optional[str]] = {LANE_NAVIGATION: None, LANE_CONTENT: None}
+        # Keep a delta frame and a full-document frame ordered on the same
+        # websocket.  Without this, an already-validated patch task can yield
+        # just as a recovery capture starts and arrive after its newer gen.
+        self._ws_send_lock = asyncio.Lock()
+        # Navigation controls and the URL watcher can observe the same change
+        # (especially on SB/history.pushState). Serialize their recovery send
+        # so the mirror never races two full documents for one URL.
+        self._navigation_capture_lock = asyncio.Lock()
+        self._pending_reason: Optional[str] = None
+        self._overlap_count: int = 0
+
+        # ---- concurrent navigation pipeline --------------------------------
+        # The delivery half: frames leave in a defined order from ONE writer
+        # task, with navigation frames allowed to overtake queued bulk (they
+        # carry no document content, so overtaking can only make the client
+        # discard something it has already been told is superseded).
+        self._pipeline = SyncPipeline(
+            lambda: self.websocket, name=f"dom:{client_id or 'anon'}")
+        # The document token of the last document we published.  Patches that
+        # belong to a different document than the client is showing are
+        # superseded, not applied.
+        self._last_doc_token: Optional[str] = None
+        # Whether the newest navigation has had its document published yet.
+        self._nav_doc_published: int = 0
+        # The last URL we announced as a navigation (dedupe for the two
+        # independent signals that can report the same change).
+        self._nav_announced_url: Optional[str] = None
+        self._nav_announced_same_doc: Optional[bool] = None
+        self._nav_announced_t: float = 0.0
+        # Recent same-document history navigations, so the URL poller can
+        # classify a change the in-page hooks already described.
+        self._history_nav_at: Dict[str, float] = {}
+        # Settled follow-up task for an early (partial) navigation document.
+        self._nav_settle_task: Optional[asyncio.Task] = None
+        # Background captures scheduled by a navigation signal.  Tracked so a
+        # session teardown cannot leave one running against a closed page.
+        self._nav_capture_tasks: set = set()
+        # The write-future of the most recent navigation frame (see
+        # publish_navigation).  Only the explicit-goto path awaits it.
+        self._last_nav_publish: Optional[asyncio.Future] = None
+        # Whether the last capture was taken while the document was still
+        # parsing (see capture_page).  Reset per capture.
+        self._last_capture_partial: bool = False
+        # The navigation id we have already told the client failed (0 = none).
+        # One report per navigation is enough: the client leaves the transition
+        # on the first, and repeats would only be noise.
+        self._nav_fail_for: int = 0
+        # Generation counter — bumped on every full_document send; delta
+        # patches carry the generation they apply to.
+        self._gen: int = 0
+        # Last DOM checksum that produced a send (unchanged-DOM skip).
+        self._last_checksum: Optional[str] = None
+        # Kill-switch once httpx turns out to be unavailable.
+        self._assets_ok: bool = True
+        # A full document can mention the same immutable /assets digests on
+        # every recovery.  Warm each digest at most once per client session so
+        # asset metadata and browser fetch work do not ride along on every
+        # resync.
+        self._sent_asset_digests: set = set()
+        # Consecutive full-capture failures — surfaced as an ERROR once
+        # (a client receiving no DOM at all must never be silent).
+        self._capture_fail_streak: int = 0
+        # Whether the most recent capture came from SingleFile (fast
+        # degenerate-fallback) — asset rewrite must not touch those.
+        self._last_capture_was_singlefile: bool = False
+        # Whether the last capture can carry delta patches (has data-mid
+        # stamps) and whether asset rewriting applies to it.  fast=True/True;
+        # SingleFile=False/False; outerHTML tier3=False/True.
+        # Snapshot mode (default for non-live hosts) still keeps full
+        # documents as the fidelity/recovery floor, but the delta observer
+        # can patch safe mutations between those documents.  Set per-site by
+        # the owning session via prefer_snapshot_for_url().
+        self.snapshot_only: bool = False
+        self._last_capture_supports_delta: bool = True
+        self._last_capture_supports_assets: bool = True
+        # Best-effort auto-install on construction: only succeeds if
+        # the page object is usable right now.  Failures are silent --
+        # call enable_interaction_capture() later, or it will be
+        # re-attempted on each navigation / first send_page.
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running() and page is not None:
+                # Cannot await from __init__; schedule for next tick.
+                loop.create_task(self.enable_interaction_capture())
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def bind_page(self, page: Any) -> None:
+        """Move the helper to a different tab/page object.
+
+        A session can switch tabs while reusing one DOMCaptureSession.  The
+        exposed bindings and init-script registrations are page-scoped, so
+        carrying the old "installed" flags to the new page would silently
+        disable interaction/delta delivery there.  Reset only page-local
+        state; keep the generation counter monotonic for the client.
+        """
+        if page is self.page:
+            return
+        self.page = page
+        self._interaction_trigger_installed = False
+        self._interaction_binding_installed = False
+        self._interaction_init_script_installed = False
+        self._delta_binding_installed = False
+        self._delta_init_script_installed = False
+        self._delta_installed = False
+        self._delta_active = False
+        self._explicit_navigation_in_progress = False
+        self._last_checksum = None
+        self.last_sent_url = None
+        self.last_sent_html = None
+        # A different tab means a different document.  The navigation ids stay
+        # monotonic (the client orders by them), but everything that describes
+        # WHICH document the client is showing has to start over - otherwise
+        # the new tab's patches would be dropped as "superseded" and its
+        # document would be skipped as "already published".
+        self._last_doc_token = None
+        self._nav_doc_published = 0
+        self._nav_announced_url = None
+        self._nav_announced_same_doc = None
+        self._history_nav_at.clear()
+        self._sent_asset_digests.clear()
+        # The asset_map edit list is per CLIENT-DOCUMENT: the same authored
+        # text ("/logo.png") means a different file on a different site, so a
+        # reset here (rebind/replace) is what keeps the client's cache honest.
+        self._sent_asset_swaps.clear()
+        self._assets_pending = False
+
+    async def start(self) -> None:
+        """Install the generic interaction trigger.  Idempotent; safe
+        to call multiple times.  Callers that previously relied on
+        ``start()`` being a no-op will still get a working session;
+        we only added the trigger installation, no background polling
+        loop."""
+        await self.enable_interaction_capture()
+        return
+
+    async def enable_interaction_capture(self) -> bool:
+        """Install (or re-install) the generic interaction trigger on
+        the current page.  Safe to call after navigation: the JS
+        guard ensures at most one delegated listener per page, and
+        the Python-side ``expose_function`` is also idempotent on
+        the Playwright side."""
+        if self.page is None:
+            return False
+        if self._stopped:
+            return False
+        async with self._capture_install_lock:
+            if self._stopped:
+                return False
+            ok = await _install_interaction_trigger(self.page, self)
+            if ok:
+                self._interaction_trigger_installed = True
+            return ok
+
+    async def shutdown(self) -> None:
+        """Mark the session stopped and cancel the URL watcher if any."""
+        self._stopped = True
+        if self.url_watch_task and not self.url_watch_task.done():
+            self.url_watch_task.cancel()
+            try:
+                await self.url_watch_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self.url_watch_task = None
+        for task in (self._nav_settle_task, *tuple(self._nav_capture_tasks)):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._nav_settle_task = None
+        self._nav_capture_tasks.clear()
+        # Flush whatever the pipeline still holds before the socket goes away;
+        # a navigation frame that never left is the one thing worth waiting for.
+        try:
+            await self._pipeline.close()
+        except Exception:
+            logger.debug("sync pipeline close failed for %s", self.client_id, exc_info=True)
+        try:
+            await get_global_asset_manager().release_session(self.client_id)
+        except Exception:
+            logger.debug("asset lease release failed for %s", self.client_id, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Navigation pipeline: detect -> publish -> capture (independently)
+    # ------------------------------------------------------------------
+    @property
+    def nav_id(self) -> int:
+        """Which navigation the client has been told about (monotonic)."""
+        return self._pipeline.nav_id
+
+    @property
+    def nav_announcements(self) -> bool:
+        """Whether this session is the authority for "the page moved" frames.
+
+        ``session.py``'s transition poller asks before emitting its own
+        ``page_transition``: with announcements on, a second sender would
+        restart the client's transition for a route change it already applied
+        in place.  Off (``DOM_CAPTURE_NAV_IMMEDIATE=0``) hands that job back.
+        """
+        return bool(NAV_IMMEDIATE)
+
+    def publish_navigation(self, url: Optional[str], *, reason: str = "url_change",
+                           same_document: Optional[bool] = None,
+                           doc_expected: Optional[bool] = None,
+                           phase: str = "detected",
+                           source: str = "", doc: Optional[str] = None,
+                           force: bool = False) -> Optional[Dict[str, Any]]:
+        """Announce a navigation NOW — no capture, no settle wait, no lock.
+
+        This is the whole point of the navigation pipeline: the client can move
+        its tab, its address and (when a new document is really coming) its
+        transition on this frame alone.  The document follows on its own,
+        whenever the serializer is done with it.
+
+        Deduplicated against the previous announcement of the same URL and
+        document kind, because two independent signals (the URL poller and the
+        in-page history hooks) legitimately observe one navigation.  Reloads of
+        the same URL pass ``force=True`` (a new document token proves the page
+        really did reload).
+        """
+        if not NAV_IMMEDIATE or self._stopped:
+            return None
+        url_s = str(url) if url else None
+        if same_document is None:
+            same_document = bool(url_s and self._history_nav_at.get(url_s))
+        if not force and url_s and same_url(url_s, self._nav_announced_url):
+            if self._nav_announced_same_doc is not None and \
+                    bool(self._nav_announced_same_doc) == bool(same_document):
+                # Same navigation, same document kind, twice. Nothing to say.
+                return None
+        prev = self._pipeline.nav_url
+        frame = self._pipeline.begin_navigation(
+            url_s,
+            prev_url=prev,
+            same_document=bool(same_document),
+            doc_expected=doc_expected,
+            reason=reason,
+            source=source,
+            phase=phase,
+            doc=doc,
+        )
+        # ``wait=True`` yields a future for THIS frame only.  Nobody awaits it
+        # on the normal path (the announcement is out the door either way); the
+        # explicit-goto path does, because there the producer is about to do
+        # something slow and the ordering is free.
+        published = self._pipeline.publish(frame, control=True, wait=True)
+        if published is None or published is False:
+            return None
+        self._last_nav_publish = published if isinstance(published, asyncio.Future) else None
+        self._nav_announced_url = url_s
+        self._nav_announced_same_doc = bool(same_document)
+        self._nav_announced_t = time.monotonic()
+        if frame.get("doc"):
+            self._last_doc_token = frame["doc"]
+        logger.debug(
+            "dc nav publish nav=%d url=%s same_document=%s doc_expected=%s reason=%s source=%s",
+            frame["nav_id"], str(url_s)[:120], frame["same_document"],
+            frame["doc_expected"], reason, source or "-")
+        return frame
+
+    def _nav_lane_needed(self, same_document: bool) -> bool:
+        """Does this navigation need a full document, or are patches enough?
+
+        A same-document route change is exactly the case the delta channel was
+        built for: the DOM mutates in place, mids survive, the client patches.
+        Rebuilding the whole iframe for it is the "the entire mirrored page
+        restarts" symptom.  It only needs a document when there is no live
+        patch channel to carry it - or when the route change blew the observer
+        budget (that arrives as delta_overflow and takes the normal path).
+        """
+        if same_document and LIVE_DELTA and self._delta_installed and self._delta_active:
+            return False
+        return True
+
+    def _schedule_navigation_capture(self, nav_id: int, *, reason: str,
+                                     delay: float = 0.0) -> Optional[asyncio.Task]:
+        """Start a capture for a navigation without blocking the caller.
+
+        Guarded so that repeated signals for one navigation produce one
+        document: the navigation lane's own coalescing handles the rest.
+        """
+        if self._stopped or self.page is None:
+            return None
+        if nav_id != self._pipeline.nav_id:
+            # Superseded before it even started. The newer navigation has its
+            # own capture; starting this one would only produce a document the
+            # client must throw away.
+            return None
+        if self._nav_doc_published == nav_id and not delay:
+            return None
+
+        async def _run() -> None:
+            try:
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                if self._stopped or nav_id != self._pipeline.nav_id:
+                    return
+                if self._nav_doc_published >= nav_id:
+                    return
+                await self.send_page(reason=reason, _nav_id=nav_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("navigation capture failed (nav=%s): %s", nav_id, exc)
+
+        try:
+            task = asyncio.ensure_future(_run())
+        except RuntimeError:
+            return None
+        self._nav_capture_tasks.add(task)
+        task.add_done_callback(self._nav_capture_tasks.discard)
+        return task
+
+    async def _on_navigation_signal(self, url: Optional[str], *,
+                                    same_document: bool = False,
+                                    reason: str = "url_change",
+                                    source: str = "",
+                                    doc: Optional[str] = None,
+                                    force: bool = False,
+                                    schedule: bool = True) -> Optional[Dict[str, Any]]:
+        """Handle one navigation observation: publish, then start a capture.
+
+        The publish is synchronous and comes first, always.  Nothing here waits
+        for the page to settle, for a previous capture, or for anything else.
+        """
+        frame = self.publish_navigation(
+            url, reason=reason, same_document=same_document, doc=doc,
+            source=source, force=force)
+        if frame is None:
+            # Nothing was announced: either the pipeline is off (rollback) or
+            # this exact navigation was already announced moments ago by another
+            # signal.  Either way the document still has to exist - but only if
+            # the newest navigation does not already have one.
+            if self._nav_lane_needed(same_document):
+                if not NAV_IMMEDIATE:
+                    await self._capture_navigation_once(reason)
+                elif self._nav_doc_published < self._pipeline.nav_id:
+                    self._schedule_navigation_capture(
+                        self._pipeline.nav_id, reason=reason)
+            return None
+        nav_id = frame["nav_id"]
+        if frame.get("doc"):
+            self._last_doc_token = frame["doc"]
+        # A cross-document navigation invalidates the current generation's
+        # mids: patches from the OLD document must not be applied to the new
+        # iframe.  A same-document one does not - patches keep flowing, which
+        # is what makes an SPA route change feel instant instead of frozen.
+        if not same_document:
+            self._delta_active = False
+            self._last_checksum = None
+        if schedule and self._nav_lane_needed(same_document):
+            self._schedule_navigation_capture(nav_id, reason=reason)
+        else:
+            logger.debug(
+                "dc nav nav=%d is same-document and the patch channel is live — "
+                "no document rebuild", nav_id)
+            # Still a cheap correctness floor: if the observer silently stopped
+            # delivering, the client asks for a resync and gets a document then.
+            self._nav_doc_published = nav_id
+        return frame
+
+    def _note_history_nav(self, url: Optional[str], same_document: bool) -> None:
+        """Remember that a same-document route change happened at ``url``.
+
+        The URL poller runs every 100 ms and can see the same change; without
+        this the poller would classify an SPA route change as a brand-new
+        document, and announce a second navigation for it.  Bounded so a router
+        that rewrites its URL hundreds of times cannot grow the map.
+        """
+        if not url or not same_document:
+            return
+        now = time.monotonic()
+        self._history_nav_at[str(url)] = now
+        if len(self._history_nav_at) > 32:
+            cutoff = now - 5.0
+            for key in [k for k, t in self._history_nav_at.items() if t < cutoff]:
+                del self._history_nav_at[key]
+            while len(self._history_nav_at) > 32:
+                self._history_nav_at.pop(next(iter(self._history_nav_at)))
+
+    async def _on_document_signal(self, doc_token: Optional[str]) -> None:
+        """The in-page observer says a NEW document is running.
+
+        Fires once per document (including reloads that keep the same URL),
+        from the persistent init script.  Announce, then capture - in that
+        order, with a capture that runs beside anything else.
+        """
+        url: Optional[str] = None
+        try:
+            if self.page is not None:
+                url = self.page.url
+        except Exception:
+            url = None
+        if not url:
+            url = self._pipeline.nav_url
+        # A new document token proves a real reload even when the URL is
+        # unchanged, so the announcement must not be deduplicated away.
+        reloaded = bool(doc_token and self._last_doc_token and doc_token != self._last_doc_token)
+        # An explicit goto is already going to capture when it returns; letting
+        # the document signal start one too would serialize the same page twice.
+        frame = await self._on_navigation_signal(
+            url, same_document=False, reason="navigation",
+            source="document", doc=doc_token,
+            force=reloaded or doc_token is not None,
+            schedule=not self._explicit_navigation_in_progress)
+        if frame is None:
+            # Rollback path (DOM_CAPTURE_NAV_IMMEDIATE=0): the document still
+            # has to be produced, exactly as before.
+            await self._capture_navigation_once("navigation")
+
+    async def _publish_patch_text(self, frame_text: str) -> bool:
+        """Publish an already-serialized ``dom_patch`` frame.
+
+        The page paid for ``JSON.stringify``; adding two small fields by text
+        concatenation keeps that work from being repeated in Python.
+        """
+        try:
+            seq = self._pipeline.next_seq()
+            nav_id = self._pipeline.nav_id
+            text = (frame_text[:-1]
+                    + ',"nav_id":' + str(nav_id)
+                    + ',"seq":' + str(seq) + '}')
+            return await self._pipeline.publish_text(text, kind="dom_patch")
+        except Exception as exc:
+            logger.debug("delta relay failed: %s", exc)
+            return False
+
+    def _nav_stamp_for(self, started_nav: Optional[int],
+                       url: Optional[str]) -> Optional[int]:
+        """Which navigation a finished capture speaks for, or None if stale.
+
+        A capture that started on navigation N and finished after N+1 is only
+        worth publishing if it happens to describe the NEWER page (same URL) or
+        if the newer navigation is same-document (the document did not change,
+        so the capture is still of what the client shows).  Otherwise sending it
+        would overwrite a newer page with an older one - the exact race that
+        makes fast-pipeline reworks corrupt mirrors.
+        """
+        current = self._pipeline.nav_id
+        if started_nav is None or started_nav == current:
+            return current
+        if self._pipeline.nav_same_document:
+            return current
+        if same_url(url, self._pipeline.nav_url):
+            return current
+        return None
+
+    def _publish_nav_failure(self, url: Optional[str], reason: str) -> None:
+        """Tell the client a navigation's document is not coming.
+
+        Without this the only exit from a transition is the client-side
+        watchdog.  One control frame finishes the wait as early as the server
+        knows the answer.
+        """
+        try:
+            frame = self._pipeline.phase_frame("failed", url=url, detail=reason)
+            self._pipeline.publish(frame, control=True)
+            logger.warning(
+                "dc nav %d has no document (reason=%s url=%s) - telling the client "
+                "to leave the transition", frame["nav_id"], reason, str(url)[:120])
+        except Exception:
+            logger.debug("nav failure publish failed", exc_info=True)
+
+    def _schedule_nav_settle_followup(self, nav_id: int) -> Optional[asyncio.Task]:
+        """Converge an early (partial) navigation document in the background.
+
+        The early document bought latency; this buys fidelity.  It waits for
+        the parser (bounded), then captures again - and only for the navigation
+        it was scheduled for, so a newer navigation is never overwritten with
+        the older page's settled capture.
+        """
+        if self._stopped or self.page is None:
+            return None
+        if self._nav_settle_task is not None and not self._nav_settle_task.done():
+            return None
+
+        async def _run() -> None:
+            try:
+                await self.page.wait_for_function(
+                    "document.readyState === 'complete'",
+                    timeout=max(500, NAV_SETTLE_MAX_MS))
+            except Exception:
+                pass
+            if self._stopped or nav_id != self._pipeline.nav_id:
+                return
+            if self._nav_doc_published != nav_id:
+                return
+            try:
+                await self.send_page(reason="nav_settle", _nav_id=nav_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("settled navigation follow-up failed (nav=%s): %s", nav_id, exc)
+
+        try:
+            self._nav_settle_task = asyncio.ensure_future(_run())
+        except RuntimeError:
+            return None
+        return self._nav_settle_task
+
+    async def _capture_navigation_once(self, reason: str) -> Optional[str]:
+        """Serialize one navigation recovery send at a time.
+
+        The delta observer emits a control batch for a new document, while
+        the URL watcher also sees same-document history changes. Both are
+        needed: the former catches reloads that keep the same URL, and the
+        latter catches SPA ``pushState``/``replaceState`` changes. A lock
+        keeps the two paths from racing stale full documents.
+        """
+        async with self._navigation_capture_lock:
+            try:
+                current_url = self.page.url if self.page is not None else None
+            except Exception:
+                current_url = None
+            # The adapter's cached URL can briefly lag the document event. Ask
+            # the live document once on navigation so the full frame is labeled
+            # with the page that was actually captured, not the previous URL.
+            if self.page is not None:
+                try:
+                    live_url = await self.page.evaluate("location.href")
+                    if isinstance(live_url, str) and live_url:
+                        current_url = live_url
+                except Exception:
+                    pass
+            if current_url:
+                # The URL watcher is a fallback. If the observer/explicit
+                # navigation already sent this URL while it waited for the
+                # lock, do not rebuild the mirror a second time.
+                if reason == "url_change" and current_url == self.last_sent_url:
+                    return current_url
+                frame = self.publish_navigation(
+                    current_url, reason=reason, same_document=False,
+                    source="navigation_lock")
+                if frame is None:
+                    return await self.send_page(reason=reason, _url_override=current_url)
+                if not self._nav_lane_needed(False):
+                    return current_url
+                return await self.send_page(reason=reason, _url_override=current_url,
+                                            _nav_id=frame["nav_id"])
+            return await self.send_page(reason=reason, _url_override=current_url)
+
+    async def watch_url(self, interval_s: float = URL_WATCH_INTERVAL_S) -> None:
+        """Watch the page URL — a *detector*, never a gate.
+
+        Two things used to happen here that made navigation feel slow, and both
+        are gone:
+
+        * the watcher waited for the page to settle (load + networkidle +
+          readyState — up to ~6 s) *before* telling anyone the URL had changed.
+          The announcement is now published in the same tick the change is
+          seen; the settle wait, if any is needed, happens inside a capture
+          that runs beside it.
+        * the announcement and the document were the same message, so the
+          client's URL and its transition could not move until the serializer
+          was done.  They are separate frames now.
+
+        The in-page history hooks and the new document's observer control are
+        the primary signals; this poller stays as the floor for pages where
+        neither fires (observer install failure, a backend that drops
+        bindings).
+        """
+        last_url: Optional[str] = None
+        try:
+            if self.page is not None:
+                last_url = self.page.url
+        except Exception:
+            last_url = None
+        while not self._stopped:
+            try:
+                current_url: Optional[str] = None
+                if self.page is not None:
+                    try:
+                        current_url = self.page.url
+                    except Exception:
+                        current_url = None
+                if current_url and not same_url(current_url, last_url or ""):
+                    logger.debug("URL changed %s -> %s", last_url, current_url)
+                    # One call does both halves: announce (deduplicated against
+                    # the in-page hooks, which usually got here first and with a
+                    # classification this poller cannot make) and make sure the
+                    # newest navigation has a document.  Nothing here waits.
+                    try:
+                        await self._on_navigation_signal(
+                            current_url, reason="url_change", source="url_watch")
+                    except Exception as exc:
+                        logger.debug("URL-change navigation dispatch failed: %s", exc)
+                    last_url = current_url
+                    # Re-install on the new document when the delta path is
+                    # unavailable: init scripts persist on the page object, so
+                    # this is a no-op when they are already registered.
+                    if not self._delta_installed and (
+                            not self._interaction_init_script_installed
+                            or (LIVE_DELTA and not self._delta_init_script_installed)):
+                        try:
+                            await self.enable_interaction_capture()
+                        except Exception as exc:
+                            logger.debug("re-install interaction trigger after URL change: %s", exc)
+                last_url = current_url or last_url
+            except Exception as exc:
+                logger.debug("URL watch loop error: %s", exc)
+            try:
+                await asyncio.sleep(interval_s)
+            except asyncio.CancelledError:
+                return
+
+    # ------------------------------------------------------------------
+    # Public entry points
+    # ------------------------------------------------------------------
+
+    def request_capture(self, reason: Optional[str] = None) -> None:  # noqa: ARG002
+        """No-op kept for API compatibility.  Call ``send_page()`` to
+        actually capture."""
+        return
+
+    # Backwards-compatible alias.
+    request_sync = request_capture
+
+    async def capture_page(self, settle: Optional[str] = None) -> Optional[str]:
+        """Capture the current page.  Returns the HTML string, or None.
+
+        Also leaves ``self._last_capture_meta`` holding what the same browser
+        call could tell us for free (title, UA, readyState, URL, DOM
+        checksum) — see ``_capture_fast_meta``.
+
+        ``settle``:
+          none   — no waits at all (interaction recapture of a live page)
+          light  — readyState-complete only (default; never networkidle)
+          nav    — bounded readyState wait (``DOM_CAPTURE_NAV_READY_MS``); if the
+                   parser is still running the capture is taken anyway and
+                   ``self._last_capture_partial`` is set, so the caller can ship
+                   it now and converge with a settled follow-up
+          full   — legacy load + networkidle + readyState sequence
+        ``DOM_CAPTURE_FULL_SETTLE=1`` forces ``full`` everywhere (rollback).
+        """
+        if self.page is None:
+            return None
+        if settle is None:
+            settle = "light"
+        if FULL_SETTLE:
+            settle = "full"
+        self._last_capture_partial = False
+        try:
+            if settle != "none":
+                if settle == "full":
+                    try:
+                        await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    except Exception:
+                        pass
+                    await _ensure_page_stable(self.page)
+                elif settle == "nav":
+                    # A navigation must not buy "a fully parsed document" with
+                    # an unbounded wait. Bounded: the common case (the parser
+                    # is already past 'loading') costs nothing, a slow page
+                    # pays NAV_READY_MS at most and then ships what exists.
+                    ready = False
+                    try:
+                        await self.page.wait_for_function(
+                            "document.readyState !== 'loading'",
+                            timeout=max(1, NAV_READY_MS))
+                        ready = True
+                    except Exception:
+                        ready = False
+                    self._last_capture_partial = not ready
+                    if not ready:
+                        logger.debug(
+                            "dc nav capture: document still parsing after %d ms "
+                            "(shipping early, follow-up scheduled)", NAV_READY_MS)
+                    if PRE_CAPTURE_WAIT > 0:
+                        await asyncio.sleep(PRE_CAPTURE_WAIT)
+                else:
+                    # ONE wait, not two.  `domcontentloaded` and "readyState has
+                    # left 'loading'" are the same condition; asking for both
+                    # cost a round trip to learn nothing.  The 5 s budget is
+                    # the old one (a navigation may legitimately still be
+                    # parsing), and a hung page still returns at that bound.
+                    try:
+                        await self.page.wait_for_function(
+                            "document.readyState !== 'loading'", timeout=5000)
+                    except Exception:
+                        pass
+                    if PRE_CAPTURE_WAIT > 0:
+                        await asyncio.sleep(PRE_CAPTURE_WAIT)
+            self._last_capture_was_singlefile = False
+            self._last_capture_supports_delta = True
+            self._last_capture_supports_assets = True
+            self._last_capture_meta = {}
+            html, _meta = await _capture_fast_meta(self.page)
+            if _meta:
+                # Everything the send path used to ask for in its own round
+                # trips is now in hand.  Seed the UA memo here so the asset
+                # pass does not ask the page again.
+                self._last_capture_meta = _meta
+                if _meta.get("ua"):
+                    try:
+                        setattr(self.page, "_cached_ua", _meta["ua"])
+                    except Exception:
+                        pass
+            if html is not None and len(html) < 400 and "<html" not in html.lower():
+                html = None  # degenerate output — fall back
+            fast_err = _LAST_FAST_CAPTURE_ERROR
+            if html is None:
+                # Fast outerHTML fallback with data-mid preservation — zero SingleFile stalls
+                try:
+                    html = await self.page.evaluate("document.documentElement ? document.documentElement.outerHTML : ''")
+                    if isinstance(html, str) and html:
+                        html = "<!DOCTYPE html>\n" + html
+                        self._last_capture_supports_delta = False
+                        self._last_capture_supports_assets = True
+                        return html
+                    html = None
+                except Exception as exc:
+                    logger.debug("dc outerHTML fallback failed: %s", exc)
+                logger.error(
+                    "[CAPTURE] fast capture failed: %s; outerHTML=failed",
+                    fast_err or "unknown")
+                return None
+            return html
+        except Exception as exc:
+            logger.exception("page capture failed: %s", exc)
+            return None
+
+    async def _dom_checksum(self) -> Optional[str]:
+        """Cheap O(1)-ish page fingerprint for the unchanged-DOM skip."""
+        if self.page is None:
+            return None
+        try:
+            v = await self.page.evaluate(_DOM_CHECKSUM_JS)
+            return v if isinstance(v, str) and v else None
+        except Exception:
+            return None
+
+    async def capture_page_delta(self) -> Optional[dict]:
+        """Legacy delta-capture entry point.  No-op in single-capture mode."""
+        return None
+
+    async def send_page(self, reason: Optional[str] = None, force: bool = False,
+                        _url_override: Optional[str] = None,
+                        _nav_id: Optional[int] = None) -> Optional[str]:  # noqa: ARG002
+        """Run a full capture and ship it to the websocket.
+        Returns the URL on success, None on failure.
+
+        ``_url_override`` is used only by the navigation recovery path when a
+        backend's cached page URL may lag the live document by one CDP event.
+        ``_nav_id`` names the navigation this capture is for, so a capture that
+        finishes after a NEWER navigation can be dropped instead of overwriting
+        it (see ``_nav_stamp_for``).
+        """
+        if self.page is None:
+            return None
+        # Self-heal: if the trigger isn't installed yet (e.g. session
+        # was constructed without a running event loop, or the page
+        # navigated without going through handle_navigation), install
+        # it now.  This keeps the interaction-capture guarantee
+        # without forcing every caller to remember to call
+        # enable_interaction_capture().
+        if (not self._interaction_trigger_installed
+                or (LIVE_DELTA and not self._delta_installed)):
+            try:
+                await self.enable_interaction_capture()
+            except Exception:
+                pass
+        if _url_override is not None:
+            url = _url_override
+        else:
+            try:
+                url = self.page.url
+            except Exception:
+                url = None
+        return await self._send_full(url, reason=reason or "manual", _nav_id=_nav_id)
+
+    # ------------------------------------------------------------------
+    # Senders
+    # ------------------------------------------------------------------
+
+    async def _send_full(self, url: Optional[str], *, reason: str = "desync",
+                         _nav_id: Optional[int] = None) -> Optional[str]:
+        """Capture and send the page.
+
+        Coalesced PER LANE (SEND_COALESCE): one capture at a time within a
+        lane; an overlapping trigger buffers the latest reason and produces
+        exactly one follow-up.  Lanes are independent (``DOM_CAPTURE_CONCURRENT_LANES``),
+        so a navigation capture runs beside an interaction capture instead of
+        waiting behind it — the older one's document is dropped as stale at
+        publish time rather than being allowed to hold the newer one back.
+
+        Unchanged pages (checksum-equal, interaction reasons only) are
+        skipped before paying for a capture; that is de-duplication, not
+        filtering - the reason such a page can be skipped at all is that the
+        patch channel has already delivered the change.
+        """
+        if self.websocket is None:
+            return None
+        reason_lane = lane_for_reason(reason)
+        lane = reason_lane if CONCURRENT_LANES else LANE_CONTENT
+        is_navigation = reason_lane == LANE_NAVIGATION
+        # Which navigation this capture speaks for.  EVERY capture records the
+        # navigation current when it started, not just navigation captures: a
+        # click's recapture of the page the visitor is leaving is exactly as
+        # stale as a navigation's, and it must be dropped the same way.
+        named_nav: Optional[int] = _nav_id
+        nav_at_start: int = _nav_id if _nav_id is not None else self._pipeline.nav_id
+        if CONCURRENT_LANES and lane == LANE_NAVIGATION:
+            # One navigation's capture must not queue behind another's: a fast
+            # new page would then wait for a slow capture of the page the
+            # visitor already left (and whose document will be dropped anyway).
+            # Each navigation gets its own slot, with a small ceiling so a
+            # pathological loop of navigations cannot spawn unlimited
+            # serializations; past the ceiling they coalesce, latest wins.
+            active_nav = sum(
+                1 for key, busy in self._lane_inflight.items()
+                if busy and key.startswith(LANE_NAVIGATION))
+            if active_nav < NAV_CAPTURE_CONCURRENCY:
+                lane = f"{LANE_NAVIGATION}:{nav_at_start}"
+        if SEND_COALESCE and self._lane_inflight.get(lane):
+            self._lane_pending[lane] = reason
+            self._pending_reason = reason
+            self._overlap_count += 1
+            logger.debug("dc coalesce: buffered reason=%s (lane=%s busy)", reason, lane)
+            return None
+        self._lane_inflight[lane] = True
+        self._send_inflight = any(self._lane_inflight.values())
+        t_start = time.perf_counter()
+        try:
+            if url is None:
+                try:
+                    url = self.page.url
+                except Exception:
+                    url = None
+            settle = _settle_for_reason(reason)
+
+            # A coalesced follow-up for a navigation that already has its
+            # document would rebuild the iframe for nothing.  (Deliberate
+            # re-captures - resync, explicit reasons - are not coalesced.)
+            if (is_navigation
+                    and self._nav_doc_published >= nav_at_start
+                    and str(reason).startswith("coalesce:")):
+                logger.debug(
+                    "dc skip(duplicate nav document) reason=%s nav=%d already published",
+                    reason, nav_at_start)
+                return None
+
+            # A capture for a page we have not announced yet still owes the
+            # client that announcement, and owes it FIRST: the document can
+            # take a second, the URL takes a print.  Announcing here also
+            # covers the callers that reach _send_full directly (tab switch,
+            # explicit resync) rather than through a navigation signal.
+            known_url = self._nav_announced_url or self.last_sent_url
+            if (is_navigation and named_nav is None and url
+                    and self.has_initial_capture
+                    and not same_url(url, known_url)):
+                announced = self.publish_navigation(
+                    url, reason=reason, same_document=False, source="capture")
+                if announced is not None:
+                    nav_at_start = announced["nav_id"]
+
+            # ---- unchanged-DOM skip (only for hot interaction reasons) ----
+            checksum: Optional[str] = None
+            if _may_skip_unchanged(reason, settle,
+                                   bool(LIVE_DELTA and self._delta_installed),
+                                   self._last_checksum):
+                checksum = await self._dom_checksum()
+                if checksum and checksum == self._last_checksum:
+                    logger.debug("dc skip(unchanged) reason=%s gen=%s", reason, self._gen)
+                    return url
+
+            if self._cold_first_capture_at is None:
+                self._cold_first_capture_at = time.monotonic()
+            t_cap = time.perf_counter()
+            html_data = await self.capture_page(settle=settle)
+            capture_ms = (time.perf_counter() - t_cap) * 1000.0
+            if not html_data:
+                self._capture_fail_streak += 1
+                if self._capture_fail_streak >= 2:
+                    logger.error(
+                        "[CAPTURE] %d consecutive capture failures (client %s, last reason=%s, "
+                        "url=%s) — client receives NO DOM updates; check page/backend health",
+                        self._capture_fail_streak, self.client_id, reason, url)
+                # A navigation whose document cannot be produced must not leave
+                # the client on a transition spinner: say so, once per nav.
+                if is_navigation and self._capture_fail_streak >= 2:
+                    if self._nav_fail_for != self._pipeline.nav_id:
+                        self._nav_fail_for = self._pipeline.nav_id
+                        self._publish_nav_failure(url, reason)
+                return None
+            partial_capture = bool(self._last_capture_partial)
+            # Superseded while we were serializing?  Stop here rather than pay
+            # for the asset rewrite of a document the client will never see.
+            # (Checked again before publishing, because a navigation can land
+            # during the rewrite too.)
+            if self._nav_stamp_for(nav_at_start, url) is None:
+                logger.debug(
+                    "dc drop(superseded capture) reason=%s url=%s nav=%s<%s",
+                    reason, str(url)[:120], nav_at_start, self._pipeline.nav_id)
+                return None
+            html_data = _strip_dead_subframes(html_data, url)
+            if url:
+                html_data = _inject_base_href(html_data, url)
+
+            # ---- asset-cache rewrite (fast captures only) ----
+            #
+            # Two ways through here:
+            #
+            #   * every ref the page needs is already in the fetch-once memo
+            #     (the normal recapture) -> rewrite inline and send ONE
+            #     complete document, exactly as before;
+            #   * something still has to be downloaded (a new page, a new
+            #     font, a changed image) -> send the document NOW with those
+            #     refs still pointing at the site, and ship the resolved ones
+            #     as an ``asset_map`` the client swaps in place afterwards.
+            #     The viewer is looking at the page in capture+send time
+            #     instead of waiting out the network, and the live patch
+            #     channel stays open while the fetches run.
+            assets_meta: List[Dict[str, Any]] = []
+            rewrite_ms = 0.0
+            deferred: Optional[Dict[str, Any]] = None
+            supports_assets = self._last_capture_supports_assets
+            if supports_assets and url and self._assets_ok:
+                t_rw = time.perf_counter()
+                try:
+                    if DOM_CAPTURE_STRIP_SCRIPTS:
+                        html_data = _strip_script_tags(html_data)
+                    if PROGRESSIVE_ASSETS:
+                        plan: Dict[str, Any] = {}
+                        ready_html, _ready_meta = await _rewrite_assets_to_cache(
+                            html_data, url, self.page, owner_id=self.client_id,
+                            allow_fetch=False, report=plan,
+                        )
+                        if plan.get("missing"):
+                            deferred = {"html": html_data, "url": url,
+                                        "missing": plan["missing"]}
+                            logger.debug(
+                                "dc progressive: showing the page first, %d ref(s) pending",
+                                len(plan["missing"]))
+                        else:
+                            html_data = ready_html
+                    else:
+                        html_data, assets_meta = await _rewrite_assets_to_cache(
+                            html_data, url, self.page, owner_id=self.client_id
+                        )
+                except ImportError:
+                    self._assets_ok = False
+                except Exception as exc:
+                    logger.debug("asset rewrite failed (serving originals): %s", exc)
+                rewrite_ms = (time.perf_counter() - t_rw) * 1000.0
+
+            # ---- preserve site fonts: strip any forced Montserrat or mirror overrides ----
+            html_data = _strip_mirror_font(html_data)
+
+            # A SingleFile/outerHTML fallback has no data-mid identity map.
+            # Stop relaying patches until a later fast capture restores a
+            # patch-capable generation; otherwise the client would receive
+            # deltas it can never apply and loop through resyncs.
+            is_redraw = is_redraw_only_host(url)
+            capture_delta_active = bool(
+                LIVE_DELTA
+                and self._delta_installed
+                and self._last_capture_supports_delta
+                and not is_redraw
+            )
+
+            # Snapshot mode: skip byte-identical re-sends.  Hybrid delta
+            # patches handle the immediate mutation path; this avoids
+            # repeatedly parsing/switching an identical full document while
+            # retaining full captures for recovery and navigation.
+            _rs = str(reason)
+            if (self.snapshot_only and url == self.last_sent_url
+                    and html_data == self.last_sent_html
+                    and not _rs.startswith((
+                        "resync", "mirror_err", "recover", "delta_overflow",
+                        "navigation", "coalesce:delta_overflow", "coalesce:navigation",
+                    ))):
+                logger.debug("dc skip(identical snapshot) reason=%s", reason)
+                return url
+
+            if url != self.last_sent_url:
+                # Different page: the client's cached edits are keyed by that
+                # page's URL, so a new page must be told everything again
+                # (and an entry that is no longer true must not be reused).
+                self._sent_asset_swaps.clear()
+                # A navigation resets the prefetch budget: the links on THIS
+                # page are the ones worth warming, not the last page's.
+                self._prefetch_count = 0
+            # ---- stale-document guard -------------------------------------
+            # Everything up to here ran on the page as it was when the capture
+            # started.  If a NEWER navigation has been detected since, this
+            # document describes a page the client must not go back to: drop it
+            # and make sure the newer navigation has a capture of its own.
+            publish_nav = self._nav_stamp_for(nav_at_start, url)
+            if publish_nav is None:
+                logger.debug(
+                    "dc drop(stale document) reason=%s url=%s nav=%s<%s gen=%s",
+                    reason, str(url)[:120], nav_at_start, self._pipeline.nav_id, self._gen)
+                self._schedule_navigation_capture(
+                    self._pipeline.nav_id, reason="navigation", delay=0.0)
+                return None
+
+            self._gen += 1
+            msg: Dict[str, Any] = {
+                "type": "full_document",
+                "reason": reason,
+                "url": url,
+                "html": html_data,
+                "gen": self._gen,
+            }
+            _meta_now = getattr(self, "_last_capture_meta", None) or {}
+            if _meta_now.get("doc"):
+                # The document token this capture was taken from.  The client
+                # adopts it so patches for a DIFFERENT document are recognised
+                # as superseded instead of being misapplied.
+                msg["doc"] = str(_meta_now["doc"])[:256]
+            if partial_capture:
+                # Still parsing when it was serialized.  The client may apply
+                # this immediately; a settled follow-up capture converges it.
+                msg["partial"] = True
+            _meta = getattr(self, "_last_capture_meta", None) or {}
+            _cur_title = _meta.get("title")
+            if not _cur_title:
+                # Only ask the page when the capture could not tell us.
+                try:
+                    if self.page is not None:
+                        _cur_title = await self.page.title()
+                except Exception:
+                    _cur_title = None
+            if _cur_title:
+                msg["title"] = _cur_title
+            # The icon the SERVER has for this site — the mark the operator
+            # configured for the domain, or the favicon the server already
+            # downloaded for this profile. The client's tab uses it when the
+            # page's own <link rel=icon> cannot be reached (a hotlink block, a
+            # 404, an http: icon on an https: mirror), so a visit never falls
+            # straight through to a blank/generic tab. Late import: api imports
+            # this module, so the reference can only be resolved at call time.
+            try:
+                import api as _api_mod
+                _site_icon = _api_mod._site_icon_url(url)
+                if _site_icon:
+                    msg["site_icon"] = _site_icon
+            except Exception:
+                pass
+            if deferred is not None:
+                # "This document is complete except for assets that are still
+                # being fetched; an asset_map for this generation is coming."
+                # Purely informational: an older client ignores it and simply
+                # uses the site URLs (which resolve through <base href>).
+                msg["assets_pending"] = len(deferred["missing"])
+            if capture_delta_active:
+                # Snapshot-preferred hosts use the same patch channel between
+                # full fidelity/recovery documents; the client keeps the
+                # generation anchor and can still request a full resync.
+                msg["delta"] = True
+            assets_to_send = [
+                meta for meta in assets_meta
+                if isinstance(meta, dict)
+                and meta.get("hash") not in self._sent_asset_digests
+            ]
+            if assets_to_send:
+                msg["assets"] = assets_to_send
+            t_send = time.perf_counter()
+            self._pipeline.stamp(msg, nav_id=publish_nav)
+            try:
+                # Waits for THIS frame (the producer is done anyway); it never
+                # waits for another capture, which is the distinction that
+                # matters.
+                if not await self._pipeline.publish_now(msg):
+                    raise RuntimeError("pipeline refused the document frame")
+            except Exception as exc:
+                logger.debug("full_document send failed: %s", exc)
+                return None
+            send_ms = (time.perf_counter() - t_send) * 1000.0
+            self._nav_doc_published = max(self._nav_doc_published, int(publish_nav))
+            if msg.get("doc"):
+                self._last_doc_token = msg["doc"]
+            if not self._cold_logged:
+                # The number a visitor actually feels: from "the helper
+                # existed" to "a whole page is on their screen".
+                self._cold_logged = True
+                self._cold_first_sent_at = time.monotonic()
+                try:
+                    logger.info(
+                        "[COLD] first document on screen: %.0f ms total "
+                        "(%.0f ms to start the capture, %.0f ms capture, %.0f ms send) "
+                        "bytes=%d url=%s",
+                        (self._cold_first_sent_at - self._t_created) * 1000.0,
+                        ((self._cold_first_capture_at or self._t_created) - self._t_created) * 1000.0,
+                        capture_ms, send_ms, len(html_data), str(url)[:120],
+                    )
+                except Exception:
+                    pass
+
+            # A patch-capable generation no longer launches interaction full
+            # captures, so there is no hot-path unchanged check to seed.  Do
+            # not add a second browser round trip after every initial/nav
+            # document merely to compute a checksum that will not be used.
+            if checksum is None and not capture_delta_active:
+                # Free when the capture came with one (it did, unless the page
+                # refused the widened call).
+                checksum = _meta.get("checksum") or await self._dom_checksum()
+            self._last_checksum = checksum or self._last_checksum
+            self._capture_fail_streak = 0
+            self._delta_active = capture_delta_active
+            for meta in assets_to_send:
+                digest = meta.get("hash")
+                if digest:
+                    self._sent_asset_digests.add(digest)
+            self.last_sent_html = html_data
+            self.last_sent_url = url
+            self.has_initial_capture = True
+            logger.debug(
+                "dc send reason=%s settle=%s capture_ms=%.0f rewrite_ms=%.0f send_ms=%.0f "
+                "html_bytes=%d assets=%d gen=%d overlaps=%d total_ms=%.0f",
+                reason, settle, capture_ms, rewrite_ms, send_ms, len(html_data),
+                len(assets_to_send), self._gen, self._overlap_count,
+                (time.perf_counter() - t_start) * 1000.0,
+            )
+            if partial_capture and NAV_SETTLE_FOLLOWUP and str(reason) != "nav_settle":
+                # Keep the promise the early document made: once the parser is
+                # done, capture again and let the client converge.  Runs in the
+                # background - the caller has already been given its URL back.
+                self._schedule_nav_settle_followup(int(publish_nav))
+            if deferred is not None:
+                # The document is on screen.  Keep the delta channel open
+                # while the fetches run (``_assets_pending``), then send what
+                # they resolved.
+                self._assets_pending = True
+                try:
+                    await self._send_asset_upgrade(deferred, url)
+                except Exception as exc:
+                    logger.debug("dc progressive upgrade failed: %s", exc)
+                finally:
+                    self._assets_pending = False
+            return url
+        finally:
+            self._lane_inflight[lane] = False
+            self._send_inflight = any(self._lane_inflight.values())
+            pending = self._lane_pending.get(lane)
+            self._lane_pending[lane] = None
+            if pending and self._pending_reason == pending:
+                self._pending_reason = None
+            if SEND_COALESCE and pending and not self._stopped:
+                # Recompute URL/task state inside the follow-up.
+                follow_lane = lane
+                follow_nav = (self._pipeline.nav_id
+                              if follow_lane == LANE_NAVIGATION else None)
+                asyncio.create_task(self._send_full(
+                    None, reason=f"coalesce:{pending}", _nav_id=follow_nav))
+
+    async def _emit_asset_map(self, swap: List[Dict[str, Any]],
+                              assets_meta: Optional[List[Dict[str, Any]]],
+                              page_url: Optional[str]) -> bool:
+        """Send the edits the client has not been told about yet.
+
+        Returns True when a frame went out.  Dedupe lives here so a staged
+        upgrade and its final pass cannot send the same edit twice.
+        """
+        swap = [s for s in (swap or [])
+                if isinstance(s, dict) and self._sent_asset_swaps.get(s.get("from")) != s.get("to")]
+        new_assets = [
+            meta for meta in (assets_meta or [])
+            if isinstance(meta, dict) and meta.get("hash") not in self._sent_asset_digests
+        ]
+        if not swap and not new_assets:
+            return False
+        for s in swap:
+            self._sent_asset_swaps[s["from"]] = s["to"]
+        for meta in new_assets:
+            if meta.get("hash"):
+                self._sent_asset_digests.add(meta["hash"])
+        msg: Dict[str, Any] = {
+            "type": "asset_map",
+            "gen": self._gen,
+            "url": page_url,
+            "swap": swap,
+        }
+        if new_assets:
+            msg["assets"] = new_assets
+        # An asset edit belongs to the document it was computed for.  Stamping
+        # it with the CURRENT navigation lets the client recognise it as
+        # superseded (rather than applying a font swap to the wrong page) if a
+        # navigation landed while the fetches ran.
+        self._pipeline.stamp(msg)
+        try:
+            if not await self._pipeline.publish_now(msg):
+                raise RuntimeError("pipeline refused the asset frame")
+        except Exception as exc:
+            logger.debug("asset_map send failed: %s", exc)
+            return False
+        logger.debug("dc asset_map swaps=%d assets=%d gen=%d nav=%d",
+                     len(swap), len(new_assets), self._gen, msg.get("nav_id", 0))
+        return True
+
+    async def _send_asset_upgrade(self, deferred: Dict[str, Any],
+                                  url: Optional[str]) -> None:
+        """Resolve the assets left out of a progressive document, then send
+        only the EDITS as an ``asset_map``.
+
+        The client applies these to the document it is already showing, so
+        the result is the same HTML the non-progressive path would have sent
+        (``tests/test_asset_upgrade.py`` asserts that equality on the wire)
+        without re-rendering the frame, losing scroll, or repainting.
+
+        The downloads happen in two waves.  The FIRST is exactly one fetch
+        pool wide and holds the refs in visual priority order (fonts,
+        stylesheets, then images in document order), and it is sent the
+        moment it resolves — so the face, the layout and the top of the page
+        are right after one round trip instead of after the slowest asset on
+        the page.  The second pass then memo-hits that wave and starts the
+        next one immediately, so nothing is fetched twice and the page still
+        completes at the same time it would have without the split.
+        """
+        raw_html = deferred["html"]
+        page_url = deferred["url"] or url
+        t0 = time.perf_counter()
+
+        first_wave = ASSET_FIRST_WAVE
+        missing = deferred.get("missing") or []
+        if first_wave and len(missing) > first_wave:
+            try:
+                head: Dict[str, Any] = {}
+                _part, head_meta = await _rewrite_assets_to_cache(
+                    raw_html, page_url or "", self.page,
+                    owner_id=self.client_id, report=head, max_fetch=first_wave,
+                )
+                head_swap = head.get("swap") or []
+                if await self._emit_asset_map(head_swap, head_meta, page_url):
+                    logger.debug(
+                        "dc asset_map(first wave) swaps=%d of %d pending t=%.0fms",
+                        len(head_swap), len(missing), (time.perf_counter() - t0) * 1000.0,
+                    )
+            except Exception as exc:
+                # Any failure here is just the old behaviour: one map later.
+                logger.debug("dc progressive first wave failed: %s", exc)
+
+        report: Dict[str, Any] = {}
+        html_data, assets_meta = await _rewrite_assets_to_cache(
+            raw_html, page_url or "", self.page,
+            owner_id=self.client_id, report=report,
+        )
+        all_swap = report.get("swap") or []
+        if not await self._emit_asset_map(all_swap, assets_meta, page_url):
+            logger.debug("dc progressive: nothing new to upgrade")
+        # From here on the document the CLIENT is showing is the fully
+        # rewritten one, so the identical-snapshot skip has to compare
+        # against that rather than the raw HTML that went over the wire.
+        # Only when every recorded edit really was delivered: a dropped
+        # conflict or a failed send leaves the client behind, and pretending
+        # otherwise would make the next identical snapshot look stale.
+        if all(self._sent_asset_swaps.get(s["from"]) == s["to"] for s in all_swap):
+            self.last_sent_html = html_data
+        logger.debug("dc asset_map done swaps=%d total_ms=%.0f gen=%d",
+                     len(all_swap), (time.perf_counter() - t0) * 1000.0, self._gen)
+
+    async def prefetch_assets(self, url: str) -> bool:
+        """Warm the asset memo for a page the viewer is about to open.
+
+        Fetches the destination document, extracts the refs the SAME rewrite
+        pass would collect, and downloads them through the shared gate.  When
+        the click lands, the capture finds every font and stylesheet already in
+        the memo and the document goes out complete in one message — the
+        difference between a navigation that arrives and one that arrives and
+        then fills in.
+
+        Returns True when something was actually warmed.  Never raises, never
+        touches the live page, and never runs while a capture is in flight.
+        """
+        if not PREFETCH_ENABLED or self.page is None or self.websocket is None:
+            return False
+        target = (url or "").strip()
+        if not target.lower().startswith(("http://", "https://")):
+            return False
+        try:
+            import httpx  # noqa: F401
+        except ImportError:
+            return False
+        try:
+            current = self.page.url or ""
+        except Exception:
+            current = ""
+        tgt = urlsplit(target)
+        cur = urlsplit(current)
+        if not tgt.netloc or tgt.netloc.lower() != (cur.netloc or "").lower():
+            # Same-origin only: the mirror is not a proxy for other sites.
+            return False
+        if target.split("#", 1)[0] == current.split("#", 1)[0]:
+            return False
+        now = time.monotonic()
+        seen = self._prefetch_seen.get(target)
+        if seen is not None and now - seen < PREFETCH_REVISIT_S:
+            return False
+        if self._prefetch_count >= PREFETCH_MAX_PER_PAGE:
+            return False
+        if self._prefetch_running:
+            return False
+
+        self._prefetch_seen[target] = now
+        self._prefetch_count += 1
+        self._prefetch_running = True
+        try:
+            return await self._prefetch_warm(target, current)
+        finally:
+            self._prefetch_running = False
+
+    async def _prefetch_warm(self, target: str, current: str) -> bool:
+        """The network half of :meth:`prefetch_assets` (inside its guard)."""
+        import httpx
+        t0 = time.perf_counter()
+        # Never ask the live page anything: a prefetch is background work and
+        # must not add a browser round trip (or a pause) to the frame the
+        # viewer is looking at.  The real capture fills this in.
+        if not getattr(self.page, "_cached_ua", None):
+            try:
+                setattr(self.page, "_cached_ua", _FETCH_UA_FALLBACK)
+            except Exception:
+                pass
+        headers = {
+            "User-Agent": getattr(self.page, "_cached_ua", None) or _FETCH_UA_FALLBACK,
+            "Referer": current or target,
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            cookie_header = None
+            ctx = getattr(self.page, "context", None)
+            if ctx is not None:
+                try:
+                    jar = await ctx.cookies(target)
+                    if jar:
+                        cookie_header = "; ".join(
+                            "%s=%s" % (c.get("name"), c.get("value"))
+                            for c in jar if c.get("name"))
+                except Exception:
+                    cookie_header = None
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+        except Exception:
+            pass
+        scanned = ""
+        try:
+            async with httpx.AsyncClient(**_asset_client_kwargs(headers)) as client:
+                resp = await asyncio.wait_for(client.get(target), timeout=PREFETCH_TIMEOUT_S)
+                if int(getattr(resp, "status_code", 0) or 0) >= 400:
+                    return False
+                body = resp.content or b""
+                if not body or len(body) > PREFETCH_HTML_MAX_BYTES:
+                    return False
+                ctype = (resp.headers.get("content-type") or "").lower()
+                if ctype and "html" not in ctype and "xml" not in ctype:
+                    return False
+                scanned = body.decode("utf-8", errors="ignore")
+        except Exception as exc:
+            logger.debug("dc prefetch fetch failed %s: %s", target[:120], exc)
+            return False
+        if not scanned:
+            return False
+        try:
+            if DOM_CAPTURE_STRIP_SCRIPTS:
+                scanned = _strip_script_tags(scanned)
+            before = _LAST_REWRITE_STATS.copy()
+            await asyncio.wait_for(
+                _rewrite_assets_to_cache(
+                    scanned, target, self.page, owner_id=self.client_id, max_fetch=PREFETCH_MAX_REFS,
+                ),
+                timeout=PREFETCH_TIMEOUT_S + _REWRITE_GLOBAL_BUDGET_S,
+            )
+            fetched = int(_LAST_REWRITE_STATS.get("fetched") or 0)
+            hits = int(_LAST_REWRITE_STATS.get("memo_hits") or 0)
+        except Exception as exc:
+            logger.debug("dc prefetch rewrite failed %s: %s", target[:120], exc)
+            return False
+        _LAST_PREFETCH.clear()
+        _LAST_PREFETCH.update({
+            "url": target, "fetched": fetched, "memo_hits": hits,
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+        })
+        logger.debug("dc prefetch %s refs=%d fetched=%d memo_hits=%d ms=%.0f",
+                     target[:120], fetched + hits, fetched, hits,
+                     (time.perf_counter() - t0) * 1000)
+        return bool(fetched or hits)
+
+    # ------------------------------------------------------------------
+    # Event handlers
+    # ------------------------------------------------------------------
+
+    async def handle_click(self, selector: Optional[str] = None, mid: Optional[str] = None) -> bool:
+        if self.page is None:
+            return False
+        try:
+            # ELEMENT-PURE relay (no coordinate mapping):
+            #   1. data-mid — stamped by the capture serializer, survives DOM
+            #      churn between mirror frames better than a CSS path.
+            #   2. CSS selector built client-side from the resolved element.
+            # Runtime "click" candidates are tried with a short actionability
+            # budget (custom-element buttons like Apple's ui-button can stall
+            # Playwright's waits). The SB adapter stays on its real pointer
+            # path; only the legacy Playwright adapter uses the DOM fallback.
+            candidates = []
+            if mid is not None:
+                safe_mid = re.sub(r'[^0-9A-Za-z_\-]', '', str(mid))
+                if safe_mid:
+                    candidates.append(f'[data-mid="{safe_mid}"]')
+            if selector:
+                candidates.append(selector)
+            if not candidates:
+                return False
+
+            for sel in candidates:
+                try:
+                    await self.page.click(sel, timeout=1500)
+                    logger.debug(
+                        "handle_click: dispatched selector=%s mid=%s backend=%s",
+                        sel, mid, getattr(self.page, "_backend_name", type(self.page).__name__),
+                    )
+                    return True
+                except Exception as exc:
+                    logger.debug(
+                        "handle_click: candidate=%s failed (%s): %s",
+                        sel, type(exc).__name__, exc,
+                    )
+                    continue
+            # The SeleniumBase adapter intentionally uses real CDP pointer
+            # events in page.click(). Do not fall back to element.click() on
+            # that backend: it bypasses pointerdown/mousedown handlers and
+            # was the reason SB behaved differently from Playwright.
+            if getattr(self.page, "_is_sb_backend", False):
+                logger.debug(
+                    "handle_click: SB actionability failed (mid=%s selector=%s)",
+                    mid, selector,
+                )
+                return False
+            for sel in candidates:
+                try:
+                    clicked = await self.page.evaluate(
+                        "(sel) => { const el = document.querySelector(sel);"
+                        " if (el) { el.click(); return true; } return false; }", sel)
+                    if clicked:
+                        return True
+                except Exception:
+                    continue
+            logger.debug("handle_click: element not resolvable (mid=%s selector=%s)", mid, selector)
+            return False
+        except Exception as exc:
+            logger.debug("handle_click failed: %s", exc)
+            return False
+
+    async def handle_navigation(self, url: str) -> None:
+        """Navigate the source browser, telling the client where it is going.
+
+        The announcement is published BEFORE ``goto``: the operator pressed a
+        link, and the mirrored client can move its tab and its address in the
+        same tick instead of after the page has loaded, settled and been
+        serialized.  The document follows on the navigation pipeline like any
+        other capture.
+        """
+        if self.page is None:
+            return
+        self._explicit_navigation_in_progress = True
+        # The document is about to be replaced: mids from the current one do
+        # not exist in the new one, so the patch channel closes until the new
+        # document publishes (and reopens with it).
+        self._delta_active = False
+        announce = self.publish_navigation(
+            url, reason="goto", same_document=False, source="explicit_navigation",
+            phase="detected")
+        if announce is not None and self._last_nav_publish is not None:
+            # Deterministic ordering where it is free: the client knows where
+            # the page is going BEFORE the source browser goes there, so its
+            # tab and address never lag behind the browser it is mirroring.
+            try:
+                await asyncio.wait_for(self._last_nav_publish, 0.5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
+        try:
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # Fresh document -> the JS listener from the previous
+            # page is gone.  Re-install the generic interaction
+            # trigger on the new document.
+            if (not self._interaction_init_script_installed
+                    or (LIVE_DELTA and not self._delta_init_script_installed)):
+                try:
+                    await self.enable_interaction_capture()
+                except Exception as exc:
+                    logger.debug("re-install interaction trigger after nav: %s", exc)
+            # Use the live page URL after redirects rather than the requested
+            # URL argument; otherwise the client can remain labeled with the
+            # pre-redirect page even though the DOM is new.
+            await self._capture_navigation_once("url_change")
+        except Exception as exc:
+            if announce is not None:
+                self._publish_nav_failure(url, "goto_failed")
+            logger.debug("handle_navigation failed: %s", exc)
+        finally:
+            self._explicit_navigation_in_progress = False
+
+    async def handle_keypress(self, key: str, selector: Optional[str] = None) -> None:
+        if self.page is None:
+            return
+        try:
+            if selector:
+                try:
+                    await self.page.focus(selector)
+                except Exception:
+                    pass
+            if key and len(key) == 1:
+                await self.page.keyboard.type(key, delay=0)
+            elif key:
+                key_map = {
+                    "Enter": "Enter", "Backspace": "Backspace", "Delete": "Delete",
+                    "Tab": "Tab", "Escape": "Escape",
+                    "ArrowUp": "ArrowUp", "ArrowDown": "ArrowDown",
+                    "ArrowLeft": "ArrowLeft", "ArrowRight": "ArrowRight",
+                }
+                if key in key_map:
+                    await self.page.keyboard.press(key_map[key])
+        except Exception as exc:
+            logger.debug("handle_keypress failed: %s", exc)
+
+    async def handle_submit_form(self, selector: str, form_data: Dict[str, Any]) -> None:
+        if self.page is None:
+            return
+        try:
+            for field_name, field_value in form_data.items():
+                try:
+                    await self.page.fill(f'{selector} [name="{field_name}"]', str(field_value))
+                except Exception:
+                    pass
+            try:
+                await self.page.eval_on_selector(selector, "form => form.submit()")
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("handle_submit_form failed: %s", exc)
+
+
+__all__ = [
+    "DOMCaptureSession",
+    "prefer_snapshot_for_url",
+    "is_redraw_only_host",
+    "_inject_base_href",
+    "_capture_with_single_file",
+    "_capture_via_extension",
+    "_capture_via_library_injection",
+    "_is_extension_capture_enabled",
+    "_load_singlefile_sources",
+    "_get_page_tab_id",
+    "_install_interaction_trigger",
+    "_INTERACTION_TRIGGER_JS",
+    # fast-capture pipeline (MIGRATION_LIVE_MIRROR.md)
+    "AssetEntry",
+    "AssetManager",
+    "get_global_asset_manager",
+    "_guess_ext_from_content_type",
+    "_capture_fast",
+    "_rewrite_assets_to_cache",
+    "_LAST_PREFETCH",
+    "PREFETCH_ENABLED",
+    "_settle_for_reason",
+    "_install_delta_observer",
+    "_FAST_SERIALIZE_JS",
+    "_DELTA_OBSERVER_JS",
+    "_DOM_CHECKSUM_JS",
+    "capture_page_mhtml",
+]

@@ -1,0 +1,54 @@
+# Secrets — never commit
+.env
+*.env
+
+# Logs
+logs/
+*.log
+
+# Per-user profile data (contains cookies, history, fingerprint.json)
+profiles/
+
+# Page archives (LPV)
+lpv/
+cache/
+
+# Virtualenvs — main.py creates .venv/ on first run, deploy/setup.sh uses venv/
+venv/
+.venv/
+env/
+
+# Runtime state created on start: links, settings, Telegram config, remembered
+# sessions. Every one of them lives in data/ (see config.data_path).
+data/
+
+# Older versions wrote these beside the code; they are moved into data/ on the
+# next boot (config.migrate_legacy_state_files). Ignored too so a half-done
+# upgrade cannot show up as an untracked file that looks like source.
+/persistent_links.json
+/telegram_config.json
+/server_settings.json
+/server_sessions.json
+/client_profiles.json
+
+# Caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build / dist artifacts
+dist/
+build/
+*.egg-info/
+
+# Generated standalone panels (contain your server address)
+standalone/
+
+# generated mobile layout screenshots (verification only)
+mobile-shots/
