@@ -737,3 +737,78 @@ with the overlay (the invariant it pinned no longer exists).
 and leans on the full-document commit check instead (137 checks).  Everything
 else is green, including capture-convergence (delta path == full capture).
 `window.__MIRROR_BUILD` is now `2026-11-08-live-mirror`.
+## 2026-11-08 (c) — the mirror watches the page, it does not ask: event-driven navigation, zero polling, nothing blocking
+
+The last remaining inconsistency was structural: the moment a visitor
+navigated, the server found out by ASKING — `watch_url()` polled
+`page.url` on a 100–500 ms timer, and full documents only shipped after
+an extra stability wait (`wait_for_load_state("load")` +
+`wait_for_load_state("networkidle")` + a readyState poll, up to 6 s).
+First paint felt instant; everything after it lagged, and each capture
+stack had its own grace period.  Fixed end to end:
+
+1. **The page announces its own navigation.**  The interaction trigger
+   (always installed, not gated by `LIVE_DELTA`) now wraps
+   `history.pushState`/`replaceState`, listens for `popstate`, and also
+   fires once at `DOMContentLoaded` per document (init script runs at
+   parse start, so this covers every full load, including same-URL
+   reloads and redirects).  All three routes emit
+   `__domCaptureRequest("navigation", href)` with the URL the page is
+   on.  Announced URLs are deduped on the page side
+   (`__shifixLastNavUrl`); the server side dedupes by navigation lock +
+   same-URL rules.  `hashchange` is deliberately not hooked — a hash
+   jump doesn't move content; `popstate` still covers hash-adjacent
+   history entries.
+2. **The `[["navigation"]]` control op is no longer emitted by a
+   `setTimeout(0)` hack** in the delta observer.  The trigger is the
+   single owner of the full-load announcement; the server branch for
+   the control op stays as a harmless compatibility passthrough.
+3. **The server answers without asking.**  `_on_request` handles
+   `"navigation"` FIRST (before the `_delta_active` suppression that
+   was swallowing it): it disarms the delta channel for new-document
+   ops, and the announced URL skips the `location.href` round trip
+   entirely (`_capture_navigation_once(..., url_override=...)`).
+4. **No settle wait on announced navigation.**  `_settle_for_reason`
+   maps `navigation`/`url_change`/`coalesce:navigation` to `"none"`
+   (the announcement means the DOM is serializable as-is); light
+   settle dropped to a 1.5 s readyState bound; `_ensure_page_stable`
+   budgets cut to 1.5/1.2/0.5 s and only the full-paint branch calls it.
+   `handle_navigation` no longer adds a stability wait after
+   `goto(wait_until="domcontentloaded")`.
+5. **`watch_url()` and `url_watch_task` are GONE.**  Full documents are
+   reserved for navigation (cf. the overlay removal), so nothing polls
+   the URL anymore — no task, no interval knob
+   (`DOM_URL_WATCH_INTERVAL_S` removed with it).
+6. **Key input can't wedge on a dead window.**  `handle_keypress` was
+   already wait-free on the Playwright path (focus by `data-mid`, native
+   `keyboard.type`).  The SB/Selenium path could race a window that
+   closed between listing handles and switching to it — every keystroke
+   after that paid a handle-list round trip plus a stack trace.
+   `_switch_to_target_sync` now memoizes the failure for 3 s per
+   target id (monotonic clock) and returns quietly while the memo is
+   fresh; it expires and re-checks.
+7. **Client-side stays non-blocking.**  Key dispatch is a direct ws
+   send (never through the 240 ms `syncAll` interval, which is local
+   floating-label DOM work inside the mirror iframe, nor through asset
+   upgrades, which are background).  Heavy full-document renders remain
+   out of the key path by design.  No client changes were needed.
+
+The consistency contract is now: paint once when the document is ready —
+because the PAGE told us it is — then every update flows through the
+delta channel the instant the page mutates.  No path asks "did anything
+change?" on a timer; everything arrives because the page pushed it.
+Measured: a navigation announcement costs exactly one serializer
+round trip and zero waits (see `tests/test_capture_roundtrips.py`).
+
+Tests added: `tests/test_live_navigation.cjs` (in-page announcement,
+jsdom, 13 checks) and `test_the_navigation_announcement_drives_exactly_
+one_document` (round trips 26 → 33 checks).  `bench_cold_start` modern
+path now measures the announcement path (5 round trips saved, was 4).
+All suites green: 36/36 cjs, python roundtrips/pipeline/prefetch/
+inline_assets/asset_upgrade/cold_start/stream_scale/autoupdate/asset_gate.
+
+Note the removed-yet-referenced doc entries above (\[b\]'s "watch_url keeps
+the URL-watch fallback capture") described this as the last safety net;
+it is now gone by design.  If the trigger ever fails to install, the
+failure mode is a missed recapture after navigation (recoverable by a
+resync), never a wrong frame — the delta channel still streams through.

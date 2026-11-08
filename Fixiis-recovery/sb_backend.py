@@ -1746,6 +1746,12 @@ class SBHandle:
         # executor worker can make an otherwise valid action target a stale
         # WebDriver session or the wrong tab.
         self._target_window_handles: Dict[str, str] = {}
+        # target_id -> monotonic time until which we stop attempting a
+        # switch to a window that just proved gone ("no such window: target
+        # window already closed").  Without this, every keystroke after a
+        # navigation that closed the window paid a handle-list round trip and
+        # a full stack trace each time.
+        self._switch_fail_memo: Dict[str, float] = {}
 
     # ---- sync side (runs inside the executor thread) ----
 
@@ -1894,6 +1900,12 @@ class SBHandle:
         drv = self.driver
         if drv is None:
             return False
+        _now = time.monotonic()
+        _fail_deadline = self._switch_fail_memo.get(target_id)
+        if _fail_deadline is not None:
+            if _now < _fail_deadline:
+                return False
+            self._switch_fail_memo.pop(target_id, None)
         try:
             handles = list(drv.window_handles or [])
         except Exception as exc:
@@ -1930,6 +1942,11 @@ class SBHandle:
             self._target_window_handles[target_id] = chosen
             return True
         except Exception as exc:
+            # The window closed between listing handles and switching (a
+            # navigation raced the input).  Remember the failure briefly so a
+            # stream of keystrokes doesn't each pay the round trip + a stack
+            # trace; the memo expires and the next attempt re-checks.
+            self._switch_fail_memo[target_id] = time.monotonic() + 3.0
             logger.warning("[SB][W3C-INPUT] switch to target %s failed: %s", target_id, exc)
             return False
 

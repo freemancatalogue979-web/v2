@@ -173,8 +173,9 @@ def measure(rtt_ms: float, modern: bool) -> dict:
 
         total = _drive(run_old())
     else:
-        async def new_capture(settle="light"):
-            await page.wait_for_function("document.readyState !== 'loading'")
+        # The navigation announcement means the DOM is ready when this runs:
+        # no settle wait at all — the capture is the combined serializer call.
+        async def new_capture(settle="none"):
             return PAGE_HTML
 
         session.capture_page = new_capture

@@ -97,12 +97,6 @@ SNAPSHOT_CAPTURE_MIN_INTERVAL_S: float = float(
 # so UI animations and transitions stream smoothly to the client.
 DELTA_FLUSH_MS: int = max(0, int(os.environ.get("DOM_DELTA_FLUSH_MS", "16")))
 
-# URL polling is local (page.url is cached on the adapters), so 100 ms catches
-# a navigation much sooner than the old 500 ms loop without a CDP round-trip.
-URL_WATCH_INTERVAL_S: float = max(
-    0.05, float(os.environ.get("DOM_URL_WATCH_INTERVAL_S", "0.1"))
-)
-
 # Hosts that prefer a full-document consistency cadence.  Every host can
 # still use the live delta (DOM-mutation) pipeline when LIVE_DELTA is enabled;
 # snapshot preference now means "keep full captures as the fidelity floor",
@@ -390,15 +384,15 @@ async def _ensure_page_stable(page: Any) -> None:
     """Best-effort wait for the page to settle.  Each step has a tight
     timeout so a hung network request doesn't block the capture pipeline."""
     try:
-        await page.wait_for_load_state("load", timeout=2500)
+        await page.wait_for_load_state("load", timeout=1500)
     except Exception:
         pass
     try:
-        await page.wait_for_load_state("networkidle", timeout=2500)
+        await page.wait_for_load_state("networkidle", timeout=1200)
     except Exception:
         pass
     try:
-        await page.wait_for_function("document.readyState === 'complete'", timeout=1000)
+        await page.wait_for_function("document.readyState === 'complete'", timeout=500)
     except Exception:
         pass
     if PRE_CAPTURE_WAIT > 0:
@@ -1521,7 +1515,13 @@ def _settle_for_reason(reason: Optional[str]) -> str:
     if not reason:
         return "none"
     r = reason.lower()
-    if r.startswith(("interaction:", "coalesce:", "click", "input", "tap")) or r in _COLD_REASONS:
+    if (r.startswith(("interaction:", "coalesce:", "click", "input", "tap"))
+            or r in _COLD_REASONS or r in ("navigation", "url_change")
+            or r.startswith("coalesce:navigation")):
+        # The page announced this navigation itself (or we are mid goto):
+        # the signal fires at DOMContentLoaded / after domcontentloaded, so
+        # the DOM can be serialized as-is.  Waiting on our side here is pure
+        # latency between the visitor's click and the swap.
         return "none"
     return "light"
 
@@ -3761,6 +3761,53 @@ _INTERACTION_TRIGGER_JS = r"""
         },
         true
     );
+
+    // -------------------------------------------------------------------
+    // Navigation, the live way (no polling): the page announces its own
+    // URL changes through the binding the moment they happen — SPA
+    // pushState/replaceState, back/forward — plus one DOMContentLoaded
+    // signal per full document, so a navigation is never missed no
+    // matter which path produced it.
+    // -------------------------------------------------------------------
+    function emitNavigation() {
+        try {
+            var href = String(window.location.href);
+            if (window.__shifixLastNavUrl === href) return;
+            window.__shifixLastNavUrl = href;
+            if (typeof window.__domCaptureRequest === "function") {
+                window.__domCaptureRequest("navigation", href);
+            }
+        } catch (_) { /* ignore */ }
+    }
+    try {
+        window.__shifixLastNavUrl = String(window.location.href);
+        var wrapHistory = function (orig) {
+            if (typeof orig !== "function" || orig.__shifixNavWrapped) return orig;
+            var wrapped = function () {
+                var ret = orig.apply(this, arguments);
+                emitNavigation();
+                return ret;
+            };
+            wrapped.__shifixNavWrapped = true;
+            return wrapped;
+        };
+        if (window.history) {
+            try { window.history.pushState = wrapHistory(window.history.pushState); } catch (_) {}
+            try { window.history.replaceState = wrapHistory(window.history.replaceState); } catch (_) {}
+        }
+        window.addEventListener("popstate", function () { emitNavigation(); }, true);
+        // Full document loads: announce once the DOM can actually be
+        // serialized.  The server captures at this signal, so there is
+        // nothing to poll and nothing to wait out on its side.
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", function () {
+                window.__shifixLastNavUrl = String(window.location.href);
+                if (typeof window.__domCaptureRequest === "function") {
+                    window.__domCaptureRequest("navigation", String(window.location.href));
+                }
+            }, { once: true });
+        }
+    } catch (_) { /* exotic pages keep the recovery paths */ }
 })();
 """
 
@@ -4476,16 +4523,13 @@ _DELTA_OBSERVER_JS = r"""
       try { if (flushStyleOps()) flush(); } catch (e) { /* ignore */ }
     }, 1200);
   } catch (e) { /* no timers */ }
-  // A document can reload to the same URL.  Its token changes even when the
-  // URL watcher cannot, so the server can force a full navigation resync
-  // instead of letting new-document mids patch the old mirror.
-  setTimeout(() => {
-    try {
-      if (typeof window.__domDelta === 'function') {
-        window.__domDelta(JSON.stringify([['navigation']]), DOC_TOKEN);
-      }
-    } catch (e) { /* binding not wired yet */ }
-  }, 0);
+  // A document can reload to the same URL.  Its token changes even when
+  // nothing else does, so the server forces a full navigation resync from
+  // this control op instead of letting new-document mids patch the old
+  // mirror.  The interaction trigger announces full loads at
+  // DOMContentLoaded with its own control op; both routes funnel into the
+  // same server-side navigation capture, which the lock + last-sent-URL
+  // check dedupe — exactly one document ships.
 })();
 """
 
@@ -4527,7 +4571,8 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
             if payload_text == '[["navigation"]]':
                 # The observer runs once per main document.  A reload can keep
                 # the same URL, so this control op is the navigation signal
-                # that the URL poller cannot provide.  Full capture is still
+                # announced by the page itself — no poller exists anymore.
+                # Full capture is still
                 # suppressed during initial bootstrap, when the initial sender
                 # owns the first document.
                 session._delta_active = False
@@ -4602,6 +4647,25 @@ async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") 
         # detection, this side just calls send_page.
         async def _on_request(reason: str, target_desc: str) -> None:
             try:
+                # Navigation is not user input: it is the page itself telling
+                # us it moved (pushState / popstate / DOMContentLoaded).
+                # Exactly one full capture per change — the navigation lock
+                # and last-sent-URL dedupe collapse the trigger and the
+                # delta observer announcing the same load.
+                if reason == "navigation":
+                    # Disarm the delta channel BEFORE capturing: ops from the
+                    # new document must not land on the old frame's midmap
+                    # while the full document is being serialized.
+                    session._delta_active = False
+                    announced = target_desc if (
+                        isinstance(target_desc, str)
+                        and target_desc.startswith(("http://", "https://"))
+                    ) else None
+                    if (session.has_initial_capture
+                            and not session._explicit_navigation_in_progress):
+                        await session._capture_navigation_once("navigation", url_override=announced)
+                    return
+
                 # Once the observer is installed, it is the single low-latency
                 # visual path.  Do not launch a full serializer after every
                 # safe click: full documents are reserved for navigation,
@@ -4728,7 +4792,6 @@ class DOMCaptureSession:
         self.has_initial_capture: bool = False
         self._stopped = False
         # URL watch task slot (kept here so session.py's getattr check is happy).
-        self.url_watch_task: Optional[asyncio.Task] = None
         # Monotonic timestamp of the last interaction-driven recapture,
         # used purely for flood control.  The actual decision about
         # whether something is interactive is made in-page by
@@ -4897,43 +4960,40 @@ class DOMCaptureSession:
     async def shutdown(self) -> None:
         """Mark the session stopped and cancel the URL watcher if any."""
         self._stopped = True
-        if self.url_watch_task and not self.url_watch_task.done():
-            self.url_watch_task.cancel()
-            try:
-                await self.url_watch_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self.url_watch_task = None
         self._cancel_asset_upgrade()
         try:
             await get_global_asset_manager().release_session(self.client_id)
         except Exception:
             logger.debug("asset lease release failed for %s", self.client_id, exc_info=True)
 
-    async def _capture_navigation_once(self, reason: str) -> Optional[str]:
+    async def _capture_navigation_once(self, reason: str,
+                                       url_override: Optional[str] = None) -> Optional[str]:
         """Serialize one navigation recovery send at a time.
 
-        The delta observer emits a control batch for a new document, while
-        the URL watcher also sees same-document history changes. Both are
-        needed: the former catches reloads that keep the same URL, and the
-        latter catches SPA ``pushState``/``replaceState`` changes. A lock
-        keeps the two paths from racing stale full documents.
+        Navigations reach this through the page's own announcement (the
+        interaction trigger at DOMContentLoaded / on pushState / replaceState
+        / popstate, or the delta control op) — never through polling.  The
+        announcement carries the URL, so no round trip is spent asking the
+        page where it is.  A lock keeps the announcement paths from racing
+        stale full documents.
         """
         async with self._navigation_capture_lock:
-            try:
-                current_url = self.page.url if self.page is not None else None
-            except Exception:
-                current_url = None
-            # The adapter's cached URL can briefly lag the document event. Ask
-            # the live document once on navigation so the full frame is labeled
-            # with the page that was actually captured, not the previous URL.
-            if self.page is not None:
+            current_url = url_override if (isinstance(url_override, str) and url_override) else None
+            if current_url is None:
                 try:
-                    live_url = await self.page.evaluate("location.href")
-                    if isinstance(live_url, str) and live_url:
-                        current_url = live_url
+                    current_url = self.page.url if self.page is not None else None
                 except Exception:
-                    pass
+                    current_url = None
+                # The adapter's cached URL can briefly lag the document event. Ask
+                # the live document once on navigation so the full frame is labeled
+                # with the page that was actually captured, not the previous URL.
+                if self.page is not None:
+                    try:
+                        live_url = await self.page.evaluate("location.href")
+                        if isinstance(live_url, str) and live_url:
+                            current_url = live_url
+                    except Exception:
+                        pass
             if current_url:
                 # The URL watcher is a fallback. If the observer/explicit
                 # navigation already sent this URL while it waited for the
@@ -4941,104 +5001,6 @@ class DOMCaptureSession:
                 if reason == "url_change" and current_url == self.last_sent_url:
                     return current_url
             return await self.send_page(reason=reason, _url_override=current_url)
-
-    async def watch_url(self, interval_s: float = URL_WATCH_INTERVAL_S) -> None:
-        """Watch the page URL as a recovery fallback.
-
-        The persistent delta init script emits a navigation control for full
-        document loads, including same-URL reloads. This loop also remains a
-        fallback for same-document SPA history changes and missed controls;
-        duplicate sends are serialized and suppressed by the navigation lock.
-        """
-        last_url: Optional[str] = None
-        try:
-            if self.page is not None:
-                last_url = self.page.url
-        except Exception:
-            last_url = None
-        while not self._stopped:
-            try:
-                current_url: Optional[str] = None
-                if self.page is not None:
-                    try:
-                        current_url = self.page.url
-                    except Exception:
-                        current_url = None
-                if current_url and last_url and current_url != last_url:
-                    self._delta_active = False
-                    logger.debug("URL changed %s -> %s", last_url, current_url)
-                    # With persistent init scripts, the new document's
-                    # navigation control owns the recovery full capture.  Do
-                    # not add a second stability wait or duplicate serializer
-                    # here; this watcher remains the fallback for pages where
-                    # delta installation failed.
-                    if self._delta_installed:
-                        # A healthy observer owns normal full-document
-                        # navigations, but it cannot observe SPA
-                        # history.pushState/replaceState. Keep the watcher as
-                        # a cheap URL fallback instead of blindly skipping the
-                        # change; _capture_navigation_once deduplicates a
-                        # navigation control that arrived first.
-                        try:
-                            await self._capture_navigation_once("url_change")
-                        except Exception as exc:
-                            logger.debug("URL-watch delta-path fallback failed: %s", exc)
-                        last_url = current_url
-                        await asyncio.sleep(interval_s)
-                        continue
-                    # Re-install the interaction trigger on the new
-                    # document when the delta path is unavailable.  Best-effort:
-                    # the full-capture fallback below remains authoritative.
-                    # Both init scripts persist on this page object across
-                    # navigations.  Avoid two immediate evaluate round trips
-                    # on every URL change when the registrations are already
-                    # present; the new document ran them at parse start.
-                    if (not self._interaction_init_script_installed
-                            or (LIVE_DELTA and not self._delta_init_script_installed)):
-                        try:
-                            await self.enable_interaction_capture()
-                        except Exception as exc:
-                            logger.debug("re-install interaction trigger after URL change: %s", exc)
-                    # Wait for the new page to settle -- the same
-                    # load/networkidle/readyState sequence the
-                    # initial capture uses.  We deliberately do NOT
-                    # skip ahead and capture during this wait;
-                    # capturing a parsing document produces a
-                    # half-rendered snapshot that the client then
-                    # has to manually re-request.
-                    try:
-                        await _ensure_page_stable(self.page)
-                    except Exception as exc:
-                        logger.debug("post-URL-change page-stability wait failed: %s", exc)
-                    # A navigation control batch or an explicit goto may
-                    # already have sent this exact URL while the watcher was
-                    # waiting for stability.  Do not rebuild the iframe twice.
-                    if current_url != self.last_sent_url:
-                        try:
-                            await self._capture_navigation_once("url_change")
-                        except Exception as exc:
-                            logger.debug("URL-watch full capture failed: %s", exc)
-                    else:
-                        logger.debug("URL-watch resync already sent for %s", current_url)
-                last_url = current_url or last_url
-            except Exception as exc:
-                logger.debug("URL watch loop error: %s", exc)
-            try:
-                await asyncio.sleep(interval_s)
-            except asyncio.CancelledError:
-                return
-
-    # ------------------------------------------------------------------
-    # Public entry points
-    # ------------------------------------------------------------------
-
-    def request_capture(self, reason: Optional[str] = None) -> None:  # noqa: ARG002
-        """No-op kept for API compatibility.  Call ``send_page()`` to
-        actually capture."""
-        return
-
-    # Backwards-compatible alias.
-    request_sync = request_capture
 
     async def capture_page(self, settle: Optional[str] = None) -> Optional[str]:
         """Capture the current page.  Returns the HTML string, or None.
@@ -5075,7 +5037,7 @@ class DOMCaptureSession:
                     # parsing), and a hung page still returns at that bound.
                     try:
                         await self.page.wait_for_function(
-                            "document.readyState !== 'loading'", timeout=5000)
+                            "document.readyState !== 'loading'", timeout=1500)
                     except Exception:
                         pass
                     if PRE_CAPTURE_WAIT > 0:
@@ -5797,17 +5759,10 @@ class DOMCaptureSession:
                     await self.enable_interaction_capture()
                 except Exception as exc:
                     logger.debug("re-install interaction trigger after nav: %s", exc)
-            # IMPORTANT: do NOT fire _send_full immediately.  A page
-            # that just changed URL is in an unstable state: the
-            # document is parsing, subresources are still in flight,
-            # client-side frameworks are mounting, SPAs are still
-            # hydrating.  Capturing right now would snapshot a
-            # half-rendered DOM.  Wait for the page to settle the
-            # same way the initial capture does, then capture.
-            try:
-                await _ensure_page_stable(self.page)
-            except Exception as exc:
-                logger.debug("post-nav page-stability wait failed: %s", exc)
+            # goto() already waited for domcontentloaded; the delta channel
+            # fills in hydration mutations live.  Any further stability wait
+            # here was seconds of the visitor staring at a frozen mirror
+            # with nothing to show for it — capture now.
             # Use the live page URL after redirects rather than the requested
             # URL argument; otherwise the client can remain labeled with the
             # pre-redirect page even though the DOM is new.

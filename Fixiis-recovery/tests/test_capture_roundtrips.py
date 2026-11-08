@@ -186,13 +186,13 @@ def test_a_navigation_costs_one_evaluate():
        "the title cost its own round trip: %r" % page.calls)
     ok(page.count("wait_for_load_state") == 0,
        "domcontentloaded and readyState were both awaited: %r" % page.calls)
-    ok(page.count("wait_for_function") == 1,
-       "expected exactly one settle wait, got %r" % page.calls)
+    ok(page.count("wait_for_function") == 0,
+       "an announced navigation must not wait on our side: %r" % page.calls)
     ok(len(ws.of("full_document")) == 1, "the document never arrived")
     total = len(page.calls)
-    ok(total <= 2,
-       "a navigation cost %d browser round trips (%r) — the whole point is "
-       "that it is one wait and one capture" % (total, page.calls))
+    ok(total <= 1,
+       "a navigation cost %d browser round trips (%r) — the announcement "
+       "means the DOM is ready; all there is left is the serializer" % (total, page.calls))
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +287,61 @@ def test_the_widened_call_is_one_expression():
     ok("try {" in js,
        "the metadata reads are not guarded — one missing field would cost the "
        "whole capture")
+
+
+# ---------------------------------------------------------------------------
+# 5. The page announces its own navigation; the server answers without asking
+# ---------------------------------------------------------------------------
+def test_the_navigation_announcement_drives_exactly_one_document():
+    page = CountingPage()
+
+    async def add_init_script(*a, **k):
+        return None
+
+    exposed = {}
+
+    async def expose_function(name, fn):
+        exposed[name] = fn
+
+    page.add_init_script = add_init_script
+    page.expose_function = expose_function
+    session, ws = make_session(page)
+    session.has_initial_capture = True
+
+    async def go():
+        installed = await dom_capture._install_interaction_trigger(page, session)
+        handler = exposed.get("__domCaptureRequest")
+        calls_before = len(page.calls)
+        seen = {}
+
+        real_evaluate = page.evaluate
+
+        async def spy_evaluate(*a, **kw):
+            seen.setdefault("during", session._delta_active)
+            return await real_evaluate(*a, **kw)
+
+        page.evaluate = spy_evaluate
+        session._delta_active = True  # steady state pre-navigation
+        # The page pushes its own announcement — the server is not asking.
+        await handler("navigation", "https://site.example/next")
+        return installed, calls_before, seen
+
+    installed, calls_before, seen = run(go)
+
+    ok(installed is True, "the trigger did not install")
+    ok(callable(exposed.get("__domCaptureRequest")), "the binding never exposed")
+    docs = ws.of("full_document")
+    ok(len(docs) == 1, "expected exactly one document, got %d" % len(docs))
+    ok(docs[0].get("url") == "https://site.example/next",
+       "the announced URL is what the frame carries: %r" % docs[0].get("url"))
+    nav_calls = page.calls[calls_before:]
+    ok(all(kind != "wait_for_function" and kind != "wait_for_load_state"
+           for kind, _d in nav_calls),
+       "the server waited on its side anyway: %r" % (nav_calls,))
+    ok(seen.get("during") is False,
+       "the delta channel must be disarmed DURING the capture, got %r" % (seen,))
+    ok(page.count("wait_for_function") == 0 and page.count("wait_for_load_state") == 0,
+       "the announced navigation cost zero waits: %r" % page.calls)
 
 
 if __name__ == "__main__":

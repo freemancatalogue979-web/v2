@@ -816,8 +816,9 @@ class NeoStreamingSession:
                 # receives the first full snapshot even if the page-side
                 # observer hasn't been installed yet.
                 asyncio.create_task(self.capture_remote_page(reason="initial_connect", force=True))
-                if self.dom_capture and not getattr(self.dom_capture, 'url_watch_task', None):
-                    self.dom_capture.url_watch_task = asyncio.create_task(self.dom_capture.watch_url())
+                # Navigation is announced by the page itself (DOMContentLoaded /
+                # pushState / popstate via the interaction trigger and delta
+                # channel) — there is no URL polling loop anymore.
             except Exception as e:
                 logger.warning(f"[STARTUP] DOM capture init failed: {e}")
 
