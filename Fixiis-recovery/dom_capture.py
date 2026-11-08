@@ -4491,14 +4491,183 @@ _DELTA_OBSERVER_JS = r"""
   document.addEventListener('input', onFormEvent, true);
   document.addEventListener('change', onFormEvent, true);
   window.__shifixDeltaFlush = flush;
+
+  // ---- Visual heartbeat: rAF sampling during page load / transitions ----
+  //
+  // CSS transitions/animations animate 'transform'/'opacity'/'top'/'left'/
+  // scroll-linked values via the compositor.  Those are NOT reflected in any
+  // DOM attribute, so MutationObserver sees zero mutations and the mirror
+  // freezes until the next full capture — which is exactly what "some page
+  // updates and state are being skipped" looks like (progress bars,
+  // fade-ins, slide-in menus, Lottie/WAAPI, spinner rings).
+  //
+  // We sample cheap visible-change signals at requestAnimationFrame for a
+  // short window after navigation, and any time the browser reports a
+  // running transition/animation, and push tiny 'a' (attribute) patches
+  // carrying the current inline style + transform of the moving elements.
+  // Patches stay small — we only touch elements that are visibly changing,
+  // and only while they are changing — so the wire cost is the same as
+  // the MutationObserver path and pages feel like they are streaming in
+  // instead of arriving as one big replace.
+  let _rafTicking = false;
+  let _rafBudgetEndsAt = 0;
+  let _lastTickSentAt = 0;
+  const _RAF_MIN_INTERVAL_MS = 33;      // ~30 fps tick cap (16ms was flooding)
+  const _RAF_TICK_BUDGET_MS = 4000;    // sample this long after nav
+  const _trackedTransformProps = ['transform', 'opacity'];
+  const _sampledEls = new Set();
+  const _markAnimated = (el) => {
+    if (!el || el.nodeType !== 1) return;
+    if (_sampledEls.has(el)) return;
+    if (_sampledEls.size > 250) return;      // cap memory on wild pages
+    _sampledEls.add(el);
+    _extendRafBudget(1500);                  // keep sampling while things move
+  };
+  const _extendRafBudget = (ms) => {
+    const until = performance.now() + ms;
+    if (until > _rafBudgetEndsAt) _rafBudgetEndsAt = until;
+  };
+  const _findAnimatedRoots = () => {
+    // Compositor-animated elements own a style that the browser is actively
+    // interpolating; getComputedStyle reveals running transitions/animations.
+    try {
+      const all = document.querySelectorAll('*');
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        let cs;
+        try { cs = getComputedStyle(el); } catch (e) { continue; }
+        if (!cs) continue;
+        const hasTrans = cs.transitionDuration && cs.transitionDuration !== '0s'
+                         && cs.transitionDuration !== '0ms';
+        const hasAnim  = cs.animationDuration && cs.animationDuration !== '0s'
+                         && cs.animationDuration !== '0ms'
+                         && cs.animationName !== 'none';
+        const willChg  = cs.willChange && (cs.willChange.indexOf('transform') >= 0
+                         || cs.willChange.indexOf('opacity') >= 0
+                         || cs.willChange.indexOf('scroll-position') >= 0);
+        if (hasTrans || hasAnim || willChg) _markAnimated(el);
+      }
+    } catch (e) { /* huge docs: skip quietly */ }
+  };
+  const _readInlineStyle = (el) => {
+    // Snapshot what the mirror needs to reconstruct the interpolated frame:
+    // inline style reflects JS-driven animations; getComputedStyle catches
+    // the current interpolated value of transform/opacity.
+    let s = '';
+    try { s = el.getAttribute('style') || ''; } catch (e) { s = ''; }
+    let cs = null;
+    try { cs = getComputedStyle(el); } catch (e) { cs = null; }
+    if (cs) {
+      const extras = [];
+      for (const p of _trackedTransformProps) {
+        const v = cs.getPropertyValue(p);
+        if (v && v !== 'none' && v !== '1' && v !== '0') extras.push(p + ':' + v.trim());
+      }
+      // Carry the current scroll position so parallax/scroll-spies don't jump.
+      try {
+        if (el === document.scrollingElement || el === document.documentElement
+            || el === document.body) {
+          extras.push('--shf-sx:' + window.scrollX);
+          extras.push('--shf-sy:' + window.scrollY);
+        }
+      } catch (e) {}
+      if (extras.length) {
+        s = s ? s + ';' + extras.join(';') : extras.join(';');
+      }
+    }
+    return s;
+  };
+  const _sampleTick = () => {
+    _rafTicking = false;
+    const now = performance.now();
+    if (now < _RAF_MIN_INTERVAL_MS + _lastTickSentAt) {
+      _ensureRaf();
+      return;
+    }
+    let pushed = 0;
+    try {
+      // Once per tick, scan for newly-animating elements (cheaper than per-frame).
+      if (now - (_lastScanAt || 0) > 250) {
+        _findAnimatedRoots();
+        _lastScanAt = now;
+      }
+      for (const el of _sampledEls) {
+        if (!el.isConnected) { _sampledEls.delete(el); continue; }
+        const id = midOf(el);
+        if (!id) continue;
+        const nowStyle = _readInlineStyle(el);
+        const key = 'vis\\0' + id;
+        const prior = coalesced.get(key);
+        const priorVal = prior ? ops[prior][3] : null;
+        if (nowStyle !== priorVal) {
+          pushCoalesced(key, ['a', id, 'style', nowStyle]);
+          pushed++;
+        }
+        // Drop elements whose animation has ended AND whose style has
+        // settled to what we last sent — avoids leaking the set forever.
+        let cs;
+        try { cs = getComputedStyle(el); } catch (e) { cs = null; }
+        const stillMoving = cs && (
+          (cs.transitionDuration && cs.transitionDuration !== '0s' && cs.transitionDuration !== '0ms')
+          || (cs.animationDuration && cs.animationDuration !== '0s' && cs.animationDuration !== '0ms'
+              && cs.animationName !== 'none')
+        );
+        if (!stillMoving && nowStyle === el.getAttribute('style')) {
+          _sampledEls.delete(el);
+        }
+      }
+    } catch (e) { /* ignore */ }
+    if (pushed > 0) {
+      // Visual patches go in the current frame flush rather than waiting
+      // for a scheduled DOM mutation.
+      flush();
+    } else if (scheduled) {
+      // We have other ops (DOM mutations / stylesheet / form state)
+      // queued from this frame — flush them too.
+      flush();
+    }
+    _lastTickSentAt = performance.now();
+    _ensureRaf();
+  };
+  let _lastScanAt = 0;
+  const _ensureRaf = () => {
+    if (_rafTicking) return;
+    if (performance.now() > _rafBudgetEndsAt && _sampledEls.size === 0) return;
+    _rafTicking = true;
+    (window.requestAnimationFrame || (cb => setTimeout(cb, 16)))(_sampleTick);
+  };
+  // Kick off the visual heartbeat as soon as the document commits so the
+  // first frame of the new page is sampled (first paint, splash, progress).
+  _extendRafBudget(_RAF_TICK_BUDGET_MS);
+  _ensureRaf();
+
   // A component can insert its rules a moment after it mounts, with no
-  // further DOM change. 1.2 s of rule counting is cheap; a mirror missing a
-  // component's styles is not.
+  // further DOM change.  Tightened from 1200ms -> 400ms so stylesheets
+  // stream in small updates instead of one big late patch; still cheap
+  // (a rule-count compare).
   try {
     setInterval(() => {
-      try { if (flushStyleOps()) flush(); } catch (e) { /* ignore */ }
-    }, 1200);
+      try { if (flushStyleOps()) { _extendRafBudget(400); flush(); } } catch (e) { /* ignore */ }
+    }, 400);
   } catch (e) { /* no timers */ }
+  // Listen for transitionrun/animationstart globally so freshly-animating
+  // elements register for sampling even when our periodic scan misses them.
+  try {
+    const _animStart = (ev) => {
+      try {
+        const el = ev.target;
+        if (el && el.nodeType === 1) {
+          _markAnimated(el);
+          _extendRafBudget(1500);
+          _ensureRaf();
+        }
+      } catch (e) { /* ignore */ }
+    };
+    document.addEventListener('transitionrun', _animStart, true);
+    document.addEventListener('transitionstart', _animStart, true);
+    document.addEventListener('animationstart', _animStart, true);
+  } catch (e) { /* old browser */ }
+
   // A document can reload to the same URL.  Its token changes even when the
   // URL watcher cannot, so the server can force a full navigation resync
   // instead of letting new-document mids patch the old mirror.
@@ -5830,16 +5999,22 @@ class DOMCaptureSession:
     def _schedule_post_navigation_followups(self) -> None:
         """Fire-and-forget follow-up captures after a navigation.
 
-        These give the page progressively more time to settle (load event,
-        late XHR, post-hydration mutations) while never blocking the first
-        paint.  Coalescing ensures that if the user clicks again before
-        these fire they're cheap no-ops.
+        Dense, small captures — not a few large chunks — so the mirror
+        fills in incrementally like a real page loading, instead of
+        jumping in 3 big reveals.  Coalescing keeps these cheap when a
+        capture is already in flight or a newer navigation superseded us.
         """
         async def _followups() -> None:
+            # Many small steps: 200ms / 500ms / 1s / 2s / 3.5s / 6s.
+            # Early steps catch fast frameworks/hydrated shells; later
+            # steps catch late XHR, lazy images, post-mount effects.
             for delay_s, reason in (
+                (0.2,  "nav_settle:200"),
                 (0.5,  "nav_settle:500"),
-                (1.5,  "nav_settle:1500"),
-                (4.0,  "nav_settle:4000"),
+                (1.0,  "nav_settle:1000"),
+                (2.0,  "nav_settle:2000"),
+                (3.5,  "nav_settle:3500"),
+                (6.0,  "nav_settle:6000"),
             ):
                 try:
                     await asyncio.sleep(delay_s)
@@ -5847,12 +6022,18 @@ class DOMCaptureSession:
                         return
                     if self.websocket is None:
                         return
-                    # Don't race a capture the user is already waiting on,
-                    # and don't re-send if a newer navigation has already
-                    # superseded us (the delta observer increments _gen on
-                    # new-document navigation controls).
                     if self._send_inflight:
                         continue
+                    # Skip this tick if the DOM hasn't moved since the last
+                    # send.  The checksum is cheap; no point re-serializing
+                    # a static page six times.
+                    try:
+                        cs = await self._dom_checksum()
+                        if cs and self._last_checksum and cs == self._last_checksum:
+                            logger.debug("nav follow-up (%s): checksum unchanged, skipping", reason)
+                            continue
+                    except Exception:
+                        pass
                     await self.send_page(reason=reason)
                 except Exception as exc:
                     logger.debug("nav follow-up (%s) failed: %s", reason, exc)
