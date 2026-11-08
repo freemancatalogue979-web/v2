@@ -6134,42 +6134,11 @@ function applySpinnerColorFromHex(hexColor) {
             // the same one the mirror theme uses, so a streamed document can
             // never be reached through this door.
             function applyLpvMonoFont(doc) {
-                if (!doc || !doc.head) return false;
-                if (!isLpvPageDocument(doc) || !lpvMonoFontEnabled()) {
-                    stripLpvMonoFont(doc);
-                    return false;
-                }
-                try {
-                    if (!doc.getElementById('__shifix_lpv_mono_font_css__')) {
-                        const link = doc.createElement('link');
-                        link.id = '__shifix_lpv_mono_font_css__';
-                        link.rel = 'stylesheet';
-                        link.href = LPV_MONO_HREF;
-                        link.setAttribute('data-lpv-mono', 'true');
-                        doc.head.appendChild(link);
-                    }
-                    let leaf = doc.getElementById('__shifix_lpv_mono_font__');
-                    if (!leaf) {
-                        leaf = doc.createElement('style');
-                        leaf.id = '__shifix_lpv_mono_font__';
-                        leaf.setAttribute('data-lpv-mono', 'true');
-                        // Space Mono has no italic and only two weights; a
-                        // synthesised slant is worse than none, so italics are
-                        // normalised rather than faked.
-                        leaf.textContent =
-                            'html,body{font-family:' + LPV_MONO_STACK + '!important;}' +
-                            'body,body *' + MIRROR_FONT_SKIP +
-                            '{font-family:' + LPV_MONO_STACK + '!important;font-style:normal!important;}';
-                        doc.head.appendChild(leaf);
-                    } else if (leaf.nextElementSibling) {
-                        // Same reason as the mirror theme: keep it last, or a
-                        // page rule injected afterwards wins on a tie.
-                        doc.head.appendChild(leaf);
-                    }
-                    return true;
-                } catch (e) {
-                    return false;
-                }
+                // Live-pages also keep the site's own typography now.  Strip
+                // any previously-injected override and never inject the
+                // Google Fonts <link> or the !important style rule.
+                stripLpvMonoFont(doc);
+                return false;
             }
 
             // Re-apply (or remove) for every live page on screen. Called when
@@ -6197,14 +6166,13 @@ function applySpinnerColorFromHex(hexColor) {
 
             let mirrorFontForced = null;
             function mirrorFontEnabled() {
-                if (mirrorFontForced !== null) return mirrorFontForced;
-                mirrorFontForced = true;
-                try {
-                    const q = new URLSearchParams(window.location.search);
-                    const off = String(q.get('keep_fonts') || q.get('keep_font') || '').toLowerCase();
-                    if (off === '1' || off === 'true' || off === 'yes') mirrorFontForced = false;
-                } catch (e) { /* keep the default */ }
-                return mirrorFontForced;
+                // Site fonts always win.  The injected Space Grotesk override
+                // was an external stylesheet round-trip + a universal !important
+                // rule that fought every page's own @font-face, icon ligatures
+                // and typography — a hidden bottleneck that made debugging
+                // layout/font issues impossible.  Disabled unconditionally;
+                // ?keep_fonts=1 is kept as a benign no-op for old URLs.
+                return false;
             }
 
             // Is this document an LPV pushed page rather than the live mirror?
@@ -12743,9 +12711,10 @@ function stripDeadMirrorNodes(root) {
                 // page's own scroll code did not survive the capture, so this is
                 // what keeps it scrollable.
                 try { ensureMirrorScrolling(d, d.defaultView); } catch (e) {}
-                // Space Grotesk across the captured page, the same font as the
-                // shell and the panels.
-                try { ensureMirrorFont(d); } catch (e) {}
+                // Strip any stale mirror font override that a previous build
+                // may have injected, but never force a font — pages keep
+                // their own typography.
+                try { stripMirrorFont(d); } catch (e) {}
 
                 // Desktop wheel listener on iframe document without preventing default:
                 try {
