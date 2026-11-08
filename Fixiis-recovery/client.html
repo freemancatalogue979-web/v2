@@ -13153,131 +13153,94 @@ function stripDeadMirrorNodes(root) {
                 // uses. The click handler below prevents navigation after it
                 // has already been relayed to the server.
 
-                // Shared click dispatch for both mouse and touch paths.
+                // ----------------------------------------------------------------
+                // ONE click relay.
+                //
+                // Philosophy (per spec): the CLIENT does NOT decide what a click
+                // does.  It finds the interactive ancestor of the tapped node,
+                // ships {type:'input', subtype:'click', mid, selector}, and the
+                // SERVER browser performs the real click.  The server's browser
+                // is the only thing that knows whether that click navigates,
+                // toggles, opens a popup, runs framework JS, or does nothing —
+                // so link/button/checkbox/SPA special-casing on the client is
+                // dead code removed here.
+                //
+                // If the element the client names no longer exists on the
+                // server (stale mid/selector after navigation), the server
+                // ships a fresh full document back so the mirror catches up.
+                // No optimistic state mutation, no href-based navigation
+                // bypass, no fallbacks.
+                // ----------------------------------------------------------------
                 function mirrorClick(target) {
                     if (!target) return false;
-                    
 
-                    // Do not intercept clicks meant to focus plain inputs or their
-                    // surrounding wrappers. Some pages render a sibling SVG or label
-                    // next to the input, and clicking that should still focus/type.
+                    // Let text-field clicks fall through to the browser so the
+                    // native caret / focus / IME behavior runs.  Wrap/label
+                    // clicks around a text field also fall through (focus the
+                    // input) UNLESS the tap landed on a button or link inside
+                    // that wrapper — then it's a real control and must relay.
                     let node = target;
-                    while (node && node !== d.body) {
-                        if (node.matches && node.matches('input,textarea,select,[contenteditable="true"]')) {
-                            // Button-like inputs (submit/button/reset/image) clicked
-                            // DIRECTLY must dispatch -- otherwise the form either
-                            // submits to the blob: URL or does nothing at all.
-                            // Text inputs keep native focus behavior.
-                            const isBtnInput = node === target && node.matches('input[type="submit"],input[type="button"],input[type="reset"],input[type="image"]');
-                            if (!isBtnInput) return false;
-                            break;
+                    while (node && node !== d.body && node !== d.documentElement) {
+                        if (node.matches && node.matches('input:not([type=submit]):not([type=button]):not([type=reset]):not([type=image]):not([type=checkbox]):not([type=radio]),textarea,select,[contenteditable="true"]')) {
+                            // If the TAPPED node itself is this control, fall
+                            // through (focus it natively).  If we walked up
+                            // THROUGH an input to reach a button/link, keep
+                            // going and relay the click.
+                            if (node === target) return false;
                         }
-                        const isWrapper = node.matches && node.matches('label, .aXBtI, .Y9bbb342e, .Xb9hP, .rFrNMe, .Y9514c74c');
-                        if (isWrapper && node.querySelector && node.querySelector(':scope > input, :scope > textarea, :scope > select, :scope > [contenteditable="true"]')) {
-                            const targetTag = target.tagName;
-                            if (!['BUTTON', 'A'].includes(targetTag) && !target.matches('[role="button"], [role="link"]')) {
-                                if (focusAncestorInput(target, d)) {
-                                    return false;
-                                }
+                        if (node.matches && node.matches('label')) {
+                            // Labels focus their associated control; let the
+                            // browser do that natively unless the tap landed
+                            // on a button/link nested inside the label.
+                            const tag = (target.tagName || '').toUpperCase();
+                            if (!['BUTTON', 'A', 'INPUT'].includes(tag)
+                                && !(target.matches && target.matches('[role="button"],[role="link"]'))) {
+                                return false;
                             }
                         }
                         node = node.parentElement;
                     }
 
-                    // FIX: Allow button-type INPUTs (submit/button/reset/image) to be
-                    // processed as clicks. Without this, the click handler returns
-                    // early and the form submits naturally to the iframe's blob URL
-                    // (e.g. blob:http://localhost:8446/) — which is exactly what
-                    // was happening on Microsoft login's <input type="submit" id="idSIButton9">.
-                    const tag = target.tagName;
-                    const isTextualInput = (tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable);
-                    const isButtonLikeInput = (tag === 'INPUT' && ['submit', 'button', 'reset', 'image'].includes((target.type || '').toLowerCase()));
-                    const isPlainInput = (tag === 'INPUT' && !isButtonLikeInput);
+                    // Resolve the interactive control that owns this activation
+                    // (walks up past inner spans/icons to the real button/link/input).
+                    const el = findInteractiveElement(target) || target;
+                    if (!el || el === d.body || el === d.documentElement) return false;
 
-                    // Skip plain text inputs entirely - those have their own input event
-                    if (isTextualInput || isPlainInput) {
-                        return false;
-                    }
-
-                    // Optimistic update for checkbox and radio buttons (zero latency response)
-                    if (target.tagName === 'INPUT') {
-                        const itype = (target.type || '').toLowerCase();
-                        if (itype === 'checkbox') {
-                            target.checked = !target.checked;
-                        } else if (itype === 'radio') {
-                            target.checked = true;
+                    // Don't relay clicks on plain text inputs / textareas /
+                    // contenteditable — those have their own focus/input paths.
+                    const tag = (el.tagName || '').toUpperCase();
+                    if (tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) return false;
+                    if (tag === 'INPUT') {
+                        const t = (el.type || '').toLowerCase();
+                        if (!['submit', 'button', 'reset', 'image', 'checkbox', 'radio'].includes(t)) {
+                            return false;
                         }
                     }
 
-                    const interactive = findInteractiveElement(target) || target;
-
-                    // FIX: Always send a real "click" (never bypass with navigate)
-                    // for elements that have a visible href.
-                    //
-                    // The previous code routed every <a href> through
-                    // `{type:'navigate', url: href}`, which told the server to
-                    // call page.goto(url) — skipping the synthetic click
-                    // entirely. That broke framework-bound links such as:
-                    //
-                    //   <a class="gb_5" target="_top" href="...">Gmail</a>
-                    //       (Google — relies on mousedown analytics + target=_top)
-                    //   <a id="idA_PWD_SwitchToCredPicker"
-                    //       data-bind="click: switchToCredPicker_onClick, ..."
-                    //       href="...">Sign in another way</a>
-                    //       (Microsoft — Knockout binding only fires on a real click)
-                    //
-                    // Routing through `page.click(selector)` triggers the full
-                    // synthetic mousedown → mouseup → click sequence so:
-                    //   * framework listeners (Knockout, React, Vue, jQuery,
-                    //     onclick=…, addEventListener('click', …)) actually run
-                    //   * the browser still performs its default navigation
-                    //     for plain <a href> links after the handlers return
-                    //
-                    // We still pass the href and target="..." along in case the
-                    // server wants to special-case popup / window-target behavior.
-                    // ELEMENT-PURE relay (DOM-capture mode): no coordinate
-                    // mapping.  The server resolves this very element via
-                    // data-mid (stamped at capture; survives DOM churn) or
-                    // the CSS selector, and clicks it.
-                    const interactiveSelector = getSelector(interactive);
-                    const interactiveMid = interactive.getAttribute && interactive.getAttribute('data-mid');
-                    const targetMid = target.getAttribute && target.getAttribute('data-mid');
-                    const midToSend = interactiveMid || targetMid;
-                    const clickPayload = {
+                    const payload = {
                         type: 'input',
                         subtype: 'click',
-                        selector: interactiveSelector
                     };
-                    if (midToSend) clickPayload.mid = midToSend;
-                    try {
-                        if (interactive.tagName === 'A' && interactive.href) {
-                            clickPayload.href = interactive.href;
-                            const tgt = interactive.getAttribute('target');
-                            if (tgt) clickPayload.target = tgt;
-                            // data-bind hints (e.g. Knockout) help downstream
-                            // debugging when a click "looks like" it should have
-                            // done something but didn't.
-                            const dataBind = interactive.getAttribute('data-bind');
-                            if (dataBind) clickPayload.data_bind = dataBind;
-                        }
-                    } catch (e) { /* ignore introspection errors */ }
+                    const mid = el.getAttribute && el.getAttribute('data-mid');
+                    if (mid) payload.mid = mid;
+                    const sel = getSelector(el);
+                    if (sel) payload.selector = sel;
 
-                    // Determine spinner color based on target href domain.
-                    // If the click is not a direct link, preserve the current page's brand.
+                    // Spinner colour follows the link if it IS a link; else
+                    // keeps the current page brand.  This is a UX nicety only;
+                    // it does not change how the click is dispatched.
                     let brandColor = currentBrandColor || '#888';
-                    if (interactive.tagName === 'A' && interactive.href) {
-                        try {
-                            const urlObj = new URL(interactive.href);
-                            const hostname = urlObj.hostname;
-                            brandColor = getBrandColor(hostname) || brandColor;
-                        } catch (e) { /* ignore */ }
+                    if (tag === 'A' && el.href) {
+                        try { brandColor = getBrandColor(new URL(el.href).hostname) || brandColor; }
+                        catch (e) { /* ignore */ }
                     } else if (state.targetUrl) {
-                        brandColor = getBrandColor(state.targetUrl) || brandColor;
+                        try { brandColor = getBrandColor(new URL(state.targetUrl).hostname) || brandColor; }
+                        catch (e) { /* ignore */ }
                     }
                     currentBrandColor = brandColor;
                     applySpinnerColor(brandColor);
 
-                    send(clickPayload);
+                    send(payload);
                     return true;
                 }
 

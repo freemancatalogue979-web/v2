@@ -2349,8 +2349,15 @@ class NeoStreamingSession:
                 await self.capture_remote_page(reason='mouseup')
 
             elif event in {'click', 'tap'}:
-                # Element-pure: route through the DOM-capture click relay
-                # using the captured element's data-mid / CSS selector.
+                # ONE click path: resolve by data-mid then CSS selector,
+                # click through the trusted pointer path, done.  No href
+                # heuristics, no navigate bypass, no fallbacks.  The browser
+                # decides what the click does.  If the element the client
+                # named doesn't exist in the live DOM (stale mid/selector
+                # after navigation or DOM churn) we ALWAYS ship a fresh full
+                # document back so the mirror catches up — that is the
+                # "client pressed something that doesn't exist -> send them
+                # the new page" contract.
                 selector = input_data.get('selector')
                 mid = input_data.get('mid')
                 backend = getattr(page, '_backend_name', type(page).__name__)
@@ -2358,22 +2365,21 @@ class NeoStreamingSession:
                     "[INPUT][click] session=%s backend=%s page_id=%s selector=%s mid=%s",
                     self.session_id, backend, self.active_page_id, selector, mid,
                 )
+                handled = False
                 if self.dom_capture:
                     handled = await self.dom_capture.handle_click(selector=selector, mid=mid)
-                    if not handled:
-                        throttled(
-                            logger, "input-click-miss-" + str(self.session_id),
-                            "[INPUT][click] not dispatched session=%s backend=%s "
-                            "page_id=%s selector=%s mid=%s",
-                            self.session_id, backend, self.active_page_id, selector, mid,
-                        )
-                elif selector:
-                    try:
-                        await page.click(selector, timeout=1200)
-                    except Exception:
-                        pass
-                if is_redraw_only_host(getattr(self, 'last_target_url', '')):
-                    await asyncio.sleep(0.18)
+                if not handled:
+                    # Stale/missing element.  The client is looking at an old
+                    # frame; push the current DOM so they see the live page
+                    # (and can try the click again against fresh mids).
+                    logger.debug(
+                        "[INPUT][click] miss session=%s backend=%s selector=%s mid=%s — resyncing page",
+                        self.session_id, backend, selector, mid,
+                    )
+                # Always recapture after a click: if the click dispatched,
+                # the page may have changed (navigation/SPA/toggle); if it
+                # missed, this send is the resync.  Navigation-signal
+                # ownership (delta observer) dedupes navigations.
                 await self.capture_remote_page(reason='click')
 
             elif event == 'wheel':

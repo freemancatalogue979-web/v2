@@ -5673,18 +5673,24 @@ class DOMCaptureSession:
     # ------------------------------------------------------------------
 
     async def handle_click(self, selector: Optional[str] = None, mid: Optional[str] = None) -> bool:
+        """ONE click path.
+
+        Resolve the element by data-mid first (preferred — survives DOM churn
+        between captures), then by CSS selector, and click it through the
+        backend's trusted pointer/mouse path.  The browser decides what the
+        click DOES — navigation, toggle, submit, popup, framework handler — we
+        never second-guess it by inspecting href or tag name.
+
+        Returns True when the click was dispatched to a live element.
+        Returns False when the element cannot be resolved (stale mid/selector
+        after a navigation) — the caller treats that as "send the client a
+        fresh page" so the mirror catches up instead of silently dropping the
+        click.
+        """
         if self.page is None:
             return False
         try:
-            # ELEMENT-PURE relay (no coordinate mapping):
-            #   1. data-mid — stamped by the capture serializer, survives DOM
-            #      churn between mirror frames better than a CSS path.
-            #   2. CSS selector built client-side from the resolved element.
-            # Runtime "click" candidates are tried with a short actionability
-            # budget (custom-element buttons like Apple's ui-button can stall
-            # Playwright's waits). The SB adapter stays on its real pointer
-            # path; only the legacy Playwright adapter uses the DOM fallback.
-            candidates = []
+            candidates: List[str] = []
             if mid is not None:
                 safe_mid = re.sub(r'[^0-9A-Za-z_\-]', '', str(mid))
                 if safe_mid:
@@ -5694,40 +5700,72 @@ class DOMCaptureSession:
             if not candidates:
                 return False
 
-            for sel in candidates:
-                try:
-                    await self.page.click(sel, timeout=1500)
-                    logger.debug(
-                        "handle_click: dispatched selector=%s mid=%s backend=%s",
-                        sel, mid, getattr(self.page, "_backend_name", type(self.page).__name__),
-                    )
-                    return True
-                except Exception as exc:
-                    logger.debug(
-                        "handle_click: candidate=%s failed (%s): %s",
-                        sel, type(exc).__name__, exc,
-                    )
-                    continue
-            # The SeleniumBase adapter intentionally uses real CDP pointer
-            # events in page.click(). Do not fall back to element.click() on
-            # that backend: it bypasses pointerdown/mousedown handlers and
-            # was the reason SB behaved differently from Playwright.
-            if getattr(self.page, "_is_sb_backend", False):
+            backend_name = getattr(self.page, "_backend_name", type(self.page).__name__)
+
+            # Fast preflight: does the element exist in the live DOM right now?
+            # If not, skip page.click() entirely (it would burn the full
+            # actionability timeout for nothing) and return False immediately
+            # so the caller sends a fresh full document to the client.  This
+            # is the "client pressed a control that doesn't exist -> send them
+            # the new page" path.
+            exists_info: Any = None
+            try:
+                exists_info = await self.page.evaluate(
+                    """(sels) => {
+                        for (const s of sels) {
+                            try {
+                                const el = document.querySelector(s);
+                                if (el) {
+                                    const tag = (el.tagName || '').toUpperCase();
+                                    return {found: true, tag: tag, sel: s};
+                                }
+                            } catch (e) { /* bad selector */ }
+                        }
+                        return {found: false};
+                    }""",
+                    candidates,
+                )
+            except Exception as exc:
+                logger.debug("handle_click: preflight probe failed: %s", exc)
+
+            if exists_info is not None and exists_info.get("found") is False:
                 logger.debug(
-                    "handle_click: SB actionability failed (mid=%s selector=%s)",
+                    "handle_click: stale element (mid=%s selector=%s) — requesting page resync",
                     mid, selector,
                 )
                 return False
+
+            # Single dispatch attempt, one timeout, no fallback chains, no
+            # tag/role/href heuristics.  page.click() uses the backend's
+            # trusted pointer path (real mousemove/mousedown/mouseup/click
+            # sequence) which fires every listener a real user click would.
+            # If the click navigates the browser the navigation handlers and
+            # delta observer pick the new document up normally.
+            last_exc: Optional[Exception] = None
             for sel in candidates:
                 try:
-                    clicked = await self.page.evaluate(
-                        "(sel) => { const el = document.querySelector(sel);"
-                        " if (el) { el.click(); return true; } return false; }", sel)
-                    if clicked:
-                        return True
-                except Exception:
+                    await self.page.click(sel, timeout=2000)
+                    logger.debug(
+                        "handle_click: dispatched sel=%s mid=%s backend=%s",
+                        sel, mid, backend_name,
+                    )
+                    return True
+                except Exception as exc:
+                    last_exc = exc
+                    logger.debug(
+                        "handle_click: sel=%s failed (%s): %s",
+                        sel, type(exc).__name__,
+                        (str(exc) or "")[:200],
+                    )
                     continue
-            logger.debug("handle_click: element not resolvable (mid=%s selector=%s)", mid, selector)
+
+            # Nothing clicked.  Signal "not dispatched" -> caller ships a
+            # fresh full document so the client sees the current state.
+            logger.debug(
+                "handle_click: not dispatched mid=%s selector=%s last_err=%s",
+                mid, selector,
+                type(last_exc).__name__ if last_exc else "none",
+            )
             return False
         except Exception as exc:
             logger.debug("handle_click failed: %s", exc)
