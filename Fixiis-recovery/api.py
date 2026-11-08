@@ -10035,11 +10035,22 @@ async def _run_workflow_on_client(
             navigated_client = False
             if page_obj and not getattr(page_obj, 'is_closed', lambda: False)():
                 try:
-                    await page_obj.goto(url, wait_until='domcontentloaded', timeout=30000)
+                    # FAST: return at commit (first byte) so the mirror paints
+                    # immediately; progressive follow-ups fill the page in.
+                    try:
+                        await page_obj.goto(url, wait_until='commit', timeout=30000)
+                    except Exception:
+                        await page_obj.goto(url, wait_until='domcontentloaded', timeout=30000)
                     navigated_server = True
                     try:
                         if hasattr(session, 'capture_remote_page'):
-                            await session.capture_remote_page(reason='workflow_goto')
+                            await session.capture_remote_page(reason='goto')
+                            capture = getattr(session, 'dom_capture', None)
+                            if capture is not None and hasattr(capture, '_schedule_post_navigation_followups'):
+                                try:
+                                    capture._schedule_post_navigation_followups()
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
                 except Exception as e:

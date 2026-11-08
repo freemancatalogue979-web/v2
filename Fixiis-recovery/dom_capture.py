@@ -381,17 +381,25 @@ async def _load_singlefile_sources() -> Optional[Dict[str, str]]:
 
 async def _ensure_page_stable(page: Any) -> None:
     """Best-effort wait for the page to settle.  Each step has a tight
-    timeout so a hung network request doesn't block the capture pipeline."""
+    timeout so a hung network request doesn't block the capture pipeline.
+
+    NOTE: callers on the navigation fast-path (handle_navigation, the
+    URL-watcher fallback, and the delta-navigation handler) no longer
+    block on this function.  It is kept only for the initial bootstrap
+    capture and explicit user-triggered resyncs where one extra
+    second of waiting is preferable to a half-empty first paint.
+    """
+    # Networkidle is the biggest latency source — it can take many seconds
+    # on ad-heavy/tracking-heavy pages and never resolves on streaming
+    # pages (YouTube, chat apps).  We do NOT wait for it here; the
+    # delta/MutationObserver pipeline and a scheduled follow-up capture
+    # deliver late content as it arrives instead of blocking the first paint.
     try:
-        await page.wait_for_load_state("load", timeout=2500)
+        await page.wait_for_load_state("domcontentloaded", timeout=1500)
     except Exception:
         pass
     try:
-        await page.wait_for_load_state("networkidle", timeout=2500)
-    except Exception:
-        pass
-    try:
-        await page.wait_for_function("document.readyState === 'complete'", timeout=1000)
+        await page.wait_for_function("document.readyState !== 'loading'", timeout=1500)
     except Exception:
         pass
     if PRE_CAPTURE_WAIT > 0:
@@ -1466,6 +1474,11 @@ _DOM_CHECKSUM_JS = r"""
 
 _COLD_REASONS = frozenset((
     "click", "mouseup", "text", "keydown", "touchend", "tap", "delta_overflow",
+    "navigation",        # immediate post-nav paint — no waits
+    "url_change",        # SPA / fallback URL change — paint fast
+    "goto", "reload", "back", "forward",
+    "nav_settle:500", "nav_settle:1500", "nav_settle:4000",
+    "tab_switch",
 ))
 
 
@@ -1473,8 +1486,10 @@ _COLD_REASONS = frozenset((
 # known to be behind (overflow / navigation / an explicit resync), so "looks
 # the same to the checksum" is not evidence that it IS the same.
 _SKIP_EXEMPT_PREFIXES = (
-    "delta_overflow", "navigation", "coalesce:delta_overflow",
-    "coalesce:navigation", "resync",
+    "delta_overflow", "navigation", "url_change", "nav_settle:",
+    "coalesce:delta_overflow", "coalesce:navigation", "coalesce:url_change",
+    "goto", "reload", "back", "forward", "tab_switch", "resync",
+    "initial_connect",
 )
 
 
@@ -1505,17 +1520,32 @@ def _settle_for_reason(reason: Optional[str]) -> str:
 
     Interaction-driven recaptures ("interaction:*", input forwards,
     coalesced follow-ups, delta overflow) snapshot a page that is already
-    live — the legacy load/networkidle waits were pure latency.  Initial
-    loads and navigations get a light readyState wait so the client never
-    sees a parsing document.  DOM_CAPTURE_FULL_SETTLE=1 reverts globally.
+    live — the legacy load/networkidle waits were pure latency.
+
+    Navigations (goto/back/forward/reload, delta "navigation" signal,
+    URL-watcher fallbacks, progressive post-nav follow-ups) now return
+    "none": the user explicitly asked for "get the page as soon as the
+    browser navigates — don't wait for network idle".  We capture whatever
+    DOM exists right now and let delta patches + the scheduled follow-ups
+    carry late-loading content.  If a capture happens before the parser has
+    produced any nodes, the fast serializer returns an empty string and the
+    next tick tries again.
+
+    DOM_CAPTURE_FULL_SETTLE=1 reverts globally.
     """
     if FULL_SETTLE:
         return "full"
     if not reason:
         return "none"
     r = reason.lower()
-    if r.startswith(("interaction:", "coalesce:", "click", "input", "tap")) or r in _COLD_REASONS:
+    if r.startswith(("interaction:", "coalesce:", "nav_settle:",
+                     "click", "input", "tap")) or r in _COLD_REASONS:
         return "none"
+    # Initial connect still gets a light readyState wait so the very first
+    # paint isn't an empty/blank document.  Navigations after that are all
+    # fast.
+    if r.startswith(("initial",)):
+        return "light"
     return "light"
 
 
@@ -4985,25 +5015,20 @@ class DOMCaptureSession:
                             await self.enable_interaction_capture()
                         except Exception as exc:
                             logger.debug("re-install interaction trigger after URL change: %s", exc)
-                    # Wait for the new page to settle -- the same
-                    # load/networkidle/readyState sequence the
-                    # initial capture uses.  We deliberately do NOT
-                    # skip ahead and capture during this wait;
-                    # capturing a parsing document produces a
-                    # half-rendered snapshot that the client then
-                    # has to manually re-request.
-                    try:
-                        await _ensure_page_stable(self.page)
-                    except Exception as exc:
-                        logger.debug("post-URL-change page-stability wait failed: %s", exc)
-                    # A navigation control batch or an explicit goto may
-                    # already have sent this exact URL while the watcher was
-                    # waiting for stability.  Do not rebuild the iframe twice.
+                    # FAST PATH: capture immediately — do NOT wait for
+                    # load/networkidle.  The user asked for zero-delay
+                    # navigation.  A half-rendered page is strictly better
+                    # than a blank spinner; progressive follow-ups fill in
+                    # the rest.
                     if current_url != self.last_sent_url:
                         try:
                             await self._capture_navigation_once("url_change")
+                            # Schedule progressive follow-ups so late
+                            # content reaches the mirror without blocking
+                            # this fast first paint.
+                            self._schedule_post_navigation_followups()
                         except Exception as exc:
-                            logger.debug("URL-watch full capture failed: %s", exc)
+                            logger.debug("URL-watch fast capture failed: %s", exc)
                     else:
                         logger.debug("URL-watch resync already sent for %s", current_url)
                 last_url = current_url or last_url
@@ -5055,13 +5080,15 @@ class DOMCaptureSession:
                     await _ensure_page_stable(self.page)
                 else:
                     # ONE wait, not two.  `domcontentloaded` and "readyState has
-                    # left 'loading'" are the same condition; asking for both
-                    # cost a round trip to learn nothing.  The 5 s budget is
-                    # the old one (a navigation may legitimately still be
-                    # parsing), and a hung page still returns at that bound.
+                    # left 'loading'" are the same condition.  A 1.5 s budget
+                    # is enough for the parser to finish the initial document
+                    # even on a cold connection; we do NOT wait for `load` or
+                    # `networkidle` here — late images/ads/fonts stream in via
+                    # the delta observer and a follow-up full capture.
+                    # Returning early gives the user something to look at NOW.
                     try:
                         await self.page.wait_for_function(
-                            "document.readyState !== 'loading'", timeout=5000)
+                            "document.readyState !== 'loading'", timeout=1500)
                     except Exception:
                         pass
                     if PRE_CAPTURE_WAIT > 0:
@@ -5712,7 +5739,23 @@ class DOMCaptureSession:
         self._delta_active = False
         self._explicit_navigation_in_progress = True
         try:
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # Use "commit" wait_until so Playwright returns the MOMENT the
+            # new document has started loading (response headers + first
+            # bytes), rather than blocking until all parser-blocking scripts
+            # have run.  This is the key to "get the page as soon as the
+            # browser navigates".
+            try:
+                await self.page.goto(url, wait_until="commit", timeout=60000)
+            except Exception as exc:
+                # "commit" may not be supported by every backend (e.g. the
+                # SeleniumBase adapter).  Fall back to domcontentloaded —
+                # still strictly faster than load/networkidle.
+                logger.debug("handle_navigation: commit-wait failed (%s), falling back to domcontentloaded", exc)
+                try:
+                    await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                except Exception:
+                    raise
+
             # Fresh document -> the JS listener from the previous
             # page is gone.  Re-install the generic interaction
             # trigger on the new document.
@@ -5722,25 +5765,61 @@ class DOMCaptureSession:
                     await self.enable_interaction_capture()
                 except Exception as exc:
                     logger.debug("re-install interaction trigger after nav: %s", exc)
-            # IMPORTANT: do NOT fire _send_full immediately.  A page
-            # that just changed URL is in an unstable state: the
-            # document is parsing, subresources are still in flight,
-            # client-side frameworks are mounting, SPAs are still
-            # hydrating.  Capturing right now would snapshot a
-            # half-rendered DOM.  Wait for the page to settle the
-            # same way the initial capture does, then capture.
+
+            # FAST FIRST PAINT: send whatever DOM exists RIGHT NOW so the
+            # user sees the page start rendering immediately.  We DO NOT
+            # wait for load/networkidle here — on ad-heavy pages that can
+            # add 5+ seconds of blank screen, and the user explicitly asked
+            # for zero-delay navigation.  A half-rendered page they can
+            # watch load beats a blank spinner every time.
             try:
-                await _ensure_page_stable(self.page)
+                await self._capture_navigation_once("navigation")
             except Exception as exc:
-                logger.debug("post-nav page-stability wait failed: %s", exc)
-            # Use the live page URL after redirects rather than the requested
-            # URL argument; otherwise the client can remain labeled with the
-            # pre-redirect page even though the DOM is new.
-            await self._capture_navigation_once("url_change")
+                logger.debug("fast post-nav capture failed: %s", exc)
+
+            # Schedule progressive follow-up captures so late-loading
+            # content (images, fonts, client-side framework mounts, lazy
+            # sections) flows to the mirror as it arrives, without the
+            # caller ever waiting for it.  Delta patches carry the bulk
+            # of the incremental changes in between; these full captures
+            # are the consistency floor.
+            self._schedule_post_navigation_followups()
         except Exception as exc:
             logger.debug("handle_navigation failed: %s", exc)
         finally:
             self._explicit_navigation_in_progress = False
+
+    def _schedule_post_navigation_followups(self) -> None:
+        """Fire-and-forget follow-up captures after a navigation.
+
+        These give the page progressively more time to settle (load event,
+        late XHR, post-hydration mutations) while never blocking the first
+        paint.  Coalescing ensures that if the user clicks again before
+        these fire they're cheap no-ops.
+        """
+        async def _followups() -> None:
+            for delay_s, reason in (
+                (0.5,  "nav_settle:500"),
+                (1.5,  "nav_settle:1500"),
+                (4.0,  "nav_settle:4000"),
+            ):
+                try:
+                    await asyncio.sleep(delay_s)
+                    if getattr(self, "_stopped", False):
+                        return
+                    if self.websocket is None:
+                        return
+                    # Don't race a capture the user is already waiting on,
+                    # and don't re-send if a newer navigation has already
+                    # superseded us (the delta observer increments _gen on
+                    # new-document navigation controls).
+                    if self._send_inflight:
+                        continue
+                    await self.send_page(reason=reason)
+                except Exception as exc:
+                    logger.debug("nav follow-up (%s) failed: %s", reason, exc)
+
+        asyncio.create_task(_followups())
 
     async def handle_keypress(self, key: str, selector: Optional[str] = None) -> None:
         if self.page is None:

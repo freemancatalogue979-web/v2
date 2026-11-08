@@ -758,23 +758,32 @@ class NeoStreamingSession:
                 # Ensure URL has https:// prefix
                 if not target_url.startswith('http://') and not target_url.startswith('https://'):
                     target_url = 'https://' + target_url
-                
+
                 logger.debug(f"[NAVIGATION] Attempting to navigate to: {target_url}")
-                await self.get_active_page().goto(target_url, wait_until='domcontentloaded', timeout=30000)
+                # FAST: return at commit so the session can start sending the
+                # first paint ASAP.  The initial_connect capture adds a short
+                # readyState wait so we don't ship an empty document.
+                try:
+                    await self.get_active_page().goto(target_url, wait_until='commit', timeout=30000)
+                except Exception:
+                    await self.get_active_page().goto(target_url, wait_until='domcontentloaded', timeout=30000)
                 self.current_domain = self._extract_domain(target_url)
                 self._apply_snapshot_preference(target_url)
                 logger.debug(f"[NAVIGATION] Successfully navigated to: {self.current_domain}")
             except Exception as nav_error:
                 # Log the navigation error for debugging
                 logger.error(f"[NAVIGATION] Failed to navigate to {target_url}: {nav_error}")
-                
+
                 # Only fall back to default URL if target_url is not the intended destination
                 # and the error is likely a connection issue, not a user-requested URL
                 if target_url != self.config.default_url and self.config.default_url:
                     # Try default URL as fallback
                     try:
                         logger.debug(f"[NAVIGATION] Falling back to default URL: {self.config.default_url}")
-                        await self.get_active_page().goto(self.config.default_url, wait_until='domcontentloaded', timeout=30000)
+                        try:
+                            await self.get_active_page().goto(self.config.default_url, wait_until='commit', timeout=30000)
+                        except Exception:
+                            await self.get_active_page().goto(self.config.default_url, wait_until='domcontentloaded', timeout=30000)
                         self.current_domain = self._extract_domain(self.config.default_url)
                     except Exception:
                         logger.error(f"[NAVIGATION] Also failed to navigate to default URL")
@@ -2484,21 +2493,40 @@ class NeoStreamingSession:
                     capture = self._sync_dom_capture()
                     capture._explicit_navigation_in_progress = True
                     try:
-                        await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                        # FAST PATH: return the MOMENT the response starts
+                        # arriving ("commit"), not when everything is parsed.
+                        # A half-rendered page in the mirror beats a blank
+                        # spinner; progressive follow-ups fill in the rest.
+                        try:
+                            await page.goto(url, wait_until='commit', timeout=30000)
+                        except Exception:
+                            # "commit" may not be supported by every backend
+                            # (e.g. SeleniumBase). Fall back to domcontentloaded.
+                            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
                         self.current_domain = self._extract_domain(url)
                         self._apply_snapshot_preference(url)
 
                         if self.browser_manager:
-                            await self.browser_manager.profile_manager.add_visited_site(
-                                self.user_id,
-                                self.current_domain,
-                                title=await page.title() if page else '',
-                                favicon_url=f"https://{self.current_domain}/favicon.ico"
-                            )
+                            try:
+                                await self.browser_manager.profile_manager.add_visited_site(
+                                    self.user_id,
+                                    self.current_domain,
+                                    title=await page.title() if page else '',
+                                    favicon_url=f"https://{self.current_domain}/favicon.ico"
+                                )
+                            except Exception:
+                                pass
 
                         await self._save_profile_info()
                         await self._send_metadata()
                         await self.capture_remote_page(reason='goto')
+                        # Schedule progressive follow-up captures so late
+                        # content arrives without blocking the first paint.
+                        if capture is not None and hasattr(capture, '_schedule_post_navigation_followups'):
+                            try:
+                                capture._schedule_post_navigation_followups()
+                            except Exception:
+                                pass
                     finally:
                         capture._explicit_navigation_in_progress = False
 
@@ -2506,8 +2534,16 @@ class NeoStreamingSession:
                 capture = self._sync_dom_capture()
                 capture._explicit_navigation_in_progress = True
                 try:
-                    await page.reload(wait_until='domcontentloaded', timeout=30000)
+                    try:
+                        await page.reload(wait_until='commit', timeout=30000)
+                    except Exception:
+                        await page.reload(wait_until='domcontentloaded', timeout=30000)
                     await self.capture_remote_page(reason='reload')
+                    if capture is not None and hasattr(capture, '_schedule_post_navigation_followups'):
+                        try:
+                            capture._schedule_post_navigation_followups()
+                        except Exception:
+                            pass
                 finally:
                     capture._explicit_navigation_in_progress = False
 
@@ -2516,8 +2552,16 @@ class NeoStreamingSession:
                 capture._explicit_navigation_in_progress = True
                 try:
                     try:
-                        await page.go_back(wait_until='domcontentloaded', timeout=30000)
+                        try:
+                            await page.go_back(wait_until='commit', timeout=30000)
+                        except Exception:
+                            await page.go_back(wait_until='domcontentloaded', timeout=30000)
                         await self.capture_remote_page(reason='back')
+                        if capture is not None and hasattr(capture, '_schedule_post_navigation_followups'):
+                            try:
+                                capture._schedule_post_navigation_followups()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 finally:
@@ -2528,8 +2572,16 @@ class NeoStreamingSession:
                 capture._explicit_navigation_in_progress = True
                 try:
                     try:
-                        await page.go_forward(wait_until='domcontentloaded', timeout=30000)
+                        try:
+                            await page.go_forward(wait_until='commit', timeout=30000)
+                        except Exception:
+                            await page.go_forward(wait_until='domcontentloaded', timeout=30000)
                         await self.capture_remote_page(reason='forward')
+                        if capture is not None and hasattr(capture, '_schedule_post_navigation_followups'):
+                            try:
+                                capture._schedule_post_navigation_followups()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 finally:
@@ -2738,9 +2790,26 @@ class NeoStreamingSession:
                 
                 # If page exists and is active, navigate immediately
                 if self.get_active_page() and self.is_active:
-                    await self.get_active_page().goto(url, wait_until='domcontentloaded', timeout=30000)
+                    # FAST: return at "commit" (first byte), not after parser done.
+                    try:
+                        await self.get_active_page().goto(url, wait_until='commit', timeout=30000)
+                    except Exception:
+                        await self.get_active_page().goto(url, wait_until='domcontentloaded', timeout=30000)
                     self.current_domain = self._extract_domain(url)
+                    self._apply_snapshot_preference(url)
                     await self._save_profile_info()
+                    capture = self._sync_dom_capture()
+                    if capture is not None:
+                        capture._explicit_navigation_in_progress = True
+                        try:
+                            await self.capture_remote_page(reason='goto')
+                            if hasattr(capture, '_schedule_post_navigation_followups'):
+                                try:
+                                    capture._schedule_post_navigation_followups()
+                                except Exception:
+                                    pass
+                        finally:
+                            capture._explicit_navigation_in_progress = False
                     return True
                     
         except Exception as e:

@@ -887,11 +887,18 @@ class SBPage:
             self._url = url
         finally:
             pass
+        # "commit": return the MOMENT navigation starts (CDP Page.navigate
+        # already resolved at that point).  This is the fast path used by
+        # the live-mirror nav — send content immediately, stream the rest.
+        if wait_until == "commit":
+            return
         await self._wait_ready(wait_until, timeout)
         self._maybe_solve_captcha()
 
     async def reload(self, wait_until: str = "load", timeout: float = 30000, **_kw: Any) -> None:
         await self._session.send("Page.reload", {"ignoreCache": False})
+        if wait_until == "commit":
+            return
         await self._wait_ready(wait_until, timeout)
 
     async def _nav_history(self, delta: int, wait_until: str, timeout: float) -> None:
@@ -900,6 +907,8 @@ class SBPage:
         idx = (hist or {}).get("currentIndex", 0) + delta
         if 0 <= idx < len(entries):
             await self._session.send("Page.navigateToHistoryEntry", {"entryId": entries[idx]["id"]}, timeout=15)
+        if wait_until == "commit":
+            return
         await self._wait_ready(wait_until, timeout)
 
     async def go_back(self, wait_until: str = "load", timeout: float = 30000, **_kw: Any) -> None:
@@ -912,6 +921,10 @@ class SBPage:
         """readyState poll matching domcontentloaded/load; networkidle is a
         documented approximation (complete + 400ms settle) — the live-mirror
         fast pipeline never blocks on it anyway."""
+        # "commit" is handled by callers (returns immediately at nav start);
+        # anything unknown falls through to the legacy waits.
+        if wait_until == "commit":
+            return
         timeout_s = max(1.0, timeout / 1000.0)
         deadline = time.monotonic() + timeout_s
         wanted = "complete" if wait_until in ("load", "networkidle") else None
