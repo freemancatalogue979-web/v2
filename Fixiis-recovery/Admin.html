@@ -37,7 +37,7 @@
                     <input id="pcm-page-tags" class="pcm-modal-input" type="text" placeholder="login, google, capture" maxlength="200" />
                 </div>
                 <div class="pcm-modal-hint">
-                    The current view is captured via the <strong style="color:#fff">SingleFile</strong> extension on the server-side browser. The saved HTML is trusted and previewed in the archive as a <code style="background:rgba(255,255,255,0.08); padding:2px 5px; border-radius:6px; font-family: Helvetica Neue, Helvetica, Arial, sans-serif;">/api/lpv/archive/{id}/html</code> blob iframe — screenshots are not used.
+                    The current view is captured via the <strong style="color:#fff">SingleFile</strong> extension on the server-side browser. The saved HTML is trusted and previewed in the archive as a <code style="background:rgba(255,255,255,0.08); padding:2px 5px; border-radius:6px; font-family: Space Grotesk, sans-serif;">/api/lpv/archive/{id}/html</code> blob iframe — screenshots are not used.
                 </div>
             </div>
             <div class="pcm-modal-footer">
@@ -74,13 +74,13 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     
-    <!-- The panel is set in Helvetica Neue. The glyphs are IN THE FILE (a data:
-         URI in the block below), not fetched: nothing to preconnect to, no
-         render-blocking stylesheet, no third-party host that can be slow or
-         filtered, and the type is identical offline, on a cold cache, and
-         inside the mirrored page's opaque-origin iframe (where a URL-based
-         @font-face would be a blocked cross-origin font request).
-         Regenerate the block with deploy/embed_font.py; never hand-edit it. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" media="print" onload="this.media='all'">
+    <noscript>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap">
+    </noscript>
     
     <style>
         :root {
@@ -129,7 +129,7 @@
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
         }
 
         /* Font Style for Messages */
@@ -140,26 +140,26 @@
         .log-time,
         .tgbot-message,
         .notification-text {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
             letter-spacing: 0.02em;
         }
 
         /* Uppercase Style */
         .math-uppercase {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
 
         /* Lowercase Style */
         .math-lowercase {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
             font-size: 0.95em;
             letter-spacing: 0.02em;
         }
 
         html, body {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
             height: 100%;
@@ -1501,7 +1501,7 @@
             font-size: 24px;
             font-weight: 700;
             color: var(--text-primary);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             letter-spacing: -0.02em;
         }
 
@@ -1638,7 +1638,7 @@
             border-radius: 8px;
             color: var(--text-primary);
             font-size: 13px;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .copy-btn {
@@ -1996,7 +1996,7 @@
             font-size: 11px;
             color: var(--text-muted);
             min-width: 70px;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .log-type {
@@ -2053,7 +2053,7 @@
         .log-details {
             font-size: 11px;
             color: var(--text-muted);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .log-uptime {
@@ -2505,7 +2505,7 @@
             font-size: 18px;
             font-weight: 600;
             color: var(--text-primary);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .profiles-fullscreen-close {
@@ -2550,7 +2550,7 @@
             border-radius: 10px;
             color: var(--text-primary);
             font-size: 14px;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             outline: none;
             transition: border-color 0.2s;
         }
@@ -2608,7 +2608,7 @@
             font-size: 14px;
             font-weight: 600;
             color: var(--text-primary);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             display: flex;
             align-items: center;
             gap: 8px;
@@ -2621,7 +2621,7 @@
             border-radius: 10px;
             font-size: 12px;
             font-weight: 600;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .profiles-fullscreen-section.offline .profiles-fullscreen-section-count {
@@ -2770,7 +2770,7 @@
             fill: var(--text-primary);
         }
 
-        /* Profile Card Updates - Remove Italics and keep the product font */
+        /* Profile Card Updates - Remove Italics and ensure Space Grotesk */
         .profile-card,
         .profile-info,
         .profile-header,
@@ -2779,7 +2779,7 @@
         .profile-url,
         .profile-meta,
         .profile-meta-item {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-style: normal !important;
         }
 
@@ -2970,7 +2970,7 @@
             font-size: 14px;
             font-weight: 600;
             color: var(--text-primary);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             margin-bottom: 2px;
         }
 
@@ -3298,7 +3298,7 @@
         .klg-log-content {
             font-size: 13px;
             color: var(--text-primary);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             word-break: break-all;
             line-height: 1.5;
             margin-bottom: 6px;
@@ -3406,7 +3406,7 @@
             border-radius: 10px !important;
         }
         .lpv-final-row .val {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 12px;
             background: rgba(0,0,0,0.35);
             border: 1px solid rgba(74,222,128,0.22);
@@ -3527,14 +3527,14 @@
             border: 1px solid var(--border) !important;
         }
         #lpvProfileModal, #lpvProfileModal * {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
         }
         #lpvProfileModal .klg-log-item {
             border-radius: 10px !important;
         }
         #lpvProfileModalSearch::placeholder { color: var(--text-muted); }
         .lpv-copy-btn-sm, .lpv-filter-pill, .logs-btn {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
         }
         /* KLG-identical latest grid: uses same gap/spacing as domain row */
         .lpv-latest-grid {
@@ -3550,7 +3550,7 @@
            LPV Latest Cards — PREMIUM PATTERN
            Replaces the old flat .lpv-latest-card. Tokens from
            design-reference.html :root. Keep gap 4pt, icon 32,
-           left 3px accent, hover lift 1px, Helvetica Neue + SVG only.
+           left 3px accent, hover lift 1px, Space Grotesk + SVG only.
            Variants: --change (blue) / --final (green) / --click
            (purple) / --submit (amber). Use .lpv-card everywhere;
            .lpv-latest-card is kept as alias for cached markup.
@@ -3589,10 +3589,10 @@
         .lpv-card__time{font-size:10px; color:var(--text-muted); white-space:nowrap; font-variant-numeric:tabular-nums}
         .lpv-card__value{padding:14px 14px 14px 17px; display:flex; gap:10px; align-items:flex-start; background:rgba(0,0,0,0.22); border-top:1px solid rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.03)}
         .lpv-card--final .lpv-card__value{background:linear-gradient(180deg, rgba(74,222,128,0.10), rgba(74,222,128,0.04))}
-        .lpv-card__val-text{flex:1; min-width:0; font-size:14px; font-weight:700; letter-spacing:-0.01em; word-break:break-all; color:var(--text-primary); font-family:Helvetica Neue, Helvetica, Arial, sans-serif !important}
+        .lpv-card__val-text{flex:1; min-width:0; font-size:14px; font-weight:700; letter-spacing:-0.01em; word-break:break-all; color:var(--text-primary); font-family:'Space Grotesk', sans-serif !important}
         .lpv-card--final .lpv-card__val-text{color:#d6f5df}
         .lpv-card__val-text.is-empty{opacity:.5; font-style:italic; font-weight:400}
-        .lpv-card__copy{flex:0 0 auto; display:inline-flex; gap:6px; align-items:center; padding:8px 10px; border-radius:10px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:11px; font-weight:700; cursor:pointer; transition:all .18s; font-family:Helvetica Neue, Helvetica, Arial, sans-serif !important; min-height:32px}
+        .lpv-card__copy{flex:0 0 auto; display:inline-flex; gap:6px; align-items:center; padding:8px 10px; border-radius:10px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:11px; font-weight:700; cursor:pointer; transition:all .18s; font-family:'Space Grotesk', sans-serif !important; min-height:32px}
         .lpv-card__copy:hover{border-color:rgba(255,255,255,0.14); color:var(--text-primary); background:var(--bg-hover)}
         .lpv-card__copy.copied{border-color:#4ade80; color:#4ade80; background:rgba(74,222,128,0.10)}
         .lpv-card__copy svg{width:12px; height:12px; fill:currentColor}
@@ -3634,7 +3634,7 @@
             border-bottom: 1px solid var(--border) !important;
         }
         .lpv-section-title {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 11px;
             font-weight: 800;
             letter-spacing: 0.08em;
@@ -3729,7 +3729,7 @@
             font-size: 24px;
             font-weight: 700;
             color: var(--text-primary);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
             margin-bottom: 4px;
         }
 
@@ -3910,7 +3910,7 @@
             font-size: 14px;
             font-weight: 600;
             color: var(--text-primary);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .capacity-bar-chart {
@@ -4671,7 +4671,7 @@
             font-size: 10px;
             color: var(--text-muted);
             min-width: 60px;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+            font-family: 'Space Grotesk', sans-serif;
         }
 
         .tgbot-activity-type {
@@ -5293,7 +5293,7 @@
         .term-title {
             flex: 1;
             text-align: center;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 11px;
             color: #9aa0a6;
             letter-spacing: 0.04em;
@@ -5308,7 +5308,7 @@
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 10px;
             color: #6cff8a;
             padding: 2px 8px;
@@ -5340,7 +5340,7 @@
             padding: 8px 14px;
             background: rgba(255,255,255,0.015);
             border-bottom: 1px solid rgba(255,255,255,0.05);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 11px;
             color: #8a8f98;
             position: relative;
@@ -5376,7 +5376,7 @@
             overflow-y: auto;
             padding: 6px 0 4px;
             min-height: 240px;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 12px;
             line-height: 1.55;
             color: #d4d4d4;
@@ -5484,7 +5484,7 @@
             gap: 0;
             padding: 6px 14px 8px;
             color: #6cff8a;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 12px;
             user-select: none;
             position: relative;
@@ -5507,7 +5507,7 @@
             text-align: left;
             color: #6c7280;
             padding: 24px 14px 8px;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important;
+            font-family: 'Space Grotesk', sans-serif !important;
             font-size: 12px;
             line-height: 1.6;
         }
@@ -6547,7 +6547,7 @@
         }
         .lpv-select { min-width: 220px; }
         .lpv-input { width: 100%; }
-        .lpv-textarea { width: 100%; min-height: 120px; resize: vertical; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px; }
+        .lpv-textarea { width: 100%; min-height: 120px; resize: vertical; font-family: 'Space Grotesk', sans-serif; font-size: 12px; }
         .lpv-pill {
             padding: 3px 10px; border-radius: 999px; font-size: 11px;
             background: var(--bg-input); border: 1px solid var(--border);
@@ -6591,7 +6591,7 @@
             flex: 1 1 auto; min-height: 80px;
             padding: 10px; border-radius: 6px;
             background: var(--bg-input); border: 1px dashed var(--border);
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px;
+            font-family: 'Space Grotesk', sans-serif; font-size: 12px;
             color: var(--text-secondary);
             word-break: break-all;
         }
@@ -6607,7 +6607,7 @@
         .lpv-bind-page { font-size: 11px; color: var(--text-muted); margin-bottom: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .lpv-bind-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
         .lpv-bind-row { display: flex; gap: 8px; align-items: center; }
-        .lpv-bind-row input { flex: 1; min-width: 0; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px; outline: none; }
+        .lpv-bind-row input { flex: 1; min-width: 0; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; outline: none; }
         .lpv-bind-row input:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-bind-arrow { color: var(--text-muted); flex-shrink: 0; }
         .lpv-bind-del { background: rgba(255,255,255,0.07); border: 1px solid var(--border); color: rgba(255,255,255,0.75); border-radius: 8px; width: 32px; height: 32px; cursor: pointer; flex-shrink: 0; }
@@ -6619,7 +6619,7 @@
         .lpv-bind-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
         .lpv-bind-matchline { display: flex; gap: 6px; }
         .lpv-bind-matchline input { flex: 1; min-width: 0; }
-        .lpv-bind-match { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 8px; color: var(--text, #fff); font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px; flex-shrink: 0; }
+        .lpv-bind-match { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 8px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; flex-shrink: 0; }
         .lpv-bind-prev { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg-input); font-size: 11px; color: var(--text-secondary); }
         .lpv-bind-prev-head { font-weight: 700; color: var(--text, #fff); margin-bottom: 6px; }
         .lpv-bind-prev-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-top: 1px dashed rgba(255,255,255,0.07); }
@@ -6630,7 +6630,7 @@
         .lpv-val-row { display: flex; flex-direction: column; gap: 5px; }
         .lpv-val-row > span { font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; color: var(--text-muted); }
         .lpv-val-kind { font-style: normal; font-weight: 600; opacity: 0.6; margin-left: 6px; }
-        .lpv-val-row input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 10px; color: var(--text, #fff); font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 13px; outline: none; }
+        .lpv-val-row input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 13px; outline: none; }
         .lpv-val-row input:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-vals-modal { width: min(420px, 92vw); }
         .lpv-edit-modal { width: min(760px, 94vw); }
@@ -6638,7 +6638,7 @@
         .lpv-edit-state { font-size: 11px; color: var(--text-muted); }
         .lpv-edit-area { width: 100%; box-sizing: border-box; height: min(46vh, 380px); resize: vertical;
             background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px;
-            padding: 10px 12px; color: var(--text, #fff); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            padding: 10px 12px; color: var(--text, #fff); font-family: ui-monospace, 'Space Grotesk', monospace;
             font-size: 12px; line-height: 1.5; outline: none; white-space: pre; }
         .lpv-edit-area:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-archive-hint { font-size: 10.5px; line-height: 1.5; color: var(--text-muted);
@@ -6654,13 +6654,13 @@
             border-radius: 10px; overflow: hidden; background: #fff; }
         .lpv-pick-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
         .lpv-pick-picked { margin-top: 10px; font-size: 11px; color: var(--text-muted);
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-word; }
+            font-family: ui-monospace, 'Space Grotesk', monospace; word-break: break-word; }
         .lpv-pick-picked.good { color: #6ee7b7; }
         .lpv-pick-picked.bad { color: #fca5a5; }
         .lpv-act-match { flex: 1 1 220px; min-width: 0; }
         .lpv-act-line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         .lpv-act-do, .lpv-act-page, .lpv-act-url { background: var(--bg-panel, #14161f); border: 1px solid var(--border);
-            border-radius: 8px; padding: 9px 8px; color: var(--text, #fff); font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px; }
+            border-radius: 8px; padding: 9px 8px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; }
         .lpv-act-page { max-width: 190px; }
         .lpv-act-url { min-width: 190px; flex: 1 1 190px; }
         .lpv-bind-row { flex-wrap: wrap; }
@@ -6669,7 +6669,7 @@
         .lpv-dev-seg { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
         .lpv-dev-seg .lpv-btn { flex: 1 1 auto; }
         .lpv-dev-seg .lpv-btn.on { border-color: rgba(74,144,217,0.65); background: rgba(74,144,217,0.18); color: var(--text, #fff); }
-        .lpv-dev-select { width: 100%; box-sizing: border-box; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px; margin-bottom: 12px; outline: none; }
+        .lpv-dev-select { width: 100%; box-sizing: border-box; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; margin-bottom: 12px; outline: none; }
         .lpv-dev-select:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-bind-hint { font-size: 10px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; }
         .lpv-bind-empty { font-size: 11px; color: var(--text-muted); padding: 10px; text-align: center; border: 1px dashed var(--border); border-radius: 8px; }
@@ -6679,7 +6679,7 @@
         .lpv-guard-toggle label { font-size: 12px; font-weight: 600; cursor: pointer; }
         .lpv-guard-toggle .state { margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--text-muted); }
         .lpv-guard-toggle.locked .state { background: rgba(74,144,217,0.18); color: #7bb6f0; }
-        .lpv-guard-rules { width: 100%; min-height: 130px; resize: vertical; background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; color: var(--text, #fff); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.6; outline: none; }
+        .lpv-guard-rules { width: 100%; min-height: 130px; resize: vertical; background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; color: var(--text, #fff); font-family: 'Space Grotesk', ui-monospace, monospace; font-size: 12px; line-height: 1.6; outline: none; }
         .lpv-guard-rules:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-guard-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
         .lpv-guard-chip { font-size: 10.5px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.05); color: var(--text-secondary); cursor: pointer; }
@@ -6691,7 +6691,7 @@
         .lpv-guard-help code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 5px; font-size: 10px; }
         .lpv-guard-msg { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
         .lpv-guard-msg label { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; }
-        .lpv-guard-msg input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px; outline: none; }
+        .lpv-guard-msg input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text, #fff); font-family: 'Space Grotesk', sans-serif; font-size: 12px; outline: none; }
         .lpv-guard-msg input:focus { border-color: rgba(74,144,217,0.55); }
         .lpv-guard-msg.off { opacity: 0.5; }
         .lpv-guard-msg-note { font-size: 10px; color: var(--text-muted); line-height: 1.5; }
@@ -6711,7 +6711,7 @@
         }
         .lpv-archive-item .meta { display: flex; flex-direction: column; min-width: 0; flex: 1 1 120px; }
         .lpv-archive-item .name {
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px;
+            font-family: 'Space Grotesk', sans-serif; font-size: 12px;
             color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .lpv-archive-item .sub { font-size: 10px; color: var(--text-muted); }
@@ -6735,7 +6735,7 @@
         .lpv-activity, .lpv-audit {
             flex: 1 1 auto; min-height: 120px; max-height: 320px; overflow-y: auto;
             display: flex; flex-direction: column; gap: 4px;
-            font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 11px;
+            font-family: 'Space Grotesk', sans-serif; font-size: 11px;
         }
         .lpv-event {
             padding: 6px 8px; border-radius: 4px;
@@ -7002,7 +7002,7 @@
             display: flex; align-items: center; justify-content: space-between;
             padding: 8px 10px; background: var(--bg-input);
             border: 1px solid var(--border); border-radius: 6px;
-            margin-bottom: 6px; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px;
+            margin-bottom: 6px; font-family: 'Space Grotesk', sans-serif; font-size: 12px;
         }
         .lpv-version-row .v-meta { color: var(--text-muted); font-size: 11px; }
         .lpv-version-row .v-actions { display: flex; gap: 6px; }
@@ -7047,7 +7047,7 @@
             display: flex; align-items: center; justify-content: space-between;
             padding: 8px 10px; background: var(--bg-input);
             border: 1px solid var(--border); border-radius: 6px;
-            margin-bottom: 6px; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 12px;
+            margin-bottom: 6px; font-family: 'Space Grotesk', sans-serif; font-size: 12px;
         }
         .lpv-red-rule .r-desc { color: var(--text-muted); font-size: 11px; }
         .lpv-red-rule .r-actions { display: flex; gap: 4px; }
@@ -7064,22 +7064,22 @@
         .pcm-topbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: rgba(18,24,39,0.9); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px 14px; backdrop-filter: blur(18px) saturate(1.4); box-shadow: 0 8px 24px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06); }
         .pcm-urlbar { flex: 1 1 420px; display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; padding: 6px 6px 6px 12px; min-width: 260px; }
         .pcm-url-icon { color: rgba(255,255,255,0.45); display: flex; align-items: center; }
-        .pcm-url-input { flex: 1; background: transparent; border: 0; outline: none; color: #e6e9f2; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 500; letter-spacing: 0.01em; }
+        .pcm-url-input { flex: 1; background: transparent; border: 0; outline: none; color: #e6e9f2; font-family: 'Space Grotesk', sans-serif; font-size: 13px; font-weight: 500; letter-spacing: 0.01em; }
         .pcm-url-input::placeholder { color: rgba(230,233,242,0.45); }
-        .pcm-go-btn { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(180deg, #4a90d9 0%, #357ab8 100%); border: 0; color: #fff; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 9px 14px; border-radius: 8px; cursor: pointer; box-shadow: 0 6px 18px rgba(74,144,217,0.35); transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease; }
+        .pcm-go-btn { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(180deg, #4a90d9 0%, #357ab8 100%); border: 0; color: #fff; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 9px 14px; border-radius: 8px; cursor: pointer; box-shadow: 0 6px 18px rgba(74,144,217,0.35); transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease; }
         .pcm-go-btn:hover { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(74,144,217,0.45); filter: brightness(1.05); }
         .pcm-go-btn:active { transform: translateY(0); }
         .pcm-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .pcm-mode-toggle { display: inline-flex; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 3px; gap: 2px; }
-        .pcm-mode-toggle button { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; color: rgba(255,255,255,0.65); font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 600; font-size: 12px; letter-spacing: 0.02em; padding: 7px 12px; border-radius: 999px; cursor: pointer; transition: all 0.16s ease; }
+        .pcm-mode-toggle button { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; color: rgba(255,255,255,0.65); font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 12px; letter-spacing: 0.02em; padding: 7px 12px; border-radius: 999px; cursor: pointer; transition: all 0.16s ease; }
         .pcm-mode-toggle button.active { background: #fff; color: #0f172a; box-shadow: 0 2px 10px rgba(0,0,0,0.25); }
         .pcm-mode-toggle button:hover:not(.active) { background: rgba(255,255,255,0.08); color: #fff; }
         .pcm-mode-toggle button:disabled { opacity: 0.45; cursor: default; pointer-events: none; }
         .pcm-mode-toggle.busy { cursor: progress; }
-        .pcm-capture-btn { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(180deg, #10b981 0%, #059669 100%); border: 1px solid rgba(255,255,255,0.12); color: #fff; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 22px rgba(16,185,129,0.35); transition: all 0.16s ease; }
+        .pcm-capture-btn { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(180deg, #10b981 0%, #059669 100%); border: 1px solid rgba(255,255,255,0.12); color: #fff; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; box-shadow: 0 8px 22px rgba(16,185,129,0.35); transition: all 0.16s ease; }
         .pcm-capture-btn:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(16,185,129,0.45); filter: brightness(1.06); }
         .pcm-capture-btn:active { transform: translateY(0); }
-        .pcm-reconnect-btn { display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: rgba(255,255,255,0.85); font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; transition: all 0.16s ease; }
+        .pcm-reconnect-btn { display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: rgba(255,255,255,0.85); font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; transition: all 0.16s ease; }
         .pcm-reconnect-btn:hover { background: rgba(255,255,255,0.12); color: #fff; transform: translateY(-1px); box-shadow: 0 8px 18px rgba(0,0,0,0.25); }
         .pcm-reconnect-btn:active { transform: translateY(0); }
         .pcm-reconnect-btn.spinning svg { animation: pcmSpin 0.9s linear infinite; }
@@ -7098,10 +7098,10 @@
         .pcm-canvas { width: 100%; height: 100%; display: block; }
         .pcm-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; gap: 10px; background: linear-gradient(180deg, rgba(7,11,22,0.55), rgba(7,11,22,0.85)); backdrop-filter: blur(2px); }
         .pcm-placeholder-icon { width: 64px; height: 64px; border-radius: 16px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.75); }
-        .pcm-placeholder-title { font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0.02em; color: #fff; }
-        .pcm-placeholder-sub { font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 400; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,0.65); max-width: 560px; }
-        .pcm-placeholder-hint { font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 500; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(74,144,217,0.95); background: rgba(74,144,217,0.14); border: 1px solid rgba(74,144,217,0.25); padding: 6px 10px; border-radius: 999px; margin-top: 4px; }
-        .pcm-overlay { position: absolute; bottom: 10px; left: 10px; display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.10); color: #fff; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 6px 10px; border-radius: 999px; backdrop-filter: blur(8px); }
+        .pcm-placeholder-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0.02em; color: #fff; }
+        .pcm-placeholder-sub { font-family: 'Space Grotesk', sans-serif; font-weight: 400; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,0.65); max-width: 560px; }
+        .pcm-placeholder-hint { font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(74,144,217,0.95); background: rgba(74,144,217,0.14); border: 1px solid rgba(74,144,217,0.25); padding: 6px 10px; border-radius: 999px; margin-top: 4px; }
+        .pcm-overlay { position: absolute; bottom: 10px; left: 10px; display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.10); color: #fff; font-family: 'Space Grotesk', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 6px 10px; border-radius: 999px; backdrop-filter: blur(8px); }
         .pcm-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 6px rgba(34,197,94,0.18); animation: pcmPulse 1.4s infinite; }
         .pcm-meta { color: rgba(255,255,255,0.75); font-weight: 500; letter-spacing: 0.02em; text-transform: none; }
         @keyframes pcmPulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.35); } 70% { box-shadow: 0 0 0 8px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
@@ -7109,13 +7109,13 @@
         /* PCM areas: CM stays the archive-maker; Access is a separate
            operator-controlled browser surface with its own WS/session. */
         .pcm-area-tabs { display:flex; gap:6px; padding:4px; width:max-content; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.09); border-radius:12px; }
-        .pcm-area-tab { border:0; border-radius:9px; padding:8px 15px; color:rgba(255,255,255,.62); background:transparent; cursor:pointer; font:600 12px Helvetica Neue,Georgia,serif; letter-spacing:.03em; }
+        .pcm-area-tab { border:0; border-radius:9px; padding:8px 15px; color:rgba(255,255,255,.62); background:transparent; cursor:pointer; font:600 12px Space Grotesk,sans-serif; letter-spacing:.03em; }
         .pcm-area-tab.active { color:#0f172a; background:#fff; box-shadow:0 2px 10px rgba(0,0,0,.25); }
         .pcm-area-panel { min-height:0; }
         .access-layout { display:flex; flex-direction:column; gap:14px; height:calc(100vh - 192px); min-height:500px; }
         .access-session-tabsbar { display:flex; align-items:center; gap:8px; min-height:42px; padding:5px; overflow-x:auto; border:1px solid rgba(255,255,255,.08); border-radius:12px; background:rgba(18,24,39,.86); box-shadow:0 8px 24px rgba(0,0,0,.25); scrollbar-width:thin; }
         .access-session-tabs { display:flex; align-items:center; gap:5px; flex:1 1 auto; min-width:0; overflow-x:auto; scrollbar-width:thin; }
-        .access-session-tab { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; max-width:230px; padding:8px 9px 8px 12px; border:1px solid rgba(255,255,255,.09); border-radius:9px; color:rgba(255,255,255,.68); background:rgba(255,255,255,.045); cursor:pointer; font:600 11px Helvetica Neue,Georgia,serif; transition:background .14s ease,border-color .14s ease,color .14s ease; }
+        .access-session-tab { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; max-width:230px; padding:8px 9px 8px 12px; border:1px solid rgba(255,255,255,.09); border-radius:9px; color:rgba(255,255,255,.68); background:rgba(255,255,255,.045); cursor:pointer; font:600 11px Space Grotesk,sans-serif; transition:background .14s ease,border-color .14s ease,color .14s ease; }
         .access-session-tab:hover { color:#fff; background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.18); }
         .access-session-tab.active { color:#fff; background:linear-gradient(180deg,rgba(74,144,217,.38),rgba(53,122,184,.22)); border-color:rgba(112,181,255,.72); box-shadow:0 3px 14px rgba(74,144,217,.2); }
         .access-session-tab-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -7123,27 +7123,27 @@
         .access-session-tab-state.disconnected { background:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.15); }
         .access-session-tab-close { display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; margin-left:1px; border:0; border-radius:5px; color:rgba(255,255,255,.5); background:transparent; cursor:pointer; font-size:16px; line-height:1; }
         .access-session-tab-close:hover { color:#fff; background:rgba(239,68,68,.28); }
-        .access-session-empty { padding:8px 11px; color:rgba(255,255,255,.46); font:500 11px Helvetica Neue,Georgia,serif; white-space:nowrap; }
-        .access-new-tab-btn { display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; padding:8px 11px; border:1px dashed rgba(255,255,255,.22); border-radius:8px; color:rgba(255,255,255,.72); background:transparent; cursor:pointer; font:700 11px Helvetica Neue,Georgia,serif; }
+        .access-session-empty { padding:8px 11px; color:rgba(255,255,255,.46); font:500 11px Space Grotesk,sans-serif; white-space:nowrap; }
+        .access-new-tab-btn { display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; padding:8px 11px; border:1px dashed rgba(255,255,255,.22); border-radius:8px; color:rgba(255,255,255,.72); background:transparent; cursor:pointer; font:700 11px Space Grotesk,sans-serif; }
         .access-new-tab-btn:hover { color:#fff; background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.42); }
         .access-topbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:12px 14px; border:1px solid rgba(255,255,255,.08); border-radius:14px; background:rgba(18,24,39,.9); box-shadow:0 8px 24px rgba(0,0,0,.35); }
-        .access-user-select { min-width:220px; max-width:310px; padding:10px 12px; border-radius:9px; border:1px solid rgba(255,255,255,.12); color:#e6e9f2; background:rgba(255,255,255,.06); outline:none; font:600 12px Helvetica Neue,Georgia,serif; }
+        .access-user-select { min-width:220px; max-width:310px; padding:10px 12px; border-radius:9px; border:1px solid rgba(255,255,255,.12); color:#e6e9f2; background:rgba(255,255,255,.06); outline:none; font:600 12px Space Grotesk,sans-serif; }
         .access-urlbar { display:flex; flex:1 1 360px; min-width:240px; gap:7px; }
-        .access-url-input { flex:1; min-width:0; padding:10px 12px; color:#e6e9f2; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:9px; outline:none; font:500 12px Helvetica Neue,Georgia,serif; }
-        .access-btn { padding:10px 14px; border:1px solid rgba(255,255,255,.12); border-radius:9px; color:#fff; background:rgba(255,255,255,.08); cursor:pointer; font:700 11px Helvetica Neue,Georgia,serif; letter-spacing:.04em; text-transform:uppercase; }
+        .access-url-input { flex:1; min-width:0; padding:10px 12px; color:#e6e9f2; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:9px; outline:none; font:500 12px Space Grotesk,sans-serif; }
+        .access-btn { padding:10px 14px; border:1px solid rgba(255,255,255,.12); border-radius:9px; color:#fff; background:rgba(255,255,255,.08); cursor:pointer; font:700 11px Space Grotesk,sans-serif; letter-spacing:.04em; text-transform:uppercase; }
         .access-btn.primary { background:linear-gradient(180deg,#4a90d9,#357ab8); border-color:transparent; }
         .access-btn.danger { background:rgba(239,68,68,.16); color:#fecaca; }
         .access-btn.active { background:#facc15; color:#111827; }
-        .access-status { flex:0 0 auto; color:rgba(255,255,255,.55); font:500 11px Helvetica Neue,Georgia,serif; }
+        .access-status { flex:0 0 auto; color:rgba(255,255,255,.55); font:500 11px Space Grotesk,sans-serif; }
         .access-stage { position:relative; flex:1; min-height:380px; display:flex; overflow:auto; border:1px solid rgba(255,255,255,.08); border-radius:14px; background:radial-gradient(1200px 600px at 20% 0%,rgba(74,144,217,.12),transparent 60%),linear-gradient(180deg,rgba(18,24,39,.95),rgba(10,14,24,.98)); box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 12px 36px rgba(0,0,0,.4); }
         .access-stage:fullscreen { border-radius:0; border:none; background:#000; width:100vw; height:100vh; padding:0; margin:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }
         .access-stage:fullscreen .access-frame { box-shadow:none; border-radius:0; width:min(100vw, calc(100vh * (16 / 9))) !important; height:min(100vh, calc(100vw * (9 / 16))) !important; max-width:100vw; max-height:100vh; }
         .access-stage .access-fs-btn { position:absolute; top:12px; right:12px; z-index:10; }
         .access-frame { position:relative; margin:auto; flex:none; line-height:0; overflow:hidden; border-radius:10px; box-shadow:0 18px 50px -14px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.08); }
         .access-image { display:block; width:100%; height:100%; object-fit:fill; user-select:none; -webkit-user-drag:none; image-rendering:auto; outline:none; cursor:default; touch-action:none; }
-        .access-placeholder { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; color:rgba(255,255,255,.65); text-align:center; padding:24px; font:500 12px Helvetica Neue,Georgia,serif; }
+        .access-placeholder { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; color:rgba(255,255,255,.65); text-align:center; padding:24px; font:500 12px Space Grotesk,sans-serif; }
         .access-placeholder strong { color:#fff; font-size:15px; }
-        .access-help { color:rgba(255,255,255,.46); font:500 10px Helvetica Neue,Georgia,serif; letter-spacing:.02em; }
+        .access-help { color:rgba(255,255,255,.46); font:500 10px Space Grotesk,sans-serif; letter-spacing:.02em; }
 
         /* PCM capture modal — premium blurred overlay like KLG profile modal */
         .pcm-modal-overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: flex-start; flex-direction: column; padding-top: 80px; background: rgba(3,7,18,0.55); backdrop-filter: blur(12px) saturate(1.15); -webkit-backdrop-filter: blur(12px) saturate(1.15); z-index: 10050; opacity: 0; transition: opacity 0.22s ease; }
@@ -7151,25 +7151,25 @@
         .pcm-modal { width: min(560px, calc(100vw - 24px)); background: linear-gradient(180deg, rgba(20,26,44,0.96), rgba(14,19,32,0.98)); border: 1px solid rgba(255,255,255,0.10); border-radius: 18px; box-shadow: 0 24px 64px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08); overflow: hidden; transform: translateY(10px) scale(0.98); transition: transform 0.22s cubic-bezier(0.22,1,0.36,1); }
         .pcm-modal-overlay.open .pcm-modal { transform: translateY(0) scale(1); }
         .pcm-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-        .pcm-modal-title { display: flex; align-items: center; gap: 10px; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 700; font-size: 14px; letter-spacing: 0.02em; color: #fff; }
+        .pcm-modal-title { display: flex; align-items: center; gap: 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 14px; letter-spacing: 0.02em; color: #fff; }
         .pcm-modal-title svg { color: #4a90d9; }
         .pcm-modal-close { width: 36px; height: 36px; border-radius: 10px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); display: flex; align-items: center; justify-content: center; cursor: pointer; color: rgba(255,255,255,0.75); transition: all 0.16s ease; }
         .pcm-modal-close:hover { background: rgba(255,255,255,0.10); color: #fff; transform: scale(1.04); }
         .pcm-modal-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
-        .pcm-modal-body label { font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 600; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.60); }
-        .pcm-modal-input { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; padding: 11px 12px; color: #fff; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 500; font-size: 13px; outline: none; transition: border-color 0.14s ease, background 0.14s ease; }
+        .pcm-modal-body label { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.60); }
+        .pcm-modal-input { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; padding: 11px 12px; color: #fff; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 13px; outline: none; transition: border-color 0.14s ease, background 0.14s ease; }
         .pcm-modal-input:focus { border-color: rgba(74,144,217,0.55); background: rgba(255,255,255,0.08); }
         .pcm-modal-input::placeholder { color: rgba(255,255,255,0.35); }
-        .pcm-modal-hint { font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 12px; }
+        .pcm-modal-hint { font-family: 'Space Grotesk', sans-serif; font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 12px; }
         .pcm-modal-footer { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 20px 18px; border-top: 1px solid rgba(255,255,255,0.06); }
-        .pcm-modal-btn { font-family: Helvetica Neue, Helvetica, Arial, sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s ease; }
+        .pcm-modal-btn { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s ease; }
         .pcm-modal-btn.secondary { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.10); color: #fff; }
         .pcm-modal-btn.secondary:hover { background: rgba(255,255,255,0.12); }
         .pcm-modal-btn.primary { background: linear-gradient(180deg, #4a90d9, #357ab8); border-color: rgba(255,255,255,0.14); color: #fff; box-shadow: 0 8px 20px rgba(74,144,217,0.30); }
         .pcm-modal-btn.primary:hover { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(74,144,217,0.40); }
 
-        /* Ensure the product font only — override any mono fallbacks */
-        .lpv-modal-body, .lpv-version-row, .lpv-red-rule, .term-badge, .pcm-modal-body { font-family: Helvetica Neue, Helvetica, Arial, sans-serif !important; }
+        /* Ensure Space Grotesk only — override any mono fallbacks */
+        .lpv-modal-body, .lpv-version-row, .lpv-red-rule, .term-badge, .pcm-modal-body { font-family: 'Space Grotesk', sans-serif !important; }
 
         /* CDP screencast panel — replaces old screenshot poll */
         .screenshot-panel.cdp-mode #screenshot-status { color: #22c55e; }
@@ -7876,8 +7876,8 @@
            at: the server's own URL, a custom client.html URL, or the
            origin serving this page. Stacks to one column on a phone. */
         .lpv-linkbase{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0;padding:7px 9px;border:1px dashed rgba(180,142,255,0.25);border-radius:10px;background:rgba(180,142,255,0.06);}
-        .lpv-linkbase-label{font-size:11px;font-weight:600;color:var(--text-muted);font-family:Helvetica Neue, Helvetica, Arial, sans-serif;display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;}
-        .lpv-linkbase select,.lpv-linkbase input{font-size:11px;padding:5px 7px;min-width:0;border:1px solid var(--border);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-family:Helvetica Neue, Helvetica, Arial, sans-serif;}
+        .lpv-linkbase-label{font-size:11px;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;}
+        .lpv-linkbase select,.lpv-linkbase input{font-size:11px;padding:5px 7px;min-width:0;border:1px solid var(--border);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-family:'Space Grotesk',sans-serif;}
         .lpv-linkbase select{flex:0 1 auto;cursor:pointer;}
         .lpv-linkbase input{flex:1 1 170px;}
         .lpv-linkbase input[hidden]{display:none!important;}
@@ -7942,7 +7942,7 @@
             + '[data-pc-cast].fixiis-cast-blocked > *:not(.' + NOTE + '){display:none!important}'
             + '.' + NOTE + '{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;'
             + 'flex-direction:column;gap:10px;background:#04060c;color:#eef2ff;text-align:center;'
-            + "padding:20px;box-sizing:border-box;font-family:Helvetica Neue,Georgia,serif}"
+            + "padding:20px;box-sizing:border-box;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}"
             + '.' + NOTE + ' .k{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#7b8cff}'
             + '.' + NOTE + ' .t{font-size:22px;font-weight:700;line-height:1.25}'
             + '.' + NOTE + ' .s{font-size:13px;line-height:1.5;max-width:300px;color:#9aa7c7}';
@@ -7994,1016 +7994,6 @@
         window.__FIXIIS_CAST_PAINT__ = paint;
     })();
     </script>
-    <!-- ================================================================
-         REACTOR SHELL - the cockpit skin, applied last so it wins
-         the cascade. Presentation only: no id or class is renamed and
-         no script is touched. See the block's own header for the rules.
-         ================================================================ -->
-    <style id="shf-reactor-shell">
-/* ============================================================================
-   REACTOR SHELL — the admin cockpit skin
-   ----------------------------------------------------------------------------
-   One self-contained layer, applied last so it wins the cascade, that turns
-   Admin.html into the reference design: black-red armour plating, bevel-cut
-   panels with a lit edge, cyan instrument accents, a blueprint stage behind
-   the live view, and Helvetica (oblique) for the whole chrome.
-
-   Rules followed here, because the panel has 20k lines of working JS under it:
-
-     * NO renames and NO removals. Every id, class and data-attribute the
-       scripts reach for is untouched; this file only describes how they look.
-     * Nothing here fetches anything: no image, no font file, no icon CDN.
-       The stage art, the sentinel and the arc reactor are drawn inline.
-     * The light theme stays a real theme (a daylight cockpit), not a broken
-       one: every token has a light value.
-     * prefers-reduced-motion stops the rotation and the pulsing; the design
-       still reads without them.
-   ========================================================================= */
-
-/* --- 1. Tokens ----------------------------------------------------------- */
-:root {
-    --rx-void:      #05060a;
-    --rx-ink:       #080a10;
-    --rx-panel:     #0b0e16;
-    --rx-panel-2:   #10141f;
-    --rx-well:      #06080e;
-
-    --rx-red:       #ff2d3f;
-    --rx-red-hot:   #ff5a67;
-    --rx-red-deep:  #a80f1e;
-    --rx-red-line:  rgba(255, 45, 63, .42);
-    --rx-red-faint: rgba(255, 45, 63, .16);
-    --rx-red-glow:  rgba(255, 45, 63, .45);
-
-    --rx-cyan:      #2fc8ff;
-    --rx-cyan-soft: #8be6ff;
-    --rx-cyan-faint:rgba(47, 200, 255, .18);
-    --rx-green:     #29d977;
-
-    --rx-text:      #e9efff;
-    --rx-text-dim:  #a7afc6;
-    --rx-muted:     #79819a;
-
-    --rx-bevel:     10px;
-    --rx-cut: polygon(
-        var(--rx-bevel) 0, 100% 0,
-        100% calc(100% - var(--rx-bevel)), calc(100% - var(--rx-bevel)) 100%,
-        0 100%, 0 var(--rx-bevel));
-
-    --rx-font: Helvetica Neue, Helvetica, Arial, sans-serif;
-    --rx-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-
-    /* The panel's own theme variables, retuned to the armour palette. Every
-       rule that already says var(--accent) or var(--bg-card) turns red and
-       black with this, without touching 20k lines. */
-    --bg-primary:   #05060a;
-    --bg-secondary: #0a0c13;
-    --bg-card:      #0d1018;
-    --bg-hover:     #161a26;
-    --bg-input:     #0a0d15;
-    --text-primary: #e9efff;
-    --text-secondary: #b9c1d6;
-    --text-muted:   #79819a;
-    --accent:       #ff2d3f;
-    --accent-hover: #ff5a67;
-    --success:      #29d977;
-    --warning:      #ffb020;
-    --danger:       #ff2d3f;
-    --border:       rgba(255, 45, 63, .26);
-    --shadow:       rgba(255, 45, 63, .18);
-    --gradient-start: #ff2d3f;
-    --gradient-end:   #a80f1e;
-    --card-shadow:  0 18px 44px -24px rgba(255, 45, 63, .55);
-}
-
-[data-theme="light"] {
-    --rx-void:      #f2f4f9;
-    --rx-ink:       #ffffff;
-    --rx-panel:     #ffffff;
-    --rx-panel-2:   #f6f8fc;
-    --rx-well:      #eef1f7;
-
-    --rx-red:       #d4091c;
-    --rx-red-hot:   #b40616;
-    --rx-red-deep:  #8c0714;
-    --rx-red-line:  rgba(212, 9, 28, .34);
-    --rx-red-faint: rgba(212, 9, 28, .10);
-    --rx-red-glow:  rgba(212, 9, 28, .22);
-
-    --rx-cyan:      #0b7fb0;
-    --rx-cyan-soft: #0a6a94;
-    --rx-cyan-faint:rgba(11, 127, 176, .14);
-    --rx-green:     #0f9b52;
-
-    --rx-text:      #0f1420;
-    --rx-text-dim:  #414a5f;
-    --rx-muted:     #6b7387;
-
-    --bg-primary:   #f2f4f9;
-    --bg-secondary: #ffffff;
-    --bg-card:      #ffffff;
-    --bg-hover:     #f0f3f9;
-    --bg-input:     #f7f9fc;
-    --text-primary: #0f1420;
-    --text-secondary: #414a5f;
-    --text-muted:   #6b7387;
-    --accent:       #d4091c;
-    --accent-hover: #b40616;
-    --success:      #0f9b52;
-    --warning:      #a86a00;
-    --danger:       #d4091c;
-    --border:       rgba(212, 9, 28, .22);
-    --shadow:       rgba(15, 20, 32, .12);
-    --gradient-start: #d4091c;
-    --gradient-end:   #8c0714;
-    --card-shadow:  0 18px 44px -24px rgba(15, 20, 32, .35);
-}
-
-/* --- 2. Type: Helvetica, oblique ---------------------------------------- */
-/* The whole cockpit is set oblique, which is the reference's character. Long
-   form reading surfaces (logs, terminals, text the operator edits) stay
-   upright: a slanted monospace block is harder to scan, and this panel is
-   where the operator does the reading. */
-html, body,
-button, input, select, option, label, span, a, div, h1, h2, h3, h4, h5, h6,
-th, td, li, p, strong, em, small, summary, legend {
-    font-family: var(--rx-font);
-}
-
-body,
-button, input, select, label,
-.top-tab, .display-subtab, .btn, .sidebar-title, .panel-title,
-.detail-label, .detail-value, .logo-text, .placeholder-text,
-.placeholder-subtext, .stats-item, .keepalive-btn, .logout-btn,
-.screenshot-meta, .client-card, .empty-text, .form-label,
-.profiles-stat-label, .profiles-stat-value, .modal-title, .toast {
-    font-style: italic;
-}
-
-/* Upright by intent: machine output and anything being typed as prose. */
-textarea, pre, code, kbd, samp,
-.terminal, .terminal *, .timeline-terminal, .timeline-terminal *,
-.term-title, .term-kv, .term-comment, .term-prompt,
-.log-content, .log-details, .log-time, .log-title,
-.lpv-code, .mono, [class*="monospace"] {
-    font-family: var(--rx-mono);
-    font-style: normal;
-}
-
-/* Machine output last, so it wins over the `*` reset above: the panel forces
-   one family on everything with !important, and a terminal, a log tail and a
-   code field are the places where that is wrong. */
-textarea, pre, code, kbd, samp,
-.terminal, .terminal *, .timeline-terminal, .timeline-terminal *,
-.log-content, .log-details, .log-time, .log-title, .lpv-code, .mono {
-    font-family: var(--rx-mono) !important;
-    font-style: normal !important;
-}
-
-/* --- 3. The room --------------------------------------------------------- */
-html, body {
-    background: var(--rx-void);
-    color: var(--rx-text);
-}
-
-body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    background:
-        radial-gradient(900px 520px at 6% 106%, rgba(168, 15, 30, .30), transparent 62%),
-        radial-gradient(1100px 620px at 104% -10%, rgba(255, 45, 63, .13), transparent 58%),
-        radial-gradient(700px 420px at 46% 118%, rgba(47, 200, 255, .07), transparent 60%),
-        linear-gradient(180deg, #05060a 0%, #070910 46%, #05060a 100%);
-}
-
-/* A hairline technical grid, so large empty areas read as a blueprint rather
-   than a void. Two line weights, 32px and 160px. */
-body::after {
-    content: '';
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    opacity: .5;
-    background-image:
-        linear-gradient(rgba(120, 170, 230, .045) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(120, 170, 230, .045) 1px, transparent 1px),
-        linear-gradient(rgba(255, 60, 80, .05) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 60, 80, .05) 1px, transparent 1px);
-    background-size: 32px 32px, 32px 32px, 160px 160px, 160px 160px;
-}
-
-[data-theme="light"] body::before {
-    background:
-        radial-gradient(900px 520px at 6% 106%, rgba(212, 9, 28, .10), transparent 62%),
-        radial-gradient(1100px 620px at 104% -10%, rgba(212, 9, 28, .06), transparent 58%),
-        linear-gradient(180deg, #f6f8fc 0%, #eef1f8 100%);
-}
-[data-theme="light"] body::after { opacity: .35; }
-
-.main-app { position: relative; z-index: 1; }
-
-/* --- 4. Header ----------------------------------------------------------- */
-.header {
-    height: 58px;
-    padding: 0 18px;
-    background:
-        linear-gradient(180deg, rgba(255, 45, 63, .10), transparent 70%),
-        linear-gradient(180deg, #0e111a 0%, #070910 100%);
-    border-bottom: 1px solid var(--rx-red-line);
-    box-shadow:
-        0 1px 0 rgba(255, 90, 103, .35),
-        0 10px 30px -18px rgba(255, 45, 63, .55),
-        inset 0 1px 0 rgba(255, 255, 255, .05);
-}
-
-/* A lit seam under the header, the way the armour panels are edged. */
-.header::after {
-    content: '';
-    position: absolute;
-    left: 0; right: 0; bottom: -1px;
-    height: 1px;
-    background: linear-gradient(90deg,
-        transparent 0%, var(--rx-red) 12%, rgba(255, 90, 103, .5) 50%,
-        var(--rx-red) 88%, transparent 100%);
-    opacity: .75;
-}
-
-.logo-section { gap: 12px; }
-
-/* The arc reactor mark: rings, a lit core, and a slow rotation that stops
-   for prefers-reduced-motion. Pure CSS, no image. */
-.logo-icon {
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background:
-        radial-gradient(circle at 50% 50%, #ffffff 0 16%, var(--rx-cyan) 26%, rgba(47, 200, 255, .22) 46%, transparent 62%),
-        conic-gradient(from 0deg, #12202c, #1d3d4f, #12202c);
-    box-shadow:
-        0 0 0 1px rgba(139, 230, 255, .55),
-        0 0 14px rgba(47, 200, 255, .65),
-        inset 0 0 10px rgba(255, 255, 255, .35);
-    position: relative;
-    animation: rx-pulse 4.5s ease-in-out infinite;
-}
-.logo-icon::before {
-    content: '';
-    position: absolute;
-    inset: -4px;
-    border-radius: 50%;
-    border: 1px solid rgba(47, 200, 255, .35);
-    border-top-color: rgba(255, 255, 255, .8);
-    animation: rx-spin 9s linear infinite;
-}
-.logo-icon svg { width: 18px; height: 18px; fill: #041018; position: relative; z-index: 1; }
-
-/* The header title. The panel's own rule paints it with a gradient through
-   `background-clip: text` and a transparent fill, which would also eat the
-   glow below - so the fill is restored to a solid white here. */
-.header .logo-text {
-    font-size: 28px;
-    font-weight: 800;
-    letter-spacing: .01em;
-    color: #fff;
-    background: none !important;
-    -webkit-background-clip: border-box;
-    background-clip: border-box;
-    -webkit-text-fill-color: #fff;
-    text-shadow:
-        0 0 16px rgba(255, 45, 63, .85),
-        0 0 34px rgba(255, 45, 63, .45),
-        0 1px 0 rgba(0, 0, 0, .6);
-}
-
-/* Instrument readouts --------------------------------------------------- */
-.header-stats-bar {
-    gap: 8px;
-    padding: 4px 6px;
-    border-radius: 4px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, .04), rgba(0, 0, 0, .25));
-    border: 1px solid rgba(255, 45, 63, .18);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
-}
-
-.stats-item {
-    font-size: 11.5px;
-    font-weight: 700;
-    color: var(--rx-text-dim);
-    padding: 3px 7px;
-    letter-spacing: .02em;
-}
-.stats-item svg { width: 13px; height: 13px; fill: var(--rx-cyan); filter: drop-shadow(0 0 4px rgba(47, 200, 255, .6)); }
-.stats-item.status { color: var(--rx-green); }
-.stats-item .status-dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--rx-green);
-    box-shadow: 0 0 9px var(--rx-green);
-}
-
-.theme-toggle {
-    width: 40px; height: 21px;
-    border-radius: 999px;
-    background: #0a0d15;
-    border: 1px solid rgba(255, 45, 63, .35);
-    box-shadow: inset 0 0 12px rgba(0, 0, 0, .8);
-}
-.theme-toggle::before {
-    width: 15px; height: 15px;
-    background: radial-gradient(circle at 35% 30%, #fff, #cfd7e6 60%, #93a0b8);
-    box-shadow: 0 0 10px rgba(255, 255, 255, .5);
-}
-.theme-toggle.switched { background: #131820; }
-
-/* Command buttons ------------------------------------------------------- */
-.keepalive-btn, .logout-btn {
-    height: 30px;
-    padding: 0 14px;
-    border-radius: 3px;
-    font-size: 12.5px;
-    font-weight: 700;
-    letter-spacing: .02em;
-    gap: 7px;
-    clip-path: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px);
-    transition: filter .16s ease, box-shadow .16s ease, transform .1s ease;
-}
-.keepalive-btn svg, .logout-btn svg { width: 14px; height: 14px; }
-
-.keepalive-btn {
-    color: #d8ffe9;
-    background: linear-gradient(180deg, #128a45 0%, #0a5c2e 100%);
-    border: 1px solid rgba(41, 217, 119, .55);
-    box-shadow: 0 0 16px -4px rgba(41, 217, 119, .7), inset 0 1px 0 rgba(255, 255, 255, .18);
-}
-.keepalive-btn:hover { filter: brightness(1.14); }
-.keepalive-btn.active {
-    background: linear-gradient(180deg, #22c55e 0%, #0f7a3d 100%);
-    box-shadow: 0 0 22px -2px rgba(41, 217, 119, .85), inset 0 1px 0 rgba(255, 255, 255, .3);
-}
-
-.logout-btn {
-    color: #ffe6e9;
-    background: linear-gradient(180deg, #d01326 0%, #7d0a16 100%);
-    border: 1px solid rgba(255, 45, 63, .6);
-    box-shadow: 0 0 16px -4px rgba(255, 45, 63, .7), inset 0 1px 0 rgba(255, 255, 255, .16);
-}
-.logout-btn:hover { filter: brightness(1.15); }
-.keepalive-btn:active, .logout-btn:active { transform: translateY(1px); }
-
-/* --- 5. Left rail: active sessions -------------------------------------- */
-.sidebar {
-    background:
-        linear-gradient(180deg, rgba(255, 45, 63, .07) 0%, transparent 34%),
-        linear-gradient(180deg, #080a11 0%, #05070c 100%);
-    z-index: 1;
-    border-right: 1px solid var(--rx-red-line);
-    box-shadow: 12px 0 34px -28px rgba(255, 45, 63, .8), inset -1px 0 0 rgba(255, 45, 63, .12);
-    padding: 14px 10px 16px;
-    position: relative;
-}
-
-.sidebar-title {
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: .12em;
-    color: #ffd9dd;
-    padding: 7px 10px;
-    margin-bottom: 14px;
-    background: linear-gradient(180deg, rgba(255, 45, 63, .26), rgba(255, 45, 63, .06));
-    border: 1px solid var(--rx-red-line);
-    clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
-    text-shadow: 0 0 12px rgba(255, 45, 63, .8);
-}
-
-.sidebar .client-list { position: relative; z-index: 3; }
-
-.empty-state { padding: 26px 8px 12px; }
-
-.empty-icon {
-    width: 76px;
-    height: 76px;
-    padding: 18px;
-    box-sizing: content-box;
-    border-radius: 50%;
-    fill: var(--rx-cyan);
-    margin: 0 auto 14px;
-    background: radial-gradient(circle at 50% 38%, rgba(47, 200, 255, .16), rgba(4, 8, 14, .9) 70%);
-    border: 1px solid rgba(47, 200, 255, .45);
-    box-shadow:
-        0 0 0 6px rgba(47, 200, 255, .05),
-        0 0 26px -6px rgba(47, 200, 255, .7),
-        inset 0 0 22px rgba(47, 200, 255, .18);
-    filter: drop-shadow(0 0 8px rgba(47, 200, 255, .5));
-}
-
-.empty-text {
-    font-size: 13px;
-    color: var(--rx-text-dim);
-    line-height: 1.45;
-}
-
-/* Client cards inherit the plating. */
-.client-card {
-    background: linear-gradient(180deg, var(--rx-panel-2), var(--rx-panel));
-    border: 1px solid rgba(255, 45, 63, .22);
-    border-radius: 3px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
-    transition: border-color .16s ease, box-shadow .16s ease, transform .1s ease;
-}
-.client-card:hover {
-    border-color: rgba(255, 45, 63, .55);
-    box-shadow: 0 0 20px -8px var(--rx-red-glow), inset 0 1px 0 rgba(255, 255, 255, .07);
-}
-.client-card.active, .client-card.selected {
-    border-color: var(--rx-red);
-    box-shadow: 0 0 22px -6px var(--rx-red-glow), inset 0 0 0 1px rgba(255, 45, 63, .25);
-}
-
-/* --- 6. Navigation rows -------------------------------------------------- */
-.top-tabs {
-    background:
-        linear-gradient(180deg, rgba(255, 45, 63, .07), transparent 80%),
-        #080a11;
-    border-bottom: 1px solid var(--rx-red-line);
-    padding: 7px 14px 8px;
-    gap: 7px;
-    box-shadow: inset 0 -1px 0 rgba(255, 45, 63, .18);
-}
-
-.top-tab {
-    height: 32px;
-    padding: 0 14px;
-    gap: 7px;
-    font-size: 11.5px;
-    font-weight: 700;
-    letter-spacing: .015em;
-    color: var(--rx-text-dim);
-    background: linear-gradient(180deg, #141a26 0%, #0a0d15 100%);
-    border: 1px solid rgba(255, 45, 63, .22);
-    border-bottom: none;
-    border-radius: 0;
-    clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
-    transition: color .15s ease, background .15s ease, box-shadow .15s ease;
-}
-.top-tab svg { width: 14px; height: 14px; fill: currentColor; opacity: .9; }
-
-.top-tab:hover {
-    color: #fff;
-    background: linear-gradient(180deg, #23283a 0%, #12161f 100%);
-    box-shadow: inset 0 0 0 1px rgba(255, 45, 63, .35);
-}
-
-.top-tab.active {
-    color: #fff;
-    background: linear-gradient(180deg, #ff3d4e 0%, #b40f1f 100%);
-    border-color: rgba(255, 120, 130, .8);
-    box-shadow:
-        0 0 24px -6px rgba(255, 45, 63, .95),
-        inset 0 1px 0 rgba(255, 255, 255, .35);
-    text-shadow: 0 0 10px rgba(255, 255, 255, .55);
-}
-
-/* Sub-tabs (Live View / Dashboard) -------------------------------------- */
-.display-subtabs {
-    gap: 8px;
-    padding: 8px 0 10px;
-    border-bottom: 1px solid rgba(255, 45, 63, .16);
-    margin-bottom: 12px;
-}
-
-.display-subtab {
-    height: 34px;
-    padding: 0 18px;
-    gap: 8px;
-    font-size: 12.5px;
-    font-weight: 700;
-    color: var(--rx-text-dim);
-    background: linear-gradient(180deg, #131826, #0a0d15);
-    border: 1px solid rgba(255, 45, 63, .22);
-    border-radius: 0;
-    clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
-    transition: color .15s ease, box-shadow .15s ease, background .15s ease;
-}
-.display-subtab svg { width: 15px; height: 15px; stroke: currentColor; }
-.display-subtab:hover { color: #fff; }
-
-.display-subtab.active {
-    color: #fff;
-    border-color: rgba(255, 120, 130, .75);
-    background: linear-gradient(180deg, rgba(255, 45, 63, .34), rgba(168, 15, 30, .22));
-    box-shadow: 0 0 22px -8px rgba(255, 45, 63, .9), inset 0 1px 0 rgba(255, 255, 255, .2);
-    text-shadow: 0 0 10px rgba(255, 45, 63, .7);
-}
-
-/* --- 7. The stage: Live View -------------------------------------------- */
-.main-content {
-    background:
-        radial-gradient(760px 420px at 50% 8%, rgba(47, 200, 255, .05), transparent 62%),
-        transparent;
-    padding: 0 14px 12px;
-}
-
-.screenshot-panel {
-    position: relative;
-    background: linear-gradient(180deg, #0b0e17 0%, #06080e 100%);
-    border: 1px solid var(--rx-red-line);
-    border-radius: 0;
-    padding: 12px 14px 14px;
-    clip-path: var(--rx-cut);
-    box-shadow:
-        0 0 0 1px rgba(255, 45, 63, .12),
-        0 0 34px -14px rgba(255, 45, 63, .8),
-        inset 0 0 46px -22px rgba(255, 45, 63, .5);
-}
-
-/* Corner brackets: the reference frames the stage with them. */
-.screenshot-panel::before,
-.screenshot-panel::after {
-    content: '';
-    position: absolute;
-    width: 26px;
-    height: 26px;
-    pointer-events: none;
-    border: 1px solid var(--rx-red);
-    filter: drop-shadow(0 0 6px var(--rx-red-glow));
-}
-.screenshot-panel::before { top: 6px; left: 6px; border-right: none; border-bottom: none; }
-.screenshot-panel::after { bottom: 6px; right: 6px; border-left: none; border-top: none; }
-
-.screenshot-panel .panel-title {
-    margin: 0 0 10px;
-    padding: 0 4px 8px;
-    border-bottom: 1px solid rgba(255, 45, 63, .18);
-    color: #fff;
-}
-
-.screenshot-panel .panel-title > span:first-child {
-    font-size: 1rem;
-    font-weight: 800;
-    letter-spacing: .01em;
-    color: #ffe9ec;
-    text-shadow: 0 0 16px rgba(255, 45, 63, .55);
-}
-.screenshot-panel .panel-title > span:first-child svg {
-    fill: var(--rx-red);
-    filter: drop-shadow(0 0 8px var(--rx-red-glow));
-}
-
-/* The status pill: "Waiting for client selection" / "Streaming" */
-#screenshot-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 13px;
-    font-size: 11.5px;
-    font-weight: 700;
-    color: #c6ffd9;
-    background: linear-gradient(180deg, rgba(41, 217, 119, .2), rgba(8, 40, 24, .55));
-    border: 1px solid rgba(41, 217, 119, .5);
-    border-radius: 999px;
-    box-shadow: 0 0 16px -6px rgba(41, 217, 119, .9), inset 0 1px 0 rgba(255, 255, 255, .12);
-}
-#screenshot-status::before {
-    content: '';
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: var(--rx-green);
-    box-shadow: 0 0 10px var(--rx-green);
-    animation: rx-blink 2.4s ease-in-out infinite;
-}
-
-.screenshot-wrapper {
-    position: relative;
-    background:
-        radial-gradient(600px 300px at 50% 42%, rgba(47, 200, 255, .10), transparent 70%),
-        linear-gradient(180deg, #070b14 0%, #04070d 100%);
-    border: 1px solid rgba(90, 130, 190, .18);
-    border-radius: 0;
-    overflow: hidden;
-}
-
-/* The old diagonal hatch belonged to the previous look; the cockpit's stage is
-   a dot field over a map, so the hatch goes rather than sitting under it. */
-.screenshot-wrapper::before { background: none; opacity: 0; }
-
-/* The blueprint stage behind the empty state: dot field + dotted world map.
-   Both are drawn here, so a cockpit with no client still looks instrumented. */
-.lx-stage {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 1;
-    background-image:
-        radial-gradient(rgba(120, 190, 255, .16) 1px, transparent 1.3px),
-        radial-gradient(rgba(120, 190, 255, .07) 1px, transparent 1.3px);
-    background-size: 22px 22px, 11px 11px;
-    background-position: 0 0, 5px 5px;
-    opacity: .8;
-    mask-image: radial-gradient(78% 78% at 50% 46%, #000 30%, transparent 88%);
-    -webkit-mask-image: radial-gradient(78% 78% at 50% 46%, #000 30%, transparent 88%);
-}
-.lx-stage::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background:
-        repeating-linear-gradient(0deg, rgba(255, 45, 63, .05) 0 1px, transparent 1px 4px),
-        radial-gradient(circle at 50% 118%, rgba(47, 200, 255, .16), transparent 58%);
-}
-.lx-map {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    opacity: .5;
-    z-index: 1;
-    pointer-events: none;
-}
-
-.stream-placeholder { z-index: 3; padding: 26px 32px; grid-area: 1 / 1; }
-
-/* The instrument ring around the monitor glyph. */
-.placeholder-icon {
-    width: 168px;
-    height: 168px;
-    margin-bottom: 20px;
-    border-radius: 50%;
-    border: 1px solid rgba(47, 200, 255, .5);
-    background:
-        radial-gradient(circle at 50% 50%, rgba(47, 200, 255, .22) 0 22%, rgba(8, 26, 38, .55) 55%, transparent 70%),
-        conic-gradient(from 200deg, transparent 0deg, rgba(47, 200, 255, .35) 60deg, transparent 130deg);
-    box-shadow:
-        0 0 0 1px rgba(139, 230, 255, .22),
-        0 0 44px -8px rgba(47, 200, 255, .8),
-        inset 0 0 40px rgba(47, 200, 255, .18);
-    animation: none;
-    transition: box-shadow .3s ease;
-}
-
-.placeholder-icon::before {
-    content: '';
-    position: absolute;
-    inset: 12px;
-    border-radius: 50%;
-    border: 1px dashed rgba(47, 200, 255, .45);
-    animation: rx-spin 26s linear infinite;
-}
-.placeholder-icon::after {
-    content: '';
-    position: absolute;
-    inset: -14px;
-    border-radius: 50%;
-    background: none;
-    filter: none;
-    border: 1px solid rgba(47, 200, 255, .14);
-    box-shadow: 0 0 30px -6px rgba(47, 200, 255, .5);
-    animation: rx-spin 60s linear infinite reverse;
-}
-
-.placeholder-icon svg {
-    width: 56px;
-    height: 56px;
-    stroke: var(--rx-cyan-soft);
-    filter: drop-shadow(0 0 10px rgba(47, 200, 255, .85));
-    opacity: 1;
-}
-
-.stream-placeholder:hover .placeholder-icon {
-    transform: none;
-    border-color: rgba(139, 230, 255, .8);
-    box-shadow:
-        0 0 0 1px rgba(139, 230, 255, .4),
-        0 0 60px -6px rgba(47, 200, 255, .95),
-        inset 0 0 44px rgba(47, 200, 255, .24);
-}
-.stream-placeholder:hover .placeholder-icon svg { transform: none; }
-
-.placeholder-text {
-    font-size: 25px;
-    font-weight: 800;
-    letter-spacing: .02em;
-    color: #fff;
-    margin-bottom: 8px;
-    background: none;
-    -webkit-text-fill-color: currentColor;
-    text-shadow: 0 0 22px rgba(47, 200, 255, .55), 0 0 44px rgba(47, 200, 255, .25);
-}
-
-.placeholder-subtext {
-    font-size: 13.5px;
-    line-height: 1.55;
-    max-width: 340px;
-    color: var(--rx-text-dim);
-}
-
-/* The instrument strip under the stage. */
-.screenshot-meta {
-    margin-top: 10px;
-    padding: 9px 14px;
-    background: linear-gradient(180deg, rgba(47, 200, 255, .07), rgba(4, 8, 14, .85));
-    border: 1px solid rgba(47, 200, 255, .22);
-    border-radius: 0;
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--rx-cyan-soft);
-    letter-spacing: .02em;
-}
-.screenshot-meta span::before {
-    width: 7px; height: 7px;
-    background: var(--rx-cyan);
-    box-shadow: 0 0 10px var(--rx-cyan);
-    opacity: 1;
-}
-.screenshot-meta span:last-child::before { background: var(--rx-cyan); box-shadow: 0 0 10px var(--rx-cyan); }
-
-/* The maximise hint keeps its function, takes the palette. */
-.stream-max-hint {
-    border: 1px solid rgba(255, 45, 63, .35);
-    border-radius: 3px;
-    background: linear-gradient(180deg, rgba(20, 26, 38, .96), rgba(6, 8, 14, .96));
-    box-shadow: 0 0 26px -10px rgba(255, 45, 63, .9);
-}
-.max-hint-title { color: #fff; }
-.max-hint-sub { color: var(--rx-text-dim); }
-
-.stream-overlay .stream-status {
-    background: rgba(6, 12, 10, .82);
-    border: 1px solid rgba(41, 217, 119, .5);
-    border-radius: 999px;
-    box-shadow: 0 0 18px -6px rgba(41, 217, 119, .9);
-}
-.stream-status-text { color: #bdffd6; letter-spacing: .14em; }
-.stream-status-dot { background: var(--rx-green); box-shadow: 0 0 10px var(--rx-green); }
-
-.stream-fs-btn {
-    border: 1px solid rgba(255, 45, 63, .4);
-    background: rgba(6, 8, 14, .78);
-    border-radius: 3px;
-    color: #ffd9dd;
-    box-shadow: 0 0 18px -8px rgba(255, 45, 63, .9);
-}
-.stream-fs-btn:hover { background: rgba(255, 45, 63, .18); }
-
-/* The stage is sized by a subtraction that was tuned for a 44px header. The
-   cockpit header is 58px and the nav is a hair taller, so the constant moves
-   with it - otherwise the readout strip sits below the fold. */
-#display-sub-live .screenshot-panel { height: calc(100vh - 256px); }
-
-/* --- 7b. The sign-in sheet, in the same language ------------------------- */
-.login-overlay {
-    background:
-        radial-gradient(900px 520px at 50% 118%, rgba(255, 45, 63, .18), transparent 62%),
-        rgba(3, 4, 8, .94);
-    z-index: 9000;
-}
-.login-modal {
-    background: linear-gradient(180deg, #0b0e17 0%, #06080e 100%);
-    border: 1px solid var(--rx-red-line);
-    border-radius: 0;
-    clip-path: var(--rx-cut);
-    box-shadow:
-        0 0 0 1px rgba(255, 45, 63, .14),
-        0 0 60px -18px rgba(255, 45, 63, .95),
-        inset 0 0 50px -26px rgba(255, 45, 63, .6);
-}
-.login-title {
-    color: #ffe9ec;
-    font-style: italic;
-    text-shadow: 0 0 18px rgba(255, 45, 63, .5);
-}
-.login-btn {
-    color: #fff;
-    background: linear-gradient(180deg, #ff3d4e 0%, #a80f1e 100%);
-    border: 1px solid rgba(255, 120, 130, .8);
-    border-radius: 0;
-    clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
-    box-shadow: 0 0 26px -8px rgba(255, 45, 63, 1), inset 0 1px 0 rgba(255, 255, 255, .28);
-    font-style: italic;
-    letter-spacing: .04em;
-}
-.login-btn:hover { filter: brightness(1.1); }
-
-/* --- 8. Right rail: instruments ------------------------------------------ */
-.right-sidebar {
-    background:
-        linear-gradient(180deg, rgba(255, 45, 63, .06) 0%, transparent 30%),
-        linear-gradient(180deg, #080a11 0%, #05070c 100%);
-    z-index: 1;
-    border-left: 1px solid var(--rx-red-line);
-    box-shadow: -12px 0 34px -28px rgba(255, 45, 63, .8), inset 1px 0 0 rgba(255, 45, 63, .12);
-    padding: 14px 10px 16px;
-}
-
-.detail-section {
-    border: 1px solid rgba(255, 45, 63, .18);
-    background: linear-gradient(180deg, rgba(255, 255, 255, .025), rgba(0, 0, 0, .25));
-    padding: 4px 10px;
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-}
-
-.detail-row {
-    padding: 8px 0;
-    border-bottom: 1px dashed rgba(255, 45, 63, .22);
-}
-.detail-row:last-child { border-bottom: none; }
-
-.detail-label {
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--rx-muted);
-}
-.detail-value {
-    font-size: 12px;
-    font-weight: 700;
-    color: #eef3ff;
-}
-
-/* --- 9. Controls --------------------------------------------------------- */
-.btn {
-    height: 30px;
-    padding: 0 12px;
-    font-size: 12px;
-    font-weight: 700;
-    color: #e4e9f7;
-    background: linear-gradient(180deg, #161c29 0%, #0a0e16 100%);
-    border: 1px solid rgba(255, 45, 63, .3);
-    border-radius: 0;
-    clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
-    transition: border-color .15s ease, box-shadow .15s ease, background .15s ease, color .15s ease;
-}
-.btn svg { width: 13px; height: 13px; fill: currentColor; }
-.btn:hover {
-    color: #fff;
-    border-color: rgba(255, 45, 63, .65);
-    background: linear-gradient(180deg, #232a3b 0%, #121724 100%);
-    box-shadow: 0 0 18px -8px rgba(255, 45, 63, .9), inset 0 1px 0 rgba(255, 255, 255, .1);
-}
-.btn:active { transform: translateY(1px); }
-
-.btn.primary {
-    color: #fff;
-    background: linear-gradient(180deg, #ff3d4e 0%, #a80f1e 100%);
-    border-color: rgba(255, 120, 130, .85);
-    box-shadow: 0 0 22px -8px rgba(255, 45, 63, 1), inset 0 1px 0 rgba(255, 255, 255, .28);
-}
-.btn.primary:hover { filter: brightness(1.08); }
-
-.button-group { gap: 7px; }
-
-.url-input-small, .form-input, input[type="text"], input[type="password"],
-input[type="number"], input[type="search"], select, textarea {
-    background: #06080e;
-    border: 1px solid rgba(255, 45, 63, .28);
-    border-radius: 0;
-    color: #e9efff;
-    box-shadow: inset 0 0 16px rgba(0, 0, 0, .8);
-    transition: border-color .15s ease, box-shadow .15s ease;
-}
-.url-input-small:focus, .form-input:focus, input:focus, select:focus, textarea:focus {
-    outline: none;
-    border-color: var(--rx-red);
-    box-shadow: 0 0 0 1px rgba(255, 45, 63, .35), 0 0 20px -6px rgba(255, 45, 63, .9), inset 0 0 16px rgba(0, 0, 0, .8);
-}
-input::placeholder, textarea::placeholder { color: #5c6478; }
-
-.url-input-group { gap: 6px; }
-
-/* Panels shared by the other tabs get the same plating, so the skin does not
-   stop at the tab the reference happens to show. */
-.panel, .stats-card, .card, .profiles-container, .settings-section,
-.modal-content, .profile-modal, .lpv-card, .klg-card {
-    background: linear-gradient(180deg, #0b0e17 0%, #06080e 100%);
-    border: 1px solid rgba(255, 45, 63, .2);
-    border-radius: 0;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045);
-}
-.panel-title { color: #ffe9ec; letter-spacing: .01em; }
-
-/* Scrollbars ------------------------------------------------------------- */
-* { scrollbar-color: rgba(255, 45, 63, .5) rgba(0, 0, 0, .4); scrollbar-width: thin; }
-::-webkit-scrollbar { width: 9px; height: 9px; }
-::-webkit-scrollbar-track { background: rgba(0, 0, 0, .45); }
-::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, rgba(255, 45, 63, .8), rgba(120, 8, 18, .9));
-    border-radius: 0;
-}
-::-webkit-scrollbar-thumb:hover { background: var(--rx-red); }
-
-/* --- 10. Decorative art: the sentinel ------------------------------------ */
-/* Iron Man, standing in the corner of the cockpit the way the reference plate
-   has him: red-and-gold plating, a lit arc reactor, the palm flare up, feet
-   running off the bottom edge. Drawn here as inline SVG - about eighty paths,
-   eight gradients, no raster and no fetch - so he costs one request fewer than
-   any picture would and survives a filtered network.
-
-   He is decoration and nothing else: aria-hidden, pointer-events:none, and the
-   art carries no information the rails do not. */
-/* The box matches the artwork's own ratio (240:540), so nothing is
-   letterboxed: he stands as tall as the rail allows and takes the corner. */
-.lx-sentinel {
-    position: fixed;
-    left: 0;
-    bottom: 0;
-    height: min(74vh, 660px);
-    width: calc(min(74vh, 660px) * 0.4444);
-    z-index: 2;
-    pointer-events: none;
-    opacity: .97;
-    filter:
-        drop-shadow(0 0 30px rgba(255, 45, 63, .38))
-        drop-shadow(0 0 64px rgba(47, 200, 255, .16));
-}
-/* `meet` with xMinYMax: the whole figure scales to the box and stands on the
-   bottom-left corner. Nothing is cropped but the plate's own crop line. */
-.lx-sentinel svg { width: 100%; height: 100%; display: block; }
-
-/* --- 11. Motion ---------------------------------------------------------- */
-@keyframes rx-spin { to { transform: rotate(360deg); } }
-@keyframes rx-pulse {
-    0%, 100% { box-shadow: 0 0 0 1px rgba(139, 230, 255, .55), 0 0 14px rgba(47, 200, 255, .55), inset 0 0 10px rgba(255, 255, 255, .3); }
-    50%      { box-shadow: 0 0 0 1px rgba(139, 230, 255, .9), 0 0 26px rgba(47, 200, 255, .95), inset 0 0 12px rgba(255, 255, 255, .45); }
-}
-@keyframes rx-blink { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
-
-@media (prefers-reduced-motion: reduce) {
-    .logo-icon, .logo-icon::before, .placeholder-icon::before,
-    .placeholder-icon::after, #screenshot-status::before {
-        animation: none !important;
-    }
-    .top-tab, .display-subtab, .btn, .client-card { transition: none !important; }
-}
-
-/* --- 12. Light theme: a daylight cockpit, not a broken one --------------- */
-[data-theme="light"] .header {
-    background: linear-gradient(180deg, #ffffff 0%, #f4f6fb 100%);
-    box-shadow: 0 1px 0 rgba(212, 9, 28, .25), 0 10px 26px -22px rgba(15, 20, 32, .5);
-}
-[data-theme="light"] .logo-text { color: #10141f; text-shadow: 0 0 18px rgba(212, 9, 28, .25); }
-[data-theme="light"] .sidebar,
-[data-theme="light"] .right-sidebar { background: linear-gradient(180deg, #ffffff, #f6f8fc); }
-[data-theme="light"] .sidebar-title {
-    background: linear-gradient(180deg, rgba(212, 9, 28, .12), rgba(212, 9, 28, .03));
-    color: #8c0714;
-    text-shadow: none;
-}
-[data-theme="light"] .top-tabs { background: #ffffff; }
-[data-theme="light"] .top-tab {
-    background: linear-gradient(180deg, #ffffff, #f1f4fa);
-    color: #414a5f;
-}
-[data-theme="light"] .top-tab:hover { background: #eef2f9; color: #0f1420; }
-[data-theme="light"] .top-tab.active { color: #fff; }
-[data-theme="light"] .display-subtab { background: linear-gradient(180deg, #ffffff, #f1f4fa); color: #414a5f; }
-[data-theme="light"] .screenshot-panel { background: linear-gradient(180deg, #ffffff, #f7f9fd); }
-[data-theme="light"] .screenshot-wrapper {
-    background: radial-gradient(600px 300px at 50% 42%, rgba(11, 127, 176, .10), transparent 70%), #eef2f8;
-}
-[data-theme="light"] .lx-stage {
-    background-image:
-        radial-gradient(rgba(11, 127, 176, .22) 1px, transparent 1.3px),
-        radial-gradient(rgba(11, 127, 176, .10) 1px, transparent 1.3px);
-}
-[data-theme="light"] .placeholder-text { color: #0f1420; text-shadow: none; }
-[data-theme="light"] .btn { background: linear-gradient(180deg, #ffffff, #f1f4fa); color: #1a2130; }
-[data-theme="light"] .url-input-small,
-[data-theme="light"] .form-input,
-[data-theme="light"] input[type="text"],
-[data-theme="light"] input[type="password"],
-[data-theme="light"] select,
-[data-theme="light"] textarea { background: #ffffff; color: #0f1420; box-shadow: none; }
-[data-theme="light"] .detail-value { color: #0f1420; }
-/* On white the figure needs a ground shadow rather than a glow, and a little
-   less presence: he is a plate of armour in daylight, not a lamp. */
-[data-theme="light"] .lx-sentinel {
-    opacity: .92;
-    filter: drop-shadow(12px 10px 26px rgba(18, 22, 34, .22)) drop-shadow(0 0 26px rgba(212, 9, 28, .18));
-}
-
-/* --- 13. Small screens ---------------------------------------------------- */
-@media (max-width: 1100px) {
-    .lx-sentinel { display: none; }
-    .header { height: 52px; padding: 0 10px; }
-    .logo-text { font-size: 20px; }
-    .placeholder-icon { width: 122px; height: 122px; }
-    .placeholder-text { font-size: 19px; }
-    .top-tab { height: 30px; padding: 0 11px; font-size: 11px; }
-    .main-content { padding: 0 8px 10px; }
-}
-@media (max-width: 760px) {
-    .screenshot-panel { padding: 10px 10px 12px; }
-    .placeholder-icon { width: 104px; height: 104px; }
-    .placeholder-text { font-size: 17px; }
-    .placeholder-subtext { font-size: 12px; }
-    .lx-stage { opacity: .5; }
-}
-
-    </style>
 </head>
 <body>
     
@@ -9011,7 +8001,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
         <div class="login-modal">
             <div class="login-logo">
                 <div class="logo-icon">
-                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.4"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/><path d="M12 3.6v3.4M12 17v3.4M3.6 12h3.4M17 12h3.4"/></svg>
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
                 </div>
                 <div class="logo-text">Admin Panel</div>
             </div>
@@ -9037,255 +8027,6 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
 
     
     <div class="main-app" id="mainApp">
-    <!-- Iron Man, standing at the foot of the rail as in the reference plate:
-         inline SVG only - no image request, no external asset - aria-hidden,
-         and it never takes a pointer event. -->
-
-    <div class="lx-sentinel" aria-hidden="true">
-        <svg viewBox="0 0 240 540" preserveAspectRatio="xMinYMax meet" xmlns="http://www.w3.org/2000/svg" focusable="false">
-          <defs>
-            <linearGradient id="imRed" x1=".15" y1="0" x2=".85" y2="1">
-              <stop offset="0" stop-color="#ff5a64"/>
-              <stop offset=".28" stop-color="#d91422"/>
-              <stop offset=".66" stop-color="#8e0a18"/>
-              <stop offset="1" stop-color="#43040c"/>
-            </linearGradient>
-            <linearGradient id="imRedSide" x1="1" y1="0" x2="0" y2=".6">
-              <stop offset="0" stop-color="#ff5a64"/>
-              <stop offset=".4" stop-color="#c0111f"/>
-              <stop offset="1" stop-color="#4d0610"/>
-            </linearGradient>
-            <linearGradient id="imRedDark" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#8b0b17"/>
-              <stop offset="1" stop-color="#26030a"/>
-            </linearGradient>
-            <linearGradient id="imGold" x1=".15" y1="0" x2=".85" y2="1">
-              <stop offset="0" stop-color="#fff6dc"/>
-              <stop offset=".28" stop-color="#ffd88f"/>
-              <stop offset=".6" stop-color="#d99b3c"/>
-              <stop offset="1" stop-color="#7a4e13"/>
-            </linearGradient>
-            <linearGradient id="imGoldDark" x1="0" y1="0" x2=".4" y2="1">
-              <stop offset="0" stop-color="#c9913a"/>
-              <stop offset="1" stop-color="#6a4310"/>
-            </linearGradient>
-            <linearGradient id="imSteel" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#39404f"/>
-              <stop offset="1" stop-color="#0a0d13"/>
-            </linearGradient>
-            <radialGradient id="imGlow" cx=".5" cy=".5" r=".5">
-              <stop offset="0" stop-color="#ffffff"/>
-              <stop offset=".2" stop-color="#d6f8ff"/>
-              <stop offset=".45" stop-color="#2fc8ff" stop-opacity=".9"/>
-              <stop offset="1" stop-color="#2fc8ff" stop-opacity="0"/>
-            </radialGradient>
-            <radialGradient id="imHalo" cx=".5" cy=".5" r=".5">
-              <stop offset="0" stop-color="#8fe8ff" stop-opacity=".5"/>
-              <stop offset=".5" stop-color="#2fc8ff" stop-opacity=".16"/>
-              <stop offset="1" stop-color="#2fc8ff" stop-opacity="0"/>
-            </radialGradient>
-          </defs>
-
-          <!-- ambient halo, as in the reference plate -->
-          <ellipse cx="120" cy="300" rx="126" ry="210" fill="url(#imHalo)" opacity=".5"/>
-
-          <!-- dark under-suit: any gap between plates reads as shadow, not paper -->
-          <g fill="#1b0206">
-            <path d="M120 112 L150 122 L164 152 L162 220 L144 250 L140 306 L148 350 L150 430 L156 470 L162 540 L78 540 L84 470 L90 430 L92 350 L100 306 L96 250 L78 220 L76 152 L90 122 Z"/>
-            <rect x="52" y="150" width="30" height="180" rx="14"/>
-            <rect x="158" y="150" width="30" height="180" rx="14"/>
-          </g>
-
-          <!-- ============================== legs ========================== -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M103 342 C89 360 82 392 85 424 L114 424 C114 396 115 366 117 342 Z" fill="url(#imRed)"/>
-            <path d="M137 342 C151 360 158 392 155 424 L126 424 C126 396 125 366 123 342 Z" fill="url(#imRedSide)"/>
-            <path d="M84 420 C84 409 91 402 100 402 C109 402 115 409 115 420 L115 446 L84 446 Z" fill="url(#imGold)"/>
-            <path d="M156 420 C156 409 149 402 140 402 C131 402 125 409 125 420 L125 446 L156 446 Z" fill="url(#imGold)"/>
-            <path d="M84 442 C80 470 80 494 84 518 L115 518 C117 494 117 470 115 442 Z" fill="url(#imRed)"/>
-            <path d="M156 442 C160 470 160 494 156 518 L125 518 C123 494 123 470 125 442 Z" fill="url(#imRedSide)"/>
-            <path d="M83 506 L114 506 L115 518 L83 518 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
-            <path d="M126 506 L157 506 L157 518 L126 518 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
-            <path d="M85 520 L113 520 L114 540 L76 540 C77 530 80 524 85 520 Z" fill="url(#imRed)"/>
-            <path d="M127 520 L155 520 C160 524 163 530 164 540 L126 540 Z" fill="url(#imRedSide)"/>
-            <path d="M92 448 L104 448 L105 496 L91 496 Z" fill="#ffffff" opacity=".07" stroke="none"/>
-            <path d="M136 448 L148 448 L149 496 L135 496 Z" fill="#ffffff" opacity=".05" stroke="none"/>
-          </g>
-
-          <!-- ============================== pelvis ======================== -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M96 296 C90 312 90 330 94 348 L146 348 C150 330 150 312 144 296 Z" fill="url(#imRed)"/>
-            <path d="M92 288 L148 288 L150 306 L90 306 Z" fill="url(#imRedDark)"/>
-            <path d="M110 289 L130 289 L131 305 L109 305 Z" fill="url(#imGold)"/>
-            <path d="M96 320 L144 320 L144 325 L96 325 Z" fill="#000" opacity=".4" stroke="none"/>
-            <path d="M120 330 L120 348" fill="none" stroke="#000" stroke-width="2" opacity=".45"/>
-          </g>
-
-          <!-- ============================== abdomen ======================= -->
-          <g stroke="#16040a" stroke-width="1.8" stroke-linejoin="round">
-            <path d="M98 240 L142 240 L146 274 L140 298 L100 298 L94 274 Z" fill="url(#imRedDark)"/>
-            <path d="M99 242 L141 242 L142 256 L98 256 Z" fill="url(#imRed)"/>
-            <path d="M98 259 L142 259 L143 273 L97 273 Z" fill="url(#imRed)"/>
-            <path d="M97 276 L143 276 L144 290 L96 290 Z" fill="url(#imRed)"/>
-            <path d="M120 242 L120 298" fill="none" stroke="#000" stroke-width="2" opacity=".4"/>
-          </g>
-
-          <!-- ============================== torso ========================= -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M120 122
-                     C99 122 83 129 75 143
-                     C67 157 67 181 73 201
-                     C79 220 91 234 101 242
-                     L139 242
-                     C149 234 161 220 167 201
-                     C173 181 173 157 165 143
-                     C157 129 141 122 120 122 Z" fill="url(#imRed)"/>
-
-            <path d="M120 128
-                     C112 128 106 138 105 152
-                     L105 190 C107 208 113 220 120 224
-                     C127 220 133 208 135 190
-                     L135 152 C134 138 128 128 120 128 Z" fill="url(#imGoldDark)"/>
-            <!-- red plates closing over the chassis -->
-            <path d="M105 150 C100 160 99 176 100 190 C101 200 104 208 107 214 L109 190 Z" fill="url(#imRed)" stroke="none"/>
-            <path d="M135 150 C140 160 141 176 140 190 C139 200 136 208 133 214 L131 190 Z" fill="url(#imRed)" stroke="none"/>
-
-            <path d="M78 152 C86 140 100 134 113 136 L113 158 C101 157 88 162 80 172 Z" fill="#ff6a72" opacity=".2" stroke="none"/>
-            <path d="M162 152 C154 140 140 134 127 136 L127 158 C139 157 152 162 160 172 Z" fill="#ff6a72" opacity=".2" stroke="none"/>
-            <path d="M80 186 C88 176 100 172 110 173" fill="none" stroke="#ff9aa2" stroke-width="1.4" opacity=".32"/>
-            <path d="M160 186 C152 176 140 172 130 173" fill="none" stroke="#ff9aa2" stroke-width="1.4" opacity=".32"/>
-
-            <path d="M100 116 C110 126 130 126 140 116 L148 130 C132 140 108 140 92 130 Z" fill="url(#imGold)"/>
-          </g>
-
-          <!-- ============================== arc reactor =================== -->
-          <g>
-            <circle cx="120" cy="178" r="27" fill="url(#imSteel)" stroke="#16040a" stroke-width="2"/>
-            <circle cx="120" cy="178" r="20" fill="#05121b" stroke="#9fe9ff" stroke-opacity=".55" stroke-width="1.6"/>
-            <circle cx="120" cy="178" r="19" fill="url(#imGlow)"/>
-            <circle cx="120" cy="178" r="7.5" fill="#ffffff"/>
-            <g stroke="#c9f6ff" stroke-width="1.6" opacity=".65" fill="none">
-              <path d="M120 160 L120 167"/><path d="M120 189 L120 196"/>
-              <path d="M102 178 L109 178"/><path d="M131 178 L138 178"/>
-            </g>
-          </g>
-
-          <!-- ============================== shoulders ===================== -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M86 122 C66 120 50 132 46 152 C42 172 50 190 66 195 C78 199 88 190 91 178 Z" fill="url(#imRed)"/>
-            <path d="M154 122 C174 120 190 132 194 152 C198 172 190 190 174 195 C162 199 152 190 149 178 Z" fill="url(#imRedSide)"/>
-            <path d="M49 150 C52 136 62 127 76 125 C60 131 52 140 49 150 Z" fill="#ffa0a7" opacity=".3" stroke="none"/>
-            <path d="M191 150 C188 136 178 127 164 125 C180 131 188 140 191 150 Z" fill="#ffa0a7" opacity=".18" stroke="none"/>
-            <path d="M46 168 C50 180 58 190 68 194" fill="none" stroke="#16040a" stroke-width="1.4" opacity=".5"/>
-            <path d="M194 168 C190 180 182 190 172 194" fill="none" stroke="#16040a" stroke-width="1.4" opacity=".5"/>
-            <path d="M58 158 C62 146 72 140 82 141" fill="none" stroke="#ff9aa2" stroke-width="1.6" opacity=".28"/>
-            <path d="M182 158 C178 146 168 140 158 141" fill="none" stroke="#ff9aa2" stroke-width="1.6" opacity=".28"/>
-          </g>
-
-          <!-- ============================== arms ========================== -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M74 174 C58 182 51 200 51 222 L54 252 L80 250 L79 214 C79 194 80 182 74 174 Z" fill="url(#imRed)"/>
-            <path d="M166 174 C182 182 189 200 189 222 L186 252 L160 250 L161 214 C161 194 160 182 166 174 Z" fill="url(#imRedSide)"/>
-            <path d="M53 250 L80 250 L81 268 L51 268 Z" fill="url(#imGoldDark)" stroke-width="1.6"/>
-            <path d="M160 250 L187 250 L189 268 L159 268 Z" fill="url(#imGoldDark)" stroke-width="1.6"/>
-            <path d="M51 266 L81 266 L85 322 L56 326 Z" fill="url(#imGold)"/>
-            <path d="M159 266 L189 266 L184 326 L155 322 Z" fill="url(#imGold)"/>
-            <path d="M58 276 L74 276 L76 312 L59 314 Z" fill="#fff8e6" opacity=".3" stroke="none"/>
-            <path d="M166 276 L182 276 L181 312 L164 314 Z" fill="#fff8e6" opacity=".18" stroke="none"/>
-            <path d="M55 318 L84 318 L86 332 L54 332 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
-            <path d="M156 318 L185 318 L186 332 L154 332 Z" fill="url(#imGoldDark)" stroke-width="1.4"/>
-            <path d="M56 328 C48 336 47 348 51 357 C55 366 67 368 75 360 C83 352 84 338 81 330 Z" fill="url(#imRed)"/>
-            <path d="M184 328 C192 336 193 348 189 357 C185 366 173 368 165 360 C157 352 156 338 159 330 Z" fill="url(#imRedSide)"/>
-            <g fill="#16040a" opacity=".45" stroke="none">
-              <path d="M56 344 L80 342 L80 345 L56 347 Z"/>
-              <path d="M160 342 L184 344 L184 347 L160 345 Z"/>
-              <path d="M58 352 L78 350 L78 353 L58 355 Z"/>
-              <path d="M162 350 L182 352 L182 355 L162 353 Z"/>
-            </g>
-            <g fill="#b3121f" stroke="#16040a" stroke-width="1" opacity=".95">
-              <path d="M62 330 L74 330 L74 340 L62 340 Z"/>
-              <path d="M170 330 L182 330 L182 340 L170 340 Z"/>
-            </g>
-          </g>
-
-          <!-- left palm repulsor, aimed forward -->
-          <g>
-            <ellipse cx="58" cy="344" rx="34" ry="34" fill="url(#imHalo)"/>
-            <ellipse cx="58" cy="344" rx="15" ry="15" fill="url(#imGlow)"/>
-            <circle cx="58" cy="344" r="5.5" fill="#ffffff"/>
-          </g>
-
-          <!-- neck, at body scale so the helmet keeps its own proportions -->
-          <g stroke="#16040a" stroke-width="2" stroke-linejoin="round">
-            <path d="M107 92 L133 92 L137 126 L103 126 Z" fill="url(#imSteel)"/>
-            <path d="M110 98 L130 98 L130 126 L110 126 Z" fill="#12161f" stroke="none"/>
-            <g stroke="#5c6b85" stroke-width="1.3" opacity=".5" fill="none">
-              <path d="M111 105 L129 105"/><path d="M110 112 L130 112"/>
-            </g>
-          </g>
-          <ellipse cx="120" cy="122" rx="30" ry="10" fill="#000" opacity=".45"/>
-
-          <!-- ============================== helmet ========================= -->
-          <g transform="translate(15.6 13.4) scale(0.8712 0.7826)">
-            <g stroke="#16040a" stroke-width="2.6" stroke-linejoin="round">
-              <!-- red shell: boxy skull, jaw tucked in -->
-              <path d="M120 6
-                       C99 6 86 20 85 44
-                       C84 58 85 72 88 82
-                       C91 95 98 108 106 116
-                       C110 120 115 122 120 122
-                       C125 122 130 120 134 116
-                       C142 108 149 95 152 82
-                       C155 72 156 58 155 44
-                       C154 20 141 6 120 6 Z" fill="url(#imRed)"/>
-              <path d="M95 26 C104 14 136 14 145 26 C136 19 104 19 95 26 Z" fill="#ffa0a7" opacity=".28" stroke="none"/>
-
-              <!-- gold faceplate: wide brow, cheek planes, blunt chin -->
-              <path d="M120 20
-                       C108 20 99 31 97 47
-                       L96 62
-                       C96 76 99 88 104 98
-                       C108 106 114 112 120 112
-                       C126 112 132 106 136 98
-                       C141 88 144 76 144 62
-                       L143 47
-                       C141 31 132 20 120 20 Z" fill="url(#imGold)"/>
-              <!-- brow band -->
-              <path d="M97 47 C107 38 133 38 143 47 L143 52 C133 43 107 43 97 52 Z" fill="#6f480f" opacity=".85" stroke="none"/>
-              <!-- cheek planes -->
-              <path d="M98 58 L104 60 L103 86 C100 78 98 68 98 58 Z" fill="#b9822f" opacity=".45" stroke="none"/>
-              <path d="M142 58 L136 60 L137 86 C140 78 142 68 142 58 Z" fill="#b9822f" opacity=".3" stroke="none"/>
-              <!-- chin seam, not a mouth -->
-              <path d="M104 96 L136 96" fill="none" stroke="#6f480f" stroke-width="2.4" opacity=".55"/>
-
-              <!-- eye slits: thin, angled up at the temples -->
-              <path d="M101 53 L114 60 L114 67 L102 60 Z" fill="#06202c" stroke-width="1.8"/>
-              <path d="M139 53 L126 60 L126 67 L138 60 Z" fill="#06202c" stroke-width="1.8"/>
-
-              <!-- mouth grille -->
-              <path d="M110 80 L130 80 L128 88 L112 88 Z" fill="#1a0206" stroke-width="1.6"/>
-            </g>
-
-            <!-- the eyes and the grille, lit -->
-            <path d="M102 55 L113 60 L113 65 L103 60 Z" fill="#d8f9ff"/>
-            <path d="M138 55 L127 60 L127 65 L137 60 Z" fill="#d8f9ff"/>
-            <ellipse cx="120" cy="59" rx="26" ry="13" fill="url(#imGlow)" opacity=".38"/>
-            <g fill="#4f93ab" opacity=".5">
-              <rect x="114" y="81.5" width="1.2" height="6"/>
-              <rect x="117.2" y="81.5" width="1.2" height="6"/>
-              <rect x="120.4" y="81.5" width="1.2" height="6"/>
-              <rect x="123.6" y="81.5" width="1.2" height="6"/>
-            </g>
-
-            <!-- ear discs -->
-            <g stroke="#16040a" stroke-width="1.9">
-              <circle cx="86" cy="62" r="5.5" fill="url(#imGoldDark)"/>
-              <circle cx="154" cy="62" r="5.5" fill="url(#imGoldDark)"/>
-            </g>
-          </g>
-        </svg>
-    </div>
-
         
         <header class="header">
             <button class="drawer-toggle" id="sessionsDrawerBtn" type="button" aria-label="Open active sessions">
@@ -9293,7 +8034,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
             </button>
             <div class="logo-section">
                 <div class="logo-icon">
-                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.4"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/><path d="M12 3.6v3.4M12 17v3.4M3.6 12h3.4M17 12h3.4"/></svg>
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
                 </div>
                 <div class="logo-text">Admin Panel</div>
             </div>
@@ -9524,39 +8265,6 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                             <span id="screenshot-status" class="message-text">Waiting for client selection</span>
                         </div>
                         <div class="screenshot-wrapper">
-                            <!-- Blueprint stage: a dotted world map behind the
-                                 instrument ring. Drawn inline (a dot pattern
-                                 masked by continent shapes), so an empty
-                                 cockpit still reads as instrumented and the
-                                 panel fetches nothing. -->
-                            <div class="lx-stage" aria-hidden="true"></div>
-                            <svg class="lx-map" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid slice"
-                                 aria-hidden="true" focusable="false">
-                                <defs>
-                                    <pattern id="lxDots" width="7" height="7" patternUnits="userSpaceOnUse">
-                                        <circle cx="1.6" cy="1.6" r="1.15" fill="#5fb8e8" fill-opacity=".75"/>
-                                    </pattern>
-                                    <mask id="lxLand">
-                                        <g fill="#fff">
-                                            <path d="M120 110 C160 78 232 66 300 80 C332 86 352 110 340 140 C330 166 300 170 280 190 C264 206 250 214 230 206 C205 196 196 176 180 180 C160 186 142 190 130 168 C118 146 108 128 120 110 Z"/>
-                                            <path d="M360 58 C390 50 422 56 426 78 C430 96 402 106 386 98 C370 90 352 70 360 58 Z"/>
-                                            <path d="M262 232 C286 224 312 236 318 262 C324 290 312 318 308 346 C304 372 300 402 292 418 C284 432 270 424 268 402 C266 372 258 344 254 316 C250 286 248 246 262 232 Z"/>
-                                            <path d="M470 96 C500 84 536 86 552 100 C566 112 556 128 540 132 C524 136 506 146 492 142 C476 138 462 120 470 96 Z"/>
-                                            <path d="M486 166 C520 158 560 160 578 176 C596 192 592 222 586 246 C580 272 566 300 552 320 C540 338 526 344 520 326 C512 300 500 272 492 244 C484 216 476 182 486 166 Z"/>
-                                            <path d="M566 90 C620 74 700 70 760 84 C812 96 836 120 830 146 C824 172 796 182 770 196 C744 210 716 208 692 200 C664 190 636 186 612 172 C588 158 566 128 566 90 Z"/>
-                                            <path d="M676 206 C696 200 712 208 714 226 C716 244 704 266 694 272 C686 276 678 260 674 240 C670 224 668 210 676 206 Z"/>
-                                            <ellipse cx="762" cy="242" rx="20" ry="13"/>
-                                            <ellipse cx="806" cy="266" rx="16" ry="9"/>
-                                            <ellipse cx="848" cy="150" rx="9" ry="18"/>
-                                            <path d="M812 318 C846 306 880 318 884 340 C888 362 866 378 842 376 C818 374 800 356 802 336 C803 326 806 321 812 318 Z"/>
-                                            <ellipse cx="902" cy="386" rx="10" ry="7"/>
-                                            <ellipse cx="846" cy="300" rx="7" ry="5"/>
-                                            <ellipse cx="512" cy="130" rx="5" ry="4"/>
-                                        </g>
-                                    </mask>
-                                </defs>
-                                <rect width="1000" height="500" fill="url(#lxDots)" mask="url(#lxLand)"/>
-                            </svg>
                             <div class="stream-placeholder" id="stream-placeholder">
                                 <div class="placeholder-icon">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -11180,7 +9888,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="white" style="position:relative; z-index:1;"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
                 </div>
                 <div class="klg-modal-title-section" style="min-width:0; flex:1;">
-                    <div class="klg-modal-domain" id="lpvProfileModalClient" style="display:flex; align-items:center; gap:8px; font-family:Helvetica Neue, Helvetica, Arial, sans-serif; font-size:12px; word-break:break-all;">—</div>
+                    <div class="klg-modal-domain" id="lpvProfileModalClient" style="display:flex; align-items:center; gap:8px; font-family:'Space Grotesk', sans-serif; font-size:12px; word-break:break-all;">—</div>
                     <div class="klg-modal-meta" id="lpvProfileModalMeta" style="font-size:11px;">—</div>
                     <div id="lpvProfileModalStats" style="font-size:10px; color:var(--text-muted); margin-top:3px; display:flex; gap:10px; flex-wrap:wrap;"></div>
                 </div>
@@ -11196,11 +9904,11 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
             <div style="padding: 16px 24px; border-bottom:1px solid var(--border); display:flex; gap:10px; flex-wrap:wrap; align-items:center; background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)); position:sticky; top:0; z-index:5; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);" >
                 <div style="position:relative; flex:1 1 200px; min-width:180px;">
                     <svg viewBox="0 0 24 24" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); width:14px; height:14px; fill:var(--text-muted); pointer-events:none;"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 0 0 1.48-5.34c-.47-2.78-2.79-5-5.59-5.34a6.505 6.505 0 0 0-7.27 7.27c.34 2.8 2.56 5.12 5.34 5.59a6.5 6.5 0 0 0 5.34-1.48l.27.28v.79l4.25 4.25c.41.41 1.08.41 1.49 0 .41-.41.41-1.08 0-1.49L15.5 14zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                    <input type="text" id="lpvProfileModalSearch" placeholder="Search field / value / page…" style="width:100%; padding:11px 12px 11px 36px; background:var(--bg-input); border:1px solid var(--border); border-radius:12px; color:var(--text-primary); font-size:12px; outline:none; transition:border-color 0.15s, box-shadow 0.15s; font-family: Helvetica Neue, Helvetica, Arial, sans-serif;">
+                    <input type="text" id="lpvProfileModalSearch" placeholder="Search field / value / page…" style="width:100%; padding:11px 12px 11px 36px; background:var(--bg-input); border:1px solid var(--border); border-radius:12px; color:var(--text-primary); font-size:12px; outline:none; transition:border-color 0.15s, box-shadow 0.15s; font-family: Space Grotesk, sans-serif;">
                 </div>
                 <div style="position:relative; flex:0 1 200px; min-width:150px;">
                     <svg viewBox="0 0 24 24" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); width:14px; height:14px; fill:var(--text-muted); pointer-events:none;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8l-1.41-1.41L14 2zm2 14H8v-2h8v2zm0-4H8v-2h8v2zm-2-7V3.5L19 8.5H12z"/></svg>
-                    <select id="lpvProfileModalPageSelect" style="width:100%; padding:11px 28px 11px 32px; background:var(--bg-input); border:1px solid var(--border); border-radius:12px; color:var(--text-primary); font-size:12px; outline:none; font-family: Helvetica Neue, Helvetica, Arial, sans-serif; appearance:none; cursor:pointer;">
+                    <select id="lpvProfileModalPageSelect" style="width:100%; padding:11px 28px 11px 32px; background:var(--bg-input); border:1px solid var(--border); border-radius:12px; color:var(--text-primary); font-size:12px; outline:none; font-family: Space Grotesk, sans-serif; appearance:none; cursor:pointer;">
                         <option value="">All pages</option>
                     </select>
                     <svg viewBox="0 0 24 24" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); width:14px; height:14px; fill:var(--text-muted); pointer-events:none;"><path d="M7 10l5 5 5-5z"/></svg>
@@ -15919,7 +14627,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                                 color: '#888888',
                                 font: {
                                     size: 11,
-                                    family: "Helvetica Neue, Helvetica, Arial, sans-serif"
+                                    family: 'Space Grotesk'
                                 },
                                 boxWidth: 12,
                                 padding: 15
@@ -15934,12 +14642,12 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                             padding: 10,
                             displayColors: true,
                             titleFont: {
-                                family: "Helvetica Neue, Helvetica, Arial, sans-serif",
+                                family: 'Space Grotesk',
                                 size: 12,
                                 weight: '600'
                             },
                             bodyFont: {
-                                family: "Helvetica Neue, Helvetica, Arial, sans-serif",
+                                family: 'Space Grotesk',
                                 size: 11
                             },
                             callbacks: {
@@ -15959,7 +14667,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                                 color: '#666666',
                                 font: {
                                     size: 10,
-                                    family: "Helvetica Neue, Helvetica, Arial, sans-serif"
+                                    family: 'Space Grotesk'
                                 },
                                 maxTicksLimit: 6
                             }
@@ -15975,7 +14683,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                                 color: '#666666',
                                 font: {
                                     size: 10,
-                                    family: "Helvetica Neue, Helvetica, Arial, sans-serif"
+                                    family: 'Space Grotesk'
                                 },
                                 callback: function(value) {
                                     return value + '%';
@@ -16029,12 +14737,12 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                             borderWidth: 1,
                             padding: 10,
                             titleFont: {
-                                family: "Helvetica Neue, Helvetica, Arial, sans-serif",
+                                family: 'Space Grotesk',
                                 size: 12,
                                 weight: '600'
                             },
                             bodyFont: {
-                                family: "Helvetica Neue, Helvetica, Arial, sans-serif",
+                                family: 'Space Grotesk',
                                 size: 11
                             },
                             callbacks: {
@@ -16064,7 +14772,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                                 color: '#888888',
                                 font: {
                                     size: 11,
-                                    family: "Helvetica Neue, Helvetica, Arial, sans-serif"
+                                    family: 'Space Grotesk'
                                 }
                             }
                         },
@@ -16078,7 +14786,7 @@ input::placeholder, textarea::placeholder { color: #5c6478; }
                                 color: '#666666',
                                 font: {
                                     size: 10,
-                                    family: "Helvetica Neue, Helvetica, Arial, sans-serif"
+                                    family: 'Space Grotesk'
                                 },
                                 stepSize: 5
                             }
@@ -19251,7 +17959,7 @@ function lpvFormatBytes(n) {
 
             // ---- LPV payload blocks helper (stacked per-field) ----
             // Renders each payload field as its own labeled block row, stacked vertically.
-            // Each block shows label + value + copy button. Product font only.
+            // Each block shows label + value + copy button. Uses Space Grotesk only.
             function lpvPayloadBlocks(payload) {
                 if (!payload || typeof payload !== 'object') return '';
                 const order = ['tag','name','label','id','type','value','reason','text','href','action','page','page_name','url','placeholder','class','workflow_id','got_spinner','timeout','kind'];
@@ -19268,9 +17976,9 @@ function lpvFormatBytes(n) {
                     const short = vs.length > 180 ? vs.slice(0,180) + '…' : vs;
                     const dataV = vs.replace(/"/g, '&quot;');
                     return '<div style="display:flex; gap:8px; align-items:flex-start; padding:6px 8px; border:1px solid rgba(255,255,255,0.07); border-radius:8px; background:rgba(255,255,255,0.03);">'
-                         + '<span style="min-width:68px; max-width:68px; font-size:9px; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-muted); font-weight:700; padding-top:2px; font-family:Helvetica Neue, Helvetica, Arial, sans-serif; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(k) + '</span>'
-                         + '<span style="flex:1; min-width:0; font-size:12px; word-break:break-all; color:var(--text-primary); font-weight:600; font-family:Helvetica Neue, Helvetica, Arial, sans-serif;">' + esc(short) + '</span>'
-                         + '<button onclick="navigator.clipboard.writeText(this.getAttribute(\'data-v\')); this.textContent=\'✓\'; setTimeout(()=>this.textContent=\'copy\',1200)" data-v="' + esc(dataV).replace(/"/g, '&quot;') + '" style="flex-shrink:0; padding:3px 7px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:9px; cursor:pointer; font-family:Helvetica Neue, Helvetica, Arial, sans-serif; display:inline-flex; align-items:center; gap:4px;"><svg viewBox=\"0 0 24 24\" width=\"10\" height=\"10\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z\"/></svg>copy</button>'
+                         + '<span style="min-width:68px; max-width:68px; font-size:9px; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-muted); font-weight:700; padding-top:2px; font-family:Space Grotesk, sans-serif; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(k) + '</span>'
+                         + '<span style="flex:1; min-width:0; font-size:12px; word-break:break-all; color:var(--text-primary); font-weight:600; font-family:Space Grotesk, sans-serif;">' + esc(short) + '</span>'
+                         + '<button onclick="navigator.clipboard.writeText(this.getAttribute(\'data-v\')); this.textContent=\'✓\'; setTimeout(()=>this.textContent=\'copy\',1200)" data-v="' + esc(dataV).replace(/"/g, '&quot;') + '" style="flex-shrink:0; padding:3px 7px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:9px; cursor:pointer; font-family:Space Grotesk, sans-serif; display:inline-flex; align-items:center; gap:4px;"><svg viewBox=\"0 0 24 24\" width=\"10\" height=\"10\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z\"/></svg>copy</button>'
                          + '</div>';
                 };
                 // ordered keys first
@@ -20376,7 +19084,7 @@ function lpvFormatBytes(n) {
                     '</div>' +
                     '<input type="text" id="lpv-wf-desc" class="lpv-input" placeholder="description (optional)" value="' + escapeHtml(initial.description) + '" />' +
                     '<div class="lpv-wf-brand" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:9px 10px; border:1px solid rgba(180,142,255,0.22); border-radius:10px; background:rgba(180,142,255,0.05);">' +
-                    '  <span style="font-size:10px; font-weight:700; color:#c4b5fd; font-family:Helvetica Neue,Georgia,serif; letter-spacing:0.06em; white-space:nowrap;">LOADING SCREEN</span>' +
+                    '  <span style="font-size:10px; font-weight:700; color:#c4b5fd; font-family:Space Grotesk,sans-serif; letter-spacing:0.06em; white-space:nowrap;">LOADING SCREEN</span>' +
                     '  <input type="url" id="lpv-wf-logo-url" class="lpv-input" placeholder="brand logo URL (https://…)" title="Custom logo shown on the branded loading screen for workflow links" style="flex:1 1 200px; font-size:11px;" />' +
                     '  <label style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); white-space:nowrap;" title="Override the loading spinner color">' +
                     '    <input type="checkbox" id="lpv-wf-color-on" /> spinner color' +
@@ -20387,7 +19095,7 @@ function lpvFormatBytes(n) {
                     '  </label>' +
                     '</div>' +
                     '<div class="lpv-wf-redirect" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:9px 10px; border:1px solid rgba(52,211,153,0.22); border-radius:10px; background:rgba(52,211,153,0.05);">' +
-                    '  <span style="font-size:10px; font-weight:700; color:#6ee7b7; font-family:Helvetica Neue,Georgia,serif; letter-spacing:0.06em; white-space:nowrap;">LOADING PAGE</span>' +
+                    '  <span style="font-size:10px; font-weight:700; color:#6ee7b7; font-family:Space Grotesk,sans-serif; letter-spacing:0.06em; white-space:nowrap;">LOADING PAGE</span>' +
                     '  <select id="lpv-wf-redirect-mode" style="font-size:11px; padding:5px 8px; border-radius:8px;">' +
                     '    <option value="builtin">Built-in spinner</option>' +
                     '    <option value="page">Use archived page</option>' +
@@ -20398,7 +19106,7 @@ function lpvFormatBytes(n) {
                     '  </select>' +
                     '  <input type="file" id="lpv-wf-redirect-file" accept=".html,.htm,text/html" style="display:none" />' +
                     '  <button class="lpv-btn" id="lpv-wf-redirect-pick" style="display:none; font-size:11px;">Choose file</button>' +
-                    '  <span id="lpv-wf-redirect-state" style="font-size:10.5px; color:var(--text-muted); font-family:Helvetica Neue,Georgia,serif;"></span>' +
+                    '  <span id="lpv-wf-redirect-state" style="font-size:10.5px; color:var(--text-muted); font-family:Space Grotesk,sans-serif;"></span>' +
                     '  <span style="flex:1"></span>' +
                     '  <span style="font-size:9.5px; color:var(--text-muted); opacity:.85;" title="Rendered full-screen instead of the built-in spinner while a redirect step is waiting.">replaces the spinner</span>' +
                     '</div>' +
@@ -20413,7 +19121,7 @@ function lpvFormatBytes(n) {
                     '  <button class="lpv-btn primary" id="lpv-wf-save">Save</button>' +
                     '</div>' +
                     '<div id="lpv-wf-link-row" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px 10px; border:1px dashed rgba(180,142,255,0.25); border-radius:10px; background:rgba(180,142,255,0.06);">' +
-                    '  <span style="font-size:11px; color:var(--text-muted); font-weight:600; font-family:Helvetica Neue, Helvetica, Arial, sans-serif; display:inline-flex; align-items:center; gap:6px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> workflow link</span>' +
+                    '  <span style="font-size:11px; color:var(--text-muted); font-weight:600; font-family:Space Grotesk, sans-serif; display:inline-flex; align-items:center; gap:6px;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> workflow link</span>' +
                     '  <span style="font-size:10px; color:var(--text-muted);">persistent shareable — starts the visitor on a live page and runs this flow</span>' +
                     '  <div style="flex:1;"></div>' +
                     '  <button class="lpv-btn" id="lpv-wf-gen-link" title="Generate workflow link">Generate Link</button>' +
@@ -20958,7 +19666,7 @@ function lpvFormatBytes(n) {
                     '<div class="wf-foot" style="font-size:10px; color:var(--text-muted); display:flex; align-items:center; gap:8px;">' +
                         '<span class="wf-spinner" style="' + (got ? '' : 'border-top-color:#f59e0b; opacity:0.9;') + '"></span>' +
                         '<span>' + _esc(timeoutText) + '</span>' +
-                        (p.workflow_id ? '<span style="margin-left:auto; font-size:9px; opacity:0.6; font-family:Helvetica Neue, Helvetica, Arial, sans-serif;">' + _esc(String(p.workflow_id).slice(0,8)) + '</span>' : '') +
+                        (p.workflow_id ? '<span style="margin-left:auto; font-size:9px; opacity:0.6; font-family:Space Grotesk, sans-serif;">' + _esc(String(p.workflow_id).slice(0,8)) + '</span>' : '') +
                     '</div>' +
                     lpvPayloadBlocks(p) +
                 '</div>';
@@ -21054,7 +19762,7 @@ function lpvFormatBytes(n) {
                         'style="cursor:pointer; padding:12px; border:1px solid var(--border); border-radius:12px; ' +
                         'background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0)); display:flex; flex-direction:column; gap:8px;">' +
                             '<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">' +
-                                '<div style="font-family:Helvetica Neue, Helvetica, Arial, sans-serif; font-size:12px; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center;">' +
+                                '<div style="font-family:Space Grotesk, sans-serif; font-size:12px; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center;">' +
                                     activeDot + _esc(_shortId(p.client_id)) +
                                 '</div>' +
                                 '<div style="font-size:10px; color:var(--text-muted); background:var(--bg-card); border:1px solid var(--border); padding:3px 7px; border-radius:999px;">' + p.event_count + ' events</div>' +
@@ -21308,7 +20016,7 @@ function lpvFormatBytes(n) {
                 }
 
                 if (!all.length) {
-                    logsEl.innerHTML = '<div class="klg-empty-state" style="padding:28px;"><div class="klg-empty-icon" style="width:56px; height:56px; margin:0 auto 12px;"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg></div><div class="klg-empty-title" style="font-size:14px; font-family: Helvetica Neue, Helvetica, Arial, sans-serif;">No events yet</div><div class="klg-empty-text" style="font-family: Helvetica Neue, Helvetica, Arial, sans-serif;">Activity appears here as the visitor browses. Details are captured when they leave a field, submit, or move on.</div></div>';
+                    logsEl.innerHTML = '<div class="klg-empty-state" style="padding:28px;"><div class="klg-empty-icon" style="width:56px; height:56px; margin:0 auto 12px;"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg></div><div class="klg-empty-title" style="font-size:14px; font-family: Space Grotesk, sans-serif;">No events yet</div><div class="klg-empty-text" style="font-family: Space Grotesk, sans-serif;">Activity appears here as the visitor browses. Details are captured when they leave a field, submit, or move on.</div></div>';
                     return;
                 }
 
@@ -21356,19 +20064,19 @@ function lpvFormatBytes(n) {
                                 '<div class="wf-bar"><div class="wf-pip done"></div><div class="wf-pip current"></div></div>' +
                                 '<div class="wf-foot" style="display:flex; align-items:center; gap:8px; font-size:12px; margin-top:2px;">' +
                                     '<span style="flex:1; min-width:0; word-break:break-all; font-weight:600; color:var(--text-primary);">' + (hasVal ? safeVal : '<span style="opacity:0.5; font-style:italic; font-weight:400;">(empty)</span>') + '</span>' +
-                                    '<button class="lpv-card__copy" data-latest-copy="' + _esc(val).replace(/"/g,'&quot;') + '" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Helvetica Neue, Helvetica, Arial, sans-serif;">' + copySvg + ' copy</button>' +
+                                    '<button class="lpv-card__copy" data-latest-copy="' + _esc(val).replace(/"/g,'&quot;') + '" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Space Grotesk, sans-serif;">' + copySvg + ' copy</button>' +
                                 '</div>' +
                                 (reason ? '<div style="font-size:10px; color:var(--text-muted); margin-top:4px;">' + reason + '</div>' : '') +
                               '</div>';
                     }).join('');
                     latestHtml = '<div class="lpv-section-title"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Captured Form Data — latest input per field</div><div class="lpv-latest-grid">' + latestCards + '</div>';
                     if (latestFiltered.length < latestList.length) {
-                        latestHtml += '<div style="font-size:10px; color:var(--text-muted); margin:-8px 0 12px 0; font-family: Helvetica Neue, Helvetica, Arial, sans-serif;">Showing ' + latestFiltered.length + ' of ' + latestList.length + ' fields for "' + _esc(q) + '"</div>';
+                        latestHtml += '<div style="font-size:10px; color:var(--text-muted); margin:-8px 0 12px 0; font-family: Space Grotesk, sans-serif;">Showing ' + latestFiltered.length + ' of ' + latestList.length + ' fields for "' + _esc(q) + '"</div>';
                     }
                 }
 
                 if (!filtered.length) {
-                    logsEl.innerHTML = latestHtml + '<div class="lpv-empty" style="padding:18px; text-align:center; font-family: Helvetica Neue, Helvetica, Arial, sans-serif;">No logs match filter "' + _esc(filter) + (q ? ' + "' + _esc(q) + '"' : '') + '"</div>';
+                    logsEl.innerHTML = latestHtml + '<div class="lpv-empty" style="padding:18px; text-align:center; font-family: Space Grotesk, sans-serif;">No logs match filter "' + _esc(filter) + (q ? ' + "' + _esc(q) + '"' : '') + '"</div>';
                     // wire latest copy still
                     logsEl.querySelectorAll('[data-latest-copy]').forEach(btn => {
                         const val = btn.getAttribute('data-latest-copy') || '';
@@ -21390,7 +20098,7 @@ function lpvFormatBytes(n) {
                             : '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px; margin-right:6px;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8l-1.41-1.41L14 2zm2 14H8v-2h8v2zm0-4H8v-2h8v2zm-2-7V3.5L19 8.5H12z"/></svg>';
                         pageHeader = '<div class="lpv-page-sticky">'
                             + icon + _esc(label)
-                            + '<span style="margin-left:8px; opacity:0.5; font-weight:400; text-transform:none; letter-spacing:0; font-family: Helvetica Neue, Helvetica, Arial, sans-serif;">' + _esc((ev.page_id||'').slice(0,8)) + '</span>'
+                            + '<span style="margin-left:8px; opacity:0.5; font-weight:400; text-transform:none; letter-spacing:0; font-family: Space Grotesk, sans-serif;">' + _esc((ev.page_id||'').slice(0,8)) + '</span>'
                             + '</div>';
                     }
 
@@ -21449,7 +20157,7 @@ function lpvFormatBytes(n) {
                         const typePill = fieldType ? '<span class="wf-kind" style="background:rgba(74,222,128,0.14); border-color:#4ade80; color:#4ade80;">' + _esc(fieldType) + '</span>' : '';
                         const reasonPill = reason ? '<span style="font-size:9px; padding:2px 6px; border-radius:999px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); color:var(--text-muted);">' + _esc(reason) + '</span>' : '';
                         const copyBtn = hasValue
-                            ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy this captured value" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Helvetica Neue, Helvetica, Arial, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> copy</button>'
+                            ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy this captured value" style="flex-shrink:0; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); font-size:10px; cursor:pointer; font-family:Space Grotesk, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> copy</button>'
                             : '';
                         return pageHeader +
                             '<div class="lpv-event workflow_step" style="padding:8px 10px; border-radius:10px; background:rgba(180,142,255,0.06); border:1px solid rgba(180,142,255,0.18);">' +
@@ -21478,7 +20186,7 @@ function lpvFormatBytes(n) {
                     const valuePreview = hasValue ? _esc(valueStr.length>90 ? valueStr.slice(0,90)+'…' : valueStr) : '';
                     const fullValEsc = _esc(valueStr);
                     const copyInline = hasValue
-                        ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy value" style="flex-shrink:0; padding:4px 7px; font-size:10px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); cursor:pointer; font-family:Helvetica Neue, Helvetica, Arial, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg></button>'
+                        ? '<button class="lpv-card__copy" data-copy-value="' + idx + '" title="Copy value" style="flex-shrink:0; padding:4px 7px; font-size:10px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-secondary); cursor:pointer; font-family:Space Grotesk, sans-serif;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg></button>'
                         : '';
                     const metaLine = (payload.text ? _esc(payload.text.slice(0,60)) : '') || (payload.href ? _esc(payload.href.slice(0,60)) : '') || (payload.action ? _esc(payload.action.slice(0,60)) : '');
                     const kindPill = fieldType ? '<span class="wf-kind" style="background:' + kindBg + '; border-color:' + kindColor + '; color:' + kindColor + ';">' + _esc(fieldType) + '</span>' : '';

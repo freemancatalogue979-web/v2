@@ -2,13 +2,9 @@
 //
 // Two surfaces, two answers:
 //
-//   * the LIVE mirror (the streamed browser) is set in Roboto Slab, the same
+//   * the LIVE mirror (the streamed browser) is set in Space Grotesk, the same
 //     font as the shell and the panels, so what the operator watches all day
-//     looks like one product. The face itself travels in the theme — a data:
-//     URI copied out of the shell's own <style id="shf-font-face"> — so the
-//     theme needs NO network request, and works even though a mirrored
-//     document has an opaque (blob:) origin where a URL font would be a
-//     blocked cross-origin request;
+//     looks like one product;
 //   * an LPV page is NOT. A pushed Live-pages document is the operator's own
 //     saved page shown to a visitor as it was captured, so restyling it in our
 //     font would be changing their page. It keeps its own typography, always.
@@ -39,28 +35,11 @@ assert.ok(start >= 0 && endStart > start, 'mirror font helpers not found in clie
 const end = source.indexOf('\n            }\n', endStart) + '\n            }\n'.length;
 const slice = source.slice(start, end);
 
-// The face the shell carries, exactly as the browser would read it: the
-// mirror copies this text, it does not build its own copy of the payload.
-const faceStart = source.indexOf('<style id="shf-font-face">');
-assert.ok(faceStart > 0, 'client.html has no embedded face block');
-const faceOpenEnd = source.indexOf('>', faceStart) + 1;
-const faceClose = source.indexOf('</style>', faceOpenEnd);
-const SHELL_FACE = source.slice(faceOpenEnd, faceClose).trim();
-assert.ok(/@font-face/.test(SHELL_FACE), 'the embedded block is not a @font-face');
-
-function makeContext(search, opts) {
-  const options = opts || {};
+function makeContext(search) {
   const context = vm.createContext({
     console,
     String,
     URLSearchParams,
-    // `mirrorFontFaceCss()` reads the shell's own <style>; a page without it
-    // must still theme (with the stack, just without the face).
-    document: {
-      getElementById: (id) => (id === 'shf-font-face' && !options.noFace
-        ? { textContent: SHELL_FACE }
-        : null),
-    },
     window: { location: { search: search || '' } },
   });
   vm.runInContext(slice, context);
@@ -140,33 +119,21 @@ function makeDoc() {
 
   ok(result === true, 'the helper reports that the page is themed');
 
-  // A font <link> inside a mirrored page is a request the visitor pays for
-  // and that can fail, so its absence is part of the design, not an omission.
-  ok(!doc.getElementById('__shifix_mirror_font_css__'),
-    'no font stylesheet is injected (the face travels inline)');
-  ok(!/fonts\.googleapis/.test(doc.documentElement.innerHTML || ''),
-    'nothing in the document points at a font CDN');
+  const link = doc.getElementById('__shifix_mirror_font_css__');
+  ok(!!link, 'a stylesheet link is added');
+  ok(link.rel === 'stylesheet', 'it is a stylesheet link');
+  ok(link.href === 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap',
+    'it points at Space Grotesk (same family the panels load)');
 
   const style = doc.getElementById('__shifix_mirror_font__');
   ok(!!style, 'an override stylesheet is added');
-  ok(/font-family:Roboto Slab/.test(style.textContent),
-    'the family is Roboto Slab');
-  ok(!/'Roboto Slab'/.test(style.textContent) && !/"Roboto Slab"/.test(style.textContent),
-    'the family is unquoted - a quoted family inside a JS string has broken this page before');
-  ok(/@font-face\{font-family:Roboto Slab/.test(style.textContent),
-    'the frame gets the @font-face itself, not just a name it cannot resolve');
-  ok(style.textContent.indexOf('@font-face') < style.textContent.indexOf('html,body{'),
-    'the face comes first');
-  ok(/src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]+\)/.test(style.textContent),
-    'the face is embedded as a data: URI (an opaque-origin frame cannot fetch a URL font)');
-  ok(style.textContent.includes(SHELL_FACE),
-    'the mirror copies the shell\'s face verbatim - one payload, not two');
-  ok(/Georgia/.test(style.textContent) && /serif!important/.test(style.textContent),
-    'a slab-flavoured fallback stack stays behind it');
+  ok(/font-family:'Space Grotesk'/.test(style.textContent), 'the family is Space Grotesk');
   ok(/html,body\{font-family:/.test(style.textContent), 'the document root is covered');
   ok(/body,body \*/.test(style.textContent), 'every element in the body is covered');
   const important = style.textContent.match(/!important/g) || [];
   ok(important.length >= 2, 'the rules win over the page\'s own typography');
+  ok(/'Segoe UI', Roboto, sans-serif!important/.test(style.textContent),
+    'a system fallback stack is kept for when the CDN is unreachable');
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +170,7 @@ function makeDoc() {
 
   const links = doc.head._children.filter((c) => c.id === '__shifix_mirror_font_css__');
   const styles = doc.head._children.filter((c) => c.id === '__shifix_mirror_font__');
-  ok(links.length === 0, 'still no font stylesheet, however often it runs');
+  ok(links.length === 1, 'one stylesheet link, no matter how often it runs');
   ok(styles.length === 1, 'one override stylesheet, no matter how often it runs');
 
   // A page stylesheet injected after ours (a themed capture does this).
@@ -237,27 +204,24 @@ function makeDoc() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. The shell itself is Roboto Slab, it fetches nothing for type, and
-//    nothing still asks for Montserrat
+// 5. The shell itself is Space Grotesk, and nothing still asks for Montserrat
 // ---------------------------------------------------------------------------
 {
   ok(!/Montserrat/.test(source), 'no Montserrat left in client.html');
-  ok(!/family=Space\+Grotesk/.test(source),
-    'client.html no longer downloads Space Grotesk');
-  ok(!/<link[^>]+fonts\.googleapis[^>]*>/.test(source),
-    'no font stylesheet is linked at all — the shell cannot wait on a CDN');
-  ok(!/rel="preconnect"[^>]*fonts\.g/.test(source),
-    'not even a preconnect to a font host is left behind');
+  ok(/family=Space\+Grotesk:wght@300;400;500;600;700/.test(source),
+    'client.html loads Space Grotesk (the same URL the panels use)');
+
+  const preload = source.match(/<link rel="preload" as="style"[\s\S]{0,220}?>/);
+  ok(!!preload && /Space\+Grotesk/.test(preload[0]),
+    'the font is still fetched after first paint, never render-blocking');
+  ok(/onload="this\.onload=null;this\.rel='stylesheet'"/.test(preload[0]),
+    'the preload is promoted to a stylesheet without blocking the first paint');
 
   const globalRule = source.match(/html, body, input, button, textarea, select, optgroup \{[\s\S]*?\}/);
-  ok(!!globalRule && /font-family:\s*Roboto Slab/.test(globalRule[0]),
-    'the shell\'s own global font rule uses Roboto Slab');
-  ok(!/Helvetica Neue/.test(source),
-    'and nothing in client.html still asks for the old face');
-  ok((source.match(/font-family:\s*Roboto Slab/g) || []).length >= 3,
-    'the runtime overlays (loading screen, LPV page, guard toast) use it too');
-  ok(source.indexOf('<style id="shf-font-face">') > 0,
-    'the shell carries the face it names');
+  ok(!!globalRule && /'Space Grotesk'/.test(globalRule[0]),
+    'the shell\'s own global font rule uses Space Grotesk');
+  ok(/'Space Grotesk', -apple-system/.test(source),
+    'the runtime overlays (LPV page, guard toast) use it too');
 }
 
 // ---------------------------------------------------------------------------
@@ -346,19 +310,8 @@ function makeDoc() {
 {
   const admin = fs.readFileSync(path.join(__dirname, '..', 'Admin.html'), 'utf8');
   const mini = fs.readFileSync(path.join(__dirname, '..', 'mini-admin.html'), 'utf8');
-  // The phone panel is set in the embedded slab face; the admin cockpit is the
-  // documented exception and is set in Helvetica (oblique) from the system.
-  ok(/font-family:\s*Roboto Slab/.test(mini), 'mini-admin.html is set in Roboto Slab');
-  ok(!/Helvetica Neue/.test(mini), 'mini-admin.html mixes in no other face');
-  ok(/<style id="shf-font-face">/.test(mini), 'mini-admin.html carries the face it names');
-  ok(/font-family:\s*Helvetica Neue/.test(admin), 'Admin.html is set in Helvetica');
-  ok(!/Roboto Slab/.test(admin), 'Admin.html mixes in no other face');
-  ok(!/<style id="shf-font-face">/.test(admin),
-    'Admin.html carries no font payload - a system face needs none');
-  ok(!/Space\+?Grotesk/.test(admin), 'Admin.html no longer asks for Space Grotesk');
-  ok(!/Space\+?Grotesk/.test(mini), 'mini-admin.html no longer asks for Space Grotesk');
-  ok(!/fonts\.googleapis/.test(admin), 'Admin.html fetches no webfont');
-  ok(!/fonts\.googleapis/.test(mini), 'mini-admin.html fetches no webfont');
+  ok(/Space\+Grotesk/.test(admin), 'Admin.html loads Space Grotesk');
+  ok(/Space Grotesk/.test(mini), 'mini-admin.html uses Space Grotesk');
   ok(!/Montserrat/.test(admin), 'Admin.html has no Montserrat left');
   ok(!/Montserrat/.test(mini), 'mini-admin.html has no Montserrat left');
 }

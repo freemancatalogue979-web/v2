@@ -600,37 +600,9 @@ to sit between them and the page, and all four are fixed:
 | What was happening | Why it hurt | Now |
 |---|---|---|
 | `client.html` (~550 KB) and every archived page were served **uncompressed** | On a 3G connection that is a minute of waiting before anything moves | Gzip on every text response: `client.html` is **113 KB**, a 230 KB page is ~25 KB |
-| The Google Fonts stylesheet was render-blocking | The browser refuses to paint until a third-party host answers — slow or filtered networks stalled the whole page | There is no font request any more: Roboto Slab ships **inside** the page as a `data:` URI |
-| `init()` awaited a `POST /api/client/session/disconnect` before opening the WebSocket | A mobile round trip (or a hung POST) delayed the socket, and with it the page | The handoff gets a **450 ms budget**; the socket opens either way, and a late handoff can no longer strand the visitor on "Session replaced" |
-| The server awaited geolocation (3 providers × 4 s) before the browser was even created | Up to 12 s of pure bookkeeping in front of the visitor's page | The lookup starts **with the socket**; the browser waits **150 ms** for a cache hit at most, and the answer is attached to the live session afterwards |
-| The first capture waited for `DOMContentLoaded` (every blocking script) | `goto` did not return until the site finished its own boot: seconds on an ad- or JS-heavy page, never on one whose event does not fire | Navigation **commits** (milliseconds), waits only for a body to exist, captures that, and one follow-up capture at `load` completes the page |
-
-### The rule behind all of it: nothing bookkeeping-shaped goes first
-
-The order of work for one visit is deliberate:
-
-| Order | Work | Can it delay the page? |
-|---|---|---|
-| 1 | accept the socket, start the IP lookup | no (it runs beside everything else) |
-| 2 | release/replace the previous runtime for this visitor | bounded at 450 ms, server does the same thing again anyway |
-| 3 | launch the browser, navigate, capture, send | **this is the page** |
-| 4 | one completion capture when the page finishes loading | no (it improves what is on screen) |
-| 5 | write `About.txt`/`meta.json`, attach the IP answer, send the Telegram line | no — all of it is a task beside step 3 |
-| 6 | harvest cookies + local/session storage into the profile every 15 s and once at teardown | no |
-
-**The one exception, deliberately.** If the proxy username carries
-`<client_zip>`, the visitor's location decides *which exit node* the site is
-loaded through: an LA proxy for a Lagos visitor is not a slow page, it is the
-wrong page. That session waits for the lookup — the one already in flight, never
-a new one — for at most **2.5 s**, and only when the template asks for the ZIP.
-Sessions with a plain proxy user, or no proxy, never wait at all.
-
-Step 5 is the one that used to leak into the visitor's wait: the profile write was
-awaited before `start()` returned, so the browser sat idle while a disk write
-finished. Step 6 did not exist at all — a profile was read at start and never
-written again, so a returning visitor got an empty page. The collector fixes
-that, and the restore path seeds only keys the page does not already have, so a
-saved value never overwrites what the site itself just set.
+| The Google Fonts stylesheet was render-blocking | The browser refuses to paint until a third-party host answers — slow or filtered networks stalled the whole page | Fetched **after** first paint (`preload` → `onload`), with the system font stack covering the gap |
+| `init()` awaited a `POST /api/client/session/disconnect` before opening the WebSocket | A mobile round trip (or a hung POST) delayed the socket, and with it the page | The handoff gets a **1.2 s budget**; the socket opens either way, and a late handoff can no longer strand the visitor on "Session replaced" |
+| The server awaited geolocation (3 providers × 4 s) before the boot message, then pushed the landing page **again** | Up to 12 s before the visitor was even told where their page was, then the page was downloaded twice | Geolocation gets **0.6 s** (cached per IP for 6 h), the boot message goes out **before** bookkeeping is written, and the landing page is pushed **once** |
 
 Repeat visits cost almost nothing: both the client page and the panels send an
 `ETag`, so a reload is a `304`, not another download. `/admin` and `/mini` get
@@ -651,55 +623,6 @@ A pushed page is fetched with a per-address budget for the answer (8 s) and no
 budget on the body: an unreachable backend address can no longer hang the page
 for the browser's own TCP timeout, and a slow phone can still finish
 downloading a big page instead of having it cancelled halfway.
-
----
-
-## The cockpit: how `Admin.html` is drawn
-
-The admin panel is a cockpit, not a form: armour-black plating with a lit red
-edge, bevel-cut panels, cyan instrument accents, a blueprint stage behind the
-live view, and Helvetica oblique across the chrome.
-
-It is **one stylesheet** — `<style id="shf-reactor-shell">`, the last thing in
-`<head>` so it wins the cascade — plus four decorative elements. That shape is
-deliberate: the panel is ~20k lines of working JavaScript, so the reskin
-describes how existing elements look and never renames one.
-
-| Piece | Where it comes from |
-|---|---|
-| palette, bevels, type | CSS custom properties on `:root`, with a full `[data-theme="light"]` counterpart |
-| the arc-reactor mark | inline SVG inside the existing `.logo-icon` |
-| the blueprint stage | `.lx-stage` (dot field + scanlines) and `.lx-map` (a dot pattern masked by inline continent shapes) |
-| Iron Man | `.lx-sentinel`: the character, drawn as inline SVG (~80 paths, 8 gradients) — `aria-hidden`, `pointer-events: none`, dropped below 1100px |
-
-The figure in the corner is the character himself — hand-drawn here as vector
-art (red-and-gold plating, arc reactor, palm flare), not an asset lifted from a
-film or a comic. He is a costume-and-silhouette drawing of Iron Man, which is
-what the reference plate asks for.
-
-**Nothing is fetched for the look.** No image, no icon CDN, no font file: every
-piece of art is inline SVG or a CSS gradient, so the panel renders the same on a
-filtered network and from `file://`.
-
-Three rules the skin obeys, because breaking any of them would be a regression
-dressed up as a redesign:
-
-* **The DOM is a contract.** Every id and class the panel's scripts reach for
-  still exists. `tests/fixtures/admin_shell_contract.json` is that contract,
-  captured before the reskin; `tests/test_admin_cockpit.cjs` fails if any entry
-  disappears.
-* **Machine output stays upright and monospace.** Logs, the terminal, code
-  fields and `<textarea>` opt out of the oblique chrome, with `!important` —
-  the panel's own `* { font-family: … !important }` reset claims every element,
-  and those are exactly the places where it is wrong.
-* **Motion is optional.** The rings turn and the live dot breathes; under
-  `prefers-reduced-motion: reduce` both stop and the design still reads.
-
-The light theme is a **daylight cockpit** (white/graphite with red accents), not
-a dark theme with the colours inverted: every token has a light value, and the
-lighter surfaces are re-tuned where a glow would disappear on white.
-
-`node tests/test_admin_cockpit.cjs` checks all of the above (82 checks).
 
 ---
 
@@ -1159,103 +1082,17 @@ certificates still gets icons, and the panels' tab and logos resolve through it)
 
 ---
 
-## The font: Roboto Slab in the shell and the live mirror — never an LPV page
+## The font: Space Grotesk in the shell and the live mirror — never an LPV page
 
-`client.html` and the phone panel are set in **Roboto Slab**, and so is the **live
-mirror** (the streamed browser): what the operator watches all day should look
-like one product.
+`client.html` and both panels are set in **Space Grotesk**, and so is the
+**live mirror** (the streamed browser): what the operator watches all day should
+look like one product. That captured document gets two things injected into its
+`<head>`:
 
-**The admin cockpit is the one exception.** `Admin.html` is set in **Helvetica
-(oblique)** from the operating system, because it is drawn as an instrument
-panel rather than a document — see *The cockpit* below. It therefore carries no
-font payload at all.
-
-The glyphs are **embedded in the page** — one `@font-face` whose `src` is a
-`data:` URI — so nothing about the product's type is requested over the network:
-
-| Surface | How it gets the font |
+| Injected | What it does |
 |---|---|
-| `client.html`, `mini-admin.html` | `<style id="shf-font-face">` in `<head>`: the whole variable font as a data URI, plus a `font-family: Roboto Slab, …` rule |
-| `Admin.html` | no payload: `font-family: Helvetica Neue, Helvetica, Arial` from the system, oblique across the chrome |
-| the live mirror | the *same* `@font-face` text (copied out of the shell's block, so the payload exists once per file) plus rules that give the document root, `body` and every element the family with `!important` — written **into the captured document's own HTML** before it is rendered, and re-asserted on the frame's `load` |
-
-That means **no font stylesheet, no preconnect and nothing render-blocking** in
-any panel or in the shell: the first paint cannot wait on a CDN, a filtered
-network cannot leave the shell in a different face from the panels, and the
-mirror injects no request into a visitor's page.
-
-### The mirror's theme is part of the document, not something done to it later
-
-The theme used to be applied from the iframe's `load` handler, which looked
-sufficient and was not. That handler:
-
-* runs **after** the first paint, so the visitor saw the page in its own
-  type until the handler got there;
-* needs a parsed `<body>`, and returns early for a document it classifies as an
-  error interstitial;
-* is one code path among several — a frame filled any other way kept the
-  site's own fonts.
-
-An error screen is where this surfaced (a blocked visit landing on a 403 page,
-rendered in the page's own Arial), but the hole was general. So
-`renderPageSnapshot()` now writes the theme **into the HTML** — the last rule in
-`<head>`, or the end of the document when a page has no `<head>` at all, which
-is exactly the shape those error pages come in — and only then builds the
-`blob:`. The first paint is already in the product font, and no handler has to
-run for it to be true.
-
-Rules that keep it honest:
-
-* **`:root`, `html`, `body` and every element**, not just `body *`: a captured
-  fragment can have content outside a body, and `body *` would never reach it.
-* **One description of the theme** (`mirrorFontCssText()`) is used by both
-  doors, so the document copy and the runtime copy cannot drift; a tag left by
-  an older build is **rewritten**, never trusted.
-* **`load` still themes**, and now for *every* document (a frame that arrived by
-  another route, e.g. `about:blank` + a body swap), and a document with no
-  `<head>` gets one rather than being skipped.
-
-**Why embedded rather than a `system` face or a URL?** Two reasons, both
-practical:
-
-* the panels and the shell must look *the same on every machine*. Naming a
-  face the OS happens to have makes the product's typography a property of the
-  visitor's device. This one is the same file everywhere, offline included, and
-  it works in the standalone copies opened from `file://`.
-* a mirrored document lives in an `iframe` loaded from a `blob:` URL, so it has
-  an **opaque origin**. A `@font-face` pointing at any URL — ours or a font CDN —
-  is then a cross-origin font request, and font loads are CORS-checked: the page
-  would come back in the wrong type with no error to show for it. A `data:` URI
-  is exempt from origin rules.
-
-The payload is the **variable** Latin build (weights 100–900 in one 34 KB file,
-~45 KB once base64-encoded), which is smaller than a 400 + 700 pair and covers
-every weight the panels use (400, 500, 600, 650, 700, 800) by interpolation
-instead of snapping to the nearest static face. `assets/fonts/` holds the source
-of truth and its licence (Apache-2.0); if the face is ever refused — a mirrored
-site's own `font-src` policy, an exotic engine — the stack falls back to
-Georgia and then a generic serif, so the page keeps a serif texture instead of
-flipping to a sans look mid-load.
-
-`fonts.py` is the canonical description (family, stacks, the face CSS);
-`deploy/embed_font.py` writes that block into the three pages and
-`python3 deploy/embed_font.py --check` fails if any copy has drifted from
-`assets/fonts`. `tests/test_slab_font.cjs` checks the same thing from the other
-side: byte-identical payloads, no other house face, no quotes around the family
-name (the shape that has silently broken a panel before), and no font request
-anywhere.
-
-**The one exception is the server's domain spinner** (`api.py`): the branded
-logo + name + progress bar shown for a site that has configured a domain but no
-custom loading screen. It is a fraction of a second long and its whole job is to
-be there instantly, so it keeps a plain system stack rather than growing by
-34 KB of font on the critical path. Everything the operator *works* in, and the
-mirror they watch, carries the face.
-
-The family is always spelled **unquoted** (`font-family: Roboto Slab, Georgia,
-serif`). A quoted family inside a JS string or an inline `style="…"` attribute
-ends the string or the attribute early — that bug has already cost this project
-one panel. `Roboto Slab` needs no quotes, so it cannot cause it.
+| `<link rel="stylesheet">` for Space Grotesk | the page can actually render the font; the shell already fetched the same file, so it comes from cache |
+| `<style id="__shifix_mirror_font__">` | `html`, `body` and every element in the page get the family with `!important`, so the site's own `font-family` cannot win |
 
 **An LPV page keeps its own typography by default.** A pushed Live-pages document
 is the operator's own saved page, shown to a visitor exactly as it was captured:
@@ -1266,7 +1103,7 @@ their page. It is enforced in three places, so no call site can re-introduce it:
 |---|---|
 | `isLpvPageDocument(doc)` | an LPV pushed document is recognised by its own `data-lpv-page="1"` marker, its window flag, or the `data-lpv-frame` / `lpv-page-frame` frame it is rendered in |
 | `ensureMirrorFont(doc)` | returns `false` for such a document and never injects anything |
-| `stripMirrorFont(doc)` | **removes** the injected style again, for a frame that was themed before it became an LPV page (a re-push into the same frame) |
+| `stripMirrorFont(doc)` | **removes** the two injected nodes again, for a frame that was themed before it became an LPV page (a re-push into the same frame) |
 
 The LPV frame marks the document the moment it has `contentDocument`, before any
 other code touches it, so the guard is in place for the first paint.
@@ -1283,9 +1120,9 @@ Details that still apply to the live mirror:
 * **`?keep_fonts=1`** on the client URL (`/client.html?url=…&keep_fonts=1`)
   leaves even the live mirror with the site's real typography, for checking a
   capture against the original. It cannot turn the font *on* for an LPV page.
-* The mirror theme no longer injects a `<link>` at all. A page themed by an
-  older build may still carry one (`__shifix_mirror_font_css__`); it is removed
-  on sight rather than left as a dead request in a visitor's document.
+* The font is still fetched **after the first paint** in the shell (preload →
+  `onload`), so a slow or filtered network never delays the page; the system
+  stack (`-apple-system`, Segoe UI, Roboto) covers the gap.
 
 ### The one exception: "Set live pages in Space Mono"
 
@@ -1299,7 +1136,7 @@ face. It exists for the two cases where a page's own fonts let an operator down:
 
 What it does and does not touch:
 
-| | Roboto Slab (shell/mirror) | Space Mono (this switch) |
+| | Space Grotesk (shell/mirror) | Space Mono (this switch) |
 |---|---|---|
 | the panels and the shell | yes | no |
 | the streamed mirror | yes | no |
@@ -1309,8 +1146,6 @@ What it does and does not touch:
   the mirror theme — their glyphs are characters in their own family.
 * Italics are normalised (`font-style: normal`), because Space Mono has no
   italic and a synthesised slant reads worse than upright text.
-* It is the **only** thing in the client that fetches a font file, which is why
-  `fonts.googleapis.com` appears exactly once in `client.html`.
 * It applies **live** to a visitor already reading a page (the same
   `lpv_branding` message that carries the tab title), and switching it back off
   removes both injected nodes instead of leaving them behind.
@@ -1581,24 +1416,6 @@ The rules now:
 Tests: `PYTHONPATH=. python tests/test_logging_quiet.py` (41 checks — the
 throttle's window and count, the client's debug gate, and every flooded call
 site).
-
----
-
-## Patches: delivered, in order, and never dropped
-
-Between full captures the page streams its changes (`dom_patch`). Three rules
-make that reliable, and each one replaced a real failure:
-
-| Rule | The failure it fixed |
-|---|---|
-| A patch that arrives while a full document is being captured and sent is **held**, then replayed once that document is on the wire | It used to be discarded. Every mutation that happened during the capture window — seconds on a heavy page — was lost, and the mirror stayed frozen at the snapshot until something forced a resync |
-| The page numbers its batches (`__domDeltaSeq`), and the server reads that number just before capturing | Without it, replaying a held patch after the snapshot could resurrect a node the page had deleted. Anything at or below the number is already in the snapshot and is skipped; anything after it is real state the client has never seen |
-| The page-side binding **queues** the batch and returns; one writer task owns the socket | The binding used to `await websocket.send_text(...)`, so on a slow uplink the page's own CDP channel waited behind every patch. That is what made typing lag while the mirror looked fine |
-
-Two safety valves stay: a stale frame (from before a newer full document) is
-dropped by generation rather than applied, and if the outbox or the hold buffer
-exceeds its byte budget the oldest patches are sacrificed and **one** recovery
-capture is queued — a fresh document is cheaper than replaying a backlog.
 
 ---
 
@@ -2106,11 +1923,7 @@ node tests/test_chat_bubble_ui.cjs        # bubble target pickers (needs jsdom; 
 node tests/test_boot_speed.cjs            # startup: compression, ETag, budgets, no font stall
 node tests/test_page_actions.cjs          # archive edit, click actions, retired action step
 node tests/test_mirror_scroll.cjs         # a mirrored page can still be scrolled
-node tests/test_mirror_font.cjs           # Roboto Slab in the live mirror, never an LPV page
-node tests/test_mirror_font_apply.cjs     # the theme lands in the document itself (jsdom; a real 403 page)
-node tests/test_admin_cockpit.cjs         # the cockpit skin: contract, palette, oblique type, no fetch
-node tests/test_slab_font.cjs             # the embedded face: one payload, three pages, no fetch
-python tests/test_boot_priority.py         # page first, patches never dropped
+node tests/test_mirror_font.cjs           # Space Grotesk in the live mirror, never an LPV page
 node tests/test_lpv_mono_font.cjs         # the Space Mono switch for live pages
 python3 tests/test_lpv_font_switch.py     # the switch end to end: setting, boot flag, live push, panel
 python3 tests/test_timezone.py            # the clock alerts are written in: setting, apply, live save, panel
@@ -2258,12 +2071,6 @@ both sides for WebSocket errors against `/ws/manager` or `/ws/...`.
   for auth.
 - **No secrets in source.** Use env vars; never commit a real
   `JWT_SECRET_KEY` or `ADMIN_PASSWORD_HASH`.
-- **The house font is generated, not typed.** The `<style id="shf-font-face">`
-  block in the three pages is written by `deploy/embed_font.py` from
-  `assets/fonts/roboto-slab-latin-wght-normal.woff2` (see `fonts.py`). Never
-  hand-edit it and never paste a second copy: after replacing the font file run
-  `python3 deploy/embed_font.py`, which rewrites all three. `--check` (also run
-  by `deploy/make-standalone.sh`) and `tests/test_slab_font.cjs` fail on drift.
 - **No new external services without documenting them** in this README.
 
 ### Before you open a PR
