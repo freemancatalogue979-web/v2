@@ -9169,18 +9169,30 @@ function applySpinnerColorFromHex(hexColor) {
                         break;
                     // --- New stability-driven sync messages ----------------
                     case 'page_transition':
-                        // Server's URL-watcher detected a navigation.  The
-                        // full_document with the new page is on its way but
-                        // takes 100-500ms; until then every dom_patch we get
-                        // is a mix of OLD-page tear-down and NEW-page
-                        // build-up, and applying it to the OLD iframe leaves
-                        // the user staring at step-2-and-3 overlaid (the
-                        // search page with autocomplete open *plus* the
-                        // search-results fragments already inserted on top of
-                        // it).  Enter nav-pending mode: hide the old iframe,
-                        // show the spinner overlay, and buffer every
-                        // subsequent patch instead of applying it.
-                        beginNavigationTransition(message.url || null);
+                        // Server's URL-watcher detected a navigation.
+                        // We do NOT buffer patches here anymore: holding
+                        // dom_patch ops until full_document arrives was the
+                        // single biggest source of "lag" / "stuck page"
+                        // feeling — users watched a frozen iframe for
+                        // 300-1500ms while the new page streamed.
+                        //
+                        // Deltas carry a doc-token + generation; any patch
+                        // for the new document that lands on the old iframe
+                        // naturally misses its mids and is dropped by
+                        // applyDomPatch (a few harmless 'missing' counts),
+                        // and the moment full_document arrives the fresh
+                        // page is seeded and subsequent deltas paint live.
+                        // This gives the "page loads naturally" behaviour
+                        // the user asked for: no hidden freeze, no buffering.
+                        try {
+                            if (message.url) reportPageChange(message.url);
+                            dbg('[NAV] page_transition -> ' + (message.url || '?') + ' (no buffering, live patches)');
+                        } catch (e) {}
+                        // Defensive: drop any stale buffer from a prior nav.
+                        state._navPending = false;
+                        state._navPatchBuffer = [];
+                        state._navBufferedGen = null;
+                        state._navBufferedDoc = null;
                         break;
                     case 'sync_noop':
                         // Page became stable with no visible change.

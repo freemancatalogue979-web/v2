@@ -1889,7 +1889,7 @@ class NeoStreamingSession:
         """Monitor page URL changes and notify client of transitions"""
         while self.is_active:
             try:
-                await asyncio.sleep(0.5)  # Check every 500ms
+                await asyncio.sleep(0.05)  # Check every 50ms — URL change must fire fast
                 
                 # Get current page URL
                 page = self.get_active_page()
