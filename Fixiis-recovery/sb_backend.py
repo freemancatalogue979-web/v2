@@ -510,12 +510,17 @@ class _Keyboard:
         self._mods = 0
 
     async def _dispatch_cdp(self, etype: str, key: str) -> bool:
+        if self._page is None or self._page._closed:
+            return False
         kd = _key_def(key)
         kd["type"] = etype
         kd["modifiers"] = self._mods
         return await _safe_input_send(self._page._session, "Input.dispatchKeyEvent", kd)
 
     async def _native(self, etype: str, key: str) -> bool:
+        # Short-circuit before any executor hop when the page/context is gone.
+        if self._page is None or self._page._closed:
+            return False
         handle = self._page._ctx._handle
         if handle is None:
             return False
@@ -550,6 +555,8 @@ class _Keyboard:
         await self.up(key)
 
     async def insert_text(self, text: str) -> None:
+        if self._page is None or self._page._closed:
+            return
         handle = self._page._ctx._handle
         if handle is not None:
             try:
@@ -580,6 +587,9 @@ class _Mouse:
 
     async def _native(self, action: str, button: str = "left", delta_x: float = 0,
                       delta_y: float = 0) -> bool:
+        # Short-circuit before any executor hop when the page/context is gone.
+        if self._page is None or self._page._closed:
+            return False
         handle = self._page._ctx._handle
         if handle is None:
             return False
@@ -1673,6 +1683,13 @@ class SBBrowser:
         sid = (res or {}).get("sessionId")
         if not sid:
             raise RuntimeError(f"SB attach failed for target {target_id}")
+        # A target being attached is live by definition — clear any stale
+        # dead flag Chrome recycled the id or a previous crash marked it.
+        if self._handle is not None:
+            try:
+                self._handle._mark_target_alive(target_id)
+            except Exception:
+                pass
         page = SBPage(self._client, target_id, sid, ctx, opener_id=opener_id)
         await page._init()
         if self._handle is not None and self._handle.viewport:
@@ -1759,6 +1776,17 @@ class SBHandle:
         # executor worker can make an otherwise valid action target a stale
         # WebDriver session or the wrong tab.
         self._target_window_handles: Dict[str, str] = {}
+        # Targets we've observed to be closed/gone.  Once a target lands here
+        # every subsequent action against it short-circuits to False without
+        # paying for a switch_to.window round-trip AND without spamming the
+        # log with "no such window: target window already closed" warnings on
+        # every pointer move/keystroke (which is what was slowing sessions
+        # down when a tab closed mid-interaction).
+        self._dead_targets: set = set()
+        # Per-target consecutive-switch-failure count; after a couple of
+        # "no such window" misses the target is promoted to _dead_targets
+        # so we stop hammering ChromeDriver with impossible switches.
+        self._target_fail_streak: Dict[str, int] = {}
 
     # ---- sync side (runs inside the executor thread) ----
 
@@ -1903,19 +1931,47 @@ class SBHandle:
         Crucially, do not silently choose the last tab when there are several:
         that was the source of input being sent to the visible/restored Google
         tab while CDP drove a different page.
+
+        Performance: once we learn a target is dead (closed tab, navigated-
+        away renderer), we short-circuit and refuse to pay for the
+        switch_to.window round-trip or emit a warning for every subsequent
+        pointer move / keystroke against it.  Repeated "no such window"
+        warnings on the hot input path were the dominant source of SB
+        slowdown when a tab closed mid-session.
         """
         drv = self.driver
         if drv is None:
             return False
+        if not target_id:
+            return False
+        # Fast path: we already know this target is gone.
+        if target_id in self._dead_targets:
+            return False
+
         try:
             handles = list(drv.window_handles or [])
         except Exception as exc:
-            logger.warning("[SB][W3C-INPUT] cannot read window handles: %s", exc)
+            # "no such window" / "invalid session id" class errors:
+            # ChromeDriver itself is wedged. Throttle the log so a dying
+            # driver doesn't spam a warning per mousemove.
+            throttled(
+                logger, "sb-w3c-handles-" + str(target_id)[:12],
+                "[SB][W3C-INPUT] cannot read window handles: %s", exc,
+                every=10.0,
+            )
+            self._mark_target_dead(target_id)
             return False
         if not handles:
+            self._mark_target_dead(target_id)
             return False
 
+        # Invalidate cached handle if it isn't in the live handle set — the
+        # tab was closed and ChromeDriver has already dropped it.
         known = self._target_window_handles.get(target_id)
+        if known and known not in handles:
+            self._target_window_handles.pop(target_id, None)
+            known = None
+
         candidates = [target_id]
         if target_id and not target_id.startswith("CDwindow-"):
             candidates.append("CDwindow-" + target_id)
@@ -1931,20 +1987,82 @@ class SBHandle:
         if chosen is None and len(handles) == 1:
             chosen = handles[0]
         if chosen is None:
-            logger.warning(
-                "[SB][W3C-INPUT] target %s is not represented by driver handles %s",
-                target_id, handles,
-            )
+            # Target isn't in our handle list.  If this is a transient
+            # moment during a navigation we'll see it on a later retry; if
+            # the tab is gone we'll blacklist after a few consecutive
+            # misses.  Throttle so one dead tab never floods logs.
+            streak = self._target_fail_streak.get(target_id, 0) + 1
+            self._target_fail_streak[target_id] = streak
+            if streak <= 2:
+                throttled(
+                    logger, "sb-w3c-missing-" + str(target_id)[:12],
+                    "[SB][W3C-INPUT] target %s not in driver handles (streak=%d)",
+                    target_id, streak,
+                    every=5.0,
+                )
+            else:
+                self._mark_target_dead(target_id)
             return False
         try:
             current = getattr(drv, "current_window_handle", None)
             if current != chosen:
                 drv.switch_to.window(chosen)
             self._target_window_handles[target_id] = chosen
+            # Successful switch -> clear any failure streak.
+            self._target_fail_streak.pop(target_id, None)
             return True
         except Exception as exc:
-            logger.warning("[SB][W3C-INPUT] switch to target %s failed: %s", target_id, exc)
+            msg = str(exc)
+            # "no such window" / "target window already closed" /
+            # "web view not found" mean the tab or renderer is gone.
+            # Blacklist immediately instead of retrying for every input.
+            is_dead = any(
+                s in msg.lower() for s in (
+                    "no such window", "target window already closed",
+                    "web view not found", "invalid session id",
+                    "no such frame", "target closed",
+                    "cannot determine loading status",  # target crashed mid-switch
+                )
+            )
+            streak = self._target_fail_streak.get(target_id, 0) + 1
+            self._target_fail_streak[target_id] = streak
+            if is_dead or streak >= 2:
+                self._mark_target_dead(target_id)
+                throttled(
+                    logger, "sb-w3c-dead-" + str(target_id)[:12],
+                    "[SB][W3C-INPUT] target %s dead (switch failed: %s); "
+                    "suppressing further attempts",
+                    target_id, msg.split("\n")[0][:200],
+                    every=30.0,
+                )
+            else:
+                throttled(
+                    logger, "sb-w3c-switch-" + str(target_id)[:12],
+                    "[SB][W3C-INPUT] switch to target %s failed: %s",
+                    target_id, msg.split("\n")[0][:200],
+                    every=5.0,
+                )
+            # Drop cached handle so a future recovery path re-probes
+            self._target_window_handles.pop(target_id, None)
             return False
+
+    def _mark_target_dead(self, target_id: str) -> None:
+        """Record ``target_id`` as unreachable.  All future switches/
+        native actions against it return False immediately with no
+        ChromeDriver round-trip and no warning."""
+        if not target_id:
+            return
+        self._dead_targets.add(target_id)
+        self._target_window_handles.pop(target_id, None)
+        self._target_fail_streak.pop(target_id, None)
+
+    def _mark_target_alive(self, target_id: str) -> None:
+        """Clear the dead flag for a target we believe has been re-attached
+        or recreated (e.g. after a same-process crash recovery)."""
+        if not target_id:
+            return
+        self._dead_targets.discard(target_id)
+        self._target_fail_streak.pop(target_id, None)
 
     @staticmethod
     def _wd_key_value(key: str) -> str:
@@ -2144,10 +2262,23 @@ class SBHandle:
         """Compatibility wrapper used by the SBPage click recovery path."""
         return self._native_pointer_action_sync(target_id, "click", x, y, button=button)
 
+    def _target_alive(self, target_id: str) -> bool:
+        """Cheap pre-flight check: refuse native actions against targets we
+        already know are dead.  Saves an executor round-trip per keystroke
+        and per pointer move when the user is typing/mousing over a tab
+        that has closed."""
+        if self._stopped:
+            return False
+        if not target_id:
+            return False
+        if target_id in self._dead_targets:
+            return False
+        return True
+
     async def native_pointer_action(self, target_id: str, action: str,
                                     x: float, y: float, button: str = "left",
                                     delta_x: float = 0, delta_y: float = 0) -> bool:
-        if self._ex is None or self._stopped:
+        if self._ex is None or not self._target_alive(target_id):
             return False
         loop = asyncio.get_running_loop()
         try:
@@ -2159,7 +2290,7 @@ class SBHandle:
             return False
 
     async def native_key_action(self, target_id: str, action: str, key: str) -> bool:
-        if self._ex is None or self._stopped:
+        if self._ex is None or not self._target_alive(target_id):
             return False
         loop = asyncio.get_running_loop()
         try:
@@ -2170,7 +2301,7 @@ class SBHandle:
             return False
 
     async def native_insert_text(self, target_id: str, text: str) -> bool:
-        if self._ex is None or self._stopped:
+        if self._ex is None or not self._target_alive(target_id):
             return False
         loop = asyncio.get_running_loop()
         try:
@@ -2181,7 +2312,7 @@ class SBHandle:
             return False
 
     async def native_focus_selector(self, target_id: str, selector: str) -> bool:
-        if self._ex is None or self._stopped:
+        if self._ex is None or not self._target_alive(target_id):
             return False
         loop = asyncio.get_running_loop()
         try:
@@ -2192,7 +2323,7 @@ class SBHandle:
             return False
 
     async def native_click_selector(self, target_id: str, selector: str) -> bool:
-        if self._ex is None or self._stopped:
+        if self._ex is None or not self._target_alive(target_id):
             return False
         loop = asyncio.get_running_loop()
         try:
@@ -2356,7 +2487,7 @@ class SBHandle:
         frameworks) silently do not fire.  See the comment above
         ``_w3c_actions_click_sync`` for the full diagnosis.
         """
-        if self._ex is None or self._stopped:
+        if self._ex is None or not self._target_alive(target_id):
             return False
         loop = asyncio.get_running_loop()
         try:
@@ -2548,6 +2679,14 @@ async def _launch_stack(profile_dir: Optional[str], viewport: Dict[str, Any],
 
     def _target_destroyed(params: dict) -> None:
         tid = (params or {}).get("targetId")
+        if tid and ctx._handle is not None:
+            # Immediately blacklist this target so in-flight native actions
+            # (key presses, mouse moves queued on the executor thread) bail
+            # out fast instead of logging a wall of "no such window" warnings.
+            try:
+                ctx._handle._mark_target_dead(tid)
+            except Exception:
+                pass
         for page in list(ctx.pages):
             if page is not None and page._target_id == tid:
                 page._mark_closed()
