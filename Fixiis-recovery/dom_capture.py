@@ -968,6 +968,22 @@ _FAST_SERIALIZE_JS = r"""
   };
   const styleSafe = (css) => css.replace(/<\//g, '<\\/');
 
+  const MIRROR_URL_ATTRS = new Set(['href','xlink:href','src','action','formaction',
+    'poster','background','cite','longdesc','lowsrc','dynsrc','data','profile','manifest']);
+  // Visual-only mirror: attributes that would execute code in the
+  // same-origin blob document must never cross into the capture.  Inline
+  // event handlers, javascript:/vbscript: URLs (leading C0 controls ignored,
+  // like the browser), and srcdoc iframes (they would run same-origin JS).
+  const dropMirrorAttr = (n, v) => {
+    const name = String(n || '');
+    if (/^on/i.test(name)) return true;
+    if (name.toLowerCase() === 'srcdoc') return true;
+    if (MIRROR_URL_ATTRS.has(name.toLowerCase()) && v != null) {
+      const s = String(v == null ? '' : v);
+      if (/^[\s\u0000-\u0020]*(javascript|vbscript)\s*:/i.test(s)) return true;
+    }
+    return false;
+  };
   const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
   const attrsFor = (el, tag) => {
     let s = '';
@@ -977,6 +993,7 @@ _FAST_SERIALIZE_JS = r"""
       const a = list[i];
       const n = a.name;
       if (n === MID) continue;
+      if (dropMirrorAttr(n, a.value)) continue;
       if (isFormCtl && (n === 'value' || n === 'checked' || n === 'selected')) continue;
       s += ' ' + n + '="' + escAttr(a.value) + '"';
     }
@@ -1203,6 +1220,7 @@ _FAST_SERIALIZE_JS = r"""
       for (let i = 0; i < list2.length; i++) {
         const a = list2[i];
         if (a.name === 'src' || a.name === 'srcset' || a.name === MID) continue;
+        if (dropMirrorAttr(a.name, a.value)) continue;
         // Native lazy-loading would defer an image that is already in the
         // viewport of the mirror; the capture is a photograph of a loaded
         // page, so every image loads eagerly.
@@ -1271,6 +1289,7 @@ _FAST_SERIALIZE_JS = r"""
           for (let i = 0; i < listC.length; i++) {
             const a = listC[i];
             if (a.name === MID) continue;
+            if (dropMirrorAttr(a.name, a.value)) continue;
             if (a.name === 'style') {
               out.push(' style="background: url(' + dataUrl + ') center/contain no-repeat; ' + escAttr(a.value) + '"');
               styleAdded = true;
@@ -1286,6 +1305,10 @@ _FAST_SERIALIZE_JS = r"""
           return;
         }
       } catch (e) {}
+    }
+    if (tag === 'meta') {
+      const he = String(el.getAttribute('http-equiv') || '').trim().toLowerCase();
+      if (he === 'refresh') return;   // a mirror must never navigate itself
     }
     out.push('<', tag);
     out.push(attrsFor(el, tag));
@@ -4662,6 +4685,7 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                 doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
                 frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + payload_text + '}'
                 await session.websocket.send_text(frame)
+                session._inactive_drop_streak = 0
         except Exception as exc:
             logger.debug("delta relay failed: %s", exc)
 
@@ -4712,7 +4736,7 @@ async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") 
                     # second per session.
                     now = time.monotonic()
                     last = getattr(session, "_last_unhealthy_resync_t", 0.0)
-                    if now - last >= 1.0:
+                    if now - last >= 5.0 and not session._send_inflight:
                         session._last_unhealthy_resync_t = now
                         announced = target_desc if (
                             isinstance(target_desc, str)
@@ -4903,6 +4927,8 @@ class DOMCaptureSession:
         self._prefetch_running = False
         self._delta_active: bool = False     # current client generation has data-mid
         self._delta_drops: int = 0           # patches the relay could not send
+        self._inactive_drop_streak: int = 0  # consecutive inactive-gate drops
+        self._last_drop_recovery_t: float = 0.0
         self._delta_drop_task: Optional[asyncio.Task] = None
         self._last_unhealthy_resync_t: float = 0.0
         self._explicit_navigation_in_progress: bool = False
@@ -5038,13 +5064,14 @@ class DOMCaptureSession:
             logger.debug("asset lease release failed for %s", self.client_id, exc_info=True)
 
     def _record_delta_drop(self, why: str) -> None:
-        """Patches that could not be relayed must not vanish silently.
+        """Track patches the relay could not send.
 
-        A dropped patch means server and mirror can no longer be trusted to
-        agree, so schedule exactly one coalesced recovery document.  Drops
-        during bootstrap or an in-progress navigation are normal and are not
-        recaptured here — the full document that owns that window will
-        supersede anything we could send.
+        A patch dropped during a full send is NORMAL — the document being
+        built supersedes it — and must never schedule work; scheduling one
+        recovery per dropped patch caused a permanent full-capture loop after
+        every interaction. Only a SUSTAINED stream against the inactive gate
+        (no full document able to cover the patches) may produce one
+        recovery, at most one per 10 seconds.
         """
         try:
             dropped = int(getattr(self, "_delta_drops", 0)) + 1
@@ -5054,6 +5081,20 @@ class DOMCaptureSession:
                     "dc delta drop #%d (%s) client=%s",
                     dropped, why, self.client_id,
                 )
+            if why != "inactive":
+                # full_send_inflight / send_race — superseded by the inflight
+                # document by design. Bookkeeping only, never a recapture.
+                return
+            streak = int(getattr(self, "_inactive_drop_streak", 0)) + 1
+            self._inactive_drop_streak = streak
+            if streak < 3:
+                return
+            now = time.monotonic()
+            last = getattr(self, "_last_drop_recovery_t", 0.0)
+            if now - last < 10.0:
+                return
+            self._last_drop_recovery_t = now
+            self._inactive_drop_streak = 0
             if not self.has_initial_capture or self._explicit_navigation_in_progress:
                 return
             task = getattr(self, "_delta_drop_task", None)
@@ -5067,7 +5108,9 @@ class DOMCaptureSession:
         """One coalesced full document after dropped patches (convergence)."""
         try:
             await asyncio.sleep(DELTA_DROP_DELAY_S)
-            if self._stopped:
+            if self._stopped or self._send_inflight:
+                # A capture is already on the wire; the follow-up it will
+                # schedule carries the newest DOM anyway. Never stack ours.
                 return
             await self.send_page(reason="delta_drop")
         except Exception as exc:
@@ -5455,6 +5498,7 @@ class DOMCaptureSession:
                 self._last_checksum = _free_checksum
             self._capture_fail_streak = 0
             self._delta_active = capture_delta_active
+            self._inactive_drop_streak = 0
             for meta in assets_to_send:
                 digest = meta.get("hash")
                 if digest:

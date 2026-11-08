@@ -90,10 +90,10 @@ for (const where of ['jsdom', path.join(process.cwd(), 'node_modules/jsdom'),
     'a streamed page can retire the loading page too');
   ok(/lpvStreamShown\('snapshot painted'\)/.test(client),
     'a painted snapshot does it');
-  ok(/lpvStreamShown\('dom patch'\)/.test(client) && /lpvStreamShown\('body replace'\)/.test(client),
-    'so do incremental paints');
-  ok(/lpvStreamShown\('same frame again'\)/.test(client) && /lpvStreamShown\('same snapshot again'\)/.test(client),
-    'and a repeat frame for a page that is already rendered');
+  ok(/lpvStreamShown\('dom patch'\)/.test(client) && /lpvStreamShown\('snapshot painted'\)/.test(client),
+    'so do incremental paints (the body-replace handover is gone by design)');
+  ok(/lpvStreamShown\('same snapshot again'\)/.test(client),
+    'and a repeat frame for a page that is already rendered (the frame-repeat path is gone by design)');
   ok(/stream already visible/.test(client),
     'holding a loader over a visible stream is refused');
 }
@@ -340,8 +340,10 @@ function withRuntime(fn) {
     //     snapshot arrives. Streamed visitors never go through showPage.
     {
       const { win, errors } = await withRuntime((win, sock) => {
+        // The canonical path is full_document; the legacy streamed 'page'
+        // message type is gone by design.
         sock.onmessage({ data: JSON.stringify({
-          type: 'page', html: PAGE_HTML, url: 'https://mirror.example.test/',
+          type: 'full_document', html: PAGE_HTML, url: 'https://mirror.example.test/', gen: 1,
         }) });
       });
       const doc = win.document;

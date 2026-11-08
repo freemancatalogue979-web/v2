@@ -9482,6 +9482,7 @@ function applySpinnerColorFromHex(hexColor) {
                     const tempScripts = extractScripts(html);
                     const htmlNoScripts = stripScripts(html, tempScripts);
                     target.outerHTML = htmlNoScripts;
+                    try { stripDeadMirrorNodes(doc); } catch (e) { /* ignore */ }
                     // HTML+CSS only (user request): live-page scripts never
                     // re-execute in the mirror (dead re-execute path removed).
                     // Restore typing state inside the replaced region (mid -> id -> name).
@@ -9734,8 +9735,61 @@ function attachShadowRoots(root) {
     return attached;
 }
 
+// ---- Visual-only mirror sanitizer -----------------------------------------
+// The blob: iframe is same-origin with this client (that is how we can drive
+// it), so anything that executes in it can reach THIS document: the
+// WebSocket, the session chrome, the DOM.  Scripts never ship in captures
+// by design, but an authored INLINE EVENT HANDLER (<img onerror=...>) is not
+// a <script> tag, so the script strip never saw it.  Every DOM the mirror
+// gets — the full document, a delta fragment, a shadow root — passes through
+// this walker.
+const MIRROR_URL_ATTRS = new Set(['href', 'xlink:href', 'src', 'action',
+    'formaction', 'poster', 'background', 'cite', 'longdesc', 'lowsrc',
+    'dynsrc', 'data', 'profile', 'manifest', 'srcdoc']);
+function dropMirrorAttr(name, value) {
+    const raw = String(name || '');
+    if (/^on/i.test(raw)) return true;   // onclick, onerror, onfoo — never legit here
+    const nm = raw.toLowerCase();
+    if (nm === 'srcdoc') return true;    // srcdoc iframe runs same-origin JS
+    if (MIRROR_URL_ATTRS.has(nm) && value != null) {
+        // Browsers ignore leading C0 controls/whitespace before the scheme.
+        if (/^[\s\u0000-\u0020]*(javascript|vbscript)\s*:/i.test(String(value))) return true;
+    }
+    return false;
+}
+function sanitizeMirrorElement(el) {
+    if (!el || el.nodeType !== 1 || !el.attributes) return;
+    try {
+        for (const attr of [...el.attributes]) {
+            if (dropMirrorAttr(attr.name, attr.value)) el.removeAttribute(attr.name);
+        }
+    } catch (e) { /* ignore */ }
+    try {
+        if (el.tagName === 'META') {
+            const he = String(el.getAttribute('http-equiv') || '').trim().toLowerCase();
+            if (he === 'refresh') el.remove();   // a mirror must never navigate itself
+        }
+    } catch (e) { /* ignore */ }
+}
+function walkMirrorElements(root, fn, depth) {
+    if ((depth || 0) > 8) return;
+    if (!root) return;
+    if (root.nodeType === 1) { try { fn(root); } catch (e) { /* ignore */ } }
+    if (!root.querySelectorAll) return;
+    let els = null;
+    try { els = root.querySelectorAll('*'); } catch (e) { return; }
+    for (let i = 0; i < els.length; i++) {
+        const el = els[i];
+        try { fn(el); } catch (e) { /* ignore */ }
+        // querySelectorAll stops at shadow boundaries; declarative shadow
+        // content is markup too, and its handlers would compile as well.
+        try { if (el.shadowRoot) walkMirrorElements(el.shadowRoot, fn, (depth || 0) + 1); } catch (e) { /* ignore */ }
+    }
+}
+
 function stripDeadMirrorNodes(root) {
                 if (!root) return;
+                try { walkMirrorElements(root, sanitizeMirrorElement); } catch (e) { /* ignore */ }
                 const deadSelector = '#sub-frame-error, #main-frame-error';
                 try {
                     if (root.nodeType === 1 && root.matches && root.matches(deadSelector)) {
@@ -10285,6 +10339,9 @@ function stripDeadMirrorNodes(root) {
                 // always the complete document.
                 try { html = applyAssetSwapsToHtml(html, url); } catch (e) {}
                 html = html.replace(/<meta[^>]*http-equiv\s*=\s*["']?content-security-policy(?:-report-only)?["']?[^>]*>/gi, '');
+                // A meta refresh would navigate the mirror away to a page we
+                // never sanitized — and out of the blob entirely.
+                html = html.replace(/<meta[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi, '');
                 // Chrome paints error pages inside frames whose load failed
                 // (DNS, refused, X-Frame-Options); that markup must never
                 // render as a "page island" in the mirror.
@@ -10702,6 +10759,11 @@ function stripDeadMirrorNodes(root) {
                             }
                         }
                         if (d && d.body) {
+                            // The document the browser just parsed still
+                            // carries inline handlers / javascript: URLs /
+                            // srcdoc iframes from the capture.  Neutralize
+                            // them before a single listener runs.
+                            try { stripDeadMirrorNodes(d); } catch (e) { /* ignore */ }
                             // The tab is this page: its title, its icon, and
                             // whatever it changes them to while it is up.
                             try { syncMirrorTabMeta(d); } catch (e) {}
@@ -11030,8 +11092,23 @@ function stripDeadMirrorNodes(root) {
                             if (kind === 'a') {
                                 const el = map.get(op[1]);
                                 if (!el) { missing++; continue; }
+                                // Attribute ops arrive as raw JS strings and
+                                // setAttribute() compiles on* handlers — drop
+                                // them (and javascript:/vbscript: URLs, and
+                                // srcdoc) instead of applying.  A removal op
+                                // (null value) is always safe to apply.
+                                if (op[3] !== null && op[3] !== undefined && dropMirrorAttr(op[2], op[3])) {
+                                    applied++;
+                                    try { if (window.__shfNoteOptimisticEcho) window.__shfNoteOptimisticEcho(el, op[2]); } catch (e) { /* ignore */ }
+                                    continue;
+                                }
                                 if (op[3] === null || op[3] === undefined) el.removeAttribute(op[2]);
                                 else el.setAttribute(op[2], op[3]);
+                                try {
+                                    if (window.__shfNoteOptimisticEcho) {
+                                        window.__shfNoteOptimisticEcho(el, op[2]);
+                                    }
+                                } catch (e) { /* ignore */ }
                                 // An <option>'s selectedness follows a
                                 // property, not the attribute: a page that picks
                                 // an option in script must land in the mirror as
@@ -12477,6 +12554,122 @@ function stripDeadMirrorNodes(root) {
                     return role === 'button' || role === 'link';
                 }
 
+                // ---- Tier 1 optimistic UI (pure-UI state, zero round trip) --------
+                // When the visitor activates a toggle-ish control whose effect
+                // is unambiguous from the markup, flip that state locally AT
+                // CLICK TIME instead of waiting a full round trip for the real
+                // page to confirm. The delta channel carries the server's
+                // answer milliseconds later and simply overwrites these same
+                // attributes (server wins); a full document resets everything.
+                //
+                // Safety contract: attribute flips only — never forms, never
+                // navigation, never downloads. And a flip the server never
+                // acknowledges is REVERTED after ~900 ms, so a click the page
+                // ignored cannot leave phantom state behind.
+                const optimisticFlips = window.__shfOptimisticFlips || (window.__shfOptimisticFlips = []);
+                function controlledPanelOf(el) {
+                    const id = el && el.getAttribute ? el.getAttribute('aria-controls') : null;
+                    if (!id) return null;
+                    try { return d.getElementById(id); } catch (e) { return null; }
+                }
+                function markOptimisticFlip(el, name, prev) {
+                    try { el.setAttribute('data-shf-optimistic', name); } catch (e) { /* ignore */ }
+                    optimisticFlips.push({ el, name, prev, t: Date.now() });
+                }
+                if (!window.__shfOptimisticSweepInit) {
+                    window.__shfOptimisticSweepInit = true;
+                    setInterval(() => {
+                        const flips = window.__shfOptimisticFlips || [];
+                        const now = Date.now();
+                        for (let i = flips.length - 1; i >= 0; i--) {
+                            const f = flips[i];
+                            if (!f.el || !f.el.isConnected) { flips.splice(i, 1); continue; }
+                            if (now - f.t < 900) continue;
+                            if (f.el.getAttribute('data-shf-optimistic') !== f.name) {
+                                // the server answered (or a rebuild killed the node)
+                                flips.splice(i, 1);
+                                continue;
+                            }
+                            try {
+                                if (f.prev === null || f.prev === undefined) f.el.removeAttribute(f.name);
+                                else f.el.setAttribute(f.name, f.prev);
+                                f.el.removeAttribute('data-shf-optimistic');
+                            } catch (e) { /* ignore */ }
+                            flips.splice(i, 1);
+                        }
+                    }, 300);
+                }
+                function applyOptimisticFlip(target) {
+                    if (!target || target.nodeType !== 1 || !target.closest) return;
+                    // 1. <details> — toggling the summary toggles the marker.
+                    const summary = target.closest('summary');
+                    if (summary) {
+                        const details = summary.parentElement;
+                        if (details && details.tagName === 'DETAILS') {
+                            const prev = details.hasAttribute('open') ? '' : null;
+                            if (prev === null) details.setAttribute('open', '');
+                            else details.removeAttribute('open');
+                            markOptimisticFlip(details, 'open', prev);
+                            return;
+                        }
+                    }
+                    // 2. aria-expanded — menus, accordions, combos, listboxes.
+                    const exp = target.closest('[aria-expanded]');
+                    if (exp && exp.tagName !== 'INPUT') {
+                        const prev = exp.getAttribute('aria-expanded');
+                        const next = (String(prev || 'false').toLowerCase() === 'true') ? 'false' : 'true';
+                        exp.setAttribute('aria-expanded', next);
+                        markOptimisticFlip(exp, 'aria-expanded', prev);
+                        const panel = controlledPanelOf(exp);
+                        if (panel) {
+                            const panelPrev = panel.hasAttribute('hidden') ? '' : null;
+                            if (next === 'true') panel.removeAttribute('hidden');
+                            else panel.setAttribute('hidden', '');
+                            markOptimisticFlip(panel, 'hidden', panelPrev);
+                        }
+                        return;
+                    }
+                    // 3. role=tab — select this tab, deselect its siblings.
+                    const tab = target.closest('[role="tab"]');
+                    if (tab) {
+                        const list = tab.closest('[role="tablist"]');
+                        if (list && list.contains(tab)) {
+                            const tabs = list.querySelectorAll('[role="tab"]');
+                            for (const t of tabs) {
+                                const tPrev = t.getAttribute('aria-selected');
+                                const tNext = (t === tab) ? 'true' : 'false';
+                                if (tPrev !== tNext) t.setAttribute('aria-selected', tNext);
+                                markOptimisticFlip(t, 'aria-selected', tPrev);
+                                const panel = controlledPanelOf(t);
+                                if (panel) {
+                                    const pPrev = panel.hasAttribute('hidden') ? '' : null;
+                                    if (t === tab) panel.removeAttribute('hidden');
+                                    else panel.setAttribute('hidden', '');
+                                    markOptimisticFlip(panel, 'hidden', pPrev);
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    // 4. role=switch / role=checkbox on non-native elements.
+                    const sw = target.closest('[role="switch"],[role="checkbox"]');
+                    if (sw && sw.tagName !== 'INPUT') {
+                        const prev = sw.getAttribute('aria-checked');
+                        const next = (String(prev || 'false').toLowerCase() === 'true') ? 'false' : 'true';
+                        sw.setAttribute('aria-checked', next);
+                        markOptimisticFlip(sw, 'aria-checked', prev);
+                    }
+                }
+                // The delta relay cancels a flip's revert when it rewrites the
+                // attribute: the server has spoken, so our guess is moot.
+                window.__shfNoteOptimisticEcho = (el, name) => {
+                    try {
+                        if (el && el.getAttribute && el.getAttribute('data-shf-optimistic') === name) {
+                            el.removeAttribute('data-shf-optimistic');
+                        }
+                    } catch (e) { /* ignore */ }
+                };
+
                 // Do not cancel mousedown/pointerdown here. Cancelling either
                 // event before the browser completes the gesture suppresses
                 // the later click event, which is the event the mirror relay
@@ -12528,6 +12721,10 @@ function stripDeadMirrorNodes(root) {
                     if (isTextualInput || isPlainInput) {
                         return false;
                     }
+
+                    // Optimistic update for the rest of the pure-UI toggle
+                    // family (see the Tier 1 block above).
+                    try { applyOptimisticFlip(target); } catch (e) { /* ignore */ }
 
                     // Optimistic update for checkbox and radio buttons (zero latency response)
                     if (target.tagName === 'INPUT') {

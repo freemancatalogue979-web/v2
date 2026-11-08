@@ -368,16 +368,47 @@ def test_dropped_deltas_converge_to_a_full_document():
         async def go():
             assert await dom_capture._install_delta_observer(page, session) is True
             session._delta_active = False          # gate shut: patches cannot flow
+            # A single lost patch must NOT recapture — that path caused a
+            # permanent full-capture loop after every interaction.
             await exposed["__domDelta"]('[[["a",1,"class","x"]]]', "tok-1")
+            await asyncio.sleep(0.05)
+            ok(len(ws.of("full_document")) == 0,
+               "one inactive drop triggered a recapture")
+            # Sustained gate failure (3+ drops) converges to exactly one
+            # document — not one per patch.
+            for _ in range(2):
+                await exposed["__domDelta"]('[[["a",1,"class","x"]]]', "tok-2")
             await asyncio.sleep(0.06)               # let the recovery fire
 
         run(go)
-        ok(session._delta_drops == 1,
-           "the dropped patch was not counted: %r" % session._delta_drops)
+        ok(session._delta_drops == 3,
+           "the dropped patches were not counted: %r" % session._delta_drops)
         docs = ws.of("full_document")
-        ok(len(docs) == 1, "dropped patches did not converge to a document (%d)" % len(docs))
+        ok(len(docs) == 1,
+           "sustained drops must converge to exactly one document (%d)" % len(docs))
         ok(docs[0].get("reason") == "delta_drop",
            "the recovery carried the wrong reason: %r" % docs[0].get("reason"))
+
+        # A patch dropped while a full document is in flight is superseded by
+        # that document — it must never schedule another one.
+        task_before = getattr(session, "_delta_drop_task", None)
+        session._delta_drops = 0
+        session._inactive_drop_streak = 0
+        page.calls.clear()
+        async def go2():
+            session._delta_active = True
+            session._send_inflight = True          # a document is on the wire
+            await exposed["__domDelta"]('[[["a",1,"class","y"]]]', "tok-3")
+            await asyncio.sleep(0.05)
+
+        run(go2)
+        ok(session._delta_drops == 1,
+           "the inflight-superseded patch was not counted: %r" % session._delta_drops)
+        ok(getattr(session, "_delta_drop_task", None) is task_before,
+           "an inflight-superseded drop scheduled a recapture")
+        ok(len(ws.of("full_document")) == 1,
+           "an inflight-superseded drop produced a second document")
+        session._send_inflight = False
 
         # bootstrap quiet: before the first document, drops are expected and
         # must not trigger recovery sends of their own
@@ -391,13 +422,14 @@ def test_dropped_deltas_converge_to_a_full_document():
             exposed2[name] = fn
         page2.expose_function = expose2
 
-        async def go2():
+        async def go3():
             await dom_capture._install_delta_observer(page2, session2)
             session2._delta_active = False
-            await exposed2["__domDelta"]('[[["a",2,"class","y"]]]', "tok-2")
+            for _ in range(5):
+                await exposed2["__domDelta"]('[[["a",2,"class","y"]]]', "tok-2")
             await asyncio.sleep(0.06)
 
-        run(go2)
+        run(go3)
         ok(ws2.of("full_document") == [],
            "drops during bootstrap must not trigger their own document")
     finally:
