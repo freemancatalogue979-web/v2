@@ -96,6 +96,11 @@ SNAPSHOT_CAPTURE_MIN_INTERVAL_S: float = float(
 # MutationObserver -> websocket batching.  16 ms matches a 60 Hz frame
 # so UI animations and transitions stream smoothly to the client.
 DELTA_FLUSH_MS: int = max(0, int(os.environ.get("DOM_DELTA_FLUSH_MS", "16")))
+# How long the server waits after patches had to be dropped before asking the
+# page for one recovery document.  Drops mean the mirror can no longer be
+# trusted to agree with the page — this is the convergence guarantee the delta
+# channel never had.
+DELTA_DROP_DELAY_S: float = max(0.05, float(os.environ.get("DOM_DELTA_DROP_RECAP_S", "0.35")))
 
 # Hosts that prefer a full-document consistency cadence.  Every host can
 # still use the live delta (DOM-mutation) pipeline when LIVE_DELTA is enabled;
@@ -1475,7 +1480,8 @@ _COLD_REASONS = frozenset((
 # the same to the checksum" is not evidence that it IS the same.
 _SKIP_EXEMPT_PREFIXES = (
     "delta_overflow", "navigation", "coalesce:delta_overflow",
-    "coalesce:navigation", "resync",
+    "coalesce:navigation", "resync", "delta_drop", "delta_unhealthy",
+    "coalesce:delta_drop", "coalesce:delta_unhealthy",
 )
 
 
@@ -4171,6 +4177,21 @@ _DELTA_OBSERVER_JS = r"""
     ops.push(['overflow']);
     schedule();
   };
+  // WHAT THIS WATCHES, in priority order (highest first):
+  //   1. structure — new elements / removals / moves        (childList)
+  //   2. state     — class, hidden, style, open, disabled,
+  //                  aria-*, value attributes — anything that
+  //                  restyles or re-enables an element,
+  //                  INCLUDING "now visible"                (attributes)
+  //   3. content   — text                                   (characterData)
+  //   4. form      — silent property writes (value/checked/
+  //                  selected) — no event exists            (hooked setters)
+  //   5. cosmetic  — CSSOM growth via insertRule            (rule counting)
+  //                  + tab title/icon                       (meta op)
+  // The batch ships in exactly that order, so structure exists before its
+  // state and content are applied on the mirror; text indices computed in the
+  // live document stay valid because everything structural has landed first.
+  const PHASE_OF = { r: 0, i: 1, a: 2, t: 3, v: 4, s: 5, overflow: 6, meta: 7 };
   const flush = () => {
     scheduled = false;
     // The set below only describes the batch being shipped; a later batch must
@@ -4182,24 +4203,54 @@ _DELTA_OBSERVER_JS = r"""
     // Silent form state (property writes with no event) lands here, after the
     // mutation records that created those nodes.
     try { flushSilentState(); } catch (e) { /* ignore */ }
-    // A renamed tab or a new icon is a change with no patchable DOM target in
-    // the mirror, so it rides at the head of the batch. Never while overflowed:
-    // that control frame must stay byte-exact.
     if (!overflowed) {
       try {
         const meta = pendingMeta();
-        if (meta) ops.unshift(['meta', meta[0], meta[1]]);
+        if (meta) ops.push(['meta', meta[0], meta[1]]);
       } catch (e) { /* ignore */ }
     }
     if (!ops.length) return;
-    const batch = ops.splice(0, ops.length);
+    // Deterministic priority order, stable within a phase: removals and
+    // inserts first, then state, then content, then form values, CSS and tab
+    // meta last. `overflow` stays a single, whole control frame.
+    const queued = ops.splice(0, ops.length);
+    const phases = [[], [], [], [], [], [], [], []];
+    for (const op of queued) {
+      const p = PHASE_OF[op && op[0]];
+      phases[p === undefined ? 6 : p].push(op);
+    }
+    const batch = [].concat.apply([], phases);
     coalesced.clear();
     overflowed = false;
+    // Bound the text-shrink bookkeeping: keys whose box is long gone would
+    // otherwise accumulate for the lifetime of the document.
+    try {
+      if (textCounts.size > 2000) {
+        let cut = Math.floor(textCounts.size * 0.25) + 1;
+        for (const key of textCounts.keys()) { textCounts.delete(key); if (--cut <= 0) break; }
+      }
+    } catch (e) { /* ignore */ }
+    const complain = () => {
+      // The batch is lost either way, so say so through the OTHER binding
+      // (the trigger's, which is installed independently of this one) — the
+      // mirror then gets a full document instead of freezing forever. Rate
+      // limited to one complaint per second.
+      const now = Date.now();
+      if (window.__shifixDeltaUnhealthyAt && now - window.__shifixDeltaUnhealthyAt <= 1000) return;
+      window.__shifixDeltaUnhealthyAt = now;
+      try {
+        if (typeof window.__domCaptureRequest === 'function') {
+          window.__domCaptureRequest('resync:delta-unhealthy', String(location.href || ''));
+        }
+      } catch (_) { /* ignore */ }
+    };
     try {
       if (typeof window.__domDelta === 'function') {
         window.__domDelta(JSON.stringify(batch), DOC_TOKEN);
+        return;
       }
-    } catch (e) { /* binding not wired yet */ }
+      complain();
+    } catch (e) { complain(); }
   };
   const push = (op) => {
     if (overflowed) return;
@@ -4589,12 +4640,14 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
             if payload_text == "[[]]":
                 return
             if not session._delta_active:
+                session._record_delta_drop("inactive")
                 return  # current full-capture tier cannot carry safe mids
             if session._send_inflight and not session._assets_pending:
                 # A full snapshot supersedes queued patches — unless the only
                 # thing still in flight is the asset fetch for a document the
                 # client is ALREADY showing.  Holding patches shut for that
                 # window is what made a navigation feel frozen.
+                session._record_delta_drop("full_send_inflight")
                 return
 
             # The browser already paid for JSON.stringify(batch).  Wrap that
@@ -4603,6 +4656,7 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
             # so a full recovery cannot be followed by an old-generation patch.
             async with session._ws_send_lock:
                 if session._send_inflight:
+                    session._record_delta_drop("send_race")
                     return
                 gen = int(session._gen)
                 doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
@@ -4652,6 +4706,20 @@ async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") 
                 # Exactly one full capture per change — the navigation lock
                 # and last-sent-URL dedupe collapse the trigger and the
                 # delta observer announcing the same load.
+                if reason == "resync:delta-unhealthy":
+                    # The page told us its live channel is dead. Answer with
+                    # a document, not silence — at most one recovery per
+                    # second per session.
+                    now = time.monotonic()
+                    last = getattr(session, "_last_unhealthy_resync_t", 0.0)
+                    if now - last >= 1.0:
+                        session._last_unhealthy_resync_t = now
+                        announced = target_desc if (
+                            isinstance(target_desc, str)
+                            and target_desc.startswith(("http://", "https://"))
+                        ) else None
+                        await session._capture_navigation_once("delta_unhealthy", url_override=announced)
+                    return
                 if reason == "navigation":
                     # Disarm the delta channel BEFORE capturing: ops from the
                     # new document must not land on the old frame's midmap
@@ -4834,6 +4902,9 @@ class DOMCaptureSession:
         self._prefetch_count = 0
         self._prefetch_running = False
         self._delta_active: bool = False     # current client generation has data-mid
+        self._delta_drops: int = 0           # patches the relay could not send
+        self._delta_drop_task: Optional[asyncio.Task] = None
+        self._last_unhealthy_resync_t: float = 0.0
         self._explicit_navigation_in_progress: bool = False
         self._capture_install_lock = asyncio.Lock()
         # ---- fast-pipeline state (MIGRATION_LIVE_MIRROR.md) ----
@@ -4965,6 +5036,42 @@ class DOMCaptureSession:
             await get_global_asset_manager().release_session(self.client_id)
         except Exception:
             logger.debug("asset lease release failed for %s", self.client_id, exc_info=True)
+
+    def _record_delta_drop(self, why: str) -> None:
+        """Patches that could not be relayed must not vanish silently.
+
+        A dropped patch means server and mirror can no longer be trusted to
+        agree, so schedule exactly one coalesced recovery document.  Drops
+        during bootstrap or an in-progress navigation are normal and are not
+        recaptured here — the full document that owns that window will
+        supersede anything we could send.
+        """
+        try:
+            dropped = int(getattr(self, "_delta_drops", 0)) + 1
+            self._delta_drops = dropped
+            if dropped == 1 or dropped % 25 == 0:
+                logger.debug(
+                    "dc delta drop #%d (%s) client=%s",
+                    dropped, why, self.client_id,
+                )
+            if not self.has_initial_capture or self._explicit_navigation_in_progress:
+                return
+            task = getattr(self, "_delta_drop_task", None)
+            if task is not None and not task.done():
+                return
+            self._delta_drop_task = asyncio.create_task(self._delta_drop_recapture())
+        except Exception:
+            pass
+
+    async def _delta_drop_recapture(self) -> None:
+        """One coalesced full document after dropped patches (convergence)."""
+        try:
+            await asyncio.sleep(DELTA_DROP_DELAY_S)
+            if self._stopped:
+                return
+            await self.send_page(reason="delta_drop")
+        except Exception as exc:
+            logger.debug("delta drop recapture failed: %s", exc)
 
     async def _capture_navigation_once(self, reason: str,
                                        url_override: Optional[str] = None) -> Optional[str]:
@@ -5352,6 +5459,10 @@ class DOMCaptureSession:
                 digest = meta.get("hash")
                 if digest:
                     self._sent_asset_digests.add(digest)
+            if len(self._sent_asset_digests) > 2048:
+                # Forget most-known digests; refetching an evicted asset is a
+                # one-time cost, unbounded growth is forever.
+                self._sent_asset_digests = set(list(self._sent_asset_digests)[-1024:])
             self.last_sent_html = html_data
             self.last_sent_url = url
             self.has_initial_capture = True
@@ -5471,6 +5582,8 @@ class DOMCaptureSession:
         for meta in new_assets:
             if meta.get("hash"):
                 self._sent_asset_digests.add(meta["hash"])
+        if len(self._sent_asset_digests) > 2048:
+            self._sent_asset_digests = set(list(self._sent_asset_digests)[-1024:])
         msg: Dict[str, Any] = {
             "type": "asset_map",
             "gen": self._gen,

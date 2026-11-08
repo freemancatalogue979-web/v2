@@ -8897,7 +8897,7 @@ function applySpinnerColorFromHex(hexColor) {
                             const ok = Array.isArray(message.ops)
                                 ? applyDomPatch(message)
                                 : applyPatch(message);
-                            if (!ok && !state.resyncRequestPending) {
+                            if (!ok && state._deltaOn && !state.resyncRequestPending) {
                                 requestResync(state._deltaGen, 'patch_failed');
                             }
                         } catch (e) {
@@ -10979,7 +10979,18 @@ function stripDeadMirrorNodes(root) {
                     }
                 } catch (e) { /* ignore */ }
                 try {
-                    if (!state._deltaOn || !frame || !frame.contentDocument) return false;
+                    // Frame mid-swap (a full document is still landing):
+                    // buffer instead of failing — rebuildMirrorIdMap flushes
+                    // against the new generation, in order.
+                    if (!frame || !frame.contentDocument) {
+                        const pend = state._pendingPatches || (state._pendingPatches = []);
+                        for (const o of (message.ops || [])) { if (pend.length < 500) pend.push(o); }
+                        return true;
+                    }
+                    // Delta-incapable generation: patches are not expected at
+                    // all — ignore them quietly instead of resync-storming
+                    // full documents on every patch.
+                    if (!state._deltaOn) return false;
                     if (typeof message.gen === 'number' && state._deltaGen !== null && message.gen !== state._deltaGen) {
                         requestResync(state._deltaGen, 'delta_gen_mismatch');
                         return false;

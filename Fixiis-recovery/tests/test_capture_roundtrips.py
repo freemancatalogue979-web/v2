@@ -344,6 +344,66 @@ def test_the_navigation_announcement_drives_exactly_one_document():
        "the announced navigation cost zero waits: %r" % page.calls)
 
 
+# ---------------------------------------------------------------------------
+# 6. Patches that cannot be relayed must not vanish silently
+# ---------------------------------------------------------------------------
+def test_dropped_deltas_converge_to_a_full_document():
+    dom_capture.DELTA_DROP_DELAY_S = 0.01  # tighten the debounce for the test
+    try:
+        page = CountingPage()
+
+        async def add_init_script(*a, **k):
+            return None
+
+        exposed = {}
+
+        async def expose_function(name, fn):
+            exposed[name] = fn
+
+        page.add_init_script = add_init_script
+        page.expose_function = expose_function
+        session, ws = make_session(page)
+        session.has_initial_capture = True
+
+        async def go():
+            assert await dom_capture._install_delta_observer(page, session) is True
+            session._delta_active = False          # gate shut: patches cannot flow
+            await exposed["__domDelta"]('[[["a",1,"class","x"]]]', "tok-1")
+            await asyncio.sleep(0.06)               # let the recovery fire
+
+        run(go)
+        ok(session._delta_drops == 1,
+           "the dropped patch was not counted: %r" % session._delta_drops)
+        docs = ws.of("full_document")
+        ok(len(docs) == 1, "dropped patches did not converge to a document (%d)" % len(docs))
+        ok(docs[0].get("reason") == "delta_drop",
+           "the recovery carried the wrong reason: %r" % docs[0].get("reason"))
+
+        # bootstrap quiet: before the first document, drops are expected and
+        # must not trigger recovery sends of their own
+        page2 = CountingPage()
+        page2.add_init_script = add_init_script
+        session2, ws2 = make_session(page2)
+        session2.has_initial_capture = False
+        exposed2 = {}
+
+        async def expose2(name, fn):
+            exposed2[name] = fn
+        page2.expose_function = expose2
+
+        async def go2():
+            await dom_capture._install_delta_observer(page2, session2)
+            session2._delta_active = False
+            await exposed2["__domDelta"]('[[["a",2,"class","y"]]]', "tok-2")
+            await asyncio.sleep(0.06)
+
+        run(go2)
+        ok(ws2.of("full_document") == [],
+           "drops during bootstrap must not trigger their own document")
+    finally:
+        dom_capture.DELTA_DROP_DELAY_S = 0.35
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

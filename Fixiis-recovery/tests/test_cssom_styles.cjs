@@ -124,9 +124,11 @@ function wait(ms) {
 }
 
 (async () => {
-  await wait(60);                       // the install flush (navigation op)
+  await wait(60);
   const installed = batches.length;
-  ok(installed >= 1, 'the observer installs and speaks');
+  // The observer no longer ships an install-time batch — the full-load
+  // announcement lives in the interaction trigger (DOMContentLoaded) by
+  // design. The CSSOM path is proven by mutations below alone.
 
   // The step renders: six inputs whose classes the page has styled with
   // insertRule() — no DOM text, no mutation of the stylesheet element.

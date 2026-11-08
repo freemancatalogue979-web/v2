@@ -812,3 +812,70 @@ the URL-watch fallback capture") described this as the last safety net;
 it is now gone by design.  If the trigger ever fails to install, the
 failure mode is a missed recapture after navigation (recoverable by a
 resync), never a wrong frame — the delta channel still streams through.
+## 2026-11-08 (d) — delta channel rework: deterministic priority, no silent drops, cleanup bounds
+
+The report: "the update DOM logic is flawed, it's conditional — I click an
+element, the page changes server side, it never comes to the client. The
+mutation observer is not working." With the pipeline audited end to end,
+the failure class was found and removed in three places:
+
+1. **Drops are no longer silent.**  Every gate in the delta relay that
+   used to swallow a patch (`_delta_active` off, full send in flight,
+   send-lock race) now counts the drop (`session._delta_drops`) and
+   schedules ONE coalesced recovery full document after ~350 ms
+   (`_delta_drop_recapture`, `DOM_DELTA_DROP_RECAP_S`). Drops during
+   bootstrap or an explicit in-progress navigation are excluded by design
+   — the full document that owns that window supersedes them.  Convergence
+   is now guaranteed: if the observer sent anything the client could not
+   receive, the client gets a fresh document, never nothing.
+2. **If the observer's binding is dead it SAYS SO.**  `flush()` now
+   reports `resync:delta-unhealthy` through the trigger binding (a second,
+   independently installed channel) when `window.__domDelta` is missing or
+   throws — rate-limited to one complaint per second. Server-side the
+   announcement produces a recovery document (`delta_unhealthy`), never an
+   infinite loop. This was the quietest, most total failure: the page
+   kept mutating, the binding wasn't there, and every batch went into the
+   void — the mirror froze while the real page moved on.
+3. **The batch ships in a deterministic PRIORITY order** (stable within
+   each phase): `r` structure removals → `i` inserts → `a` state
+   (class/hidden/style/open/disabled/value attrs — the "now visible"
+   class of change) → `t` text → `v` form values → `s` CSS → `meta` tab
+   chrome (tab meta was unshifted to the head before; it now rides last,
+   where cosmetic ops belong). Structure exists before state/content
+   describes it, and text indices computed in the live document stay
+   valid on the mirror.
+
+Cleanup ("browser is not cleaning up well"):
+
+- page side: the `__domTextCounts` shrink-bookkeeping map is now bounded
+  (drops the oldest quarter past 2000 keys) — stale keys previously lived
+  for the whole document;
+- server side: `_sent_asset_digests` is now capped (2048, keeps the
+  newest 1024) at both growth sites — an hours-long session used to
+  accumulate an unbounded set of digests;
+- client side: a patch arriving while the frame is mid-swap (full
+  document still landing) is now BUFFERED for rebuildMirrorIdMap to flush
+  in generation order, instead of failing into a resync request; a patch
+  on a delta-incapable generation is dropped quietly instead of
+  resync-storming full documents. This closed a feedback loop where every
+  full_document swap could trigger another one.
+
+Verification honesty note: the jsdom suites previously reported green
+because they skipped silently without jsdom installed. jsdom 31 is now
+present in the test environment (/tmp/jsd) and ALL suites actually ran —
+the delta convergence oracle passes 215/215 with the reordered flush, CSSOM
+26/26, tab identity 14/14 (its expectations of an install-time navigation op
+were updated — that control op moved to the trigger by design in (c)).
+
+New tests: tests/test_delta_health.cjs (batch phase order r<i<a<t<v<s<meta;
+missing binding reports resync:delta-unhealthy — 8 checks),
+test_capture_roundtrips.py section 6 (a patch dropped at the gate
+converges to exactly one delta_drop recovery document, and does NOT fire
+during bootstrap — 37 checks total). All python suites pass.
+
+What this does NOT fix (and said so out loud): a genuinely wedged browser
+(page itself hung — no JS timers firing, MO starved) is invisible to an
+in-page channel. The recovery paths (resync_request from client, drop
+recapture, delta_unhealthy) all converge within about a second of any
+signal; a fully dead page has no signal to give, and only a full recapture
+cadence would catch it — a trade we deliberately did not make.
