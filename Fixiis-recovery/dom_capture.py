@@ -28,17 +28,52 @@ hosts; full documents remain the navigation, overflow, and recovery
 floor.  Node identity is carried by ``data-mid`` stamps assigned during
 serialization (WeakMap + counter page-side).
 
-Captures coalesce (``SEND_COALESCE=1``): at most one capture in
-flight per session; overlapping triggers produce exactly one
-follow-up send with the latest reason.  Unchanged-DOM checksums
-(``DOM_CAPTURE_SKIP_UNCHANGED=1``) suppress no-op recaptures before
-paying for them.
+Captures coalesce **per lane** (``SEND_COALESCE=1``): one capture at a
+time within a lane, overlapping triggers producing exactly one
+follow-up with the latest reason.  The lanes are independent
+(``DOM_CAPTURE_CONCURRENT_LANES=1``): a navigation capture runs beside
+an interaction recapture of the page being left, and the older one's
+document is dropped as stale instead of being allowed to hold the
+newer one back.  Unchanged-DOM checksums
+(``DOM_CAPTURE_SKIP_UNCHANGED=1``) skip recaptures whose change the
+patch channel has already delivered - de-duplication, never
+suppression.
 
 The caller drives capture timing: explicitly call ``send_page``
 when you want a fresh snapshot (initial, on navigation, on
 demand).  Event handlers (handle_click / handle_navigation /
 handle_keypress / handle_submit_form) just dispatch to
 Playwright; they do not auto-capture.
+
+Four independent pipelines, one writer
+--------------------------------------
+A mirrored page has four things to say, and they become true at
+different moments: where it is (navigation), what its DOM is
+(document), what changed (patch), what its assets resolve to
+(``asset_map``).  They are produced independently and delivered
+through ``sync_pipeline.SyncPipeline``, which serialises the socket
+with ONE writer task and returns from ``publish`` immediately:
+
+    navigation  published the tick the change is seen (URL poll,
+                in-page pushState/replaceState/popstate/hashchange
+                hooks, document-commit control, explicit goto) and
+                carries nav_id + same_document, so the client can move
+                its tab and decide about its transition with no DOM;
+    document    captured on the navigation or content lane, with a
+                BOUNDED readyState wait (``DOM_CAPTURE_NAV_READY_MS``);
+                an early document is marked ``partial`` and a settled
+                follow-up converges it;
+    patch       relayed straight through, even while a capture runs;
+    assets      sent as edits once the document is on screen.
+
+Ordering discipline (the counterweight to all that concurrency):
+every frame carries ``nav_id`` (which navigation) and ``seq``
+(producer order).  A capture records the navigation it started under
+and is DROPPED at publish time if a newer navigation superseded it,
+so a slow serializer can never overwrite a newer page.  Full
+documents also carry the in-page document token, so a patch for a
+document the client is not showing is discarded rather than applied
+to the wrong page.
 """
 from __future__ import annotations
 
@@ -58,6 +93,17 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
 
+# Concurrent delivery + capture lanes (see sync_pipeline.py).  Kept in its own
+# module: it knows nothing about browsers, so the ordering rules can be tested
+# without one.
+from sync_pipeline import (
+    LANE_CONTENT,
+    LANE_NAVIGATION,
+    SyncPipeline,
+    lane_for_reason,
+    same_url,
+)
+
 # Shared JSON helper for CDP evaluation payloads.
 _json = json
 
@@ -71,20 +117,19 @@ logger = logging.getLogger(__name__)
 PRE_CAPTURE_WAIT: float = float(os.environ.get("DOM_CAPTURE_PRE_CAPTURE_WAIT", "0.0"))
 SINGLEFILE_TIMEOUT_S: int = int(os.environ.get("DOM_CAPTURE_SINGLEFILE_TIMEOUT_S", "60"))
 
-# Minimum interval between interaction-triggered recaptures.  This is
-# purely a flood-control knob; it does NOT decide whether a click is
-# "real" -- that decision is made in the page by _INTERACTION_TRIGGER_JS.
-# The delta observer carries the first visual update; this only throttles
-# the slower full-document safety capture.
+# Interaction recaptures are NOT throttled any more.  The old debounce dropped
+# a genuine recapture that arrived within ~0.08 s (0.25 s in snapshot mode) of
+# the previous one, which is a filter, not a de-duplication: the page really had
+# changed and the change was really lost.  Duplicate processing is prevented
+# where it belongs - the content lane runs one capture at a time and folds every
+# overlapping request into exactly one follow-up carrying the latest reason, so
+# a burst costs one extra document and loses nothing.  Both knobs are still
+# accepted for deployment compatibility and documented as inert.
 INTERACTION_CAPTURE_MIN_INTERVAL_S: float = float(
-    os.environ.get("DOM_CAPTURE_INTERACTION_MIN_INTERVAL_S", "0.08")
+    os.environ.get("DOM_CAPTURE_INTERACTION_MIN_INTERVAL_S", "0")
 )
-
-# Snapshot-mode interaction cadence when the delta channel is unavailable.
-# Healthy snapshot-preferred pages patch in place and do not use this full
-# capture throttle for ordinary interactions.
 SNAPSHOT_CAPTURE_MIN_INTERVAL_S: float = float(
-    os.environ.get("DOM_SNAPSHOT_MIN_INTERVAL_S", "0.25")
+    os.environ.get("DOM_SNAPSHOT_MIN_INTERVAL_S", "0")
 )
 
 # MutationObserver -> websocket batching.  16 ms matches a 60 Hz frame
@@ -174,6 +219,61 @@ LIVE_DELTA: bool = os.environ.get("LIVE_DELTA", "1").strip().lower() not in ("0"
 # Debug/rollback: force the legacy "load + networkidle + readyState" settle
 # on EVERY capture, including interaction recaptures.
 FULL_SETTLE: bool = os.environ.get("DOM_CAPTURE_FULL_SETTLE", "").strip().lower() in ("1", "true", "yes", "on")
+
+# ---------------------------------------------------------------------------
+# Concurrent navigation pipeline (see sync_pipeline.py)
+# ---------------------------------------------------------------------------
+# Publish the navigation frame the moment a URL change is detected - before,
+# and independently of, any capture.  With this on, the mirrored client learns
+# the new URL in the same tick as the source browser; roll back with
+# DOM_CAPTURE_NAV_IMMEDIATE=0 (the URL then arrives with the document, as it
+# used to).
+NAV_IMMEDIATE: bool = os.environ.get(
+    "DOM_CAPTURE_NAV_IMMEDIATE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# In-page history hooks.  pushState/replaceState/popstate/hashchange produce
+# neither a DOM mutation nor a document load, so without these the only way to
+# see a route change is the 100 ms URL poll.  On by default: a route change
+# then leaves for the client in the same tick, and is marked same_document so
+# the client can skip the transition animation entirely.
+NAV_HISTORY_HOOKS: bool = os.environ.get(
+    "DOM_CAPTURE_HISTORY_HOOKS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# How long a navigation capture waits for the new document to leave
+# 'loading' before serializing what is there.  Capturing a parsing document
+# used to be avoided at the cost of up to 5 s of nothing (the old
+# readyState/networkidle wait); instead we now take the early document, mark it
+# ``partial``, and schedule a settled follow-up capture once the parser is
+# done.  The client gets content fast AND converges to the final DOM.
+NAV_READY_MS: int = max(0, int(os.environ.get("DOM_CAPTURE_NAV_READY_MS", "400")))
+
+# Upper bound on that settled follow-up wait (ms).  A page that never finishes
+# parsing must not leave the mirror on the early document forever.
+NAV_SETTLE_MAX_MS: int = max(500, int(os.environ.get("DOM_CAPTURE_NAV_SETTLE_MS", "5000")))
+
+# Follow an early (partial) navigation document with a settled capture.
+# DOM_CAPTURE_NAV_SETTLE_FOLLOWUP=0 leaves the early document as final.
+NAV_SETTLE_FOLLOWUP: bool = os.environ.get(
+    "DOM_CAPTURE_NAV_SETTLE_FOLLOWUP", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Independent capture lanes: a navigation capture may run concurrently with a
+# content capture instead of queueing behind it.  DOM_CAPTURE_CONCURRENT_LANES=0
+# restores the single global "one capture at a time" barrier.
+CONCURRENT_LANES: bool = os.environ.get(
+    "DOM_CAPTURE_CONCURRENT_LANES", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Ceiling on navigation captures that may run at the same time.  Two covers the
+# real case (a slow capture of the page just left, plus the new page) without
+# letting a redirect chain spawn unlimited serializations.
+NAV_CAPTURE_CONCURRENCY: int = max(1, int(os.environ.get("DOM_CAPTURE_NAV_CAPTURES", "2")))
+
+# Do not hold the delta channel shut while a full document is being captured.
+# Patches carry the document token + generation they belong to, so the client
+# can apply the ones that still fit and discard the ones a newer document has
+# already superseded.  DOM_CAPTURE_PATCH_DURING_CAPTURE=0 restores the old
+# "drop every patch while a capture is in flight" gate.
+PATCH_DURING_CAPTURE: bool = os.environ.get(
+    "DOM_CAPTURE_PATCH_DURING_CAPTURE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 # Asset-cache fetcher bounds (server-side fetch-once rewrite).
 # Raised from 48 -> 256: the cap silently dropped assets from heavy pages
@@ -1371,6 +1471,7 @@ _FAST_CAPTURE_CALL_JS = (
     "   out.ua = navigator.userAgent || '';"
     "   out.ready = document.readyState || '';"
     "   out.url = location.href || '';"
+    "   out.doc = window.__shifixDocToken || '';"
     "   out.checksum = de ? (de.getElementsByTagName('*').length + ':'"
     "     + (de.textContent ? de.textContent.length : 0) + ':'"
     "     + (de.scrollHeight | 0)) : '';"
@@ -1413,7 +1514,7 @@ async def _capture_fast_meta(page: Any) -> Tuple[Optional[str], Dict[str, Any]]:
         _LAST_FAST_CAPTURE_ERROR = f"evaluate(meta): {exc}"
         logger.debug("dc fast capture(meta) evaluate failed: %s", exc)
     if isinstance(result, dict):
-        for key in ("title", "ua", "ready", "url", "checksum"):
+        for key in ("title", "ua", "ready", "url", "checksum", "doc"):
             val = result.get(key)
             if isinstance(val, str) and val:
                 meta[key] = val
@@ -1466,6 +1567,10 @@ _DOM_CHECKSUM_JS = r"""
 
 _COLD_REASONS = frozenset((
     "click", "mouseup", "text", "keydown", "touchend", "tap", "delta_overflow",
+    # A settled follow-up runs AFTER the page reported itself complete: there is
+    # nothing left to wait for, and waiting again would add a full capture's
+    # worth of latency to the document the visitor is already looking at.
+    "nav_settle",
 ))
 
 
@@ -1505,17 +1610,26 @@ def _settle_for_reason(reason: Optional[str]) -> str:
 
     Interaction-driven recaptures ("interaction:*", input forwards,
     coalesced follow-ups, delta overflow) snapshot a page that is already
-    live — the legacy load/networkidle waits were pure latency.  Initial
-    loads and navigations get a light readyState wait so the client never
-    sees a parsing document.  DOM_CAPTURE_FULL_SETTLE=1 reverts globally.
+    live — the legacy load/networkidle waits were pure latency.
+
+    Navigations get their own level, ``nav``: a SHORT bounded readyState wait.
+    Long enough that the common case still ships a parsed document, short
+    enough that a slow page cannot park the mirror on a spinner — if the parser
+    has not finished, the capture is taken anyway and flagged ``partial``, and a
+    settled follow-up capture converges it.  Everything else keeps the light
+    readyState wait.  DOM_CAPTURE_FULL_SETTLE=1 reverts globally.
     """
     if FULL_SETTLE:
         return "full"
     if not reason:
         return "none"
     r = reason.lower()
-    if r.startswith(("interaction:", "coalesce:", "click", "input", "tap")) or r in _COLD_REASONS:
+    if r.startswith("coalesce:"):
+        r = r[len("coalesce:"):]
+    if r.startswith(("interaction:", "click", "input", "tap")) or r in _COLD_REASONS:
         return "none"
+    if lane_for_reason(r) == LANE_NAVIGATION:
+        return "nav"
     return "light"
 
 
@@ -3797,6 +3911,73 @@ _DELTA_OBSERVER_JS = r"""
       return String(location.href || '') + '|' + String(performance.timeOrigin || Date.now());
     } catch (e) { return String(Date.now()); }
   })();
+  // The token identifies THIS document for the whole page lifetime. Patches
+  // carry it, and so does every full capture (the serializer reports it), so
+  // the server can tell "the client is showing this document" from "the client
+  // is showing a different one" without guessing.
+  try { window.__shifixDocToken = DOC_TOKEN; } catch (e) { /* ignore */ }
+
+  // ---- navigation signals -----------------------------------------------
+  // pushState / replaceState / popstate / hashchange change the URL without a
+  // DOM mutation and without a document load. The server's 100 ms URL poll
+  // could see them eventually; the visitor saw the address bar change
+  // immediately. Emit the new URL in the same tick instead, tagged
+  // sameDocument so the client knows it does NOT have to wait for a new
+  // document (no transition spinner) - the mirror is updated by the patch
+  // stream that follows.
+  const emitNav = (() => {
+    let lastHref = '';
+    let lastAt = 0;
+    return (href, sameDocument, source) => {
+      try {
+        const now = Date.now();
+        const url = String(href || '');
+        if (!url) return;
+        // A page that rewrites the URL in a loop must not become a frame loop.
+        if (url === lastHref && (now - lastAt) < 200) return;
+        lastHref = url;
+        lastAt = now;
+        if (typeof window.__domDelta === 'function') {
+          window.__domDelta(JSON.stringify([['nav', url, !!sameDocument, String(source || '')]]),
+                            DOC_TOKEN);
+        }
+      } catch (e) { /* binding not wired yet */ }
+    };
+  })();
+  // Resolved by the server at import time.  The guard is real, not decorative:
+  // test harnesses (and anyone reading the literal) run this script WITHOUT the
+  // substitution, and an undefined identifier would take the whole observer
+  // down - history hooks are a capability, not a prerequisite.
+  const HISTORY_HOOKS_ON = (typeof __SHIFIX_HISTORY_HOOKS__ === 'undefined')
+    ? true
+    : __SHIFIX_HISTORY_HOOKS__;
+  if (HISTORY_HOOKS_ON) {
+    try {
+      const hookHistory = (name) => {
+        const orig = history && history[name];
+        if (typeof orig !== 'function' || orig.__shifixNavHooked) return;
+        const wrapped = function (state, title, url) {
+          const out = orig.apply(this, arguments);
+          try {
+            const href = (url === undefined || url === null)
+              ? String(location.href)
+              : new URL(String(url), String(location.href)).href;
+            emitNav(href, true, 'history:' + name);
+          } catch (e) { /* relative/sandboxed URL: the poll still covers it */ }
+          return out;
+        };
+        wrapped.__shifixNavHooked = true;
+        history[name] = wrapped;
+      };
+      hookHistory('pushState');
+      hookHistory('replaceState');
+    } catch (e) { /* frozen history: the poll still covers it */ }
+    try {
+      window.addEventListener('popstate', () => emitNav(String(location.href), true, 'popstate'));
+      window.addEventListener('hashchange', () => emitNav(String(location.href), true, 'hashchange'));
+    } catch (e) { /* ignore */ }
+  }
+
   // ---- tab identity -----------------------------------------------------
   // The visitor's tab shows the SITE's title and icon. A full capture carries
   // both inside the document, but between captures a page can rename itself
@@ -4487,6 +4668,12 @@ _DELTA_OBSERVER_JS = r"""
 _DELTA_OBSERVER_JS = _DELTA_OBSERVER_JS.replace(
     "__SHIFIX_DELTA_FLUSH_MS__", str(DELTA_FLUSH_MS)
 )
+# The history hooks are a rollback-able capability: a page whose own router
+# misbehaves under a wrapped pushState can be taken off them without touching
+# the observer (the URL poll remains as the fallback either way).
+_DELTA_OBSERVER_JS = _DELTA_OBSERVER_JS.replace(
+    "__SHIFIX_HISTORY_HOOKS__", "true" if NAV_HISTORY_HOOKS else "false"
+)
 
 
 async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bool:
@@ -4520,16 +4707,40 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
             if payload_text == '[["navigation"]]':
                 # The observer runs once per main document.  A reload can keep
                 # the same URL, so this control op is the navigation signal
-                # that the URL poller cannot provide.  Full capture is still
-                # suppressed during initial bootstrap, when the initial sender
-                # owns the first document.
-                session._delta_active = False
-                if (session.has_initial_capture
-                        and not session._explicit_navigation_in_progress):
-                    await session._capture_navigation_once("navigation")
+                # that the URL poller cannot provide.
+                #
+                # Order matters: announce first (a control frame, published in
+                # this tick), then let the capture run beside everything else.
+                # The old code did the capture inline, so the client only heard
+                # about the new document once it had been serialized.
+                token = str(doc_token)[:256] if doc_token is not None else None
+                if session.has_initial_capture and not session._explicit_navigation_in_progress:
+                    await session._on_document_signal(token)
+                else:
+                    # Initial bootstrap: the first sender owns the document.
+                    session._delta_active = False
+                return
+            if payload_text.startswith('[["nav"'):
+                # pushState / replaceState / popstate / hashchange (see the
+                # history hooks in the in-page script).  Same-document: the URL
+                # travels now, the patch stream carries the content, and no
+                # transition is started on the client.
+                try:
+                    op = _json.loads(payload_text)[0]
+                except Exception:
+                    return
+                href = str(op[1]) if len(op) > 1 and op[1] is not None else None
+                same_doc = bool(op[2]) if len(op) > 2 else True
+                source = str(op[3]) if len(op) > 3 else "history"
+                if not href:
+                    return
+                session._note_history_nav(href, same_doc)
+                await session._on_navigation_signal(
+                    href, same_document=same_doc, reason="url_change",
+                    source=source, doc=str(doc_token)[:256] if doc_token else None)
                 return
             if payload_text == '[["overflow"]]':
-                if not session._delta_active or session._send_inflight:
+                if not session._delta_active:
                     return
                 logger.debug("dc delta overflow -> full recapture (client %s)", session.client_id)
                 await session.send_page(reason="delta_overflow")
@@ -4538,24 +4749,29 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                 return
             if not session._delta_active:
                 return  # current full-capture tier cannot carry safe mids
-            if session._send_inflight and not session._assets_pending:
-                # A full snapshot supersedes queued patches — unless the only
-                # thing still in flight is the asset fetch for a document the
-                # client is ALREADY showing.  Holding patches shut for that
-                # window is what made a navigation feel frozen.
+            if not PATCH_DURING_CAPTURE and session._send_inflight and not session._assets_pending:
+                # Rollback path only.  A patch is worth sending even while a
+                # capture runs: it carries the document token and generation it
+                # belongs to, so the client applies it when it still fits and
+                # discards it when a newer document has superseded it.  Holding
+                # the channel shut for a capture's whole lifetime was the
+                # "updates stop while it is busy" symptom.
+                return
+
+            # Patches for a document the client is no longer showing are
+            # superseded, not applicable: drop them here instead of making the
+            # client resync to discover it.
+            token = str(doc_token)[:256] if doc_token is not None else None
+            if token and session._last_doc_token and token != session._last_doc_token:
                 return
 
             # The browser already paid for JSON.stringify(batch).  Wrap that
             # exact JSON text instead of parsing and serializing the operation
-            # list a second time.  Recheck inflight state under the send lock
-            # so a full recovery cannot be followed by an old-generation patch.
-            async with session._ws_send_lock:
-                if session._send_inflight:
-                    return
-                gen = int(session._gen)
-                doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
-                frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + payload_text + '}'
-                await session.websocket.send_text(frame)
+            # list a second time.
+            gen = int(session._gen)
+            doc_json = _json.dumps(token, ensure_ascii=False) if token is not None else "null"
+            frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + payload_text + '}'
+            await session._publish_patch_text(frame)
         except Exception as exc:
             logger.debug("delta relay failed: %s", exc)
 
@@ -4602,21 +4818,13 @@ async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") 
                 if getattr(session, "_delta_active", False):
                     return
 
-                # Flood control remains for the no-delta fallback path, where
-                # the full document is the only way to reflect an activation.
-                now = asyncio.get_event_loop().time()
-                last = getattr(session, "_last_interaction_capture_t", 0.0)
-                _min_iv = (SNAPSHOT_CAPTURE_MIN_INTERVAL_S
-                           if getattr(session, "snapshot_only", False)
-                           else INTERACTION_CAPTURE_MIN_INTERVAL_S)
-                if (now - last) < _min_iv:
-                    logger.debug(
-                        "interaction recapture suppressed (debounce): "
-                        "reason=%s target=%s",
-                        reason, target_desc,
-                    )
-                    return
-                session._last_interaction_capture_t = now
+                # No debounce.  On the no-delta fallback path a full document
+                # is the only way to reflect an activation, and the old
+                # minimum-interval check silently DROPPED an activation that
+                # landed too soon after the previous one.  Overlapping requests
+                # now coalesce in the content lane instead: one capture in
+                # flight, one follow-up with the latest reason, nothing lost.
+                session._last_interaction_capture_t = asyncio.get_event_loop().time()
                 full_reason = f"interaction:{reason}"
                 if target_desc:
                     full_reason = f"{full_reason}:{target_desc}"
@@ -4767,9 +4975,15 @@ class DOMCaptureSession:
         self._explicit_navigation_in_progress: bool = False
         self._capture_install_lock = asyncio.Lock()
         # ---- fast-pipeline state (MIGRATION_LIVE_MIRROR.md) ----
-        # Coalesce: at most one capture in flight; overlaps buffer the
-        # latest reason and produce exactly one follow-up send.
+        # Coalesce WITHIN a capture lane: at most one capture per lane in
+        # flight; overlaps buffer the latest reason and produce exactly one
+        # follow-up send.  Lanes are independent, so a navigation capture is
+        # never queued behind an interaction recapture of the page being left.
+        # ``_send_inflight`` is kept as the "any lane busy" summary for the
+        # paths (and tests) that ask the coarse question.
         self._send_inflight: bool = False
+        self._lane_inflight: Dict[str, bool] = {LANE_NAVIGATION: False, LANE_CONTENT: False}
+        self._lane_pending: Dict[str, Optional[str]] = {LANE_NAVIGATION: None, LANE_CONTENT: None}
         # Keep a delta frame and a full-document frame ordered on the same
         # websocket.  Without this, an already-validated patch task can yield
         # just as a recovery capture starts and arrive after its newer gen.
@@ -4780,6 +4994,43 @@ class DOMCaptureSession:
         self._navigation_capture_lock = asyncio.Lock()
         self._pending_reason: Optional[str] = None
         self._overlap_count: int = 0
+
+        # ---- concurrent navigation pipeline --------------------------------
+        # The delivery half: frames leave in a defined order from ONE writer
+        # task, with navigation frames allowed to overtake queued bulk (they
+        # carry no document content, so overtaking can only make the client
+        # discard something it has already been told is superseded).
+        self._pipeline = SyncPipeline(
+            lambda: self.websocket, name=f"dom:{client_id or 'anon'}")
+        # The document token of the last document we published.  Patches that
+        # belong to a different document than the client is showing are
+        # superseded, not applied.
+        self._last_doc_token: Optional[str] = None
+        # Whether the newest navigation has had its document published yet.
+        self._nav_doc_published: int = 0
+        # The last URL we announced as a navigation (dedupe for the two
+        # independent signals that can report the same change).
+        self._nav_announced_url: Optional[str] = None
+        self._nav_announced_same_doc: Optional[bool] = None
+        self._nav_announced_t: float = 0.0
+        # Recent same-document history navigations, so the URL poller can
+        # classify a change the in-page hooks already described.
+        self._history_nav_at: Dict[str, float] = {}
+        # Settled follow-up task for an early (partial) navigation document.
+        self._nav_settle_task: Optional[asyncio.Task] = None
+        # Background captures scheduled by a navigation signal.  Tracked so a
+        # session teardown cannot leave one running against a closed page.
+        self._nav_capture_tasks: set = set()
+        # The write-future of the most recent navigation frame (see
+        # publish_navigation).  Only the explicit-goto path awaits it.
+        self._last_nav_publish: Optional[asyncio.Future] = None
+        # Whether the last capture was taken while the document was still
+        # parsing (see capture_page).  Reset per capture.
+        self._last_capture_partial: bool = False
+        # The navigation id we have already told the client failed (0 = none).
+        # One report per navigation is enough: the client leaves the transition
+        # on the first, and repeats would only be noise.
+        self._nav_fail_for: int = 0
         # Generation counter — bumped on every full_document send; delta
         # patches carry the generation they apply to.
         self._gen: int = 0
@@ -4847,6 +5098,16 @@ class DOMCaptureSession:
         self._last_checksum = None
         self.last_sent_url = None
         self.last_sent_html = None
+        # A different tab means a different document.  The navigation ids stay
+        # monotonic (the client orders by them), but everything that describes
+        # WHICH document the client is showing has to start over - otherwise
+        # the new tab's patches would be dropped as "superseded" and its
+        # document would be skipped as "already published".
+        self._last_doc_token = None
+        self._nav_doc_published = 0
+        self._nav_announced_url = None
+        self._nav_announced_same_doc = None
+        self._history_nav_at.clear()
         self._sent_asset_digests.clear()
         # The asset_map edit list is per CLIENT-DOCUMENT: the same authored
         # text ("/logo.png") means a different file on a different site, so a
@@ -4891,10 +5152,343 @@ class DOMCaptureSession:
             except (asyncio.CancelledError, Exception):
                 pass
         self.url_watch_task = None
+        for task in (self._nav_settle_task, *tuple(self._nav_capture_tasks)):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._nav_settle_task = None
+        self._nav_capture_tasks.clear()
+        # Flush whatever the pipeline still holds before the socket goes away;
+        # a navigation frame that never left is the one thing worth waiting for.
+        try:
+            await self._pipeline.close()
+        except Exception:
+            logger.debug("sync pipeline close failed for %s", self.client_id, exc_info=True)
         try:
             await get_global_asset_manager().release_session(self.client_id)
         except Exception:
             logger.debug("asset lease release failed for %s", self.client_id, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Navigation pipeline: detect -> publish -> capture (independently)
+    # ------------------------------------------------------------------
+    @property
+    def nav_id(self) -> int:
+        """Which navigation the client has been told about (monotonic)."""
+        return self._pipeline.nav_id
+
+    @property
+    def nav_announcements(self) -> bool:
+        """Whether this session is the authority for "the page moved" frames.
+
+        ``session.py``'s transition poller asks before emitting its own
+        ``page_transition``: with announcements on, a second sender would
+        restart the client's transition for a route change it already applied
+        in place.  Off (``DOM_CAPTURE_NAV_IMMEDIATE=0``) hands that job back.
+        """
+        return bool(NAV_IMMEDIATE)
+
+    def publish_navigation(self, url: Optional[str], *, reason: str = "url_change",
+                           same_document: Optional[bool] = None,
+                           doc_expected: Optional[bool] = None,
+                           phase: str = "detected",
+                           source: str = "", doc: Optional[str] = None,
+                           force: bool = False) -> Optional[Dict[str, Any]]:
+        """Announce a navigation NOW — no capture, no settle wait, no lock.
+
+        This is the whole point of the navigation pipeline: the client can move
+        its tab, its address and (when a new document is really coming) its
+        transition on this frame alone.  The document follows on its own,
+        whenever the serializer is done with it.
+
+        Deduplicated against the previous announcement of the same URL and
+        document kind, because two independent signals (the URL poller and the
+        in-page history hooks) legitimately observe one navigation.  Reloads of
+        the same URL pass ``force=True`` (a new document token proves the page
+        really did reload).
+        """
+        if not NAV_IMMEDIATE or self._stopped:
+            return None
+        url_s = str(url) if url else None
+        if same_document is None:
+            same_document = bool(url_s and self._history_nav_at.get(url_s))
+        if not force and url_s and same_url(url_s, self._nav_announced_url):
+            if self._nav_announced_same_doc is not None and \
+                    bool(self._nav_announced_same_doc) == bool(same_document):
+                # Same navigation, same document kind, twice. Nothing to say.
+                return None
+        prev = self._pipeline.nav_url
+        frame = self._pipeline.begin_navigation(
+            url_s,
+            prev_url=prev,
+            same_document=bool(same_document),
+            doc_expected=doc_expected,
+            reason=reason,
+            source=source,
+            phase=phase,
+            doc=doc,
+        )
+        # ``wait=True`` yields a future for THIS frame only.  Nobody awaits it
+        # on the normal path (the announcement is out the door either way); the
+        # explicit-goto path does, because there the producer is about to do
+        # something slow and the ordering is free.
+        published = self._pipeline.publish(frame, control=True, wait=True)
+        if published is None or published is False:
+            return None
+        self._last_nav_publish = published if isinstance(published, asyncio.Future) else None
+        self._nav_announced_url = url_s
+        self._nav_announced_same_doc = bool(same_document)
+        self._nav_announced_t = time.monotonic()
+        if frame.get("doc"):
+            self._last_doc_token = frame["doc"]
+        logger.debug(
+            "dc nav publish nav=%d url=%s same_document=%s doc_expected=%s reason=%s source=%s",
+            frame["nav_id"], str(url_s)[:120], frame["same_document"],
+            frame["doc_expected"], reason, source or "-")
+        return frame
+
+    def _nav_lane_needed(self, same_document: bool) -> bool:
+        """Does this navigation need a full document, or are patches enough?
+
+        A same-document route change is exactly the case the delta channel was
+        built for: the DOM mutates in place, mids survive, the client patches.
+        Rebuilding the whole iframe for it is the "the entire mirrored page
+        restarts" symptom.  It only needs a document when there is no live
+        patch channel to carry it - or when the route change blew the observer
+        budget (that arrives as delta_overflow and takes the normal path).
+        """
+        if same_document and LIVE_DELTA and self._delta_installed and self._delta_active:
+            return False
+        return True
+
+    def _schedule_navigation_capture(self, nav_id: int, *, reason: str,
+                                     delay: float = 0.0) -> Optional[asyncio.Task]:
+        """Start a capture for a navigation without blocking the caller.
+
+        Guarded so that repeated signals for one navigation produce one
+        document: the navigation lane's own coalescing handles the rest.
+        """
+        if self._stopped or self.page is None:
+            return None
+        if nav_id != self._pipeline.nav_id:
+            # Superseded before it even started. The newer navigation has its
+            # own capture; starting this one would only produce a document the
+            # client must throw away.
+            return None
+        if self._nav_doc_published == nav_id and not delay:
+            return None
+
+        async def _run() -> None:
+            try:
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                if self._stopped or nav_id != self._pipeline.nav_id:
+                    return
+                if self._nav_doc_published >= nav_id:
+                    return
+                await self.send_page(reason=reason, _nav_id=nav_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("navigation capture failed (nav=%s): %s", nav_id, exc)
+
+        try:
+            task = asyncio.ensure_future(_run())
+        except RuntimeError:
+            return None
+        self._nav_capture_tasks.add(task)
+        task.add_done_callback(self._nav_capture_tasks.discard)
+        return task
+
+    async def _on_navigation_signal(self, url: Optional[str], *,
+                                    same_document: bool = False,
+                                    reason: str = "url_change",
+                                    source: str = "",
+                                    doc: Optional[str] = None,
+                                    force: bool = False,
+                                    schedule: bool = True) -> Optional[Dict[str, Any]]:
+        """Handle one navigation observation: publish, then start a capture.
+
+        The publish is synchronous and comes first, always.  Nothing here waits
+        for the page to settle, for a previous capture, or for anything else.
+        """
+        frame = self.publish_navigation(
+            url, reason=reason, same_document=same_document, doc=doc,
+            source=source, force=force)
+        if frame is None:
+            # Nothing was announced: either the pipeline is off (rollback) or
+            # this exact navigation was already announced moments ago by another
+            # signal.  Either way the document still has to exist - but only if
+            # the newest navigation does not already have one.
+            if self._nav_lane_needed(same_document):
+                if not NAV_IMMEDIATE:
+                    await self._capture_navigation_once(reason)
+                elif self._nav_doc_published < self._pipeline.nav_id:
+                    self._schedule_navigation_capture(
+                        self._pipeline.nav_id, reason=reason)
+            return None
+        nav_id = frame["nav_id"]
+        if frame.get("doc"):
+            self._last_doc_token = frame["doc"]
+        # A cross-document navigation invalidates the current generation's
+        # mids: patches from the OLD document must not be applied to the new
+        # iframe.  A same-document one does not - patches keep flowing, which
+        # is what makes an SPA route change feel instant instead of frozen.
+        if not same_document:
+            self._delta_active = False
+            self._last_checksum = None
+        if schedule and self._nav_lane_needed(same_document):
+            self._schedule_navigation_capture(nav_id, reason=reason)
+        else:
+            logger.debug(
+                "dc nav nav=%d is same-document and the patch channel is live — "
+                "no document rebuild", nav_id)
+            # Still a cheap correctness floor: if the observer silently stopped
+            # delivering, the client asks for a resync and gets a document then.
+            self._nav_doc_published = nav_id
+        return frame
+
+    def _note_history_nav(self, url: Optional[str], same_document: bool) -> None:
+        """Remember that a same-document route change happened at ``url``.
+
+        The URL poller runs every 100 ms and can see the same change; without
+        this the poller would classify an SPA route change as a brand-new
+        document, and announce a second navigation for it.  Bounded so a router
+        that rewrites its URL hundreds of times cannot grow the map.
+        """
+        if not url or not same_document:
+            return
+        now = time.monotonic()
+        self._history_nav_at[str(url)] = now
+        if len(self._history_nav_at) > 32:
+            cutoff = now - 5.0
+            for key in [k for k, t in self._history_nav_at.items() if t < cutoff]:
+                del self._history_nav_at[key]
+            while len(self._history_nav_at) > 32:
+                self._history_nav_at.pop(next(iter(self._history_nav_at)))
+
+    async def _on_document_signal(self, doc_token: Optional[str]) -> None:
+        """The in-page observer says a NEW document is running.
+
+        Fires once per document (including reloads that keep the same URL),
+        from the persistent init script.  Announce, then capture - in that
+        order, with a capture that runs beside anything else.
+        """
+        url: Optional[str] = None
+        try:
+            if self.page is not None:
+                url = self.page.url
+        except Exception:
+            url = None
+        if not url:
+            url = self._pipeline.nav_url
+        # A new document token proves a real reload even when the URL is
+        # unchanged, so the announcement must not be deduplicated away.
+        reloaded = bool(doc_token and self._last_doc_token and doc_token != self._last_doc_token)
+        # An explicit goto is already going to capture when it returns; letting
+        # the document signal start one too would serialize the same page twice.
+        frame = await self._on_navigation_signal(
+            url, same_document=False, reason="navigation",
+            source="document", doc=doc_token,
+            force=reloaded or doc_token is not None,
+            schedule=not self._explicit_navigation_in_progress)
+        if frame is None:
+            # Rollback path (DOM_CAPTURE_NAV_IMMEDIATE=0): the document still
+            # has to be produced, exactly as before.
+            await self._capture_navigation_once("navigation")
+
+    async def _publish_patch_text(self, frame_text: str) -> bool:
+        """Publish an already-serialized ``dom_patch`` frame.
+
+        The page paid for ``JSON.stringify``; adding two small fields by text
+        concatenation keeps that work from being repeated in Python.
+        """
+        try:
+            seq = self._pipeline.next_seq()
+            nav_id = self._pipeline.nav_id
+            text = (frame_text[:-1]
+                    + ',"nav_id":' + str(nav_id)
+                    + ',"seq":' + str(seq) + '}')
+            return await self._pipeline.publish_text(text, kind="dom_patch")
+        except Exception as exc:
+            logger.debug("delta relay failed: %s", exc)
+            return False
+
+    def _nav_stamp_for(self, started_nav: Optional[int],
+                       url: Optional[str]) -> Optional[int]:
+        """Which navigation a finished capture speaks for, or None if stale.
+
+        A capture that started on navigation N and finished after N+1 is only
+        worth publishing if it happens to describe the NEWER page (same URL) or
+        if the newer navigation is same-document (the document did not change,
+        so the capture is still of what the client shows).  Otherwise sending it
+        would overwrite a newer page with an older one - the exact race that
+        makes fast-pipeline reworks corrupt mirrors.
+        """
+        current = self._pipeline.nav_id
+        if started_nav is None or started_nav == current:
+            return current
+        if self._pipeline.nav_same_document:
+            return current
+        if same_url(url, self._pipeline.nav_url):
+            return current
+        return None
+
+    def _publish_nav_failure(self, url: Optional[str], reason: str) -> None:
+        """Tell the client a navigation's document is not coming.
+
+        Without this the only exit from a transition is the client-side
+        watchdog.  One control frame finishes the wait as early as the server
+        knows the answer.
+        """
+        try:
+            frame = self._pipeline.phase_frame("failed", url=url, detail=reason)
+            self._pipeline.publish(frame, control=True)
+            logger.warning(
+                "dc nav %d has no document (reason=%s url=%s) - telling the client "
+                "to leave the transition", frame["nav_id"], reason, str(url)[:120])
+        except Exception:
+            logger.debug("nav failure publish failed", exc_info=True)
+
+    def _schedule_nav_settle_followup(self, nav_id: int) -> Optional[asyncio.Task]:
+        """Converge an early (partial) navigation document in the background.
+
+        The early document bought latency; this buys fidelity.  It waits for
+        the parser (bounded), then captures again - and only for the navigation
+        it was scheduled for, so a newer navigation is never overwritten with
+        the older page's settled capture.
+        """
+        if self._stopped or self.page is None:
+            return None
+        if self._nav_settle_task is not None and not self._nav_settle_task.done():
+            return None
+
+        async def _run() -> None:
+            try:
+                await self.page.wait_for_function(
+                    "document.readyState === 'complete'",
+                    timeout=max(500, NAV_SETTLE_MAX_MS))
+            except Exception:
+                pass
+            if self._stopped or nav_id != self._pipeline.nav_id:
+                return
+            if self._nav_doc_published != nav_id:
+                return
+            try:
+                await self.send_page(reason="nav_settle", _nav_id=nav_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("settled navigation follow-up failed (nav=%s): %s", nav_id, exc)
+
+        try:
+            self._nav_settle_task = asyncio.ensure_future(_run())
+        except RuntimeError:
+            return None
+        return self._nav_settle_task
 
     async def _capture_navigation_once(self, reason: str) -> Optional[str]:
         """Serialize one navigation recovery send at a time.
@@ -4926,15 +5520,36 @@ class DOMCaptureSession:
                 # lock, do not rebuild the mirror a second time.
                 if reason == "url_change" and current_url == self.last_sent_url:
                     return current_url
+                frame = self.publish_navigation(
+                    current_url, reason=reason, same_document=False,
+                    source="navigation_lock")
+                if frame is None:
+                    return await self.send_page(reason=reason, _url_override=current_url)
+                if not self._nav_lane_needed(False):
+                    return current_url
+                return await self.send_page(reason=reason, _url_override=current_url,
+                                            _nav_id=frame["nav_id"])
             return await self.send_page(reason=reason, _url_override=current_url)
 
     async def watch_url(self, interval_s: float = URL_WATCH_INTERVAL_S) -> None:
-        """Watch the page URL as a recovery fallback.
+        """Watch the page URL — a *detector*, never a gate.
 
-        The persistent delta init script emits a navigation control for full
-        document loads, including same-URL reloads. This loop also remains a
-        fallback for same-document SPA history changes and missed controls;
-        duplicate sends are serialized and suppressed by the navigation lock.
+        Two things used to happen here that made navigation feel slow, and both
+        are gone:
+
+        * the watcher waited for the page to settle (load + networkidle +
+          readyState — up to ~6 s) *before* telling anyone the URL had changed.
+          The announcement is now published in the same tick the change is
+          seen; the settle wait, if any is needed, happens inside a capture
+          that runs beside it.
+        * the announcement and the document were the same message, so the
+          client's URL and its transition could not move until the serializer
+          was done.  They are separate frames now.
+
+        The in-page history hooks and the new document's observer control are
+        the primary signals; this poller stays as the floor for pages where
+        neither fires (observer install failure, a backend that drops
+        bindings).
         """
         last_url: Optional[str] = None
         try:
@@ -4950,62 +5565,28 @@ class DOMCaptureSession:
                         current_url = self.page.url
                     except Exception:
                         current_url = None
-                if current_url and last_url and current_url != last_url:
-                    self._delta_active = False
+                if current_url and not same_url(current_url, last_url or ""):
                     logger.debug("URL changed %s -> %s", last_url, current_url)
-                    # With persistent init scripts, the new document's
-                    # navigation control owns the recovery full capture.  Do
-                    # not add a second stability wait or duplicate serializer
-                    # here; this watcher remains the fallback for pages where
-                    # delta installation failed.
-                    if self._delta_installed:
-                        # A healthy observer owns normal full-document
-                        # navigations, but it cannot observe SPA
-                        # history.pushState/replaceState. Keep the watcher as
-                        # a cheap URL fallback instead of blindly skipping the
-                        # change; _capture_navigation_once deduplicates a
-                        # navigation control that arrived first.
-                        try:
-                            await self._capture_navigation_once("url_change")
-                        except Exception as exc:
-                            logger.debug("URL-watch delta-path fallback failed: %s", exc)
-                        last_url = current_url
-                        await asyncio.sleep(interval_s)
-                        continue
-                    # Re-install the interaction trigger on the new
-                    # document when the delta path is unavailable.  Best-effort:
-                    # the full-capture fallback below remains authoritative.
-                    # Both init scripts persist on this page object across
-                    # navigations.  Avoid two immediate evaluate round trips
-                    # on every URL change when the registrations are already
-                    # present; the new document ran them at parse start.
-                    if (not self._interaction_init_script_installed
+                    # One call does both halves: announce (deduplicated against
+                    # the in-page hooks, which usually got here first and with a
+                    # classification this poller cannot make) and make sure the
+                    # newest navigation has a document.  Nothing here waits.
+                    try:
+                        await self._on_navigation_signal(
+                            current_url, reason="url_change", source="url_watch")
+                    except Exception as exc:
+                        logger.debug("URL-change navigation dispatch failed: %s", exc)
+                    last_url = current_url
+                    # Re-install on the new document when the delta path is
+                    # unavailable: init scripts persist on the page object, so
+                    # this is a no-op when they are already registered.
+                    if not self._delta_installed and (
+                            not self._interaction_init_script_installed
                             or (LIVE_DELTA and not self._delta_init_script_installed)):
                         try:
                             await self.enable_interaction_capture()
                         except Exception as exc:
                             logger.debug("re-install interaction trigger after URL change: %s", exc)
-                    # Wait for the new page to settle -- the same
-                    # load/networkidle/readyState sequence the
-                    # initial capture uses.  We deliberately do NOT
-                    # skip ahead and capture during this wait;
-                    # capturing a parsing document produces a
-                    # half-rendered snapshot that the client then
-                    # has to manually re-request.
-                    try:
-                        await _ensure_page_stable(self.page)
-                    except Exception as exc:
-                        logger.debug("post-URL-change page-stability wait failed: %s", exc)
-                    # A navigation control batch or an explicit goto may
-                    # already have sent this exact URL while the watcher was
-                    # waiting for stability.  Do not rebuild the iframe twice.
-                    if current_url != self.last_sent_url:
-                        try:
-                            await self._capture_navigation_once("url_change")
-                        except Exception as exc:
-                            logger.debug("URL-watch full capture failed: %s", exc)
-                    else:
-                        logger.debug("URL-watch resync already sent for %s", current_url)
                 last_url = current_url or last_url
             except Exception as exc:
                 logger.debug("URL watch loop error: %s", exc)
@@ -5036,6 +5617,10 @@ class DOMCaptureSession:
         ``settle``:
           none   — no waits at all (interaction recapture of a live page)
           light  — readyState-complete only (default; never networkidle)
+          nav    — bounded readyState wait (``DOM_CAPTURE_NAV_READY_MS``); if the
+                   parser is still running the capture is taken anyway and
+                   ``self._last_capture_partial`` is set, so the caller can ship
+                   it now and converge with a settled follow-up
           full   — legacy load + networkidle + readyState sequence
         ``DOM_CAPTURE_FULL_SETTLE=1`` forces ``full`` everywhere (rollback).
         """
@@ -5045,6 +5630,7 @@ class DOMCaptureSession:
             settle = "light"
         if FULL_SETTLE:
             settle = "full"
+        self._last_capture_partial = False
         try:
             if settle != "none":
                 if settle == "full":
@@ -5053,6 +5639,26 @@ class DOMCaptureSession:
                     except Exception:
                         pass
                     await _ensure_page_stable(self.page)
+                elif settle == "nav":
+                    # A navigation must not buy "a fully parsed document" with
+                    # an unbounded wait. Bounded: the common case (the parser
+                    # is already past 'loading') costs nothing, a slow page
+                    # pays NAV_READY_MS at most and then ships what exists.
+                    ready = False
+                    try:
+                        await self.page.wait_for_function(
+                            "document.readyState !== 'loading'",
+                            timeout=max(1, NAV_READY_MS))
+                        ready = True
+                    except Exception:
+                        ready = False
+                    self._last_capture_partial = not ready
+                    if not ready:
+                        logger.debug(
+                            "dc nav capture: document still parsing after %d ms "
+                            "(shipping early, follow-up scheduled)", NAV_READY_MS)
+                    if PRE_CAPTURE_WAIT > 0:
+                        await asyncio.sleep(PRE_CAPTURE_WAIT)
                 else:
                     # ONE wait, not two.  `domcontentloaded` and "readyState has
                     # left 'loading'" are the same condition; asking for both
@@ -5120,12 +5726,16 @@ class DOMCaptureSession:
         return None
 
     async def send_page(self, reason: Optional[str] = None, force: bool = False,
-                        _url_override: Optional[str] = None) -> Optional[str]:  # noqa: ARG002
-        """Run a full SingleFile capture and ship it to the websocket.
+                        _url_override: Optional[str] = None,
+                        _nav_id: Optional[int] = None) -> Optional[str]:  # noqa: ARG002
+        """Run a full capture and ship it to the websocket.
         Returns the URL on success, None on failure.
 
         ``_url_override`` is used only by the navigation recovery path when a
         backend's cached page URL may lag the live document by one CDP event.
+        ``_nav_id`` names the navigation this capture is for, so a capture that
+        finishes after a NEWER navigation can be dropped instead of overwriting
+        it (see ``_nav_stamp_for``).
         """
         if self.page is None:
             return None
@@ -5148,29 +5758,59 @@ class DOMCaptureSession:
                 url = self.page.url
             except Exception:
                 url = None
-        return await self._send_full(url, reason=reason or "manual")
+        return await self._send_full(url, reason=reason or "manual", _nav_id=_nav_id)
 
     # ------------------------------------------------------------------
     # Senders
     # ------------------------------------------------------------------
 
-    async def _send_full(self, url: Optional[str], *, reason: str = "desync") -> Optional[str]:
+    async def _send_full(self, url: Optional[str], *, reason: str = "desync",
+                         _nav_id: Optional[int] = None) -> Optional[str]:
         """Capture and send the page.
 
-        Coalesced (SEND_COALESCE): if a capture is already in flight the
-        latest reason is buffered and exactly one follow-up is scheduled
-        after the current send — captures never queue or overlap.
+        Coalesced PER LANE (SEND_COALESCE): one capture at a time within a
+        lane; an overlapping trigger buffers the latest reason and produces
+        exactly one follow-up.  Lanes are independent (``DOM_CAPTURE_CONCURRENT_LANES``),
+        so a navigation capture runs beside an interaction capture instead of
+        waiting behind it — the older one's document is dropped as stale at
+        publish time rather than being allowed to hold the newer one back.
+
         Unchanged pages (checksum-equal, interaction reasons only) are
-        skipped before paying for a capture.
+        skipped before paying for a capture; that is de-duplication, not
+        filtering - the reason such a page can be skipped at all is that the
+        patch channel has already delivered the change.
         """
         if self.websocket is None:
             return None
-        if SEND_COALESCE and self._send_inflight:
+        reason_lane = lane_for_reason(reason)
+        lane = reason_lane if CONCURRENT_LANES else LANE_CONTENT
+        is_navigation = reason_lane == LANE_NAVIGATION
+        # Which navigation this capture speaks for.  EVERY capture records the
+        # navigation current when it started, not just navigation captures: a
+        # click's recapture of the page the visitor is leaving is exactly as
+        # stale as a navigation's, and it must be dropped the same way.
+        named_nav: Optional[int] = _nav_id
+        nav_at_start: int = _nav_id if _nav_id is not None else self._pipeline.nav_id
+        if CONCURRENT_LANES and lane == LANE_NAVIGATION:
+            # One navigation's capture must not queue behind another's: a fast
+            # new page would then wait for a slow capture of the page the
+            # visitor already left (and whose document will be dropped anyway).
+            # Each navigation gets its own slot, with a small ceiling so a
+            # pathological loop of navigations cannot spawn unlimited
+            # serializations; past the ceiling they coalesce, latest wins.
+            active_nav = sum(
+                1 for key, busy in self._lane_inflight.items()
+                if busy and key.startswith(LANE_NAVIGATION))
+            if active_nav < NAV_CAPTURE_CONCURRENCY:
+                lane = f"{LANE_NAVIGATION}:{nav_at_start}"
+        if SEND_COALESCE and self._lane_inflight.get(lane):
+            self._lane_pending[lane] = reason
             self._pending_reason = reason
             self._overlap_count += 1
-            logger.debug("dc coalesce: buffered reason=%s (capture in flight)", reason)
+            logger.debug("dc coalesce: buffered reason=%s (lane=%s busy)", reason, lane)
             return None
-        self._send_inflight = True
+        self._lane_inflight[lane] = True
+        self._send_inflight = any(self._lane_inflight.values())
         t_start = time.perf_counter()
         try:
             if url is None:
@@ -5179,6 +5819,31 @@ class DOMCaptureSession:
                 except Exception:
                     url = None
             settle = _settle_for_reason(reason)
+
+            # A coalesced follow-up for a navigation that already has its
+            # document would rebuild the iframe for nothing.  (Deliberate
+            # re-captures - resync, explicit reasons - are not coalesced.)
+            if (is_navigation
+                    and self._nav_doc_published >= nav_at_start
+                    and str(reason).startswith("coalesce:")):
+                logger.debug(
+                    "dc skip(duplicate nav document) reason=%s nav=%d already published",
+                    reason, nav_at_start)
+                return None
+
+            # A capture for a page we have not announced yet still owes the
+            # client that announcement, and owes it FIRST: the document can
+            # take a second, the URL takes a print.  Announcing here also
+            # covers the callers that reach _send_full directly (tab switch,
+            # explicit resync) rather than through a navigation signal.
+            known_url = self._nav_announced_url or self.last_sent_url
+            if (is_navigation and named_nav is None and url
+                    and self.has_initial_capture
+                    and not same_url(url, known_url)):
+                announced = self.publish_navigation(
+                    url, reason=reason, same_document=False, source="capture")
+                if announced is not None:
+                    nav_at_start = announced["nav_id"]
 
             # ---- unchanged-DOM skip (only for hot interaction reasons) ----
             checksum: Optional[str] = None
@@ -5202,6 +5867,22 @@ class DOMCaptureSession:
                         "[CAPTURE] %d consecutive capture failures (client %s, last reason=%s, "
                         "url=%s) — client receives NO DOM updates; check page/backend health",
                         self._capture_fail_streak, self.client_id, reason, url)
+                # A navigation whose document cannot be produced must not leave
+                # the client on a transition spinner: say so, once per nav.
+                if is_navigation and self._capture_fail_streak >= 2:
+                    if self._nav_fail_for != self._pipeline.nav_id:
+                        self._nav_fail_for = self._pipeline.nav_id
+                        self._publish_nav_failure(url, reason)
+                return None
+            partial_capture = bool(self._last_capture_partial)
+            # Superseded while we were serializing?  Stop here rather than pay
+            # for the asset rewrite of a document the client will never see.
+            # (Checked again before publishing, because a navigation can land
+            # during the rewrite too.)
+            if self._nav_stamp_for(nav_at_start, url) is None:
+                logger.debug(
+                    "dc drop(superseded capture) reason=%s url=%s nav=%s<%s",
+                    reason, str(url)[:120], nav_at_start, self._pipeline.nav_id)
                 return None
             html_data = _strip_dead_subframes(html_data, url)
             if url:
@@ -5291,6 +5972,20 @@ class DOMCaptureSession:
                 # A navigation resets the prefetch budget: the links on THIS
                 # page are the ones worth warming, not the last page's.
                 self._prefetch_count = 0
+            # ---- stale-document guard -------------------------------------
+            # Everything up to here ran on the page as it was when the capture
+            # started.  If a NEWER navigation has been detected since, this
+            # document describes a page the client must not go back to: drop it
+            # and make sure the newer navigation has a capture of its own.
+            publish_nav = self._nav_stamp_for(nav_at_start, url)
+            if publish_nav is None:
+                logger.debug(
+                    "dc drop(stale document) reason=%s url=%s nav=%s<%s gen=%s",
+                    reason, str(url)[:120], nav_at_start, self._pipeline.nav_id, self._gen)
+                self._schedule_navigation_capture(
+                    self._pipeline.nav_id, reason="navigation", delay=0.0)
+                return None
+
             self._gen += 1
             msg: Dict[str, Any] = {
                 "type": "full_document",
@@ -5299,6 +5994,16 @@ class DOMCaptureSession:
                 "html": html_data,
                 "gen": self._gen,
             }
+            _meta_now = getattr(self, "_last_capture_meta", None) or {}
+            if _meta_now.get("doc"):
+                # The document token this capture was taken from.  The client
+                # adopts it so patches for a DIFFERENT document are recognised
+                # as superseded instead of being misapplied.
+                msg["doc"] = str(_meta_now["doc"])[:256]
+            if partial_capture:
+                # Still parsing when it was serialized.  The client may apply
+                # this immediately; a settled follow-up capture converges it.
+                msg["partial"] = True
             _meta = getattr(self, "_last_capture_meta", None) or {}
             _cur_title = _meta.get("title")
             if not _cur_title:
@@ -5343,14 +6048,20 @@ class DOMCaptureSession:
             if assets_to_send:
                 msg["assets"] = assets_to_send
             t_send = time.perf_counter()
+            self._pipeline.stamp(msg, nav_id=publish_nav)
             try:
-                frame = json.dumps(msg, ensure_ascii=False)
-                async with self._ws_send_lock:
-                    await self.websocket.send_text(frame)
+                # Waits for THIS frame (the producer is done anyway); it never
+                # waits for another capture, which is the distinction that
+                # matters.
+                if not await self._pipeline.publish_now(msg):
+                    raise RuntimeError("pipeline refused the document frame")
             except Exception as exc:
                 logger.debug("full_document send failed: %s", exc)
                 return None
             send_ms = (time.perf_counter() - t_send) * 1000.0
+            self._nav_doc_published = max(self._nav_doc_published, int(publish_nav))
+            if msg.get("doc"):
+                self._last_doc_token = msg["doc"]
             if not self._cold_logged:
                 # The number a visitor actually feels: from "the helper
                 # existed" to "a whole page is on their screen".
@@ -5393,6 +6104,11 @@ class DOMCaptureSession:
                 len(assets_to_send), self._gen, self._overlap_count,
                 (time.perf_counter() - t_start) * 1000.0,
             )
+            if partial_capture and NAV_SETTLE_FOLLOWUP and str(reason) != "nav_settle":
+                # Keep the promise the early document made: once the parser is
+                # done, capture again and let the client converge.  Runs in the
+                # background - the caller has already been given its URL back.
+                self._schedule_nav_settle_followup(int(publish_nav))
             if deferred is not None:
                 # The document is on screen.  Keep the delta channel open
                 # while the fetches run (``_assets_pending``), then send what
@@ -5406,12 +6122,19 @@ class DOMCaptureSession:
                     self._assets_pending = False
             return url
         finally:
-            self._send_inflight = False
-            pending = self._pending_reason
-            self._pending_reason = None
+            self._lane_inflight[lane] = False
+            self._send_inflight = any(self._lane_inflight.values())
+            pending = self._lane_pending.get(lane)
+            self._lane_pending[lane] = None
+            if pending and self._pending_reason == pending:
+                self._pending_reason = None
             if SEND_COALESCE and pending and not self._stopped:
                 # Recompute URL/task state inside the follow-up.
-                asyncio.create_task(self._send_full(None, reason=f"coalesce:{pending}"))
+                follow_lane = lane
+                follow_nav = (self._pipeline.nav_id
+                              if follow_lane == LANE_NAVIGATION else None)
+                asyncio.create_task(self._send_full(
+                    None, reason=f"coalesce:{pending}", _nav_id=follow_nav))
 
     async def _emit_asset_map(self, swap: List[Dict[str, Any]],
                               assets_meta: Optional[List[Dict[str, Any]]],
@@ -5442,15 +6165,19 @@ class DOMCaptureSession:
         }
         if new_assets:
             msg["assets"] = new_assets
+        # An asset edit belongs to the document it was computed for.  Stamping
+        # it with the CURRENT navigation lets the client recognise it as
+        # superseded (rather than applying a font swap to the wrong page) if a
+        # navigation landed while the fetches ran.
+        self._pipeline.stamp(msg)
         try:
-            frame = json.dumps(msg, ensure_ascii=False)
-            async with self._ws_send_lock:
-                await self.websocket.send_text(frame)
+            if not await self._pipeline.publish_now(msg):
+                raise RuntimeError("pipeline refused the asset frame")
         except Exception as exc:
             logger.debug("asset_map send failed: %s", exc)
             return False
-        logger.debug("dc asset_map swaps=%d assets=%d bytes=%d gen=%d",
-                     len(swap), len(new_assets), len(frame), self._gen)
+        logger.debug("dc asset_map swaps=%d assets=%d gen=%d nav=%d",
+                     len(swap), len(new_assets), self._gen, msg.get("nav_id", 0))
         return True
 
     async def _send_asset_upgrade(self, deferred: Dict[str, Any],
@@ -5707,10 +6434,32 @@ class DOMCaptureSession:
             return False
 
     async def handle_navigation(self, url: str) -> None:
+        """Navigate the source browser, telling the client where it is going.
+
+        The announcement is published BEFORE ``goto``: the operator pressed a
+        link, and the mirrored client can move its tab and its address in the
+        same tick instead of after the page has loaded, settled and been
+        serialized.  The document follows on the navigation pipeline like any
+        other capture.
+        """
         if self.page is None:
             return
-        self._delta_active = False
         self._explicit_navigation_in_progress = True
+        # The document is about to be replaced: mids from the current one do
+        # not exist in the new one, so the patch channel closes until the new
+        # document publishes (and reopens with it).
+        self._delta_active = False
+        announce = self.publish_navigation(
+            url, reason="goto", same_document=False, source="explicit_navigation",
+            phase="detected")
+        if announce is not None and self._last_nav_publish is not None:
+            # Deterministic ordering where it is free: the client knows where
+            # the page is going BEFORE the source browser goes there, so its
+            # tab and address never lag behind the browser it is mirroring.
+            try:
+                await asyncio.wait_for(self._last_nav_publish, 0.5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
         try:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
             # Fresh document -> the JS listener from the previous
@@ -5722,22 +6471,13 @@ class DOMCaptureSession:
                     await self.enable_interaction_capture()
                 except Exception as exc:
                     logger.debug("re-install interaction trigger after nav: %s", exc)
-            # IMPORTANT: do NOT fire _send_full immediately.  A page
-            # that just changed URL is in an unstable state: the
-            # document is parsing, subresources are still in flight,
-            # client-side frameworks are mounting, SPAs are still
-            # hydrating.  Capturing right now would snapshot a
-            # half-rendered DOM.  Wait for the page to settle the
-            # same way the initial capture does, then capture.
-            try:
-                await _ensure_page_stable(self.page)
-            except Exception as exc:
-                logger.debug("post-nav page-stability wait failed: %s", exc)
             # Use the live page URL after redirects rather than the requested
             # URL argument; otherwise the client can remain labeled with the
             # pre-redirect page even though the DOM is new.
             await self._capture_navigation_once("url_change")
         except Exception as exc:
+            if announce is not None:
+                self._publish_nav_failure(url, "goto_failed")
             logger.debug("handle_navigation failed: %s", exc)
         finally:
             self._explicit_navigation_in_progress = False

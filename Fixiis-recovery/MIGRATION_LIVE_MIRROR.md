@@ -612,3 +612,149 @@ headed on it.
 - Order-of-operations proof on VPS logs to expect:
   `[Xvfb] installing virtual display server: apt-get install -y xvfb` →
   `[Xvfb] Xvfb installed successfully` → `session launch mode: xvfb`.
+
+## 2026-11-08 — Concurrent capture & non-blocking delivery (navigation pipeline)
+
+**Status: implemented, default-on.** New module `sync_pipeline.py`; new flags
+`DOM_CAPTURE_NAV_IMMEDIATE`, `DOM_CAPTURE_HISTORY_HOOKS`,
+`DOM_CAPTURE_NAV_READY_MS`, `DOM_CAPTURE_NAV_SETTLE_MS`,
+`DOM_CAPTURE_NAV_SETTLE_FOLLOWUP`, `DOM_CAPTURE_CONCURRENT_LANES`,
+`DOM_CAPTURE_CONCURRENT_NAV_CAPTURES`, `DOM_CAPTURE_PATCH_DURING_CAPTURE`
+(all revertible). Verified by `tests/test_sync_pipeline.py` (47 checks),
+`tests/test_navigation_pipeline.py` (67 checks) and
+`tests/test_nav_transition.cjs` (39 checks), plus the pre-existing suites —
+including the jsdom differential oracle (`test_capture_convergence.cjs`, 215
+checks) and the full client suite.
+
+### The problem, stated precisely
+
+A navigation used to be one serialised chain:
+
+```
+URL poll (≤100 ms) → wait for stability (≤6 s) → serialize → rewrite assets → send → client leaves transition
+```
+
+Every link waited for the one in front.  The client could not move its address
+bar, and its transition could not end, until a *capture* happened to finish —
+even though the URL was known 100 ms in and the new document was already
+rendering in the source browser.  Two independent signals (URL poll, observer)
+also raced to send a full document each, and the loser rebuilt the iframe for
+no reason.
+
+### The architecture
+
+```
+SOURCE BROWSER
+  navigation  (URL poll · pushState/replaceState/popstate/hashchange hooks ·
+               document-commit control · explicit goto)
+  DOM         (serializer, bounded nav ready-wait, snapshot generation)
+  patches     (MutationObserver → __domDelta)
+  assets      (fetch-once rewrite; deferred edits)
+        │
+        ├─ pipeline 01 navigation ─ published the tick it is seen ─────────┐
+        ├─ pipeline 02 document   ─ navigation lane · content lane ────────┤
+        ├─ pipeline 03 patches    ─ straight through, even mid-capture ────┤
+        └─ pipeline 04 assets     ─ edits after the document is on screen ─┤
+                                                                           ▼
+                                       SyncPipeline: ONE writer task, bounded
+                                       queues, control overtakes queued bulk
+                                                                           │
+                                                                  webSocket │
+MIRRORED CLIENT                                                           ▼
+  URL/tab first · transition only when a document is really coming ·
+  patches buffered across a document swap · progressive application · stale
+  frames (older nav_id / superseded document) discarded, never applied
+```
+
+Deliberately **not** done: "make everything async and drop the ordering
+controls".  Concurrency without ordering is how an older snapshot corrupts a
+newer page.  Every frame carries `nav_id` (which navigation) and `seq`
+(producer order); a capture records the navigation it started under and is
+dropped at publish time if a newer one superseded it.
+
+### What changed, file by file
+
+- **`sync_pipeline.py` (new).** `SyncPipeline` = ordered, priority-aware,
+  bounded delivery for one client.  `publish()` never awaits; a burst writer
+  task drains the queue and exits when it is empty (an idle session owns no
+  tasks).  Control frames (navigation) may overtake *queued* bulk frames — they
+  carry no document content, so the only possible effect is the client
+  discarding something it has already been told is superseded.  Under backlog
+  pressure the frame that is dropped is a patch or an asset edit, never
+  silently a document.  Also owns `lane_for_reason()` (navigation vs content)
+  and `same_url()`.
+- **`dom_capture.py`.**
+  - Navigation announcements: `publish_navigation()` /
+    `_on_navigation_signal()` / `_on_document_signal()`.  The frame goes out
+    before the capture starts, always, and carries `nav_id`, `same_document`,
+    `doc_expected`, `doc` and `prev_url`.
+  - In-page history hooks in `_DELTA_OBSERVER_JS`:
+    `pushState`/`replaceState`/`popstate`/`hashchange` emit a
+    `['nav', href, sameDocument, source]` control op in the same tick, so a
+    route change no longer waits for the poll — and it is *classified*, which
+    the poller cannot do.
+  - Per-lane capture coalescing (`_lane_inflight`, `_lane_pending`); each
+    navigation gets its own slot (cap `DOM_CAPTURE_CONCURRENT_NAV_CAPTURES`,
+    default 2), so a slow capture of the page just left cannot delay the new
+    one.
+  - Bounded navigation settle (`settle='nav'`, `DOM_CAPTURE_NAV_READY_MS`,
+    default 400 ms).  Not ready ⇒ ship anyway, flagged `partial`, then a
+    settled follow-up (`nav_settle`, bounded by `DOM_CAPTURE_NAV_SETTLE_MS`)
+    converges it.  The old code paid up to 5 s of nothing to avoid ever showing
+    a parsing document; that trade is now the client's (it already shows a
+    transition).
+  - Stale documents are dropped twice: right after serialization (before the
+    asset rewrite, so the work stops) and again before publishing (a navigation
+    can land during the rewrite).
+  - The delta relay no longer shuts while a capture runs
+    (`DOM_CAPTURE_PATCH_DURING_CAPTURE`); patches carry the document token and
+    are dropped server-side when they belong to a document the client is not
+    showing.
+  - `watch_url()` is a detector, not a gate: it announces and returns.  The
+    `_ensure_page_stable` barrier is gone from the navigation path.
+  - A navigation whose capture fails twice publishes `phase: 'failed'`, so the
+    client leaves its transition immediately instead of waiting out a watchdog.
+- **`client.html`.**  New `navigation` message handling:
+  - URL/tab/favicon move on the announcement alone (`reportPageChange`);
+  - `same_document` ⇒ **no transition at all** (the patch stream keeps updating
+    a live mirror — this was the "stuck on a spinner over a page that never
+    changed" bug);
+  - cross-document ⇒ the transition opens, bounded at 4 s, and closes on the
+    first `full_document`, on `phase: 'failed'`, or on a newer same-document
+    announcement;
+  - `full_document` / `dom_patch` frames with an older `nav_id` are discarded
+    before they can touch the DOM;
+  - patch generations are read properly: **older** = superseded (drop
+    silently), **newer** = the client is missing a document (resync).  Asking
+    for a resync on a superseded patch made a concurrent pipeline look like a
+    broken one;
+  - `full_document` adopts the capture's document token, so a patch from a
+    different document is recognised instead of "the first patch decides".
+- **`session.py`.**  `_page_transition_monitor` now delegates to the capture
+  session's announcement (one authority for "the page moved"), keeping the
+  legacy `page_transition` frame only when there is no capture session.  It was
+  500 ms behind the capture session and could restart the client's transition
+  for a route change already applied in place.
+
+### Acceptance criteria → where they are proven
+
+| Criterion | Proof |
+|---|---|
+| URL transmitted without a full DOM snapshot | `test_url_change_is_announced_before_any_capture` (wire is `["navigation"]` only) |
+| New content starts as soon as it exists | `test_partial_navigation_document_is_followed_by_a_settled_one` |
+| DOM mutations not filtered out | `test_patch_is_relayed_while_a_full_capture_is_in_flight` |
+| Resource collection does not block navigation | assets were already progressive; navigation never awaits them (`test_announcement_does_not_wait_for_a_slow_capture`) |
+| Screenshots do not block DOM delivery | separate pipeline (screencast/WebRTC untouched, own task) |
+| Multiple captures concurrently | `test_navigation_capture_is_not_blocked_by_a_content_capture` |
+| Client not stuck in a transition | `test_nav_transition.cjs` §2/§4 (`failed` closes it; same-document never opens it) |
+| Rapid URL changes never apply stale content | `test_rapid_navigations_end_on_the_newest_page_once` + client `nav_id` guard |
+| Correct order, applied reliably | `test_sync_pipeline.py` (FIFO bulk, control priority, monotonic stamps) |
+
+### Rollback
+
+`DOM_CAPTURE_NAV_IMMEDIATE=0` (no announcement frame — the URL rides with the
+document again), `DOM_CAPTURE_HISTORY_HOOKS=0` (poll-only URL detection),
+`DOM_CAPTURE_CONCURRENT_LANES=0` (single global capture barrier),
+`DOM_CAPTURE_PATCH_DURING_CAPTURE=0` (old patch gate),
+`DOM_CAPTURE_NAV_SETTLE_FOLLOWUP=0` (early document is final),
+`DOM_CAPTURE_FULL_SETTLE=1` (legacy full settle).  Each is independent.

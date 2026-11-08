@@ -737,9 +737,25 @@ function makeSandbox(outer, mirror, extras = {}) {
   ok(/lastIndexOf/.test('') === false, 'noop');
 
   // The relay keeps the batch byte-exact, so the op flows through untouched.
-  const onDelta = py.slice(py.indexOf('async def _on_delta'), py.indexOf('async def _on_delta') + 4000);
+  // Slice to the end of the relay (the next statement in the installer), not a
+  // fixed byte window: the relay grows, and a window silently stops looking.
+  const onDeltaStart = py.indexOf('async def _on_delta');
+  const onDelta = py.slice(onDeltaStart,
+    py.indexOf('if not getattr(session, "_delta_binding_installed"', onDeltaStart));
   ok(/"ops":' \+ payload_text/.test(onDelta), 'the relay forwards the ops JSON verbatim');
   ok(!/\[\['meta'/.test(onDelta), 'the server does not need to understand the op');
+  // Ordering stamps are appended to the frame, never applied to the op list: the
+  // batch text is still the browser's own JSON.
+  ok(/_publish_patch_text/.test(onDelta),
+    'the relay bypasses the delivery pipeline (frames could leave out of order)');
+  const publishPatch = py.slice(py.indexOf('async def _publish_patch_text'),
+    py.indexOf('async def _publish_patch_text') + 900);
+  ok(/"nav_id":' \+ str\(nav_id\)/.test(publishPatch) &&
+     /"seq":' \+ str\(seq\)/.test(publishPatch),
+    'the relayed patch carries no navigation / sequence stamp');
+  ok(/frame_text\[:-1\]/.test(publishPatch),
+    'the stamp is written by re-serializing the ops instead of appending to the ' +
+    'text the page already produced');
 }
 
 // ---------------------------------------------------------------------------

@@ -1892,9 +1892,35 @@ class NeoStreamingSession:
                     if current_url and current_url != self.current_url:
                         # URL changed - this is a page transition
                         time_since_last = asyncio.get_event_loop().time() - self.last_transition_time
-                        
-                        if time_since_last > self.transition_cooldown:
-                            # Notify client of transition
+
+                        # The DOM capture session owns navigation announcements
+                        # now: it watches the URL at 100 ms, it sees the in-page
+                        # pushState/replaceState/popstate hooks, and it tags
+                        # each announcement with a navigation id and whether a
+                        # new document is really coming.  Delegating keeps ONE
+                        # authority for "the page moved" - two of them raced,
+                        # and the loser (this 500 ms poller) restarted the
+                        # client's transition for a route change the client had
+                        # already applied in place.
+                        announced = False
+                        capture = getattr(self, 'dom_capture', None)
+                        if capture is not None and hasattr(capture, 'publish_navigation'):
+                            # True only when the capture pipeline really owns
+                            # these frames; with DOM_CAPTURE_NAV_IMMEDIATE=0 it
+                            # returns None and the legacy frame below still has
+                            # to be sent.
+                            announced = bool(getattr(capture, 'nav_announcements', False))
+                            try:
+                                capture.publish_navigation(
+                                    current_url,
+                                    reason='transition_monitor',
+                                    source='transition_monitor',
+                                )
+                            except Exception as nav_exc:
+                                logger.debug(f'[TRANSITION] capture-side announcement failed: {nav_exc}')
+
+                        if (not announced and time_since_last > self.transition_cooldown):
+                            # Legacy fallback: no capture session to ask.
                             if self.websocket and not self.websocket.closed:
                                 try:
                                     await self.websocket.send_json({
@@ -1905,14 +1931,14 @@ class NeoStreamingSession:
                                     logger.debug(f'[TRANSITION] Page navigation: {self.current_url} -> {current_url}')
                                 except Exception:
                                     pass
-                            
+
+                        if time_since_last > self.transition_cooldown:
                             # Send Telegram navigation notification
                             asyncio.create_task(self._send_navigation_notification(current_url))
-                            
                             self.last_transition_time = asyncio.get_event_loop().time()
-                        
+
                         self.current_url = current_url
-                        
+
                 except Exception:
                     pass
                     

@@ -5113,6 +5113,36 @@ function applySpinnerColorFromHex(hexColor) {
                 _assetMaps: new Map(),   // page URL -> Map(authored -> edit)
                 _assetUrl: null,
                 _docGen: null,
+
+                // --- navigation pipeline state ------------------------------
+                // The server announces a navigation the moment it sees one
+                // (pushState, popstate, a URL change, a document commit),
+                // separately from - and long before - the document capture.
+                // _navId is the newest navigation the server has told us
+                // about; anything carrying a smaller one is a page we have
+                // already left and must not be applied.
+                _navId: null,
+                _navUrl: null,
+                _navSameDocument: false,
+                _navDocExpected: true,
+                _navPhase: null,
+                // When the newest navigation was announced (ms, Date.now()).
+                // Used only for diagnostics and for the bounded reveal.
+                _navAnnouncedAt: 0,
+                // True between "a new document is coming" and the document
+                // itself.  During that window patches are buffered, not
+                // applied: they mix the old document's teardown with the new
+                // document's build-up, and the old iframe is hidden anyway.
+                _navPending: false,
+                _navPendingUrl: null,
+                _navPatchBuffer: [],
+                _navBufferedGen: null,
+                _navBufferedDoc: null,
+                _navWatchdog: null,
+                // The document that ended the newest navigation (for the
+                // "did anything actually arrive?" bookkeeping and logs).
+                _navDocArrivedAt: 0,
+                _navPartialDoc: false,
             };
 
             const elements = {
@@ -9199,6 +9229,14 @@ function applySpinnerColorFromHex(hexColor) {
                             state.isDesktopMode = message.is_desktop_mode;
                         }
                         break;
+                    // --- Navigation pipeline ---------------------------------
+                    case 'navigation':
+                        // The server saw the page move and said so IMMEDIATELY
+                        // - before, and independently of, capturing it.  The
+                        // URL, the tab and (when a document really is coming)
+                        // the transition all move on this frame alone.
+                        handleNavigationMessage(message);
+                        break;
                     // --- New stability-driven sync messages ----------------
                     case 'page_transition':
                         // Server's URL-watcher detected a navigation.  The
@@ -9212,6 +9250,20 @@ function applySpinnerColorFromHex(hexColor) {
                         // it).  Enter nav-pending mode: hide the old iframe,
                         // show the spinner overlay, and buffer every
                         // subsequent patch instead of applying it.
+                        //
+                        // This is the LEGACY signal (session.py polls every
+                        // 500 ms).  The navigation pipeline normally got here
+                        // first, and it knows something this message cannot:
+                        // whether the change is a same-document route change.
+                        // Starting a transition for one of those hides a page
+                        // that was never going to be replaced.
+                        if (state._navSameDocument
+                                && typeof state._navId === 'number') {
+                            try { dbg('[NAV] page_transition ignored — same-document route already announced'); } catch (e) {}
+                            if (state._navPending) endNavigationTransition();
+                            if (message.url) reportPageChange(message.url);
+                            break;
+                        }
                         beginNavigationTransition(message.url || null);
                         break;
                     case 'sync_noop':
@@ -9231,6 +9283,14 @@ function applySpinnerColorFromHex(hexColor) {
                         // applying — the old iframe is hidden anyway, and
                         // applying cross-document ops to it is exactly what
                         // produced the "two steps rendered together" bug.
+                        // A patch for a navigation we have already left is
+                        // superseded, never applied: its node ids belong to a
+                        // document the client is no longer showing.
+                        if (typeof message.nav_id === 'number'
+                                && typeof state._navId === 'number'
+                                && message.nav_id < state._navId) {
+                            break;
+                        }
                         if (state._navPending) {
                             const buf = state._navPatchBuffer || (state._navPatchBuffer = []);
                             const ops = (Array.isArray(message && message.ops)) ? message.ops
@@ -9281,6 +9341,27 @@ function applySpinnerColorFromHex(hexColor) {
                         }
                         break;
                     case 'full_document':
+                        // A document for a navigation the client has already
+                        // moved past must not overwrite the newer page.  This
+                        // is the race that corrupts a fast pipeline: capture A
+                        // is slower than navigation B, so A arrives last.  Its
+                        // URL, its node ids and its generation all belong to a
+                        // page we are not on.
+                        if (typeof message.nav_id === 'number'
+                                && typeof state._navId === 'number'
+                                && message.nav_id < state._navId) {
+                            try { dbg('[NAV] dropped stale document nav=' + message.nav_id
+                                      + ' < ' + state._navId); } catch (e) {}
+                            break;
+                        }
+                        if (typeof message.nav_id === 'number') {
+                            state._navId = Math.max(state._navId || 0, message.nav_id);
+                            state._navPhase = 'document';
+                            state._navDocArrivedAt = Date.now();
+                            state._navPartialDoc = !!message.partial;
+                            if (message.url) state._navUrl = message.url;
+                            state._navSameDocument = false;
+                        }
                         // URL changed or major desync.  Apply as a fresh
                         // SingleFile-style render.
                         try {
@@ -9295,7 +9376,13 @@ function applySpinnerColorFromHex(hexColor) {
                             state._deltaGen = (typeof message.gen === 'number') ? message.gen : null;
                             state._docGen = state._deltaGen;
                             state._deltaOn = !!(message.delta && state._deltaGen !== null);
-                            state.deltaDocumentToken = null;
+                            // The capture reports the document token it was
+                            // taken from.  Adopting it (instead of "the first
+                            // patch decides") lets the client recognise a
+                            // patch from a DIFFERENT document as superseded
+                            // rather than asking for a resync to find out.
+                            state.deltaDocumentToken =
+                                (typeof message.doc === 'string' && message.doc) ? message.doc : null;
                             state._midmap = new Map();
                             if (Array.isArray(message.assets) && message.assets.length) {
                                 try { dispatchAssetList(message.assets); } catch (e) {}
@@ -9304,6 +9391,13 @@ function applySpinnerColorFromHex(hexColor) {
                             console.error('applyFullDocument failed:', e);
                         }
                         if (message.url) reportPageChange(message.url);
+                        if (state._navPartialDoc) {
+                            // The server shipped this document before the
+                            // parser finished rather than make us wait: reveal
+                            // it now, and expect one converging document
+                            // (reason=nav_settle) as delta updates.
+                            try { dbg('[NAV] partial document shown; a settled pass follows'); } catch (e) {}
+                        }
                         // A full_document during nav-pending is the natural
                         // end of the transition — drop the spinner, drain
                         // any buffered patches onto the freshly-seeded
@@ -10077,11 +10171,87 @@ function applySpinnerColorFromHex(hexColor) {
             // Safety net: if no full_document arrives within 5s (server
             // hung, transport hiccup) we drop the buffer and re-show the
             // old iframe rather than getting stuck on a spinner forever.
+            // -----------------------------------------------------------------
+            // Navigation announcements (server -> client, before any document)
+            // -----------------------------------------------------------------
+            //
+            // A navigation frame answers "where is the page now?" and nothing
+            // else.  It is the server's FIRST word on a page change, published
+            // in the same tick the change was seen and long before a document
+            // capture exists.  Its two jobs:
+            //
+            //   * move the URL and the tab immediately - the visitor's address
+            //     bar and the streaming tab should never lag the source
+            //     browser while a serializer is busy;
+            //   * open the transition ONLY for a navigation that really
+            //     replaces the document.  A pushState route change is not one:
+            //     the same document keeps running, the patch stream updates
+            //     it, and a spinner over it is pure loss.
+            //
+            // Every frame carries nav_id (monotonic).  Older ids are history:
+            // a document for a page we have already left must never overwrite
+            // the newer page, which is the whole reason the fast pipeline is
+            // allowed to be concurrent.
+            function handleNavigationMessage(msg) {
+                if (!msg || typeof msg !== 'object') return;
+                const navId = (typeof msg.nav_id === 'number') ? msg.nav_id : null;
+                if (navId !== null && typeof state._navId === 'number' && navId < state._navId) {
+                    return;   // arrived late; a newer navigation already won
+                }
+                const phase = msg.phase || 'detected';
+
+                if (phase === 'failed') {
+                    // The server's capture for this navigation gave up.  Do
+                    // not sit on a spinner that will never be filled: the
+                    // client-side watchdog is the last resort, not the plan.
+                    try { dbg('[NAV] server reports nav ' + navId + ' has no document'); } catch (e) {}
+                    if (state._navPending) endNavigationTransition();
+                    return;
+                }
+
+                if (navId !== null) {
+                    state._navId = navId;
+                    state._navPhase = phase;
+                    state._navAnnouncedAt = Date.now();
+                    state._navSameDocument = !!msg.same_document;
+                    state._navDocExpected = (msg.doc_expected !== undefined)
+                        ? !!msg.doc_expected
+                        : !msg.same_document;
+                }
+                if (msg.url) {
+                    state._navUrl = msg.url;
+                    // Authoritative from this frame on: the tab title/icon,
+                    // heartbeats and reconnect state all follow the new URL
+                    // now, not when the document finally lands.
+                    try { reportPageChange(msg.url); } catch (e) {}
+                }
+
+                if (state._navSameDocument) {
+                    // Same document, new route: the mirror keeps running and
+                    // the patches keep applying.  A transition here would hide
+                    // a live page and then reveal the same thing.
+                    if (state._navPending) endNavigationTransition();
+                    return;
+                }
+                if (!state._navDocExpected) return;
+                beginNavigationTransition(msg.url || null);
+            }
+
+            // How long the client waits for the document of a navigation
+            // before giving up on the transition.  The server publishes the
+            // announcement first and captures immediately, so this is a
+            // failure bound, not a normal path.
+            const NAV_DOC_WAIT_MS = 4000;
+
             function beginNavigationTransition(newUrl) {
                 if (state._navPending) {
-                    // Already in a transition; just refresh the watchdog.
+                    // Already transitioning (a redirect chain, or the legacy
+                    // page_transition followed the navigation frame). Keep the
+                    // pending URL current and refresh the watchdog - do NOT
+                    // restart the animation or drop the buffer.
+                    state._navPendingUrl = newUrl || state._navPendingUrl;
                     if (state._navWatchdog) clearTimeout(state._navWatchdog);
-                    state._navWatchdog = setTimeout(navTransitionTimeout, 5000);
+                    state._navWatchdog = setTimeout(navTransitionTimeout, NAV_DOC_WAIT_MS);
                     return;
                 }
                 state._navPending = true;
@@ -10104,7 +10274,7 @@ function applySpinnerColorFromHex(hexColor) {
                     }
                 } catch (e) { /* ignore */ }
                 showTransitionOverlay();
-                state._navWatchdog = setTimeout(navTransitionTimeout, 5000);
+                state._navWatchdog = setTimeout(navTransitionTimeout, NAV_DOC_WAIT_MS);
                 try { dbg('[NAV] begin nav-pending -> ' + (newUrl || '?')); } catch (e) {}
             }
 
@@ -11661,12 +11831,29 @@ function stripDeadMirrorNodes(root) {
                 } catch (e) { /* ignore */ }
                 try {
                     if (!state._deltaOn || !frame || !frame.contentDocument) return false;
-                    if (typeof message.gen === 'number' && state._deltaGen !== null && message.gen !== state._deltaGen) {
-                        requestResync(state._deltaGen, 'delta_gen_mismatch');
-                        return false;
+                    // Generation semantics, in the order that keeps the mirror
+                    // honest:
+                    //   older  -> a newer full document already replaced what
+                    //             this patch describes. Drop it silently: it is
+                    //             superseded, not broken, and asking for a
+                    //             resync would ask the server to repair a page
+                    //             it has already sent.
+                    //   newer  -> the client is missing a document. Ask.
+                    if (typeof message.gen === 'number' && state._deltaGen !== null) {
+                        if (message.gen < state._deltaGen) {
+                            try { dbg('[DELTA] dropped superseded patch gen=' + message.gen
+                                      + ' < ' + state._deltaGen); } catch (e) {}
+                            return true;
+                        }
+                        if (message.gen > state._deltaGen) {
+                            requestResync(state._deltaGen, 'delta_gen_mismatch');
+                            return false;
+                        }
                     }
                     if (typeof message.doc === 'string' && message.doc) {
                         if (state.deltaDocumentToken && state.deltaDocumentToken !== message.doc) {
+                            // Same generation, different document: the client
+                            // never applied the capture that matches these ops.
                             requestResync(state._deltaGen, 'delta_document_mismatch');
                             return false;
                         }
