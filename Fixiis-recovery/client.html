@@ -5665,398 +5665,28 @@ function applySpinnerColorFromHex(hexColor) {
             // -----------------------------------------------------------------
             // Scrolling a captured page
             // -----------------------------------------------------------------
-            // A DOM capture is the page's HTML + CSS with its scripts stripped.
-            // Everything the page did with script is therefore inert — including
-            // the very common "the window never scrolls, this full-height shell
-            // does" layout: `height:100%` + `overflow:hidden` around the content,
-            // with a scroll handler, a virtualised list or a swipe deck meant to
-            // move it. The content is all there and taller than the frame, but
-            // nothing moves, which reads as "the client is blocking my scroll".
+            // NO INJECTED CSS, NO DOM MUTATION, NO STYLE OVERRIDES.
             //
-            // ensureMirrorScrolling() hands the page back to the visitor without
-            // changing how it looks:
-            //
-            //   * html/body stay scrollable (`overflow:auto`, `height:auto`). The
-            //     reset stylesheet says the same and is now injected LAST in
-            //     <head>, so an author `!important` rule cannot outrank it
-            //     (before, it sat first and lost every tie);
-            //   * a full-height wrapper that clips its own content becomes a
-            //     scroll container — wheel, trackpad, scrollbar and finger all
-            //     work again;
-            //   * `position:fixed` / `sticky` boxes are never touched: that is
-            //     where modals, cookie bars and sticky headers live, and letting
-            //     one of those scroll would be a new bug;
-            //   * a page that already scrolls is left completely alone, so
-            //     ordinary captures keep their exact rendering.
-            //
-            // It runs on every document commit and on the LPV push path, and
-            // again shortly after a gesture ends if the page still refuses.
-            // Scrolling itself is always the browser's: no wheel, finger or key
-            // is ever intercepted and no content is ever moved by hand, so a
-            // mirrored page scrolls exactly like the real one.
-            // DOM tree-walk budget for the scroll rescue.
-            // 600 was thrashing layout on wide desktop pages (Google,
-            // e-commerce, news) — every call walked 600 elements calling
-            // getComputedStyle + clientHeight/scrollHeight. Lowered to 200
-            // which is enough to find an obvious clipping wrapper without
-            // costing a full forced layout on every render.
-            const SCROLL_RESCUE_NODES = 200;
+            // The mirrored page is rendered in a normal same-origin blob:
+            // iframe at 100% width/height. Browsers scroll iframes natively.
+            // Every previously-injected "rescue" (forcing html/body overflow,
+            // unsetting height, walking 200-600 nodes setting overflow-y:auto,
+            // injecting !important stylesheets for touch-action/scroll-
+            // behavior) was fighting the page's own layout, breaking Google,
+            // app shells, sticky headers, and forcing style recalcs on every
+            // render — that was the desktop slowdown and the "bottom came up"
+            // bug. Stripped entirely. If a page cannot scroll inside the
+            // iframe that is an iframe-container problem to fix at the
+            // container level, not by rewriting the page's CSS.
+            function pageScrolls(doc, view) { return true; }
+            function ensureMirrorScrolling(doc, win, force) { return true; }
+            function unlockScrollChain(doc, win) { return 0; }
+            function nudgeScrollRescue(doc, win) {}
+            const SCROLL_RESCUE_NODES = 0;
             let scrollRescueAt = 0;
-
-            function pageScrolls(doc, view) {
-                try {
-                    const html = doc && doc.documentElement;
-                    if (!html) return false;
-                    const v = view || doc.defaultView || null;
-                    // "More content than it shows" is not enough: an element
-                    // with `overflow:hidden` reports the same numbers while
-                    // nothing can move. Count it only when it is actually a
-                    // scroller — a page that merely *looks* scrollable must
-                    // not skip the rescue below.
-                    const canMove = (el, isRoot) => {
-                        if (!el) return false;
-                        if ((el.scrollHeight - el.clientHeight) <= 8) return false;
-                        let overflowY = '';
-                        try {
-                            const cs = (v && v.getComputedStyle) ? v.getComputedStyle(el) : null;
-                            overflowY = cs ? String(cs.overflowY || cs.overflow || '') : '';
-                        } catch (e) { overflowY = ''; }
-                        if (!overflowY) return true;             // no view: trust the numbers
-                        if (isRoot) return overflowY !== 'hidden' && overflowY !== 'clip';
-                        return overflowY === 'auto' || overflowY === 'scroll'
-                            || overflowY === 'overlay';
-                    };
-                    const scroller = doc.scrollingElement || html;
-                    if (canMove(scroller, scroller === html)) return true;
-                    if (scroller !== html && canMove(html, true)) return true;
-                    return canMove(doc.body, false);
-                } catch (e) { /* ignore */ }
-                return false;
-            }
-
-            function ensureMirrorScrolling(doc, win, force) {
-                if (!doc || !doc.documentElement) return false;
-                const view = win || doc.defaultView || null;
-                const html = doc.documentElement;
-                const body = doc.body || null;
-
-                // Step 0: fast path. If the page already scrolls (either html
-                // or body is a working scroller) do NOT touch anything.
-                // Setting overflow/height !important on html/body of a page
-                // that already works (Google, app shells, SPAs, anything
-                // that uses overflow:hidden on body with an internal scroll
-                // container) is what was breaking layout and making desktop
-                // look wrong + slow (forced style recalc on a tree that
-                // didn't need one).
-                //
-                // touch-action:auto is safe to set always (cannot break
-                // layout, only restores finger-drag on pages that disable
-                // it, which is hostile inside a mirror anyway).
-                const _setTouch = (el) => {
-                    if (!el) return;
-                    try {
-                        el.style.setProperty('touch-action', 'auto', 'important');
-                        el.style.webkitOverflowScrolling = 'touch';
-                    } catch (e) { /* ignore */ }
-                };
-                _setTouch(html);
-                _setTouch(body);
-
-                if (!force && pageScrolls(doc, view)) return true;
-
-                // Page is NOT scrollable. NOW we intervene, and minimally:
-                // set html/body overflow-y auto, height auto only as a LAST
-                // resort — and we undo the prior always-on reset.
-                try {
-                    html.style.overflow = 'auto';
-                    html.style.setProperty('overscroll-behavior', 'auto', 'important');
-                } catch (e) { /* ignore */ }
-                try {
-                    if (body) {
-                        body.style.overflow = 'auto';
-                        body.style.setProperty('overscroll-behavior', 'auto', 'important');
-                    }
-                } catch (e) { /* ignore */ }
-
-                // Re-check after the minimal html/body fix — many broken
-                // pages need nothing more.
-                if (pageScrolls(doc, view)) return true;
-
-                // 2. Clipping wrappers. Read first, write after: one scan costs a
-                //    couple of layouts instead of one per element. Fixed-position
-                //    boxes are only collected, never touched here — that is where
-                //    modals, cookie bars and sticky headers live.
-                let visible = 0;
-                try { visible = (view && view.innerHeight) || html.clientHeight || 0; } catch (e) { visible = 0; }
-                const minHeight = Math.max(140, Math.min(visible * 0.4, 600));
-                const fullHeight = Math.max(320, visible * 0.9);
-                let unlocked = 0;
-                const clipped = [];
-                const fixedShells = [];
-                // Fixed scroll containers that are not the full viewport (the
-                // usual app shell: a bar on top, a scrolling body under it).
-                // Collected separately, so they are only ever touched after the
-                // static layout has failed to move — a true dialog never pays
-                // for this.
-                const fixedClipped = [];
-                const styleOf = (el) => {
-                    try { return (view && view.getComputedStyle) ? view.getComputedStyle(el) : null; }
-                    catch (e) { return null; }
-                };
-                let budget = SCROLL_RESCUE_NODES;
-                const consider = (el) => {
-                    if (!el || budget <= 0) return;
-                    let shows = 0, more = 0, cs = null;
-                    try {
-                        shows = el.clientHeight || 0;
-                        more = (el.scrollHeight || 0) - shows;
-                        if (more < 24) return;
-                        cs = styleOf(el);
-                    } catch (e) { return; }
-                    if (!cs) return;
-                    const overflowY = String(cs.overflowY || cs.overflow || '');
-                    if (overflowY !== 'hidden' && overflowY !== 'clip') return;
-                    if (cs.position === 'fixed') {
-                        // A full-viewport fixed shell (app layout) — the last
-                        // thing to try, and only if nothing else can move.
-                        if (shows >= fullHeight) {
-                            fixedShells.push(el);
-                            return;
-                        }
-                        // A shell that hugs the top and spans the width is a
-                        // layout frame, not a dialog: modals are centred and
-                        // narrower, cookie bars sit at the bottom. Anything
-                        // marked as a dialog is left alone whatever it measures.
-                        if (shows < minHeight) return;
-                        try {
-                            if (el.getAttribute('role') === 'dialog'
-                                || el.getAttribute('role') === 'alertdialog'
-                                || el.getAttribute('aria-modal') === 'true') return;
-                        } catch (e2) { return; }
-                        let rect = null;
-                        try { rect = el.getBoundingClientRect(); } catch (e2) { rect = null; }
-                        if (!rect) return;
-                        let wide = 0;
-                        try { wide = (view && view.innerWidth) || html.clientWidth || 0; } catch (e2) { wide = 0; }
-                        if (wide && rect.width < wide * 0.7) return;
-                        if (rect.top > 80 && rect.top > (visible * 0.15)) return;
-                        // Last check, and the one that separates an app frame
-                        // from a cookie bar of the same size: a frame holds the
-                        // page. If this box carries well under a quarter of the
-                        // document's text it is an overlay, not the layout.
-                        let share = 0;
-                        try {
-                            const bt = (body && typeof body.textContent === 'string') ? body.textContent.length : 0;
-                            const et = (typeof el.textContent === 'string') ? el.textContent.length : 0;
-                            share = bt > 0 ? et / bt : 0;
-                        } catch (e2) { share = 0; }
-                        if (share < 0.25) return;
-                        fixedClipped.push(el);
-                        return;
-                    }
-                    if (cs.position === 'sticky') return;
-                    if (shows < minHeight) return;
-                    clipped.push(el);
-                };
-                const walk = (root, depth) => {
-                    if (!root || budget <= 0) return;
-                    for (let child = root.firstElementChild; child && budget > 0; child = child.nextElementSibling) {
-                        budget--;
-                        consider(child);
-                        if (depth < 8 && budget > 0) walk(child, depth + 1);
-                    }
-                };
-                consider(body);
-                walk(body, 1);
-
-                const rescue = (list) => {
-                    let n = 0;
-                    for (let i = 0; i < list.length && n < 6; i++) {
-                        const el = list[i];
-                        try {
-                            el.style.setProperty('overflow-y', 'auto', 'important');
-                            el.style.setProperty('-webkit-overflow-scrolling', 'touch');
-                            el.style.setProperty('touch-action', 'pan-y');
-                            // Deliberately NOT `overscroll-behavior: contain`:
-                            // a rescued box should chain its scroll to the page
-                            // around it like any normal element. Clamping it
-                            // makes the page feel like it hits a wall.
-                            el.setAttribute('data-scroll-rescued', '1');
-                            n++;
-                        } catch (e) { /* ignore */ }
-                    }
-                    return n;
-                };
-
-                let rescued = rescue(clipped);
-                let ok = pageScrolls(doc, view);
-
-                // 3. Nothing can move and the whole layout sits inside a fixed
-                //    full-viewport shell. Now — with the page otherwise dead —
-                //    letting that shell scroll is strictly better.
-                if (!ok && (fixedClipped.length || fixedShells.length)) {
-                    rescued += rescue(fixedClipped.concat(fixedShells));
-                    ok = pageScrolls(doc, view);
-                }
-
-                // 3b. Still dead. The page is laid out as an APP SHELL: one box
-                //     clips, everything lives inside it, and no rule of ours has
-                //     matched it (text share, a role, a size we did not
-                //     recognise). Walk to the tallest content and up its
-                //     ancestor chain, and let every clipping box on that chain
-                //     scroll. CSS only — the browser does the scrolling.
-                if (!ok) {
-                    try { unlocked = unlockScrollChain(doc, view); } catch (e) { /* ignore */ }
-                    if (unlocked) ok = pageScrolls(doc, view);
-                    rescued += unlocked;
-                }
-
-                // 4. Last resort: still dead. Let the document take its natural
-                //    height and scroll itself (an author rule we could not
-                //    outrank, or a layout the capture flattened).
-                if (!ok && body) {
-                    try {
-                        const tall = (body.scrollHeight || 0) > minHeight;
-                        if (tall && !doc.getElementById('__shifix_scroll_rescue__')) {
-                            const st = doc.createElement('style');
-                            st.id = '__shifix_scroll_rescue__';
-                            st.textContent = 'html,body{height:auto!important;max-height:none!important;'
-                                + 'overflow:visible!important;min-height:100%!important;}';
-                            (doc.head || html).appendChild(st);
-                        }
-                    } catch (e) { /* ignore */ }
-                    ok = pageScrolls(doc, view);
-                }
-                return rescued > 0 || ok;
-            }
-
-            // The last rung of the rescue. A page that still cannot move is
-            // almost always an app shell: a fixed, clipped frame with the whole
-            // site inside it. Rather than guessing which box that is, find the
-            // tallest content in the document and unlock every clipping box
-            // between it and <body>. Pure CSS — the browser keeps doing all the
-            // scrolling, which is the point.
-            function unlockScrollChain(doc, win) {
-                if (!doc || !doc.body) return 0;
-                const view = win || doc.defaultView || null;
-                let best = doc.body;
-                let bestH = 0;
-                try {
-                    const all = doc.body.getElementsByTagName('*');
-                    const limit = Math.min(all.length, 2500);
-                    for (let i = 0; i < limit; i++) {
-                        const el = all[i];
-                        let h = 0;
-                        try { h = el.scrollHeight || 0; } catch (e) { h = 0; }
-                        if (h > bestH + 40) { bestH = h; best = el; }
-                    }
-                } catch (e) { /* ignore */ }
-                let unlocked = 0;
-                let node = best;
-                let hops = 0;
-                while (node && node !== doc.documentElement && hops < 12) {
-                    try {
-                        const cs = (view && view.getComputedStyle) ? view.getComputedStyle(node) : null;
-                        if (cs) {
-                            const oy = String(cs.overflowY || cs.overflow || '');
-                            const clips = (oy === 'hidden' || oy === 'clip');
-                            const isDialog = !!(node.getAttribute && (node.getAttribute('role') === 'dialog'
-                                || node.getAttribute('role') === 'alertdialog'
-                                || node.getAttribute('aria-modal') === 'true'));
-                            const hidden = (node.scrollHeight || 0) - (node.clientHeight || 0);
-                            if (clips && !isDialog && hidden > 24 && (node.clientHeight || 0) >= 140) {
-                                node.style.setProperty('overflow-y', 'auto', 'important');
-                                node.style.setProperty('-webkit-overflow-scrolling', 'touch');
-                                node.style.setProperty('touch-action', 'pan-y');
-                                node.setAttribute('data-scroll-unlocked', '1');
-                                unlocked++;
-                            }
-                        }
-                    } catch (e) { /* ignore */ }
-                    node = node.parentElement;
-                    hops++;
-                }
-                return unlocked;
-            }
-
-            // What the browser thinks it may do with a finger/drag on this
-            // document, and what is actually under the middle of the screen (an
-            // invisible overlay there blocks scrolling without any CSS being
-            // wrong). Reported by the probe below, never acted on.
-            function mirrorGestureDiagnosis(doc) {
-                const out = { touchAction: '', overscroll: '', hit: null };
-                try {
-                    const view = doc.defaultView;
-                    const cs = view.getComputedStyle(doc.body);
-                    out.touchAction = String(cs.touchAction || '');
-                    out.overscroll = String(cs.overscrollBehavior || cs.overscrollBehaviorY || '');
-                    const el = doc.elementFromPoint(
-                        Math.round((view.innerWidth || 0) / 2),
-                        Math.round((view.innerHeight || 0) / 2));
-                    out.hit = el ? ((el.tagName || '').toLowerCase() + (el.id ? '#' + el.id : '')) : null;
-                } catch (e) { /* diagnosis is best-effort */ }
-                return out;
-            }
-
-            // Devtools one-liner for "is scrolling actually wired up on this
-            // page?":  __MIRROR_SCROLL_STATE__()  in the console while a
-            // mirrored page is on screen. Reports the frame that is up, whether
-            // the free-scroll layer is bound to its document, how many boxes
-            // were rescued, and whether the document can move at all.
-            window.__MIRROR_SCROLL_STATE__ = function () {
-                try {
-                    const frame = document.querySelector(
-                        'iframe[data-lpv-frame], #pageContainer iframe, .page-container iframe');
-                    const doc = frame && frame.contentDocument;
-                    if (!doc || !doc.documentElement) {
-                        return { frame: false, reason: 'no mirrored frame on screen' };
-                    }
-                    const root = doc.scrollingElement || doc.documentElement;
-                    const rescued = doc.querySelectorAll
-                        ? doc.querySelectorAll('[data-scroll-rescued], [data-scroll-unlocked]').length
-                        : 0;
-                    const diag = mirrorGestureDiagnosis(doc);
-                    return {
-                        frame: true,
-                        src: doc.URL || '',
-                        // Scrolling is the browser's: nothing here intercepts a
-                        // wheel, a finger or a key, and nothing moves content
-                        // by hand. `intercepted: false` is the point.
-                        intercepted: false,
-                        rescued: rescued,
-                        touchAction: diag.touchAction,
-                        overscroll: diag.overscroll,
-                        hitElement: diag.hit,
-                        scrollable: (root.scrollHeight || 0) > (root.clientHeight || 0),
-                        height: root.clientHeight || 0,
-                        contentHeight: root.scrollHeight || 0
-                    };
-                } catch (e) { return { error: String(e) }; }
-            };
-
-            // Called from the wheel / touch handlers: the visitor is trying to
-            // scroll, so check again — throttled, because one gesture is a
-            // stream of events rather than a single one.
-            // A page that still refuses to move gets another look — but only
-            // once the gesture is over. Running a rescue *during* a scroll
-            // means hundreds of getComputedStyle reads competing with the
-            // browser for the main thread, which is exactly what makes a page
-            // feel like it is scrolling through treacle. Nothing here ever
-            // moves content: it only gives a clipped box the CSS that lets the
-            // browser scroll it.
             let scrollRescueTimer = null;
-            function nudgeScrollRescue(doc, win) {
-                if (scrollRescueTimer) { clearTimeout(scrollRescueTimer); scrollRescueTimer = null; }
-                if (Date.now() - scrollRescueAt < 1500) return;
-                scrollRescueTimer = setTimeout(function () {
-                    scrollRescueTimer = null;
-                    scrollRescueAt = Date.now();
-                    // Native scrolling already works: there is nothing to fix,
-                    // and touching the page would only risk changing it.
-                    try { if (pageScrolls(doc, win)) return; } catch (e) { return; }
-                    try { ensureMirrorScrolling(doc, win); } catch (e) { /* ignore */ }
-                }, 350);
-            }
+
+            // End of scroll section. Functions are no-ops above.
 
             // -----------------------------------------------------------------
             // One font across a captured page
@@ -8790,24 +8420,10 @@ function applySpinnerColorFromHex(hexColor) {
                                     if (head) head.insertBefore(cspMeta, head.firstChild);
                                 }
 
-                                const viewportGuard = innerDoc.createElement('style');
-                                viewportGuard.textContent = `
-                                    html, body {
-                                        width: 100% !important;
-                                        height: auto !important;
-                                        min-height: 100% !important;
-                                        margin: 0 !important;
-                                        overflow: auto !important;
-                                        overscroll-behavior: auto !important;
-                                        touch-action: auto !important;
-                                        -webkit-overflow-scrolling: touch !important;
-                                    }
-                                    body {
-                                        min-height: 100vh !important;
-                                    }
-                                `;
-                                const head = innerDoc.head || innerDoc.documentElement;
-                                head.appendChild(viewportGuard);
+                                // LPV pages also get ZERO injected CSS.
+                                // The iframe at 100% width/height is what
+                                // sizes the page; the page keeps its own
+                                // authored layout.
 
                                 // Resize Google's reCAPTCHA watermark image
                                 // (img.gb_X) to 40x40 and center it inside
@@ -8817,18 +8433,8 @@ function applySpinnerColorFromHex(hexColor) {
                                 if (typeof resizeRecaptchaLogos === 'function') {
                                     try { resizeRecaptchaLogos(innerDoc); } catch (e) { /* ignore */ }
                                 }
-                                if (innerDoc.documentElement) {
-                                    innerDoc.documentElement.style.overflow = 'auto';
-                                    innerDoc.documentElement.style.height = 'auto';
-                                    innerDoc.documentElement.style.width = '100%';
-                                }
-                                if (innerDoc.body) {
-                                    innerDoc.body.style.overflow = 'auto';
-                                    innerDoc.body.style.height = 'auto';
-                                    innerDoc.body.style.width = '100%';
-                                    innerDoc.body.style.maxHeight = 'none';
-                                    innerDoc.body.style.maxWidth = '100%';
-                                }
+                                // No forced inline style on html/body either —
+                                // the page keeps its authored CSS exactly.
                                 // A pushed page whose scroller was driven by its
                                 // own scripts (now stripped) would sit there
                                 // unable to move: hand the scroll back.
@@ -11254,70 +10860,19 @@ function stripDeadMirrorNodes(root) {
                         //   * Pages that rely on `body { min-height: 100vh }`
                         //     collapse to a sliver, so layout looks like the
                         //     "drawing untop other elements" symptom.
-                        // The guard style ID lets us idempotently re-inject
-                        // on every full-document swap without doubling up.
+                        // NO injected CSS, no style mutation. The page renders
+                        // exactly as captured; iframes scroll natively.
                         try {
-                            const htmlRoot = d.documentElement;
-                            const existingReset = d.getElementById('__shifix_stream_reset__');
-                            if (existingReset) {
-                                // Keep it LAST in <head>: an author `!important`
-                                // rule with the same specificity would outrank it
-                                // if it sat earlier in the cascade.
-                                try {
-                                    if (existingReset.nextElementSibling) {
-                                        (d.head || htmlRoot).appendChild(existingReset);
-                                    }
-                                } catch (e) { /* ignore */ }
-                            } else if (htmlRoot) {
-                                // INJECTED RESET CSS REMOVED.
-                                //
-                                // The previous reset always injected
-                                // `html,body{height:auto!important;overflow:auto
-                                // !important;min-height:100vh!important;...}` on
-                                // EVERY captured page, regardless of whether
-                                // the page actually had a scroll problem. That
-                                // was what broke google.com (which uses
-                                // body{height:100%;overflow:hidden} with
-                                // internal scroll containers) and every other
-                                // app-shell layout, and why "the bottom came up"
-                                // — we were forcing body height to auto content
-                                // height instead of viewport height.
-                                //
-                                // ensureMirrorScrolling() already injects a
-                                // rescue stylesheet ONLY when it has verified
-                                // the page truly cannot scroll (pageScrolls()
-                                // returns false after walking the DOM). So the
-                                // always-on reset was pure collateral damage.
-                                //
-                                // One thing we DO still do: neutralise a
-                                // `touch-action: none` on html/body because on
-                                // mobile that makes Chrome refuse drags
-                                // entirely, and it is never what a mirrored
-                                // page wants. This is a single property, not a
-                                // full layout reset, so it cannot break layout.
-                                try {
-                                    const taStyle = d.createElement('style');
-                                    taStyle.id = '__shifix_touch_action__';
-                                    taStyle.setAttribute('data-stream-injected', 'true');
-                                    taStyle.textContent =
-                                        'html,body{touch-action:auto!important;'
-                                        + '-webkit-overflow-scrolling:touch!important;}';
-                                    (d.head || htmlRoot).appendChild(taStyle);
-                                } catch (e) { /* ignore */ }
+                            // Strip any leftover modifier stylesheets from a
+                            // previous build so they can't keep haunting pages.
+                            const stale = d.querySelectorAll
+                                ? d.querySelectorAll('[data-stream-injected]')
+                                : [];
+                            for (let k = 0; k < stale.length; k++) {
+                                try { stale[k].parentNode.removeChild(stale[k]); }
+                                catch (e) { /* ignore */ }
                             }
-                            // Check whether the page can scroll, and rescue it
-                            // ONLY if it can't. No forced CSS, no tree walk,
-                            // unless pageScrolls() returns false. The 800ms
-                            // delayed recheck still runs for late font/image
-                            // settling.
-                            try {
-                                ensureMirrorScrolling(d, doc.defaultView);
-                                const _sd = d, _sw = doc.defaultView;
-                                setTimeout(function () {
-                                    try { ensureMirrorScrolling(_sd, _sw); } catch (e) { /* ignore */ }
-                                }, 800);
-                            } catch (e) { /* ignore — non-fatal */ }
-                        } catch (e) { /* ignore — non-fatal */ }
+                        } catch (e) { /* ignore */ }
                     } catch (e) {
                         console.error('Cannot access iframe document:', e);
                     }
