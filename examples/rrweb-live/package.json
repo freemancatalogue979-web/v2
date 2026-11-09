@@ -1,0 +1,20 @@
+{
+  "name": "rrweb-live-stream",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Consent-based live browser session recording and replay with rrweb and Socket.IO",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "socket.io": "^4.8.1"
+  }
+}
