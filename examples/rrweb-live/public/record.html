@@ -26,83 +26,15 @@
   <div class="notice">Only record pages and sessions you own or have clear permission to share. Inputs are masked by default. Do not record passwords, payment details, or private conversations.</div>
   <form id="connect-form">
     <label for="room">Room name</label>
-    <input id="room" name="room" minlength="3" maxlength="64" pattern="[A-Za-z0-9_-]+" required value="demo-room">
+    <input id="room" name="room" minlength="3" maxlength="64" required value="demo-room">
     <label for="token">Room access token</label>
     <input id="token" name="token" type="password" autocomplete="off" required>
-    <button type="submit">Connect & start recording</button>
+    <button type="submit">Connect &amp; start recording</button>
     <button class="stop" id="stop" type="button" disabled>Stop</button>
   </form>
   <div id="status" role="status" aria-live="polite">Not connected.</div>
 </main>
 <script src="/socket.io/socket.io.js"></script>
-<script type="module">
-  import { record } from "https://cdn.rrweb.com/record/2.2.1/dist/record.js";
-
-  const form = document.querySelector("#connect-form");
-  const status = document.querySelector("#status");
-  const stopButton = document.querySelector("#stop");
-  let socket;
-  let stopRecording;
-
-  function setStatus(message) {
-    status.textContent = message;
-  }
-
-  function stop() {
-    if (stopRecording) {
-      stopRecording();
-      stopRecording = undefined;
-    }
-    if (socket?.connected) socket.disconnect();
-    socket = undefined;
-    stopButton.disabled = true;
-    setStatus("Recording stopped.");
-  }
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    stop();
-
-    const room = form.room.value.trim();
-    const token = form.token.value;
-    socket = io();
-
-    socket.on("connect", () => {
-      socket.emit("join-room", { room, token, role: "recorder" }, (result) => {
-        if (!result?.ok) {
-          setStatus(result?.error || "Could not join room.");
-          socket.disconnect();
-          return;
-        }
-
-        stopRecording = record({
-          emit(rrwebEvent) {
-            socket?.emit("rrweb-event", rrwebEvent);
-          },
-          maskAllInputs: true,
-          maskTextSelector: "[data-rrweb-mask]",
-          blockClass: "rr-block",
-          ignoreClass: "rr-ignore"
-        });
-
-        stopButton.disabled = false;
-        setStatus(`Recording and streaming to room “${room}”.`);
-      });
-    });
-
-    socket.on("connect_error", () => setStatus("Connection failed. Check the server and try again."));
-    socket.on("disconnect", () => {
-      if (stopRecording) {
-        stopRecording();
-        stopRecording = undefined;
-      }
-      stopButton.disabled = true;
-      setStatus("Disconnected.");
-    });
-  });
-
-  stopButton.addEventListener("click", stop);
-  window.addEventListener("beforeunload", () => stopRecording?.());
-</script>
+<script type="module" src="/record.js"></script>
 </body>
 </html>
