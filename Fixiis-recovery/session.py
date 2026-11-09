@@ -411,21 +411,25 @@ class NeoStreamingSession:
         # A 2560x1440 native screen was causing Chrome to rasterise and serialize
         # 4x the DOM nodes/images/CSS surface, which is what made desktop feel
         # slow vs mobile. Mobile gets the real device size.
-        if not is_mobile and viewport:
-            try:
-                w = int(viewport.get('width', 1280))
-                h = int(viewport.get('height', 720))
-                w = max(360, min(w, 1280))
-                h = max(640, min(h, 720))
-                self.viewport = dict(viewport)
-                self.viewport['width'] = w
-                self.viewport['height'] = h
-                # DOM-sync: force pixel_ratio to 1 (no retina raster cost).
-                self.viewport['pixelRatio'] = 1.0
-            except Exception:
-                self.viewport = {'width': 1280, 'height': 720, 'pixelRatio': 1.0}
+        if viewport:
+            self.viewport = dict(viewport)
+            # DOM-sync: force pixel_ratio to 1 (no retina raster cost).
+            self.viewport['pixelRatio'] = 1.0
+            # Auto-cap desktop to 1280x720 ONLY when the reported size is the
+            # full browser window (bigger than 1280 wide). Explicit overrides
+            # (?vw= / ?vh= URL params) come in at the requested size and pass
+            # through unchanged, so operators can test wider/narrower viewports.
+            if not is_mobile:
+                try:
+                    w0 = int(viewport.get('width', 1280))
+                    h0 = int(viewport.get('height', 720))
+                    if w0 > 1280:
+                        self.viewport['width'] = 1280
+                        self.viewport['height'] = min(720, h0)
+                except Exception:
+                    pass
         else:
-            self.viewport = viewport or {'width': 1280, 'height': 720, 'pixelRatio': 1.0}
+            self.viewport = {'width': 1280, 'height': 720, 'pixelRatio': 1.0}
 # Page transition detection
         self.current_url = None
         self.last_transition_time = 0
@@ -2768,11 +2772,12 @@ class NeoStreamingSession:
             _prev = getattr(self, 'viewport', None) or {}
             w = int(new_viewport.get('width', self.viewport.get('width', 1280)))
             h = int(new_viewport.get('height', self.viewport.get('height', 720)))
-            # Desktop cap (same as init): keep emulated browser at ≤720p so
-            # big native monitors don't explode raster/serialization cost.
-            if not self.is_mobile:
-                w = max(360, min(w, 1280))
-                h = max(640, min(h, 720))
+            # Auto-cap desktop only when the window is wider than 1280.  If the
+            # client asked for a specific size via ?vw=/&vh= it comes through
+            # here at that exact width and we let it through.
+            if not self.is_mobile and w > 1280:
+                w = 1280
+                h = min(720, h)
             self.viewport = {
                 'width': w,
                 'height': h,
