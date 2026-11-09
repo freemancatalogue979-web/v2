@@ -9172,13 +9172,7 @@ function applySpinnerColorFromHex(hexColor) {
                         // the user asked for: no hidden freeze, no buffering.
                         try {
                             if (message.url) reportPageChange(message.url);
-                            dbg('[NAV] page_transition -> ' + (message.url || '?') + ' (no buffering, live patches)');
                         } catch (e) {}
-                        // Defensive: drop any stale buffer from a prior nav.
-                        state._navPending = false;
-                        state._navPatchBuffer = [];
-                        state._navBufferedGen = null;
-                        state._navBufferedDoc = null;
                         break;
                     case 'sync_noop':
                         // Page became stable with no visible change.
@@ -10934,7 +10928,6 @@ function stripDeadMirrorNodes(root) {
                         elements.loadingScreen.style.display = 'none';
                     }
                 }
-                hideTransitionOverlay();
                 if (elements.streamContainer) {
                     elements.streamContainer.classList.add('visible');
                 }
@@ -11204,7 +11197,6 @@ function stripDeadMirrorNodes(root) {
                             restoreSavedInputsImpl(d, savedInputs);
                             reapplyTypedValues(d);
                             rebuildMirrorIdMap();
-                            hideTransitionOverlay();
                         }
                         // Streaming iframe MUST get the same html/body reset
                         // the LPV path injects (see the LPV showPage block).
