@@ -1518,35 +1518,29 @@ def _may_skip_unchanged(reason: Optional[str], settle: str,
 def _settle_for_reason(reason: Optional[str]) -> str:
     """Map a capture reason to a settle level.
 
-    Interaction-driven recaptures ("interaction:*", input forwards,
-    coalesced follow-ups, delta overflow) snapshot a page that is already
-    live — the legacy load/networkidle waits were pure latency.
+    Plain rule: ZERO waits unless it's the very first connect. Any DOM
+    that exists gets captured NOW; if the parser has produced nothing yet
+    the fast serializer returns empty and the delta observer + URL watcher
+    will retry in milliseconds. There is no reason a user click or nav
+    should sit waiting for the browser's readyState flag.
 
-    Navigations (goto/back/forward/reload, delta "navigation" signal,
-    URL-watcher fallbacks, progressive post-nav follow-ups) now return
-    "none": the user explicitly asked for "get the page as soon as the
-    browser navigates — don't wait for network idle".  We capture whatever
-    DOM exists right now and let delta patches + the scheduled follow-ups
-    carry late-loading content.  If a capture happens before the parser has
-    produced any nodes, the fast serializer returns an empty string and the
-    next tick tries again.
-
-    DOM_CAPTURE_FULL_SETTLE=1 reverts globally.
+      none  — capture immediately (the default for everything).
+      light — wait up to 1.5s for readyState to leave 'loading' (only
+              used on initial connect so the first paint isn't literally
+              an empty <html></html> shell).
+      full  — legacy load + networkidle + readyState sequence (only
+              reachable via DOM_CAPTURE_FULL_SETTLE=1 rollback).
     """
     if FULL_SETTLE:
         return "full"
     if not reason:
         return "none"
     r = reason.lower()
-    if r.startswith(("interaction:", "coalesce:", "nav_settle:",
-                     "click", "input", "tap")) or r in _COLD_REASONS:
-        return "none"
-    # Initial connect still gets a light readyState wait so the very first
-    # paint isn't an empty/blank document.  Navigations after that are all
-    # fast.
+    # Initial connect: give the parser one moment so the very first paint
+    # isn't blank. Every other reason captures right now.
     if r.startswith(("initial",)):
         return "light"
-    return "light"
+    return "none"
 
 
 # ---------------------------------------------------------------------------
@@ -4552,19 +4546,41 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                 return
             if not session._delta_active:
                 return  # current full-capture tier cannot carry safe mids
-            if session._send_inflight and not session._assets_pending:
-                # A full snapshot supersedes queued patches — unless the only
-                # thing still in flight is the asset fetch for a document the
-                # client is ALREADY showing.  Holding patches shut for that
-                # window is what made a navigation feel frozen.
-                return
 
             # The browser already paid for JSON.stringify(batch).  Wrap that
             # exact JSON text instead of parsing and serializing the operation
             # list a second time.  Recheck inflight state under the send lock
             # so a full recovery cannot be followed by an old-generation patch.
+            #
+            # IMPORTANT: when a full-document send is in flight we MUST NOT
+            # drop patches on the floor — that is what caused "small updates
+            # arrive late / state is skipped": every mutation that happened
+            # during full-doc serialization (100-500ms of page activity)
+            # was silently swallowed here.  Buffer it, and when the inflight
+            # send finishes the buffer is drained in order before any new
+            # mutations go out, so nothing is lost.
+            if session._send_inflight:
+                buf = getattr(session, "_delta_pending_buf", None)
+                if buf is None:
+                    buf = []
+                    session._delta_pending_buf = buf
+                # Cap at 80k chars (~400 ops) to avoid unbounded memory on a
+                # wedged send; overflow is harmless because the follow-up
+                # full capture will repair any missed state.
+                if sum(len(b) for b in buf) < 80000:
+                    buf.append((int(session._gen), doc_token, payload_text))
+                return
+
             async with session._ws_send_lock:
                 if session._send_inflight:
+                    # Lost the race — buffer (same logic as above) rather
+                    # than drop.
+                    buf = getattr(session, "_delta_pending_buf", None)
+                    if buf is None:
+                        buf = []
+                        session._delta_pending_buf = buf
+                    if sum(len(b) for b in buf) < 80000:
+                        buf.append((int(session._gen), doc_token, payload_text))
                     return
                 gen = int(session._gen)
                 doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
@@ -4635,12 +4651,10 @@ async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") 
                 if target_desc:
                     full_reason = f"{full_reason}:{target_desc}"
 
-                async def _delayed_send():
-                    if is_redraw_only_host(getattr(session, "last_sent_url", "")):
-                        await asyncio.sleep(0.18)
+                async def _send_now():
                     await session.send_page(reason=full_reason)
 
-                asyncio.create_task(_delayed_send())
+                asyncio.create_task(_send_now())
             except Exception as exc:
                 logger.debug("interaction recapture dispatch failed: %s", exc)
 
@@ -5420,6 +5434,27 @@ class DOMCaptureSession:
             self._send_inflight = False
             pending = self._pending_reason
             self._pending_reason = None
+            # Drain any delta patches that arrived during this send — they
+            # were buffered rather than dropped so none of the 100-500ms of
+            # activity while the full doc serialized is lost. Send them
+            # under the ws lock, in arrival order, against the gen they
+            # were captured on.
+            try:
+                buf = getattr(self, "_delta_pending_buf", None)
+                if buf:
+                    self._delta_pending_buf = []
+                    async with self._ws_send_lock:
+                        for bgen, bdoc, bpayload in buf:
+                            try:
+                                doc_json = (_json.dumps(str(bdoc)[:256], ensure_ascii=False)
+                                            if bdoc is not None else "null")
+                                frame = ('{"type":"dom_patch","gen":' + str(bgen)
+                                         + ',"doc":' + doc_json + ',"ops":' + bpayload + '}')
+                                await self.websocket.send_text(frame)
+                            except Exception as exc:
+                                logger.debug("pending delta flush failed: %s", exc)
+            except Exception as exc:
+                logger.debug("pending delta flush setup failed: %s", exc)
             if SEND_COALESCE and pending and not self._stopped:
                 # Recompute URL/task state inside the follow-up.
                 asyncio.create_task(self._send_full(None, reason=f"coalesce:{pending}"))
