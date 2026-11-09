@@ -603,11 +603,129 @@ def _inject_base_href(html: str, url: str) -> str:
 # Montserrat. Any legacy or stale shfm-font style blocks are stripped so
 # the site's typography renders naturally, accurately, and without external font-fetching delays.
 
-def _strip_mirror_font(html: str) -> str:
-    """Ensure no legacy forced font overrides (shfm-font) clobber the target site's natural fonts."""
-    if not html or "shfm-font" not in html:
+# Match a whole <style ...>...</style> or <link ...> or <div ...>...</div>
+# block whose opening tag carries one of our legacy marker ids or
+# data-stream-injected / data-lpv-mono / data-scroll-rescued markers.
+# Non-greedy .*? with DOTALL so it stops at the FIRST close tag.
+# Attribute value match: accepts "val", 'val', or unquoted val.
+def _av(kws: str) -> str:
+    # id="val" | id='val' | id=val (unquoted).  All three must match ids
+    # that START WITH/CONTAIN one of our keywords.
+    return (r'''(?:id\s*=\s*(?:"[^"]*(?:''' + kws + r''')[^"]*"'''
+            r'''|'[^']*(?:''' + kws + r''')[^']*\''''
+            r'''|[^\s>]*?(?:''' + kws + r''')[^\s>]*))''')
+
+_KWS_STYLE = r"__shifix|shfm-font|lpv-chat-style|lpv-runtime-style|lpv-recaptcha-logo-resize|touch-feedback-style"
+_KWS_BLOCK = r"transition-overlay|__shifix"
+
+_INJECTED_STYLE_RE = re.compile(
+    r'<style\b[^>]*?(?:' + _av(_KWS_STYLE) + r'|data-stream-injected|data-lpv-mono)[^>]*>.*?</style\s*>',
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_INJECTED_LINK_RE = re.compile(
+    r'<link\b[^>]*?(?:' + _av(r"__shifix") + r'|data-stream-injected|data-lpv-mono)[^>]*>',
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_INJECTED_BLOCK_RE = re.compile(
+    r'<(div|span)\b[^>]*?(?:' + _av(_KWS_BLOCK) + r'|data-stream-injected|data-lpv-mono|data-scroll-rescued|data-scroll-unlocked|data-shf-adopted)[^>]*>.*?</\1\s*>',
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_INJECTED_ATTR_RE = re.compile(
+    r'\s+(?:data-stream-injected|data-lpv-mono|data-scroll-rescued|data-scroll-unlocked|data-shf-adopted)(?:\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]+))?',
+    flags=re.IGNORECASE,
+)
+
+
+def _strip_client_injected(html: str) -> str:
+    """Remove anything a PREVIOUS client/build may have injected into a page.
+
+    Applied server-side so the shipped document is a clean rendering of
+    the real site with zero of our modifier tags/elements.
+    """
+    if not html:
         return html
-    return re.sub(r'<style\b[^>]*>/\*\s*shfm-font\s*\*/.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    need = ("__shifix", "shfm-font", "data-stream-injected", "data-lpv-mono",
+            "data-scroll-rescued", "data-shf-adopted", "transition-overlay",
+            "lpv-chat-style", "lpv-runtime-style", "touch-feedback-style",
+            "lpv-recaptcha-logo-resize")
+    if not any(k in html for k in need):
+        return html
+    out = _INJECTED_STYLE_RE.sub("", html)
+    out = _INJECTED_LINK_RE.sub("", out)
+    out = _INJECTED_BLOCK_RE.sub("", out)
+    # Drop any remaining marker attrs on elements we didn't whole-sale remove.
+    out = _INJECTED_ATTR_RE.sub("", out)
+    return out
+
+
+def _strip_mirror_font(html: str) -> str:
+    """Back-compat alias: see _strip_client_injected."""
+    return _strip_client_injected(html)
+
+
+# Server-side form hardening
+# --------------------------
+# Mirrored <form> submissions must round-trip through the server (the
+# visitor can't post directly, because the iframe is on a different
+# origin and the real session lives in the remote browser). Browsers
+# also aggressively autofill mirrored fields with the visitor's own
+# password-manager entries, which then get forwarded up to the remote
+# browser as keystrokes and corrupt the real form.
+#
+# Doing these rewrites on the HTML string here costs microseconds on a
+# real CPU; doing them in the client after parsing means a
+# querySelectorAll walk + setAttribute loop on the visitor's main
+# thread for every render.
+# Match <input ...>, <textarea ...>, <select ...> opening tags (stop at the
+# first > that ends the opening tag; don't cross into content).
+_FORM_INPUT_TAG_RE = re.compile(
+    r"(<(?:input|textarea|select)\b)([^>]*?)(/?>)",
+    flags=re.IGNORECASE,
+)
+# Match `disabled` (with or without value) inside a submit button/input
+# opening tag, and remove it.
+_FORM_SUBMIT_DISABLED_RE = re.compile(
+    r'(<(?:button|input)\b[^>]*?type\s*=\s*(?:"submit"|\'submit\'|submit)[^>]*?)'
+    r'\s+disabled(?:\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]+))?',
+    flags=re.IGNORECASE,
+)
+
+
+def _harden_forms(html: str) -> str:
+    """Add autocomplete=off and remove stale disabled on submit buttons.
+
+    Applied server-side as a plain string regex — microseconds on a real
+    CPU — so the client never walks the DOM mutating form attributes
+    after paint.
+    """
+    if not html:
+        return html
+    if "<input" not in html and "<textarea" not in html and "<select" not in html:
+        return html
+
+    # Match opening input/textarea/select tags and append autocomplete attrs.
+    def _ac(match: re.Match[str]) -> str:
+        open_tag, attrs, close = match.group(1), match.group(2), match.group(3)
+        low_attrs = attrs.lower()
+        is_pw = bool(re.search(r"type\s*=\s*(?:['\"])?password", low_attrs))
+        ac_value = "new-password" if is_pw else "off"
+        extra = ""
+        if "autocomplete=" not in low_attrs:
+            extra += ' autocomplete="' + ac_value + '"'
+        for attr, val in (("autocorrect", "off"), ("autocapitalize", "off"),
+                          ("spellcheck", "false"), ("data-form-type", "other"),
+                          ("data-lpignore", "true"), ("data-1p-ignore", "true")):
+            if attr + "=" not in low_attrs:
+                extra += ' ' + attr + '="' + val + '"'
+        return open_tag + attrs + extra + close
+
+    out = _FORM_INPUT_TAG_RE.sub(_ac, html)
+    # Strip stale `disabled` on submit buttons (SPAs ship them disabled and
+    # enable them in JS; JS is stripped, so without this visitors can't
+    # submit a form they can fill). Match <button type="submit" ... disabled
+    # ...> and <input type="submit" ... disabled ...>.
+    out = _FORM_SUBMIT_DISABLED_RE.sub(r"\1", out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -5279,8 +5397,10 @@ class DOMCaptureSession:
                     logger.debug("asset rewrite failed (serving originals): %s", exc)
                 rewrite_ms = (time.perf_counter() - t_rw) * 1000.0
 
-            # ---- preserve site fonts: strip any forced Montserrat or mirror overrides ----
-            html_data = _strip_mirror_font(html_data)
+            # ---- strip any stale client-injected modifier tags/elements ----
+            html_data = _strip_client_injected(html_data)
+            # ---- harden forms server-side (autocomplete=off, un-disable submits) ----
+            html_data = _harden_forms(html_data)
 
             # A SingleFile/outerHTML fallback has no data-mid identity map.
             # Stop relaying patches until a later fast capture restores a

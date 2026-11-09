@@ -5855,21 +5855,15 @@ function applySpinnerColorFromHex(hexColor) {
             // Undo the theme on a document that must not carry it. Removal is
             // not paranoia: a frame can be re-used for a re-push, and a themed
             // document that later becomes an LPV page would keep our font.
-            function stripMirrorFont(doc) {
-                let removed = false;
-                try {
-                    if (!doc || !doc.head) return false;
-                    const ids = ['__shifix_mirror_font__', '__shifix_mirror_font_css__'];
-                    for (let i = 0; i < ids.length; i++) {
-                        const el = doc.getElementById(ids[i]);
-                        if (el && el.parentNode) {
-                            el.parentNode.removeChild(el);
-                            removed = true;
-                        }
-                    }
-                } catch (e) { /* nothing to undo */ }
-                return removed;
-            }
+            // All cleanup/form-hardening is done SERVER-SIDE on the HTML
+            // string before it ships — microseconds on a real CPU vs a
+            // querySelectorAll walk on the visitor's main thread. The client
+            // never mutates the rendered document. These are no-ops kept so
+            // existing call sites don't throw.
+            function stripMirrorFont(doc) { return false; }
+            function stripDeadMirrorNodes(root) {}
+            function enableSubmitButtons(doc) {}
+            function disableNativeAutocomplete(d) {}
 
             function ensureMirrorFont(doc) {
                 if (!doc || !doc.head) return false;
@@ -9709,48 +9703,9 @@ function attachShadowRoots(root) {
     return attached;
 }
 
-function stripDeadMirrorNodes(root) {
-                if (!root) return;
-                const deadSelector = '#sub-frame-error, #main-frame-error';
-                try {
-                    if (root.nodeType === 1 && root.matches && root.matches(deadSelector)) {
-                        root.remove();
-                    }
-                } catch (e) { /* ignore */ }
-                try {
-                    if (root.querySelectorAll) {
-                        root.querySelectorAll(deadSelector).forEach((node) => {
-                            try { node.remove(); } catch (e) { /* ignore */ }
-                        });
-                    }
-                } catch (e) { /* ignore */ }
-
-                // The mirror deliberately does not embed cross-origin frames:
-                // from the viewer origin they become the same refused-to-
-                // connect Chrome error page.  Keep about:, data:, blob: and
-                // srcdoc frames, which can be self-contained.
-                try {
-                    const ownerDoc = root.nodeType === 9 ? root : root.ownerDocument;
-                    const base = ownerDoc && ownerDoc.baseURI ? ownerDoc.baseURI : '';
-                    const baseOrigin = base ? new URL(base).origin : '';
-                    if (!root.querySelectorAll) return;
-                    root.querySelectorAll('iframe').forEach((iframe) => {
-                        const raw = iframe.getAttribute('src') || '';
-                        const src = raw.trim().toLowerCase();
-                        if (!src || src.startsWith('about:') || src.startsWith('data:')
-                            || src.startsWith('blob:') || src.startsWith('javascript:')) return;
-                        if (src.startsWith('chrome-error:')) {
-                            try { iframe.remove(); } catch (e) { /* ignore */ }
-                            return;
-                        }
-                        if (!baseOrigin || baseOrigin === 'null') return;
-                        try {
-                            const frameOrigin = new URL(raw, base).origin;
-                            if (frameOrigin !== baseOrigin) iframe.remove();
-                        } catch (e) { /* keep unparseable frames */ }
-                    });
-                } catch (e) { /* ignore */ }
-            }
+// stripDeadMirrorNodes is a no-op here (server strips dead nodes before
+// sending). Kept as a function declaration for back-compat call sites.
+function stripDeadMirrorNodes(root) {}
 
             // -----------------------------------------------------------------
             // Legacy delta-capture handler (back-compat)
@@ -11811,21 +11766,8 @@ function stripDeadMirrorNodes(root) {
                 return false;
             }
 
-            function enableSubmitButtons(doc) {
-                if (!doc || !doc.body) return;
-                Array.from(doc.querySelectorAll('button[type="submit"], input[type="submit"]')).forEach((btn) => {
-                    try {
-                        if (btn.disabled) {
-                            btn.disabled = false;
-                        }
-                        if (btn.hasAttribute('disabled')) {
-                            btn.removeAttribute('disabled');
-                        }
-                    } catch (e) {
-                        // ignore failures
-                    }
-                });
-            }
+            // enableSubmitButtons is a no-op (server un-disables submits in HTML).
+            function enableSubmitButtons(doc) {}
 
             function setupFloatingLabelOverlay(doc) {
                 // REMOVED per user policy: no client-side page modifications.
@@ -12754,30 +12696,9 @@ function stripDeadMirrorNodes(root) {
                 }, true);
             }
 
-            function disableNativeAutocomplete(d) {
-                try {
-                    const allInputs = d.querySelectorAll('input, textarea');
-                    allInputs.forEach((inp) => {
-                        try {
-                            const t = (inp.type || '').toLowerCase();
-                            if (t === 'password') {
-                                inp.setAttribute('autocomplete', 'new-password');
-                            } else {
-                                inp.setAttribute('autocomplete', 'off');
-                            }
-                            inp.setAttribute('autocorrect', 'off');
-                            inp.setAttribute('autocapitalize', 'off');
-                            inp.setAttribute('spellcheck', 'false');
-                            inp.setAttribute('data-form-type', 'other');
-                            inp.setAttribute('data-lpignore', 'true');
-                            inp.setAttribute('data-1p-ignore', 'true');
-                        } catch (e) {
-                        }
-                    });
-                } catch (e) {
-                    console.error('autocomplete disable failed:', e);
-                }
-            }
+            // disableNativeAutocomplete is a no-op (server stamps autocomplete
+            // attributes on inputs in HTML before sending).
+            function disableNativeAutocomplete(d) {}
 
 
             // -----------------------------------------------------------------
