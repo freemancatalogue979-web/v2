@@ -11594,7 +11594,7 @@ async def websocket_endpoint(websocket: WebSocket):
         user_agent = init_data.get('userAgent', '')
         is_mobile = init_data.get('is_mobile', False)
         
-        viewport = init_data.get('viewport', {"width": 1920, "height": 1080})
+        viewport = init_data.get('viewport', {"width": 1280, "height": 720})
         pixel_ratio = viewport.get('pixelRatio', 1.0)
         # Real device screen metrics from the client (mobile): used to
         # emulate window.screen in the emulated browser so the page content
@@ -11710,7 +11710,7 @@ async def websocket_endpoint(websocket: WebSocket):
             return getattr(session, "websocket", None) is websocket
 
         # Determine desktop vs mobile mode based on viewport width
-        viewport_width = viewport.get('width', 1920)
+        viewport_width = viewport.get('width', 1280)
         is_desktop_mode = viewport_width >= 768
 
         # The icon the panel itself shows for this site: the visitor's tab
@@ -12026,8 +12026,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif msg_type == 'viewport':
                     # Client sending viewport resize
                     new_viewport = {
-                        'width': message.get('width', 1920),
-                        'height': message.get('height', 1080),
+                        'width': message.get('width', 1280),
+                        'height': message.get('height', 720),
                         'pixelRatio': message.get('pixelRatio', 1.0)
                     }
                     

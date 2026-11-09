@@ -103,19 +103,20 @@ class UltraConfig:
 
     # Stream render scale (device pixel ratio)
     # ---------------------------------------
-    # Chrome never upscales a screencast frame, and a 1x render shown at
-    # 200% is always soft. Every live view therefore renders its page at
-    # `CSS viewport x stream_dpr` and the panel displays that frame back at
-    # the CSS size. 2.0 = retina-sharp text; 1.0 = the old logical-pixel
-    # behaviour (smaller frames, visibly softer).
-    stream_dpr: float = 2.0
+    # DOM-sync mode: no screencast, no video frames.  DPR is 1.0 so Chrome
+    # rasterises the page at CSS-pixel size — keeps layout, memory, and
+    # DOM serialization fast.  Higher DPRs were needed only for the old
+    # WebRTC screencast pipeline (which is removed).
+    stream_dpr: float = 1.0
 
-    # Adaptive FPS Settings - ENABLED for 60 FPS
-    adaptive_fps: bool = True  # Enabled - allows dynamic FPS adjustment
-    fps_min: int = 60  # Minimum FPS (60 FPS target)
-    fps_max: int = 60  # Maximum FPS (locked at 60 FPS)
-    fps_drop_threshold: float = 0.1  # Drop FPS if >10% frames dropped
-    fps_recovery_threshold: float = 0.02  # Recover FPS if <2% frames dropped
+    # Adaptive FPS / screencast settings: unused in DOM-sync mode but kept
+    # for any admin/screenshot tooling that still reads them.  Capped low
+    # so any accidental screencast startup does not explode the process.
+    adaptive_fps: bool = False
+    fps_min: int = 15
+    fps_max: int = 30
+    fps_drop_threshold: float = 0.1
+    fps_recovery_threshold: float = 0.02
 
     # Adaptive Bitrate Streaming (20-80 Mbps - maximum quality)
     bitrate_min: int = 10000000   # 20 Mbps minimum
@@ -125,8 +126,8 @@ class UltraConfig:
 
     # Desktop Mode Settings - Support up to 4K resolution
     desktop_mode: bool = True
-    desktop_width: int = 3840  # 4K width (was 1920)
-    desktop_height: int = 2160  # 4K height (was 1080)
+    desktop_width: int = 1280  # 720p default for DOM-sync mode
+    desktop_height: int = 720
     fixed_resolution: bool = False  # Dynamic based on client window size
     full_screen_only: bool = True
 

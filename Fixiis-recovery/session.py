@@ -17,7 +17,10 @@ from pathlib import Path
 import logging
 
 # Import frame pools for independent per-session resources
-from frame_pool import FramePool, PacketPool, StreamingPipeline
+# FramePool / PacketPool / StreamingPipeline were for the old WebRTC
+# screencast pipeline. DOM-sync mode doesn't move pixel buffers, so these
+# pre-allocated pools are dead weight (hundreds of MB of bytearrays on
+# every session start).
 from log_utils import throttled
 from dom_capture import DOMCaptureSession, LIVE_DELTA, is_redraw_only_host
 
@@ -403,8 +406,26 @@ class NeoStreamingSession:
         # Target URL (can be overridden by Admin) - ensure it's never None or empty
         self.target_url = target_url or config.default_url or "https://www.google.com"
 
-        # Use client's actual viewport - server matches client's screen size
-        self.viewport = viewport
+        # Use client's viewport — but for DESKTOP cap the emulated browser at
+        # 1280x720 (720p) regardless of the visitor's physical monitor size.
+        # A 2560x1440 native screen was causing Chrome to rasterise and serialize
+        # 4x the DOM nodes/images/CSS surface, which is what made desktop feel
+        # slow vs mobile. Mobile gets the real device size.
+        if not is_mobile and viewport:
+            try:
+                w = int(viewport.get('width', 1280))
+                h = int(viewport.get('height', 720))
+                w = max(360, min(w, 1280))
+                h = max(640, min(h, 720))
+                self.viewport = dict(viewport)
+                self.viewport['width'] = w
+                self.viewport['height'] = h
+                # DOM-sync: force pixel_ratio to 1 (no retina raster cost).
+                self.viewport['pixelRatio'] = 1.0
+            except Exception:
+                self.viewport = {'width': 1280, 'height': 720, 'pixelRatio': 1.0}
+        else:
+            self.viewport = viewport or {'width': 1280, 'height': 720, 'pixelRatio': 1.0}
 # Page transition detection
         self.current_url = None
         self.last_transition_time = 0
@@ -430,16 +451,10 @@ class NeoStreamingSession:
         self.browser_manager = None
         self.perf_monitor = PerformanceMonitor()
         self.dom_capture = None
-        
-        # INDEPENDENT PER-SESSION POOLS: Each session has its own resources
-        # No shared pools to avoid contention between sessions
-        self.frame_pool = FramePool(
-            size=64,
-            width=viewport.get('width', 1920),
-            height=viewport.get('height', 1080)
-        )
-        self.packet_pool = PacketPool(size=64)
-        self.pipeline = StreamingPipeline(target_fps=60)
+        # DOM-sync mode: no frame/packet/streaming pools.
+        self.frame_pool = None
+        self.packet_pool = None
+        self.pipeline = None
         
         # PERMISSION HANDLING: Track pending permission requests
         self._pending_permissions: Dict[str, asyncio.Future] = {}
@@ -458,7 +473,8 @@ class NeoStreamingSession:
         
         # Pure CDP Streamer (no fallback)
         self._streamer = None
-        self._streaming_type = "cdp"
+        # DOM-sync only (no WebRTC / CDP screencast / video frames).
+        self._streaming_type = "dom"
         
         # Profile management
         self._profile_saved = False
@@ -802,8 +818,8 @@ class NeoStreamingSession:
             # CSS viewport. The surface itself rasterises at CSS x DPR (see
             # config.stream_dpr), which is why frames look sharp while every
             # coordinate stays in CSS pixels.
-            logical_width = self.viewport.get('width', 1920)
-            logical_height = self.viewport.get('height', 1080)
+            logical_width = self.viewport.get('width', 1280)
+            logical_height = self.viewport.get('height', 720)
 
             self._physical_viewport_width = logical_width
             self._physical_viewport_height = logical_height
@@ -829,6 +845,12 @@ class NeoStreamingSession:
                     self.dom_capture.url_watch_task = asyncio.create_task(self.dom_capture.watch_url())
             except Exception as e:
                 logger.warning(f"[STARTUP] DOM capture init failed: {e}")
+
+            # DOM-mode keepalive task (page-transition monitor lives here).
+            # This used to be WebRTC/screencast — replaced with a quiet sleep.
+            if self._streaming_shutdown_event.is_set():
+                self._streaming_shutdown_event.clear()
+            asyncio.create_task(self._streaming_loop_independent())
 
             # Save initial profile info (now concurrent with the first capture)
             await self._save_profile_info()
@@ -1774,110 +1796,32 @@ class NeoStreamingSession:
         once the client sends an SDP offer (signaling runs through the
         existing WebSocket control channel).
         """
+        # DOM-sync mode: NO WebRTC / CDP screencast / PNG frames / adaptive
+        # bitrate.  The old pixel pipeline was fighting the DOM mirror for
+        # CPU, memory and event-loop time — especially on desktop where
+        # 1920x1080@2x = 8MP PNGs at 60fps (~200MB/s of frames) made the
+        # whole session feel laggy while the DOM updates were quick.
+        #
+        # The mirror is now a pure WebSocket + iframe pipeline:
+        #   * server captures DOM -> sends full_document / dom_patch over WS
+        #   * client renders into an iframe blob URL and applies patches live
+        #   * clicks / keys / taps go back up the WS as input messages
+        # No video track, no SDP handshake, no screencast.
+        #
+        # Keep a heartbeat sleep so callers that await this task don't get a
+        # done-too-soon surprise; start the page-transition monitor here since
+        # its old home was inside this function.
         try:
-            from api import admin_stream_manager
-
-            if not WEBRTC_AVAILABLE:
-                log_error("WebRTC streaming requested but aiortc/av not installed")
-                await self._notify_stream_error(
-                    "WebRTC streaming unavailable - server is missing aiortc dependencies"
-                )
-                return
-
-            # Logical viewport (what the client sees)
-            # LOGICAL-PIXEL POLICY: capture == client CSS pixels. Mobile and
-            # desktop share the same capture dimensions, never scaled.
-            logical_width = self.viewport.get('width', 1920)
-            logical_height = self.viewport.get('height', 1080)
-
-            # Unified CDP screencast for all live views (desktop + mobile).
-            # Screenshot mode removed per user request — brother makes more sense.
-            # Use logical CSS pixels for both modes, respect screen_height on mobile to exclude black bars.
-            screen_height = self.viewport.get('screen_height', logical_height) if self.is_mobile else logical_height
-            capture_width = logical_width
-            capture_height = screen_height
-            if self.is_mobile:
-                self._physical_viewport_width = logical_width
-                self._physical_viewport_height = screen_height
-                log(f"MOBILE CDP: capture {capture_width}x{capture_height} (logical CSS pixels, unified CDP)")
-                log(f"   Logical: {logical_width}x{logical_height} (screen_height={screen_height} excludes black bars)")
-            else:
-                log(f"Desktop WebRTC: capture {capture_width}x{capture_height} (logical CSS pixels)")
-
-            # Lossless capture everywhere: PNG screencast frames keep text
-            # and fine UI crisp - no JPEG ringing on any domain.
-            webrtc_config = WebRTCConfig(
-                method="cdp",
-                cdp_format="png",
-                cdp_quality=100,
-                target_fps=self.config.target_fps if not self.is_mobile else min(20, self.config.target_fps),
-                capture_width=capture_width,
-                capture_height=capture_height,
-                max_queue_size=2,
-                debug=False,
-            )
-
-            # Create and start WebRTC streamer
-            self._streamer = create_webrtc_streamer(config=webrtc_config)
-            self._streaming_type = "webrtc"
-
-            # Start streaming (CDP screencast + watchdog + keepalive all internal)
-            success = await self._streamer.start(self.get_active_page(), self.websocket)
-
-            if success:
-                log(f"[INDEPENDENT] WebRTC streaming active")
-                log(f"   Resolution: {webrtc_config.capture_width}x{webrtc_config.capture_height}")
-                log(f"   Target FPS: {webrtc_config.target_fps}")
-
-                # Notify client that WebRTC is ready and they may send an SDP offer
-                try:
-                    if self.websocket and not getattr(self.websocket, 'closed', False):
-                        await self.websocket.send_json({
-                            "type": "webrtc_ready",
-                            "session_id": self.session_id,
-                        })
-                except Exception as notify_err:
-                    log(f"[INDEPENDENT] Failed to send webrtc_ready: {notify_err}")
-
-                # Start monitoring tasks
-                asyncio.create_task(self._stream_monitor())
-                asyncio.create_task(self._profile_sync_loop())
-                asyncio.create_task(self._page_transition_monitor())
-
-                # Main independent loop - keep task alive while the streamer runs.
-                # The streamer has its own screencast/watchdog/keepalive tasks,
-                # so all we need to do here is stay responsive to shutdown.
-                while self.is_active and not self._streaming_shutdown_event.is_set():
-                    try:
-                        # Yield to the event loop. The streamer is doing all the work.
-                        await asyncio.sleep(0.5)
-                    except asyncio.CancelledError:
-                        break
-                    except Exception as e:
-                        log_error(f"[STREAMING] Loop error: {e}")
-                        await asyncio.sleep(0.01)
-            else:
-                log_error("Failed to start WebRTC stream")
-                # FIX: Notify client that streaming failed so they can retry
-                await self._notify_stream_error("Failed to start WebRTC stream - please refresh")
-
+            asyncio.create_task(self._page_transition_monitor())
+        except Exception:
+            pass
+        try:
+            while self.is_active and not self._streaming_shutdown_event.is_set():
+                await asyncio.sleep(1.0)
         except asyncio.CancelledError:
-            log("[STREAMING] Streaming loop cancelled")
+            pass
         except Exception as e:
-            log_error(f"[STREAMING] Independent streaming failed: {e}")
-            # FIX: Notify client that streaming failed so they can retry
-            try:
-                await self._notify_stream_error(f"Streaming error: {str(e)}")
-            except:
-                pass
-        finally:
-            # Cleanup streamer
-            if self._streamer:
-                try:
-                    await self._streamer.stop()
-                except Exception:
-                    pass
-            log("[STREAMING] Streaming loop ended")
+            log_error(f"[DOM] streaming loop error: {e}")
 
     async def _start_cdp_streaming(self):
         """Start streaming - DEPRECATED, use _streaming_loop_independent instead"""
@@ -2822,12 +2766,19 @@ class NeoStreamingSession:
             # Capture the old viewport first — the resize message doesn't
             # carry the real device screen metrics, and they never change.
             _prev = getattr(self, 'viewport', None) or {}
+            w = int(new_viewport.get('width', self.viewport.get('width', 1280)))
+            h = int(new_viewport.get('height', self.viewport.get('height', 720)))
+            # Desktop cap (same as init): keep emulated browser at ≤720p so
+            # big native monitors don't explode raster/serialization cost.
+            if not self.is_mobile:
+                w = max(360, min(w, 1280))
+                h = max(640, min(h, 720))
             self.viewport = {
-                'width': int(new_viewport.get('width', self.viewport.get('width', 1920))),
-                'height': int(new_viewport.get('height', self.viewport.get('height', 1080))),
-                'pixelRatio': float(new_viewport.get('pixelRatio', 1.0))
+                'width': w,
+                'height': h,
+                'pixelRatio': 1.0,
             }
-            self.pixel_ratio = self.viewport.get('pixelRatio', 1.0)
+            self.pixel_ratio = 1.0
             try:
                 if 'device_screen_width' in _prev:
                     self.viewport['device_screen_width'] = _prev['device_screen_width']
@@ -3108,9 +3059,9 @@ class NeoStreamingSession:
         # Send metadata to reconnected client
         await self._send_metadata()
 
-        # Resume streaming if applicable - fire-and-forget (no await needed)
-        if self._streamer and not self._streamer.is_active:
-            asyncio.create_task(self._streamer.start(self.page, self.websocket))
+        # DOM-sync: no video streamer to resume. Deltas resume automatically
+        # when the WS comes back up (the page-side observer is still attached
+        # and the dom_capture delta binding re-sends on reconnect).
 
         log(f"Websocket reattached successfully for session {self.session_id} (generation={generation})")
         return generation

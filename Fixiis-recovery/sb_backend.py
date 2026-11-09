@@ -1324,11 +1324,11 @@ class SBPage:
                 pass
 
     async def set_viewport_size(self, size: Dict[str, Any]) -> None:
+        # DOM-sync mode: DPR is always 1. Higher DPRs were for video.
         await self._session.send("Emulation.setDeviceMetricsOverride", {
             "width": int(size.get("width", 1280)),
             "height": int(size.get("height", 720)),
-            "deviceScaleFactor": float(size.get(
-                "deviceScaleFactor", self._ctx._pixel_ratio or _stream_dpr())),
+            "deviceScaleFactor": 1.0,
             "mobile": bool(self._mobile),
         })
 
@@ -1802,15 +1802,15 @@ class SBHandle:
         # that flag for its own channel and conflicts break UC's attach.
         # Chrome's actual port is read from DevToolsActivePort in the profile
         # (deterministic), with probed fallbacks.
-        _scale = _stream_dpr()
+        # DOM-sync mode: force DPR=1.  The old screencast pipeline needed
+        # retina scale for sharp video frames; without video, 2x just doubles
+        # raster cost, memory, and HTML serialization size.
         args = [
             "--remote-allow-origins=*",
-            # Same scale the emulation below uses: a browser forced to 1x
-            # while the page is told 2x renders a 1x surface and every frame
-            # comes out soft again.
-            "--force-device-scale-factor=" + ("%g" % _scale),
+            "--force-device-scale-factor=1",
             "--password-store=basic",
             "--enable-features=PasswordManager,CredentialManager",
+            "--high-dpi-support=1",
         ]
         if sys.platform.startswith("linux"):
             args.append("--disable-dev-shm-usage")

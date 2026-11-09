@@ -222,11 +222,11 @@ _EMBEDDED_MOBILE_DEVICES = {
         'screen_height': 800},
     'desktop': {
         'user_agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-        'viewport': {'width': 1920, 'height': 1080}, 'device_scale_factor': 1.0,
+        'viewport': {'width': 1280, 'height': 720}, 'device_scale_factor': 1.0,
         'is_mobile': False, 'has_touch': False},
     'windows_11_chrome': {
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-        'viewport': {'width': 1920, 'height': 1080}, 'device_scale_factor': 1.0,
+        'viewport': {'width': 1280, 'height': 720}, 'device_scale_factor': 1.0,
         'is_mobile': False, 'has_touch': False, 'platform': 'Win32',
         'oscpu': 'Windows NT 10.0; Win64; x64', 'cpu_cores': 8, 'memory': 16,
         'max_touch_points': 0,
@@ -235,7 +235,7 @@ _EMBEDDED_MOBILE_DEVICES = {
         'fonts': ['Segoe UI', 'Arial', 'Times New Roman', 'Calibri', 'Consolas']},
     'windows_11_edge': {
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0',
-        'viewport': {'width': 1920, 'height': 1080}, 'device_scale_factor': 1.0,
+        'viewport': {'width': 1280, 'height': 720}, 'device_scale_factor': 1.0,
         'is_mobile': False, 'has_touch': False, 'platform': 'Win32',
         'oscpu': 'Windows NT 10.0; Win64; x64', 'cpu_cores': 8, 'memory': 16,
         'max_touch_points': 0,
@@ -244,7 +244,7 @@ _EMBEDDED_MOBILE_DEVICES = {
         'fonts': ['Segoe UI', 'Arial', 'Times New Roman', 'Calibri', 'Consolas']},
     'mac_chrome': {
         'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-        'viewport': {'width': 1920, "height": 1080}, 'device_scale_factor': 1.0,
+        'viewport': {'width': 1280, "height": 720}, 'device_scale_factor': 1.0,
         'is_mobile': False, 'has_touch': False, 'platform': 'MacIntel',
         'oscpu': 'Intel Mac OS X 10_15_7', 'cpu_cores': 8, 'memory': 16,
         'max_touch_points': 0,
@@ -1829,8 +1829,8 @@ class FingerprintManager:
         tz_info = self.TIMEZONE_COUNTRY_MAP.get(timezone, {'country': 'US', 'language': 'en-US', 'offset': -300})
         
         # Screen dimensions from client's ACTUAL viewport
-        screen_width = viewport.get('width', 1920)
-        screen_height = viewport.get('height', 1080)
+        screen_width = viewport.get('width', 1280)
+        screen_height = viewport.get('height', 720)
         
         fingerprint = {
             # Core identity - USE CLIENT'S ACTUAL UA
@@ -1984,7 +1984,7 @@ class FingerprintManager:
             'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
             'device_type': 'windows_11_chrome',
-            'viewport': {'width': 1920, 'height': 1080},
+            'viewport': {'width': 1280, 'height': 720},
             'pixel_ratio': 1.0,
             'device_scale_factor': _stream_dpr(),
             'is_mobile': False,
@@ -2001,8 +2001,8 @@ class FingerprintManager:
             'fonts': ['Segoe UI', 'Arial', 'Times New Roman', 'Calibri', 'Consolas'],
             'canvas_seed': self._generate_seed(user_id),
             'audio_seed': self._generate_seed(user_id),
-            'screen_width': 1920,
-            'screen_height': 1080,
+            'screen_width': 1280,
+            'screen_height': 720,
             'screen_color_depth': 24,
             'screen_pixel_depth': 32,
             'connection_type': '4g',
@@ -4702,8 +4702,8 @@ class BrowserManager:
                                                 5 if is_mobile else 0),
             'canvas_seed': fingerprint.get('canvas_seed', 12345),
             'audio_seed': fingerprint.get('audio_seed', 12345),
-            'screen_width': fingerprint.get('screen_width', 1920),
-            'screen_height': fingerprint.get('screen_height', 1080),
+            'screen_width': fingerprint.get('screen_width', 1280),
+            'screen_height': fingerprint.get('screen_height', 720),
         }
 
         # Derive a "real-looking" extension ID from the canvas seed so it
@@ -5279,8 +5279,8 @@ class BrowserManager:
             'max_touch_points': fingerprint.get('max_touch_points', 0),
             'canvas_seed': fingerprint.get('canvas_seed', 12345),
             'audio_seed': fingerprint.get('audio_seed', 12345),
-            'screen_width': fingerprint.get('screen_width', 1920),
-            'screen_height': fingerprint.get('screen_height', 1080),
+            'screen_width': fingerprint.get('screen_width', 1280),
+            'screen_height': fingerprint.get('screen_height', 720),
             'timezone_offset': fingerprint.get('timezone_offset', -300),
             'connection_type': fingerprint.get('connection_type', '4g'),
             'connection_downlink': fingerprint.get('connection_downlink', 10),
@@ -6224,7 +6224,7 @@ class BrowserManager:
             'browser': 'Chrome',
             'browser_version': '147.0.0.0',
             'platform': 'Windows NT 10.0; Win64; x64',
-            'viewport': f"{viewport.get('width', 1920)}x{viewport.get('height', 1080)}",
+            'viewport': f"{viewport.get('width', 1280)}x{viewport.get('height', 720)}",
             'pixel_ratio': str(viewport.get('pixelRatio', 1.0)),
             'current_url': current_url or 'None',
             'session_start': time.strftime('%Y-%m-%d %H:%M:%S'),
