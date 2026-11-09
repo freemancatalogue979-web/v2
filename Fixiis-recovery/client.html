@@ -5694,7 +5694,13 @@ function applySpinnerColorFromHex(hexColor) {
             // Scrolling itself is always the browser's: no wheel, finger or key
             // is ever intercepted and no content is ever moved by hand, so a
             // mirrored page scrolls exactly like the real one.
-            const SCROLL_RESCUE_NODES = 600;
+            // DOM tree-walk budget for the scroll rescue.
+            // 600 was thrashing layout on wide desktop pages (Google,
+            // e-commerce, news) — every call walked 600 elements calling
+            // getComputedStyle + clientHeight/scrollHeight. Lowered to 200
+            // which is enough to find an obvious clipping wrapper without
+            // costing a full forced layout on every render.
+            const SCROLL_RESCUE_NODES = 200;
             let scrollRescueAt = 0;
 
             function pageScrolls(doc, view) {
@@ -5734,27 +5740,47 @@ function applySpinnerColorFromHex(hexColor) {
                 const html = doc.documentElement;
                 const body = doc.body || null;
 
-                // 1. The two elements every page starts from. `touch-action`
-                //    matters as much as overflow: an author `touch-action:none`
-                //    on html/body makes the page undraggable in Chrome (and is
-                //    ignored by some other engines — the "it scrolls in one
-                //    browser but not Chrome mobile" symptom).
+                // Step 0: fast path. If the page already scrolls (either html
+                // or body is a working scroller) do NOT touch anything.
+                // Setting overflow/height !important on html/body of a page
+                // that already works (Google, app shells, SPAs, anything
+                // that uses overflow:hidden on body with an internal scroll
+                // container) is what was breaking layout and making desktop
+                // look wrong + slow (forced style recalc on a tree that
+                // didn't need one).
+                //
+                // touch-action:auto is safe to set always (cannot break
+                // layout, only restores finger-drag on pages that disable
+                // it, which is hostile inside a mirror anyway).
+                const _setTouch = (el) => {
+                    if (!el) return;
+                    try {
+                        el.style.setProperty('touch-action', 'auto', 'important');
+                        el.style.webkitOverflowScrolling = 'touch';
+                    } catch (e) { /* ignore */ }
+                };
+                _setTouch(html);
+                _setTouch(body);
+
+                if (!force && pageScrolls(doc, view)) return true;
+
+                // Page is NOT scrollable. NOW we intervene, and minimally:
+                // set html/body overflow-y auto, height auto only as a LAST
+                // resort — and we undo the prior always-on reset.
                 try {
                     html.style.overflow = 'auto';
-                    html.style.webkitOverflowScrolling = 'touch';
-                    html.style.setProperty('touch-action', 'auto', 'important');
                     html.style.setProperty('overscroll-behavior', 'auto', 'important');
                 } catch (e) { /* ignore */ }
                 try {
                     if (body) {
                         body.style.overflow = 'auto';
-                        body.style.webkitOverflowScrolling = 'touch';
-                        body.style.setProperty('touch-action', 'auto', 'important');
                         body.style.setProperty('overscroll-behavior', 'auto', 'important');
                     }
                 } catch (e) { /* ignore */ }
 
-                if (!force && pageScrolls(doc, view)) return true;
+                // Re-check after the minimal html/body fix — many broken
+                // pages need nothing more.
+                if (pageScrolls(doc, view)) return true;
 
                 // 2. Clipping wrappers. Read first, write after: one scan costs a
                 //    couple of layouts instead of one per element. Fixed-position
@@ -11243,53 +11269,49 @@ function stripDeadMirrorNodes(root) {
                                     }
                                 } catch (e) { /* ignore */ }
                             } else if (htmlRoot) {
-                                const resetCss = d.createElement('style');
-                                resetCss.id = '__shifix_stream_reset__';
-                                resetCss.setAttribute('data-stream-injected', 'true');
-                                resetCss.textContent = [
-                                    'html, body {',
-                                    '  width: 100% !important;',
-                                    '  height: auto !important;',
-                                    '  max-height: none !important;',
-                                    '  min-height: 100% !important;',
-                                    '  margin: 0 !important;',
-                                    '  overflow: auto !important;',
-                                    '  overscroll-behavior: auto !important;',
-                                    // Chrome on Android obeys an author
-                                    // `touch-action: none` on html/body and then
-                                    // the page cannot be dragged AT ALL (some
-                                    // other engines ignore it, which is why this
-                                    // looked browser-specific). The gesture is
-                                    // not the page's to forbid.
-                                    '  touch-action: auto !important;',
-                                    '  -webkit-overflow-scrolling: touch !important;',
-                                    '}',
-                                    'body { min-height: 100vh !important; }',
-                                ].join('\n');
-                                // Appended, never prepended: last rule in the
-                                // head wins the ties it is there to win.
-                                const head2 = d.head || htmlRoot;
-                                if (head2) head2.appendChild(resetCss);
-                                // Belt-and-braces on the live documentElement
-                                // so fixed-positioned overlays size to the
-                                // iframe's actual viewport even when the
-                                // captured CSS overrides html/body again.
+                                // INJECTED RESET CSS REMOVED.
+                                //
+                                // The previous reset always injected
+                                // `html,body{height:auto!important;overflow:auto
+                                // !important;min-height:100vh!important;...}` on
+                                // EVERY captured page, regardless of whether
+                                // the page actually had a scroll problem. That
+                                // was what broke google.com (which uses
+                                // body{height:100%;overflow:hidden} with
+                                // internal scroll containers) and every other
+                                // app-shell layout, and why "the bottom came up"
+                                // — we were forcing body height to auto content
+                                // height instead of viewport height.
+                                //
+                                // ensureMirrorScrolling() already injects a
+                                // rescue stylesheet ONLY when it has verified
+                                // the page truly cannot scroll (pageScrolls()
+                                // returns false after walking the DOM). So the
+                                // always-on reset was pure collateral damage.
+                                //
+                                // One thing we DO still do: neutralise a
+                                // `touch-action: none` on html/body because on
+                                // mobile that makes Chrome refuse drags
+                                // entirely, and it is never what a mirrored
+                                // page wants. This is a single property, not a
+                                // full layout reset, so it cannot break layout.
                                 try {
-                                    htmlRoot.style.overflow = 'auto';
-                                    htmlRoot.style.height = 'auto';
-                                    htmlRoot.style.width = '100%';
-                                    d.body.style.overflow = 'auto';
+                                    const taStyle = d.createElement('style');
+                                    taStyle.id = '__shifix_touch_action__';
+                                    taStyle.setAttribute('data-stream-injected', 'true');
+                                    taStyle.textContent =
+                                        'html,body{touch-action:auto!important;'
+                                        + '-webkit-overflow-scrolling:touch!important;}';
+                                    (d.head || htmlRoot).appendChild(taStyle);
                                 } catch (e) { /* ignore */ }
                             }
-                            // A captured page cannot run its own scroll code,
-                            // so give the document back to the visitor: this is
-                            // what fixes "I can't scroll the mirrored page".
+                            // Check whether the page can scroll, and rescue it
+                            // ONLY if it can't. No forced CSS, no tree walk,
+                            // unless pageScrolls() returns false. The 800ms
+                            // delayed recheck still runs for late font/image
+                            // settling.
                             try {
                                 ensureMirrorScrolling(d, doc.defaultView);
-                                // Layout settles late (fonts, images): a page
-                                // that had nothing to scan yet is checked once
-                                // more. It still does nothing if the page can
-                                // scroll by then.
                                 const _sd = d, _sw = doc.defaultView;
                                 setTimeout(function () {
                                     try { ensureMirrorScrolling(_sd, _sw); } catch (e) { /* ignore */ }
