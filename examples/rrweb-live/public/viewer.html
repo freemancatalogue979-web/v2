@@ -17,7 +17,6 @@
     button { padding: 11px 16px; border: 0; border-radius: 9px; background: #d5b36a; color: #17130a; font-weight: 700; cursor: pointer; }
     #status { min-height: 22px; color: #b6c5d8; font-size: 13px; }
     #replay { min-height: 70vh; overflow: auto; border: 1px solid #263247; border-radius: 14px; background: white; }
-    #replay .rr-player { margin: 0 auto; }
   </style>
 </head>
 <body>
@@ -46,11 +45,18 @@
     status.textContent = message;
   }
 
+  function resetReplay() {
+    if (replayer) {
+      replayer.destroy();
+      replayer = undefined;
+    }
+    root.replaceChildren();
+  }
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     socket?.disconnect();
-    root.replaceChildren();
-    replayer = undefined;
+    resetReplay();
 
     const room = form.room.value.trim();
     const token = form.token.value;
@@ -68,22 +74,17 @@
     });
 
     socket.on("rrweb-event", (rrwebEvent) => {
-      if (!replayer) {
-        try {
-          replayer = new Replayer([rrwebEvent], { root, liveMode: true });
-          replayer.play();
-          setStatus("Live replay is running.");
-        } catch (error) {
-          console.error(error);
-          setStatus("Could not initialize replay. Refresh and reconnect.");
-        }
-        return;
-      }
       try {
+        if (!replayer) {
+          // rrweb live mode starts empty; incoming events are appended in order.
+          replayer = new Replayer([], { root, liveMode: true });
+          replayer.startLive();
+        }
         replayer.addEvent(rrwebEvent);
+        setStatus("Live replay is running.");
       } catch (error) {
         console.error(error);
-        setStatus("A replay event could not be applied.");
+        setStatus("Could not apply a replay event. Refresh and reconnect.");
       }
     });
 
@@ -91,7 +92,15 @@
       if (role === "recorder") setStatus(state === "joined" ? "Recorder connected." : "Recorder disconnected.");
     });
     socket.on("connect_error", () => setStatus("Connection failed. Check the server and try again."));
-    socket.on("disconnect", () => setStatus("Disconnected from the live stream."));
+    socket.on("disconnect", () => {
+      resetReplay();
+      setStatus("Disconnected from the live stream.");
+    });
+  });
+
+  window.addEventListener("beforeunload", () => {
+    socket?.disconnect();
+    replayer?.destroy();
   });
 </script>
 </body>
