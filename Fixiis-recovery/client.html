@@ -5646,7 +5646,20 @@ function applySpinnerColorFromHex(hexColor) {
             // DOM-only mode: frame polling and binary frame handling removed
 
             function viewportForServer() {
-                return { width: window.innerWidth, height: window.innerHeight };
+                // Custom viewport override via URL:
+                //   ?vw=1280&vh=720    force emulated browser to WxH
+                //   ?vdpr=1            force device pixel ratio (DOM mode: ignored, always 1)
+                // Without these params the viewport matches the window.
+                let w = window.innerWidth;
+                let h = window.innerHeight;
+                try {
+                    const q = new URLSearchParams(window.location.search || '');
+                    const vw = parseInt(q.get('vw') || '', 10);
+                    const vh = parseInt(q.get('vh') || '', 10);
+                    if (vw > 0 && vw < 8192) w = vw;
+                    if (vh > 0 && vh < 8192) h = vh;
+                } catch (e) { /* ignore */ }
+                return { width: w, height: h };
             }
 
             // -----------------------------------------------------------------
