@@ -43,12 +43,24 @@ const deltaBodyStart = capture.indexOf('"""', deltaStart) + 3;
 const deltaSrc = capture.slice(deltaBodyStart, capture.indexOf('"""', deltaBodyStart));
 
 ok(deltaSrc.includes('sheetRuleCount'), 'the observer can count a sheet\'s rules');
-ok(deltaSrc.includes('cssSignature'), 'it keeps a cheap signature of the cascade');
+ok(deltaSrc.includes('styleState'), 'it keeps a signature PER stylesheet');
 ok(deltaSrc.includes('flushStyleOps'), 'and a routine that ships a changed sheet');
 ok(deltaSrc.includes("pushCoalesced('s|' + id, ['s', id, css])"),
   'a changed <style> is re-sent from the CSSOM as an `s` op');
 ok(deltaSrc.includes("pushCoalesced('s|0', ['s', 0, adopted])"),
   'adopted stylesheets ride the same op (id 0)');
+// The signature is PER SHEET, not a page-wide aggregate.  An aggregate meant
+// that one sheet growing re-serialised and re-shipped the CSS of the WHOLE
+// page: on a modern app that turned one new message into a 4 MB batch, which
+// the relay dropped — the message never arrived.
+ok(!deltaSrc.includes('cssSignature'),
+  'the cascade is NOT signed as one page-wide aggregate');
+ok(/styleState\.set\(id, \{ rules: rules, css: css \}\)/.test(deltaSrc),
+  'each sheet remembers its own rule count and its own last-shipped text');
+ok(/prev\.css === css/.test(deltaSrc),
+  'a sheet whose text did not change is not re-shipped');
+ok(/STYLE_DEEP_MS/.test(deltaSrc),
+  'a rule replaced 1:1 (count unchanged) is caught by a rate-limited deep read');
 // Structural, not whitespace-sensitive: the CSSOM check must run inside the
 // flush, before the ops are taken off the queue.
 {
@@ -70,6 +82,9 @@ ok(client.includes("kind === 's'"), 'the mirror applies the `s` op');
 ok(client.includes("doc.querySelector('style[data-shf-adopted=\"1\"]')"),
   'including the adopted-stylesheet dump, created when the document has none');
 ok(client.includes('el.textContent = cssText'), 'by replacing the stylesheet text');
+ok(/if \(el\.textContent !== cssText\) el\.textContent = cssText;/.test(client),
+  'but ONLY when the text really differs — rewriting a stylesheet that already ' +
+  'holds these rules tears it down and cancels the CSS transitions running on it');
 ok(client.includes('if (!el) { continue; }'),
   'a style element the mirror does not have never forces a resync storm');
 
@@ -96,7 +111,7 @@ if (!jsdom) {
 
 const { JSDOM } = jsdom;
 const CELLS = 6;
-const html = `<!doctype html><html><head><style id="griffel"></style></head><body>
+const html = `<!doctype html><html><head><style id="griffel"></style><style id="other"></style></head><body>
   <div class="card"><h1>Enter your code</h1>
     <div id="code"></div>
   </div></body></html>`;
@@ -162,6 +177,18 @@ function wait(ms) {
   ok(mid > 0, 'the stylesheet has a mirror id (so the op has a target)');
   ok(styleOps.some((op) => Number(op[1]) === mid),
     'the `s` op targets that stylesheet');
+
+  // Only the sheet that CHANGED is re-shipped.  Re-shipping every sheet on
+  // the page meant one new message became a multi-megabyte batch (which the
+  // relay then dropped — so the message never arrived) and rewrote every
+  // stylesheet on the mirror, cancelling the CSS transitions the visitor
+  // was watching.
+  const otherMid = Number(doc.getElementById('other').getAttribute('data-mid'));
+  ok(otherMid > 0, 'the untouched stylesheet has a mirror id too');
+  ok(!styleOps.some((op) => Number(op[1]) === otherMid),
+    'the UNCHANGED stylesheet is not re-shipped');
+  ok(styleOps.length === 1,
+    'exactly one stylesheet was re-shipped (the one that changed), not every one');
 
   // The inputs themselves are carried too, attributes and all.
   const inserts = ops.filter((op) => op[0] === 'i');
