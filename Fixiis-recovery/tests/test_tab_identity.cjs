@@ -736,9 +736,20 @@ function makeSandbox(outer, mirror, extras = {}) {
   ok(/lastIndexOf/.test('') === false, 'noop');
 
   // The relay keeps the batch byte-exact, so the op flows through untouched.
-  const onDelta = py.slice(py.indexOf('async def _on_delta'), py.indexOf('async def _on_delta') + 4000);
+  // Slice the whole handler: a fixed-length peek used to stop short of the
+  // send line as soon as the relay grew, which read as a broken relay.
+  const onDeltaStart = py.indexOf('async def _on_delta');
+  const onDeltaEnd = py.indexOf('if not getattr(session, "_delta_binding_installed"', onDeltaStart);
+  const onDelta = py.slice(onDeltaStart, onDeltaEnd > onDeltaStart ? onDeltaEnd : onDeltaStart + 8000);
   ok(/"ops":' \+ payload_text/.test(onDelta), 'the relay forwards the ops JSON verbatim');
   ok(!/\[\['meta'/.test(onDelta), 'the server does not need to understand the op');
+  // An oversized batch is SPLIT, never dropped: dropping it left the mirror
+  // behind in silence, with the ops in it (a new message) simply lost.
+  ok(/_split_delta_ops/.test(onDelta), 'the relay splits a batch that does not fit one frame');
+  ok(/_record_delta_drop\("oversize"\)/.test(onDelta),
+    'and a batch that cannot be split at all is a recorded drop, not a silent one');
+  ok(!/len\(payload\) > 1_000_000/.test(onDelta),
+    'no batch is thrown away for being large');
 }
 
 // ---------------------------------------------------------------------------
