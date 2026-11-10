@@ -968,22 +968,6 @@ _FAST_SERIALIZE_JS = r"""
   };
   const styleSafe = (css) => css.replace(/<\//g, '<\\/');
 
-  const MIRROR_URL_ATTRS = new Set(['href','xlink:href','src','action','formaction',
-    'poster','background','cite','longdesc','lowsrc','dynsrc','data','profile','manifest']);
-  // Visual-only mirror: attributes that would execute code in the
-  // same-origin blob document must never cross into the capture.  Inline
-  // event handlers, javascript:/vbscript: URLs (leading C0 controls ignored,
-  // like the browser), and srcdoc iframes (they would run same-origin JS).
-  const dropMirrorAttr = (n, v) => {
-    const name = String(n || '');
-    if (/^on/i.test(name)) return true;
-    if (name.toLowerCase() === 'srcdoc') return true;
-    if (MIRROR_URL_ATTRS.has(name.toLowerCase()) && v != null) {
-      const s = String(v == null ? '' : v);
-      if (/^[\s\u0000-\u0020]*(javascript|vbscript)\s*:/i.test(s)) return true;
-    }
-    return false;
-  };
   const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
   const attrsFor = (el, tag) => {
     let s = '';
@@ -993,7 +977,6 @@ _FAST_SERIALIZE_JS = r"""
       const a = list[i];
       const n = a.name;
       if (n === MID) continue;
-      if (dropMirrorAttr(n, a.value)) continue;
       if (isFormCtl && (n === 'value' || n === 'checked' || n === 'selected')) continue;
       s += ' ' + n + '="' + escAttr(a.value) + '"';
     }
@@ -1220,7 +1203,6 @@ _FAST_SERIALIZE_JS = r"""
       for (let i = 0; i < list2.length; i++) {
         const a = list2[i];
         if (a.name === 'src' || a.name === 'srcset' || a.name === MID) continue;
-        if (dropMirrorAttr(a.name, a.value)) continue;
         // Native lazy-loading would defer an image that is already in the
         // viewport of the mirror; the capture is a photograph of a loaded
         // page, so every image loads eagerly.
@@ -1289,7 +1271,6 @@ _FAST_SERIALIZE_JS = r"""
           for (let i = 0; i < listC.length; i++) {
             const a = listC[i];
             if (a.name === MID) continue;
-            if (dropMirrorAttr(a.name, a.value)) continue;
             if (a.name === 'style') {
               out.push(' style="background: url(' + dataUrl + ') center/contain no-repeat; ' + escAttr(a.value) + '"');
               styleAdded = true;
@@ -1305,10 +1286,6 @@ _FAST_SERIALIZE_JS = r"""
           return;
         }
       } catch (e) {}
-    }
-    if (tag === 'meta') {
-      const he = String(el.getAttribute('http-equiv') || '').trim().toLowerCase();
-      if (he === 'refresh') return;   // a mirror must never navigate itself
     }
     out.push('<', tag);
     out.push(attrsFor(el, tag));
@@ -3798,11 +3775,20 @@ _INTERACTION_TRIGGER_JS = r"""
     // signal per full document, so a navigation is never missed no
     // matter which path produced it.
     // -------------------------------------------------------------------
+    // The URL THIS DOCUMENT has already announced.  A document load and a
+    // same-document URL change are different events, but both announce
+    // "navigation" — so a page that pushed its URL during parse (a router
+    // normalising the path, a canonical-URL rewrite) announced the SAME
+    // URL twice and the server captured the whole document twice for one
+    // navigation.
+    var announcedThisDocument = null;
+
     function emitNavigation() {
         try {
             var href = String(window.location.href);
             if (window.__shifixLastNavUrl === href) return;
             window.__shifixLastNavUrl = href;
+            announcedThisDocument = href;
             if (typeof window.__domCaptureRequest === "function") {
                 window.__domCaptureRequest("navigation", href);
             }
@@ -3830,9 +3816,19 @@ _INTERACTION_TRIGGER_JS = r"""
         // nothing to poll and nothing to wait out on its side.
         if (document.readyState === "loading") {
             document.addEventListener("DOMContentLoaded", function () {
-                window.__shifixLastNavUrl = String(window.location.href);
+                var href = String(window.location.href);
+                // A document load is announced even when the URL did not
+                // change — a reload IS a new document.  But if this
+                // document already announced its own URL (a router pushed
+                // it during parse, a canonical-URL rewrite), that
+                // announcement IS this document's navigation: announcing
+                // again made the server capture the WHOLE document a
+                // second time for one navigation.
+                if (announcedThisDocument === href) return;
+                window.__shifixLastNavUrl = href;
+                announcedThisDocument = href;
                 if (typeof window.__domCaptureRequest === "function") {
-                    window.__domCaptureRequest("navigation", String(window.location.href));
+                    window.__domCaptureRequest("navigation", href);
                 }
             }, { once: true });
         }
@@ -4022,8 +4018,22 @@ _DELTA_OBSERVER_JS = r"""
   // boxes laid out as full-width default inputs, in the wrong place, instead
   // of six small rounded cells.
   //
-  // The rule COUNT is a cheap signature (O(sheets), no serialisation); when it
-  // changes the affected <style> elements are re-sent from the CSSOM.
+  // Each <style> element is tracked on its OWN.  A page-wide aggregate
+  // signature (the sum of every sheet's rule count) meant that ONE sheet
+  // growing re-serialised and re-shipped the CSS of the WHOLE page: on a
+  // modern app with 150 <style> elements that turned a single new chat
+  // message into a 4 MB delta batch, which the relay then dropped on the
+  // floor — the message never arrived, and every stylesheet was rewritten
+  // on the mirror, cancelling the CSS transitions the visitor was watching.
+  //
+  // So the signature is per sheet:
+  //   * FAST PATH (every flush): the rule COUNT is an O(1) read.  When it
+  //     moved, that sheet changed — serialise it and ship it only if the
+  //     text really differs from what we shipped last.
+  //   * DEEP PATH (rate-limited): a rule replaced 1:1 leaves the count
+  //     untouched, so every STYLE_DEEP_MS the sheets are re-read and
+  //     compared.  It only runs when the fast path found nothing, so a
+  //     busy page never pays for it.
   const rulesToCss = (rules, depth) => {
     let css = '';
     try {
@@ -4066,29 +4076,97 @@ _DELTA_OBSERVER_JS = r"""
   const styleElements = () => {
     try { return document.querySelectorAll('style'); } catch (e) { return []; }
   };
-  const cssSignature = () => {
-    let n = 0;
-    const els = styleElements();
-    for (let i = 0; i < els.length; i++) n += sheetRuleCount(els[i].sheet);
-    return n + '/' + els.length + '/' + adoptedRuleCount();
+  // ---- per-stylesheet change detection -----------------------------------
+  const STYLE_DEEP_MS = 1200;
+  const styleState = new Map();          // mid -> { rules: Number, css: String }
+  let adoptedState = { rules: 0, css: '' };
+  let styleDeepAt = 0;
+
+  // Record what a stylesheet holds right now, without shipping it.
+  const rememberSheet = (id, rules, css) => {
+    styleState.set(id, { rules: rules, css: css });
   };
-  let lastCssSig = cssSignature();
-  const flushStyleOps = () => {
-    const sig = cssSignature();
-    if (sig === lastCssSig) return false;
-    lastCssSig = sig;
+
+  // Baseline the sheets that exist at install time.  A sheet that grows
+  // later is detected against this baseline; a sheet that appears later
+  // arrives with its own insert op (the serializer writes the live CSS
+  // into the subtree), so there is nothing to ship for it.
+  const seedStyleState = () => {
     const els = styleElements();
     for (let i = 0; i < els.length; i++) {
       const el = els[i];
-      const css = liveSheetCss(el.sheet);
-      if (!css) continue;                  // empty or cross-origin: nothing to add
       const id = midOf(el);
       if (!id) continue;
-      pushCoalesced('s|' + id, ['s', id, css]);
+      rememberSheet(id, sheetRuleCount(el.sheet), liveSheetCss(el.sheet));
     }
-    const adopted = adoptedLiveCss();
-    if (adopted) pushCoalesced('s|0', ['s', 0, adopted]);
-    return true;
+    styleDeepAt = Date.now();
+  };
+
+  const flushStyleOps = () => {
+    const els = styleElements();
+    if (!els.length) return false;
+    const now = Date.now();
+    // ---- fast path: whose rule COUNT moved? (O(1) per sheet) ----
+    let suspects = null;
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
+      const id = midOf(el);
+      if (!id) continue;
+      const prev = styleState.get(id);
+      const rules = sheetRuleCount(el.sheet);
+      if (prev && prev.rules === rules) continue;      // untouched
+      if (!suspects) suspects = [];
+      suspects.push([el, id, rules, !!prev]);
+    }
+    // ---- deep path: a rule replaced 1:1 leaves the count alone ----
+    if (!suspects && (now - styleDeepAt) >= STYLE_DEEP_MS) {
+      styleDeepAt = now;
+      suspects = [];
+      for (let i = 0; i < els.length; i++) {
+        const el = els[i];
+        const id = midOf(el);
+        if (!id) continue;
+        suspects.push([el, id, sheetRuleCount(el.sheet), styleState.has(id)]);
+      }
+    }
+    if (!suspects) return false;
+    let shipped = 0;
+    for (let i = 0; i < suspects.length; i++) {
+      const el = suspects[i][0], id = suspects[i][1], rules = suspects[i][2];
+      const known = suspects[i][3];
+      const css = liveSheetCss(el.sheet);
+      const prev = styleState.get(id);
+      if (!known) {
+        // A sheet we have never recorded arrives with its own insert op —
+        // the serializer writes the live CSS into the subtree — so there is
+        // nothing to ship for it.  Just remember it, so a later growth is
+        // detected against this baseline.
+        rememberSheet(id, rules, css);
+        continue;
+      }
+      if (prev && prev.css === css) {
+        // Same text as last time — the mirror already has it.  Shipping it
+        // again would rewrite the stylesheet on the mirror for nothing, and
+        // rewriting a stylesheet cancels the CSS transitions running on it.
+        rememberSheet(id, rules, css);
+        continue;
+      }
+      rememberSheet(id, rules, css);
+      pushCoalesced('s|' + id, ['s', id, css]);
+      shipped++;
+    }
+    // Adopted (constructable) stylesheets are one logical sheet.
+    const adoptedRules = adoptedRuleCount();
+    if (adoptedRules !== adoptedState.rules) {
+      const adopted = adoptedLiveCss();
+      adoptedState.rules = adoptedRules;
+      if (adopted && adopted !== adoptedState.css) {
+        adoptedState.css = adopted;
+        pushCoalesced('s|0', ['s', 0, adopted]);
+        shipped++;
+      }
+    }
+    return shipped > 0;
   };
 
   // The full serializer has these; the delta serializer needs them too now
@@ -4214,7 +4292,7 @@ _DELTA_OBSERVER_JS = r"""
   // The batch ships in exactly that order, so structure exists before its
   // state and content are applied on the mirror; text indices computed in the
   // live document stay valid because everything structural has landed first.
-  const PHASE_OF = { r: 0, i: 1, a: 2, t: 3, v: 4, s: 5, overflow: 6, meta: 7, err: 7, nav: 7 };
+  const PHASE_OF = { r: 0, i: 1, a: 2, t: 3, v: 4, s: 5, overflow: 6, meta: 7 };
   const flush = () => {
     scheduled = false;
     // The set below only describes the batch being shipped; a later batch must
@@ -4275,45 +4353,6 @@ _DELTA_OBSERVER_JS = r"""
       complain();
     } catch (e) { complain(); }
   };
-  // SPA navigation watcher: history.pushState/replaceState and
-  // popstate/hashchange move the URL with NO document load, so the full-
-  // document navigation control never fires and a URL poll would notice
-  // seconds too late. Wrap the history methods and listen for both events;
-  // the ['nav'] control op rides the very next batch (flush is scheduled
-  // synchronously), so the mirror's URL state tracks the page itself.
-  try {
-    if (!window.__shifixSpaNavWatched) {
-      window.__shifixSpaNavWatched = 1;
-      const spaNav = () => {
-        try {
-          const url = String(location.href || '');
-          if (!url || url === window.__shifixSpaNavLast) return;
-          window.__shifixSpaNavLast = url;
-          ops.push(['nav', url, 'spa']);
-          if (ops.length > OP_CAP) markOverflow();
-          schedule();
-        } catch (e) { /* ignore */ }
-      };
-      const wrapHistory = (name) => {
-        try {
-          const original = window.history[name];
-          if (typeof original !== 'function' || original.__shifixWrapped) return;
-          const wrapped = function () {
-            const ret = original.apply(this, arguments);
-            try { spaNav(); } catch (e) { /* ignore */ }
-            return ret;
-          };
-          wrapped.__shifixWrapped = 1;
-          window.history[name] = wrapped;
-        } catch (e) { /* ignore */ }
-      };
-      wrapHistory('pushState');
-      wrapHistory('replaceState');
-      window.addEventListener('popstate', spaNav, true);
-      window.addEventListener('hashchange', spaNav, true);
-    }
-  } catch (e) { /* ignore */ }
-
   const push = (op) => {
     if (overflowed) return;
     ops.push(op);
@@ -4621,63 +4660,6 @@ _DELTA_OBSERVER_JS = r"""
   hookProperty(window.HTMLSelectElement, 'selectedIndex', markSelect);
   hookProperty(window.HTMLSelectElement, 'value', markSelect);
 
-  // ---- page-side failure telemetry -------------------------------------
-  // The visitor stares at a mirror; if the REAL page is throwing, that is
-  // the single most useful signal that something is broken right now. This
-  // BOUNDARY is the only place such failures are visible. Uncaught
-  // exceptions, unhandled rejections and dead subresources (capture phase)
-  // are shipped as ['err', kind, message, source, line] control ops; the
-  // client renders them as a small badge. Bounded and deduped: at most 20
-  // per document, identical failures at most once per 5 s.
-  const ERR_CAP = 20;
-  const ERR_DEDUPE_MS = 5000;
-  const errSeen = new Map();   // key -> ts
-  let errCount = 0;
-  const pushErr = (kind, message, source, line) => {
-    try {
-      if (errCount >= ERR_CAP) return;
-      const msg = String(message == null ? 'unknown error' : message);
-      const src = String(source || '');
-      const key = kind + '|' + msg.slice(0, 120) + '|' + src.slice(0, 120);
-      const now = Date.now();
-      const last = errSeen.get(key);
-      if (last && now - last < ERR_DEDUPE_MS) return;
-      errSeen.set(key, now);
-      if (errSeen.size > 100) errSeen.clear();
-      errCount++;
-      ops.push(['err', String(kind).slice(0, 16), msg.slice(0, 300), src.slice(0, 200),
-        line ? (Number(line) | 0) : 0]);
-      schedule();
-    } catch (e) { /* telemetry must never break the observer */ }
-  };
-  try {
-    window.addEventListener('error', (event) => {
-      const target = event.target;
-      // A dead subresource fires `error` on the element; capture phase from
-      // the window catches it. Page-uncaught errors have target === window.
-      if (target && target !== window && target.tagName) {
-        const tag = String(target.tagName).toUpperCase();
-        if (tag === 'IMG' || tag === 'SCRIPT' || tag === 'LINK' || tag === 'IFRAME'
-            || tag === 'AUDIO' || tag === 'VIDEO' || tag === 'SOURCE' || tag === 'TRACK') {
-          pushErr('resource', tag.toLowerCase() + ' failed to load',
-            target.currentSrc || target.src || target.href || '', 0);
-          return;
-        }
-      }
-      const msg = event.message
-        || (event.error && (event.error.stack || event.error.message))
-        || 'uncaught error';
-      pushErr('uncaught', msg, event.filename || '', event.lineno || 0);
-    }, true);
-    window.addEventListener('unhandledrejection', (event) => {
-      const reason = event.reason;
-      const msg = reason && (reason.stack || reason.message)
-        ? (reason.stack || reason.message)
-        : String(reason);
-      pushErr('rejection', msg, '', 0);
-    });
-  } catch (e) { /* ignore */ }
-
   const onFormEvent = (e) => {
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) pushVal(t);
@@ -4685,6 +4667,11 @@ _DELTA_OBSERVER_JS = r"""
   document.addEventListener('input', onFormEvent, true);
   document.addEventListener('change', onFormEvent, true);
   window.__shifixDeltaFlush = flush;
+  // Baseline the stylesheets that exist right now, so a sheet that grows
+  // later is measured against what the mirror already holds.  A sheet that
+  // appears later is not shipped from here: it arrives with its own insert
+  // op, which already carries the live CSS.
+  try { seedStyleState(); } catch (e) { /* ignore */ }
   // A component can insert its rules a moment after it mounts, with no
   // further DOM change. 1.2 s of rule counting is cheap; a mirror missing a
   // component's styles is not.
@@ -4710,6 +4697,72 @@ _DELTA_OBSERVER_JS = _DELTA_OBSERVER_JS.replace(
 )
 
 
+# The relay refuses frames larger than this.  An oversized batch is SPLIT,
+# never dropped: dropping it silently left the mirror behind with no way
+# back, because the ops inside it (a new message, a state change) simply
+# never arrived and nothing said so.  That broke the "no silent drops"
+# contract the delta channel is built on.
+MAX_DELTA_FRAME_BYTES: int = max(
+    64_000, int(os.environ.get("DOM_DELTA_MAX_FRAME_BYTES", "1000000"))
+)
+
+
+def _split_delta_ops(payload_text: str, limit: int) -> List[str]:
+    """Split a JSON ops array into frames that each stay under ``limit``.
+
+    The payload is ``[[op, ...], [op, ...]]`` — a compact JSON array of op
+    arrays.  Splitting on top-level element boundaries keeps the ops in
+    order, so the phase ordering the observer guarantees ("structure before
+    state") survives the split.  Returns ``[]`` when a single op is larger
+    than the limit: that batch cannot be split, and the caller turns it
+    into a recorded drop so the mirror converges on a fresh document.
+    """
+    if len(payload_text) <= limit:
+        return [payload_text]
+    starts: List[int] = []
+    ends: List[int] = []
+    depth = 0
+    in_str = False
+    esc = False
+    start = -1
+    i = 0
+    n = len(payload_text)
+    while i < n:
+        ch = payload_text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "[":
+                if depth == 1:
+                    start = i
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 1 and start >= 0:
+                    starts.append(start)
+                    ends.append(i + 1)
+        i += 1
+    if not starts:
+        return []
+    chunks: List[str] = []
+    cur = starts[0]
+    for idx in range(len(starts)):
+        if ends[idx] - cur + 2 > limit:
+            if idx == 0:
+                return []          # a single op is over the limit
+            chunks.append("[" + payload_text[cur:ends[idx - 1]] + "]")
+            cur = starts[idx]
+    chunks.append("[" + payload_text[cur:ends[-1]] + "]")
+    return chunks
+
+
 async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bool:
     """Install the delta observer + ``__domDelta`` relay binding.
 
@@ -4728,7 +4781,7 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                 return
             if session.websocket is None or session._stopped:
                 return
-            if not isinstance(payload, str) or not payload or len(payload) > 1_000_000:
+            if not isinstance(payload, str) or not payload:
                 return
             # JSON.stringify in the page always emits a compact array of
             # operation arrays.  Shape-check the text and keep it intact for
@@ -4773,15 +4826,36 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
             # exact JSON text instead of parsing and serializing the operation
             # list a second time.  Recheck inflight state under the send lock
             # so a full recovery cannot be followed by an old-generation patch.
+            #
+            # A batch that does not fit one frame is SPLIT, in order, across
+            # several frames — never dropped.  Dropping it was silent: the
+            # ops in it (a new message, a state change) never arrived and
+            # nothing said so, so the mirror just went quiet.
+            chunks = _split_delta_ops(payload_text, MAX_DELTA_FRAME_BYTES)
+            if not chunks:
+                # A single op is over the limit: it cannot be split.  Record
+                # the drop so the mirror converges on a fresh document
+                # instead of staying behind in silence.
+                session._record_delta_drop("oversize")
+                return
             async with session._ws_send_lock:
                 if session._send_inflight:
                     session._record_delta_drop("send_race")
                     return
                 gen = int(session._gen)
                 doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
-                frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + payload_text + '}'
-                await session.websocket.send_text(frame)
-                session._inactive_drop_streak = 0
+                if len(chunks) == 1:
+                    # The normal case: the ops JSON is forwarded byte-exact,
+                    # never parsed and re-serialised.
+                    frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + payload_text + '}'
+                    await session.websocket.send_text(frame)
+                else:
+                    # Too big for one frame: send it in order, as several
+                    # frames.  The client applies them in sequence, so the
+                    # observer's phase order still holds.
+                    for chunk in chunks:
+                        frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + chunk + '}'
+                        await session.websocket.send_text(frame)
         except Exception as exc:
             logger.debug("delta relay failed: %s", exc)
 
@@ -4832,7 +4906,7 @@ async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") 
                     # second per session.
                     now = time.monotonic()
                     last = getattr(session, "_last_unhealthy_resync_t", 0.0)
-                    if now - last >= 5.0 and not session._send_inflight:
+                    if now - last >= 1.0:
                         session._last_unhealthy_resync_t = now
                         announced = target_desc if (
                             isinstance(target_desc, str)
@@ -5023,8 +5097,6 @@ class DOMCaptureSession:
         self._prefetch_running = False
         self._delta_active: bool = False     # current client generation has data-mid
         self._delta_drops: int = 0           # patches the relay could not send
-        self._inactive_drop_streak: int = 0  # consecutive inactive-gate drops
-        self._last_drop_recovery_t: float = 0.0
         self._delta_drop_task: Optional[asyncio.Task] = None
         self._last_unhealthy_resync_t: float = 0.0
         self._explicit_navigation_in_progress: bool = False
@@ -5160,14 +5232,13 @@ class DOMCaptureSession:
             logger.debug("asset lease release failed for %s", self.client_id, exc_info=True)
 
     def _record_delta_drop(self, why: str) -> None:
-        """Track patches the relay could not send.
+        """Patches that could not be relayed must not vanish silently.
 
-        A patch dropped during a full send is NORMAL — the document being
-        built supersedes it — and must never schedule work; scheduling one
-        recovery per dropped patch caused a permanent full-capture loop after
-        every interaction. Only a SUSTAINED stream against the inactive gate
-        (no full document able to cover the patches) may produce one
-        recovery, at most one per 10 seconds.
+        A dropped patch means server and mirror can no longer be trusted to
+        agree, so schedule exactly one coalesced recovery document.  Drops
+        during bootstrap or an in-progress navigation are normal and are not
+        recaptured here — the full document that owns that window will
+        supersede anything we could send.
         """
         try:
             dropped = int(getattr(self, "_delta_drops", 0)) + 1
@@ -5177,20 +5248,6 @@ class DOMCaptureSession:
                     "dc delta drop #%d (%s) client=%s",
                     dropped, why, self.client_id,
                 )
-            if why != "inactive":
-                # full_send_inflight / send_race — superseded by the inflight
-                # document by design. Bookkeeping only, never a recapture.
-                return
-            streak = int(getattr(self, "_inactive_drop_streak", 0)) + 1
-            self._inactive_drop_streak = streak
-            if streak < 3:
-                return
-            now = time.monotonic()
-            last = getattr(self, "_last_drop_recovery_t", 0.0)
-            if now - last < 10.0:
-                return
-            self._last_drop_recovery_t = now
-            self._inactive_drop_streak = 0
             if not self.has_initial_capture or self._explicit_navigation_in_progress:
                 return
             task = getattr(self, "_delta_drop_task", None)
@@ -5204,9 +5261,7 @@ class DOMCaptureSession:
         """One coalesced full document after dropped patches (convergence)."""
         try:
             await asyncio.sleep(DELTA_DROP_DELAY_S)
-            if self._stopped or self._send_inflight:
-                # A capture is already on the wire; the follow-up it will
-                # schedule carries the newest DOM anyway. Never stack ours.
+            if self._stopped:
                 return
             await self.send_page(reason="delta_drop")
         except Exception as exc:
@@ -5594,7 +5649,6 @@ class DOMCaptureSession:
                 self._last_checksum = _free_checksum
             self._capture_fail_streak = 0
             self._delta_active = capture_delta_active
-            self._inactive_drop_streak = 0
             for meta in assets_to_send:
                 digest = meta.get("hash")
                 if digest:
