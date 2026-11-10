@@ -819,19 +819,15 @@ element, the page changes server side, it never comes to the client. The
 mutation observer is not working." With the pipeline audited end to end,
 the failure class was found and removed in three places:
 
-1. **Drops are counted, never silently fatal — and never looped.**  Every
-   gate in the delta relay (`_delta_active` off, full send in flight,
-   send-lock race) counts the drop (`session._delta_drops`). Patches dropped
-   WHILE A FULL DOCUMENT IS BEING SENT are superseded by it by design —
-   bookkeeping only, never a recapture. Only a SUSTAINED stream against the
-   inactive gate (≥3 drops, at most one recovery per 10 s) produces one
-   coalesced recovery document (`DOM_DELTA_DROP_RECAP_S` debounce), and a
-   recovery never stacks onto an inflight send. The first revision of this
-   section recaptured on ANY drop — that looped full documents after every
-   interaction and made the mirror unusable (sluggish, "updates never
-   arrive"); inflight drops are now explicitly excluded. A genuinely stuck
-   inactive gate heals within seconds; a dead page still needs a
-   resync_request.
+1. **Drops are no longer silent.**  Every gate in the delta relay that
+   used to swallow a patch (`_delta_active` off, full send in flight,
+   send-lock race) now counts the drop (`session._delta_drops`) and
+   schedules ONE coalesced recovery full document after ~350 ms
+   (`_delta_drop_recapture`, `DOM_DELTA_DROP_RECAP_S`). Drops during
+   bootstrap or an explicit in-progress navigation are excluded by design
+   — the full document that owns that window supersedes them.  Convergence
+   is now guaranteed: if the observer sent anything the client could not
+   receive, the client gets a fresh document, never nothing.
 2. **If the observer's binding is dead it SAYS SO.**  `flush()` now
    reports `resync:delta-unhealthy` through the trigger binding (a second,
    independently installed channel) when `window.__domDelta` is missing or
@@ -873,10 +869,9 @@ were updated — that control op moved to the trigger by design in (c)).
 
 New tests: tests/test_delta_health.cjs (batch phase order r<i<a<t<v<s<meta;
 missing binding reports resync:delta-unhealthy — 8 checks),
-test_capture_roundtrips.py section 6 (one inactive drop does NOT
-recapture; sustained inactive drops converge to exactly one document; an
-inflight-superseded drop never recaptures; bootstrap stays quiet —
-41 checks total). All python suites pass.
+test_capture_roundtrips.py section 6 (a patch dropped at the gate
+converges to exactly one delta_drop recovery document, and does NOT fire
+during bootstrap — 37 checks total). All python suites pass.
 
 What this does NOT fix (and said so out loud): a genuinely wedged browser
 (page itself hung — no JS timers firing, MO starved) is invisible to an
@@ -885,141 +880,78 @@ recapture, delta_unhealthy) all converge within about a second of any
 signal; a fully dead page has no signal to give, and only a full recapture
 cadence would catch it — a trade we deliberately did not make.
 
-## 2026-11-08 (e) — Tier 1 optimistic UI: the click paints now, the server confirms
+## 2026-11-08 (e) — the CSS channel stops re-shipping the whole page
 
-User directive: stop waiting a round trip to show what the visitor obviously
-triggered. When the effect is unambiguous from the markup, the mirror flips
-it at click time; the delta channel has the last word.
+The report: "the update DOM logic is flawed — it's so slow, and CSS
+transitions and new messages are missing."  With the delta channel audited
+end to end, one mechanism explained all three symptoms at once.
 
-Implemented in `client.html`, inside `setupIframeEventListeners` (the click
-funnel shared by mouse/pointerup/Enter/tap), right after the existing
-checkbox/radio optimistic flip:
+**The cascade was signed as one page-wide aggregate.**  `cssSignature()`
+summed the rule count of *every* `<style>` element on the page.  When that
+number moved, `flushStyleOps()` re-serialized and re-shipped the CSS of
+*every* stylesheet — not the one that changed.  One `insertRule()` anywhere
+(the normal way a chat page styles a new message) therefore republished the
+whole page's CSS.
 
-- `<summary>` click → parent `<details open>` toggles;
-- `[aria-expanded]` toggles, and a panel named by `aria-controls` toggles
-  its `hidden` to match;
-- `[role=tab]` → `aria-selected` true on it / false on the sibling tabs in
-  the nearest `[role=tablist]` (or parent), other tabs' controlled panels
-  hide, its own shows;
-- `[role=switch]` / `[role=checkbox]` on non-INPUT elements → `aria-checked`
-  toggles.
+Measured with the real observer in jsdom, one new message on a page with 150
+stylesheets produced a **4.1 MB** delta batch; a page with 60 stylesheets
+produced 1.08 MB.  The relay refused anything over 1 MB:
 
-Attribute-only. Never forms, never navigation, never submits — those are
-encoded nowhere in these branches, so a mutation can never fire. No page JS
-is executed (Tier 2 was evaluated and rejected: the blob iframe is
-same-origin with the client, the mirror holds no session cookies, and a
-mutating action would double-fire against the already-replayed server side).
+    if not isinstance(payload, str) or not payload or len(payload) > 1_000_000:
+        return
 
-Every flip writes `data-shf-optimistic="<attr>"` and pushes `{el, name, prev,
-t}` to a per-page registry. A shared 300 ms sweeper reverts any entry older
-than ~900 ms whose marker is untouched (server silence ⇒ unflip). The delta
-`a`-op path clears the marker when the server echoes that exact attribute,
-which cancels the revert — the server's value always wins. Entries whose
-element left the document (full-document swap) are pruned by `isConnected`.
-Tests: tests/test_optimistic_flips.cjs (20 checks: instant flip on all four
-patterns, revert on silence, echo wins, unrelated echo does not confirm,
-removed node pruned registry).
+That `return` was **silent** — no log, no drop counter, no resync — and it
+threw away *every* op in the batch, the new message included.  So the same
+CSS churn that made the pipeline slow also made the mirror go quiet: the
+message never arrived, and nothing said why.  (The delta channel's own
+contract is "drops are no longer silent" — this gate was the one that
+still was.)
 
-Honest status: NOT yet verified in the field. The jsdom harness proves the
-state machine; whether the snappy paint feels right on a real throttled
-connection is the user's call.
+And on the mirror, each `s` op did `el.textContent = cssText` on every
+stylesheet.  Replacing a stylesheet's text tears the sheet down and builds
+it again, which cancels the CSS transitions and animations running on it —
+so the transitions the visitor was watching never got to finish.
 
-## 2026-11-08 (f) — mirror sanitizer: inline handlers and javascript: URLs can never ride the mirror
+Three changes:
 
-An external architecture review (paste from the user) surfaced the same
-gap its "Three critical fixes A" described, and the gap was real: captures
-strip `<script>` tags, but an inline event handler (`<img onerror=...>`) is
-not a script tag, and the blob iframe is same-origin with the client — a
-handler would run with full access to this document. Same for
-`javascript:`/`vbscript:` URLs, `srcdoc` iframes (same-origin JS by
-construction), and `<meta http-equiv=refresh>` (the mirror could navigate
-itself to an unsanitized page). `setAttribute('onclick', ...)` from a delta
-attribute op would have compiled too.
+1. **The signature is per stylesheet.**  Each `<style>` is tracked on its
+   own — its rule count and the text last shipped for it.  The fast path
+   (every flush) reads the rule COUNT, which is O(1) per sheet, and
+   serializes only the sheets whose count moved; a sheet whose text did
+   not actually change is not shipped at all.  A rule replaced 1:1 leaves
+   the count untouched, so a rate-limited deep read (1.2 s, and only when
+   the fast path found nothing) catches that case too.  Measured with the
+   same probe: the 4.1 MB batch became **61 bytes**, and the message op
+   that rode in it now arrives.
 
-Two layers now:
+2. **An oversized batch is split, not dropped.**  The relay cuts the ops
+   array on top-level op boundaries and sends the pieces as several
+   frames, in order — the observer's phase order ("structure before
+   state") survives the split.  A batch whose single op is over the cap
+   cannot be split, and that is now a **recorded drop**
+   (`_record_delta_drop("oversize")`), so the mirror converges on a fresh
+   document instead of staying behind in silence.  The normal path is
+   untouched: the ops JSON is still forwarded byte-exact, never parsed and
+   re-serialized.
 
-- server (`dom_capture.py` serializer): `dropMirrorAttr` inside the
-  capture-time attribute loops (generic / img / canvas) skips any `on*`
-  attribute, `srcdoc`, and C0-control/whitespace-padded
-  `javascript:`/`vbscript:` URLs; `<meta http-equiv=refresh>` is dropped
-  whole.
-- client (`client.html`): `sanitizeMirrorElement` + `walkMirrorElements`
-  (shadow-root deep) run inside `stripDeadMirrorNodes`, which is already
-  the choke point for every document the mirror shows — the full-document
-  iframe onload (now sanitized before ANY listener is wired), delta insert
-  fragments, and the legacy outerHTML path. The delta `a`-op refuses to
-  apply mirror-hostile attributes outright (attribute *removals* still
-  apply — always safe). A string-level meta-refresh scrub happens before
-  the blob is even created.
+3. **The mirror does not rewrite a stylesheet that already holds the text.**
+   `if (el.textContent !== cssText) el.textContent = cssText;` — the
+   stylesheet stays standing, so the transitions running on it survive.
 
-Tests: tests/test_mirror_sanitize.cjs (26 checks, incl. shadow roots,
-SVG handlers, padded/mixed-case URLs, meta refresh, marker removals).
+A fourth, smaller one: the navigation announcement.  The trigger's
+`DOMContentLoaded` handler announced the document load even when the page
+had already announced that same URL (a router pushing its path during
+parse, a canonical-URL rewrite).  Two announcements meant the server
+captured the **whole document twice** for one navigation.  The document
+load is still announced when the URL did not change (a reload IS a new
+document), but not twice for the same URL.  `tests/test_live_navigation.cjs`
+was failing on the branch this section describes (11 passed, 2 failed) and
+now passes.
 
-Deliberately NOT done this turn: the review's live-stylesheet channel
-(`CSS.styleSheetChanged` → `STYLESHEET` patch). Rules inserted via
-`insertRule()` with no DOM touch are invisible to our MutationObserver and
-stay stale until the next full capture — but doing it properly means a
-persisted CDP session plus a stylesheetId→<style data-shf-adopted>
-mapping, which is a risk of its own. Deferred knowingly; full captures
-already re-materialize CSSOM text, so fidelity self-heals at capture time.
-
-## 2026-11-08 (g) — page health telemetry: the mirror tells you the page is sick
-
-Field symptom behind this: "something is really wrong bro" with no signal —
-the visitor staring at the mirror has no way to know the real page is
-throwing underneath it. Until now nothing captured page-side failure at
-all (recon: zero coverage outside Admin.html's own client code).
-
-Observer side (`dom_capture.py`, in-page delta observer): a window-level
-capture-phase `error` listener (uncaught exceptions AND dead subresources —
-IMG/SCRIPT/LINK/IFRAME/AUDIO/VIDEO/SOURCE/TRACK failures fire `error` on the
-element) plus `unhandledrejection`. Identical failures are deduped within
-5 s (keyed on kind+message+source), capped at 20 ops per document, and
-shipped as a control op `['err', kind, message, source, line]`. The op rides
-the normal batch and lands in phase 7, dead last with tab meta — it can
-never reorder or gate DOM work, and unknown-harness clients that never
-handle it simply ignore it (the op loop's fall-through does not count
-missing, so it cannot trigger resyncs).
-
-Client side (`client.html`): the `err` branch routes to `notePageError()`,
-which ring-buffers into `window.__shfPageErrors` (50, session-scoped) and
-shows a small fixed badge ("⚠ N page errors") bottom-right. Clicking it
-opens a panel listing the last 20 failures — chip + message + where — all
-`textContent`-only, because the message is attacker-influenced. Dismiss
-removes badge and panel.
-
-Deliberately NOT hooked: `console.error` (page spam, and a hostile page
-could spray the shell), cross-origin script details (the browser withholds
-them by design — the mirror cannot learn more than the page can), and any
-server-side logging (out of scope; ops already flow through the delta
-channel).
-
-Tests: tests/test_page_error_feedback.cjs (22 checks — real observer in
-jsdom for uncaught/rejection/resource/dedupe/cap/phase-order, real client
-functions for badge/panel/hostile-payload rendering/dismiss).
-
-Honest status: jsdom proves the state machine and the XSS-proof rendering;
-whether a 20-op cap survives a pathologically broken page (it will —
-rest is dropped silently by design) and how the badge feels next to real
-error storms is field verification.
-
-## 2026-11-08 (h) — SPA route sync rides the delta channel; stale full documents are refused
-
-Two deltas re-applied on top of the published pipeline (the fresh "capture
-independently" build was folded away by the user's explicit choice; the
-overlay ban, drop fix and delta priority machinery were already here):
-
-- SPA navigations — pushState/replaceState/popstate/hashchange — move the
-  URL with no document load, so the navigation control never fires and a
-  URL poll notices seconds too late. The in-page observer now wraps both
-  history methods and listens for both events (deduped by URL), pushing a
-  ['nav', url, 'spa'] control op that rides the next batch (flush is
-  scheduled synchronously; needs no DOM mutation). Client op loop applies
-  it immediately — URL state, favicon, heartbeat. Phase 7 (with meta and
-  err); it can never gate or reorder DOM work.
-- full_document carrying a generation OLDER than what this client has
-  already applied is refused outright — a late, stale document must never
-  clobber a newer navigation. Same-generation re-renders still apply;
-  legacy servers send no generation and degrade gracefully.
-
-Tests: tests/test_spa_nav_sync.cjs (19 checks, jsdom). NOT field-verified.
+Verification: `tests/test_cssom_styles.cjs` grew to 34 checks (it now
+asserts that the *untouched* stylesheet is not re-shipped, and that the
+mirror does not rewrite an unchanged sheet); `tests/test_tab_identity.cjs`
+grew to 140 (the relay's framing contract: byte-exact, split, and a
+recorded drop); new `tests/test_delta_relay.py` (19 checks) pins the
+splitter's framing, ordering and payload-safety.  `test_live_navigation.cjs`
+passes 13/13 — it was failing before this section.
