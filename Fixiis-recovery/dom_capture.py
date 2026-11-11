@@ -4793,6 +4793,7 @@ async def _install_interaction_trigger(page: Any, session: "DOMCaptureSession") 
                     )
                     return
                 session._last_interaction_capture_t = now
+                session._last_detect_at = time.perf_counter()
                 full_reason = f"interaction:{reason}"
                 if target_desc:
                     full_reason = f"{full_reason}:{target_desc}"
@@ -4931,6 +4932,27 @@ class DOMCaptureSession:
         self._cold_first_capture_at: Optional[float] = None
         self._cold_first_sent_at: Optional[float] = None
         self._cold_logged = False
+
+        # ---- DOM Streaming Engine instrumentation (Part 1, Section 8) ----
+        # A/B/C/D latency chain:
+        #   A = change detected in Browser A (_last_detect_at)
+        #   B = change sent through WebSocket (_t_sent stamped in message)
+        #   C = change received in Browser B (client.html onMessage)
+        #   D = change visibly rendered (client.html renderComplete)
+        self._last_detect_at: Optional[float] = None
+        # Monotonic sequence number stamped on every outbound WebSocket
+        # message so the client can detect gaps, duplicates, and ordering.
+        self._seq: int = 0
+        # Performance counters (logged periodically and on resync).
+        self._stats = {
+            "snapshots_sent": 0,
+            "patches_sent": 0,
+            "failed_patches": 0,
+            "recovery_requests": 0,
+            "snapshot_bytes": 0,
+            "patch_bytes": 0,
+            "capture_errors": 0,
+        }
 
         # Intent prefetch bookkeeping: which destinations were warmed, how
         # many this page may warm, and whether one is running right now.
@@ -5126,6 +5148,7 @@ class DOMCaptureSession:
                         current_url = None
                 if current_url and last_url and current_url != last_url:
                     self._delta_active = False
+                    self._last_detect_at = time.perf_counter()
                     logger.debug("URL changed %s -> %s", last_url, current_url)
                     # With persistent init scripts, the new document's
                     # navigation control owns the recovery full capture.  Do
@@ -5465,12 +5488,19 @@ class DOMCaptureSession:
                 # page are the ones worth warming, not the last page's.
                 self._prefetch_count = 0
             self._gen += 1
+            self._seq += 1
+            _t_detect = self._last_detect_at
             msg: Dict[str, Any] = {
                 "type": "full_document",
                 "reason": reason,
                 "url": url,
                 "html": html_data,
                 "gen": self._gen,
+                "seq": self._seq,
+                # DOM Streaming Engine instrumentation (Section 8):
+                # A = detection time (server), B = send time (stamped below).
+                # C (received) and D (rendered) are stamped client-side.
+                "_t_detect": _t_detect,
             }
             _meta = getattr(self, "_last_capture_meta", None) or {}
             _cur_title = _meta.get("title")
@@ -5516,6 +5546,10 @@ class DOMCaptureSession:
             if assets_to_send:
                 msg["assets"] = assets_to_send
             t_send = time.perf_counter()
+            # B timestamp: stamped just before the frame hits the wire so the
+            # client can compute capture (B-A), network (C-B), rendering (D-C),
+            # and total (D-A) delay.
+            msg["_t_sent"] = t_send
             try:
                 frame = json.dumps(msg, ensure_ascii=False)
                 async with self._ws_send_lock:
@@ -5559,12 +5593,15 @@ class DOMCaptureSession:
             self.last_sent_html = html_data
             self.last_sent_url = url
             self.has_initial_capture = True
+            self._stats["snapshots_sent"] += 1
+            self._stats["snapshot_bytes"] += len(html_data)
             logger.debug(
-                "dc send reason=%s settle=%s capture_ms=%.0f rewrite_ms=%.0f send_ms=%.0f "
-                "html_bytes=%d assets=%d gen=%d overlaps=%d total_ms=%.0f",
-                reason, settle, capture_ms, rewrite_ms, send_ms, len(html_data),
-                len(assets_to_send), self._gen, self._overlap_count,
-                (time.perf_counter() - t_start) * 1000.0,
+                "dc send reason=%s settle=%s seq=%d gen=%d capture_ms=%.0f "
+                "rewrite_ms=%.0f send_ms=%.0f html_bytes=%d assets=%d "
+                "overlaps=%d total_ms=%.0f",
+                reason, settle, self._seq, self._gen, capture_ms, rewrite_ms,
+                send_ms, len(html_data), len(assets_to_send),
+                self._overlap_count, (time.perf_counter() - t_start) * 1000.0,
             )
             if deferred is not None:
                 # The document is on screen.  Keep the delta channel open

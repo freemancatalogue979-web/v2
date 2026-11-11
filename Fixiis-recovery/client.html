@@ -5099,6 +5099,17 @@ function applySpinnerColorFromHex(hexColor) {
                 _assetMaps: new Map(),   // page URL -> Map(authored -> edit)
                 _assetUrl: null,
                 _docGen: null,
+
+                // --- DOM Streaming Engine instrumentation (Section 8) -------
+                // Sequence tracking: detect gaps, duplicates, and out-of-order
+                // messages on the WebSocket.
+                _lastSeq: null,
+                _seqGaps: 0,
+                _seqDuplicates: 0,
+                // Latency chain (A/B/C/D timestamps, all in ms):
+                _t_received: null,   // C: message received in Browser B
+                _t_rendered: null,   // D: render complete
+                _lastLatency: null,  // {capture, network, render, total}
             };
 
             const elements = {
@@ -8735,7 +8746,30 @@ function applySpinnerColorFromHex(hexColor) {
                         return;
                     }
 
+                    // C timestamp: message received in Browser B.
+                    state._t_received = performance.now();
+
                     const message = JSON.parse(data);
+
+                    // --- Sequence tracking (Section 6) ---
+                    const seq = typeof message.seq === 'number' ? message.seq : null;
+                    if (seq !== null) {
+                        if (state._lastSeq !== null) {
+                            if (seq === state._lastSeq) {
+                                state._seqDuplicates++;
+                                dbg('[WS DEBUG] duplicate seq', seq);
+                            } else if (seq < state._lastSeq) {
+                                // Out-of-order or stale; log but still process
+                                // (server may retransmit after a gap).
+                                dbg('[WS DEBUG] out-of-order seq', seq, 'last', state._lastSeq);
+                            } else if (seq > state._lastSeq + 1) {
+                                state._seqGaps += (seq - state._lastSeq - 1);
+                                dbg('[WS DEBUG] seq gap', state._lastSeq, '->', seq);
+                            }
+                        }
+                        state._lastSeq = seq;
+                    }
+
                     handleMessage(message);
                 } catch (e) {
                     dbg('[WS DEBUG] Message handling error', e.message || e);
@@ -9610,6 +9644,26 @@ function applySpinnerColorFromHex(hexColor) {
                 }
                 if (typeof message.html === 'string' && message.html.length) {
                     renderPageSnapshot(message.html, message.url);
+                }
+                // D timestamp: render complete.  Compute and log the full
+                // A/B/C/D latency chain so delay sources are measurable.
+                state._t_rendered = performance.now();
+                const _t_detect = typeof message._t_detect === 'number' ? message._t_detect : null;
+                const _t_sent = typeof message._t_sent === 'number' ? message._t_sent : null;
+                const _t_received = typeof state._t_received === 'number' ? state._t_received : null;
+                const _t_rendered = typeof state._t_rendered === 'number' ? state._t_rendered : null;
+                if (_t_detect && _t_sent && _t_received && _t_rendered) {
+                    const captureMs = _t_sent - _t_detect;   // B - A
+                    const networkMs = _t_received - _t_sent; // C - B
+                    const renderMs = _t_rendered - _t_received; // D - C
+                    const totalMs = _t_rendered - _t_detect; // D - A
+                    state._lastLatency = { capture: captureMs, network: networkMs, render: renderMs, total: totalMs };
+                    try {
+                        console.log(
+                            '[LATENCY] seq=%d gen=%s url=%s capture_ms=%.0f network_ms=%.0f render_ms=%.0f total_ms=%.0f (A=detect B=sent C=received D=rendered)',
+                            message.seq || '?', message.gen || '?', message.url || '—',
+                            captureMs, networkMs, renderMs, totalMs);
+                    } catch (e) {}
                 }
             }
 
