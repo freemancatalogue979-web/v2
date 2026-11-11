@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response, StreamingResponse, JSONResponse
 from starlette.routing import Route, Mount
 
 from . import config
@@ -99,21 +99,18 @@ def should_proxy(resource_type: str, url: str) -> bool:
 # Proxy URL parsing
 # ---------------------------------------------------------------------------
 
-def parse_proxy_path(path: str, base_path: str) -> Optional[str]:
+def parse_proxy_path(path: str, base_path: str = "") -> Optional[str]:
     """Parse a proxy request path and return the target URL, or None.
 
-    Expected format: /resource-proxy/fetch?u=<encoded-target-url>
+    The ``base_path`` prefix is handled by Starlette route mounting; this
+    function simply extracts the ``u`` query parameter from the request.
+    Expected format: /fetch?u=<encoded-target-url>
     """
-    if not path.startswith(base_path):
-        return None
-    remainder = path[len(base_path):]
-    if not remainder.startswith("/fetch"):
-        return None
-    # Extract the 'u' query parameter.
-    query_start = remainder.find("?")
+    # Extract the 'u' query parameter from the path.
+    query_start = path.find("?")
     if query_start == -1:
         return None
-    query = remainder[query_start + 1:]
+    query = path[query_start + 1:]
     params = parse_qs(query)
     target_list = params.get("u")
     if not target_list:
@@ -131,8 +128,7 @@ async def _fetch_handler(request: Request) -> Response:
     Query: ?u=<target-url>
     Headers: optional Range, Accept-Encoding, etc.
     """
-    base_path = request.scope.get("root_path", "") or config.PROXY_BASE_PATH
-    target_url = parse_proxy_path(request.url.path, base_path)
+    target_url = parse_proxy_path(str(request.url))
     if not target_url:
         return Response("Missing or invalid proxy URL", status_code=400)
 
@@ -240,8 +236,7 @@ async def _stream_handler(request: Request) -> StreamingResponse:
     Streams the origin response directly to the client without buffering
     the full body in memory.
     """
-    base_path = request.scope.get("root_path", "") or config.PROXY_BASE_PATH
-    target_url = parse_proxy_path(request.url.path, base_path)
+    target_url = parse_proxy_path(str(request.url))
     if not target_url:
         return Response("Missing or invalid proxy URL", status_code=400)
 
@@ -276,18 +271,16 @@ async def _stream_handler(request: Request) -> StreamingResponse:
     )
 
 
-async def _health_handler(request: Request) -> Response:
+async def _health_handler(request: Request) -> JSONResponse:
     """Health check endpoint."""
     cache = get_global_cache()
-    client = get_global_client()
-    return Response(
+    return JSONResponse(
         content={
             "status": "ok",
             "proxy_base": config.PROXY_BASE_PATH,
             "allowed_hosts": sorted(config.ALLOWED_HOSTS),
             "cache": cache.stats(),
         },
-        media_type="application/json",
     )
 
 

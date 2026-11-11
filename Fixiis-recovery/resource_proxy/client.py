@@ -52,7 +52,7 @@ class ProxyHttpClient:
                             max_keepalive_connections=self.max_keepalive,
                         ),
                         follow_redirects=True,
-                        http2=True,
+                        http2=False,  # HTTP/2 requires the 'h2' package; HTTP/1.1 is fine for proxying
                     )
         return self._client
 
