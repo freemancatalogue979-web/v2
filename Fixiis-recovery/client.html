@@ -10428,6 +10428,30 @@ function stripDeadMirrorNodes(root) {}
                 }
             }
 
+            // --- Resource proxy integration (Part 2, Section 14) ---
+            // Direct resource URLs remain the default.  The proxy is a
+            // selective fallback for resources that cannot be loaded
+            // directly (e.g. reverse proxies that only forward /ws,
+            // offline viewers, or origins that block direct fetching).
+            //
+            // Call with an original resource URL; returns a proxy URL
+            // when the proxy is configured and the resource type warrants
+            // it, otherwise returns the original URL unchanged.
+            function resourceProxyUrl(originalUrl) {
+                if (!originalUrl || typeof originalUrl !== 'string') return originalUrl;
+                // Skip already-proxied URLs, data:, blob:, javascript: etc.
+                if (/^(blob:|data:|javascript:|about:)/i.test(originalUrl)) return originalUrl;
+                if (originalUrl.indexOf(state._proxyBase || '/resource-proxy') === 0) return originalUrl;
+                const proxyBase = state._proxyBase || '/resource-proxy';
+                try {
+                    const target = encodeURIComponent(originalUrl);
+                    return proxyBase + '/fetch?u=' + target;
+                } catch (e) {
+                    return originalUrl;
+                }
+            }
+            state._proxyBase = state._proxyBase || '/resource-proxy';
+
             function renderPageSnapshot(html, url) {
                 // Identity skip: servers may push the same document twice
                 // (interaction debounce windows, LPV re-pushes); a byte-equal
