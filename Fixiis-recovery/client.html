@@ -8871,6 +8871,21 @@ function applySpinnerColorFromHex(hexColor) {
                             console.error('applyDomPatch failed:', e);
                             requestResync(state._deltaGen, 'patch_exception');
                         }
+                        // D timestamp for patch messages: rendered after apply.
+                        state._t_rendered = performance.now();
+                        const _t_sent_patch = typeof message._t_sent === 'number' ? message._t_sent : null;
+                        const _t_received_patch = typeof state._t_received === 'number' ? state._t_received : null;
+                        const _t_rendered_patch = typeof state._t_rendered === 'number' ? state._t_rendered : null;
+                        if (_t_sent_patch && _t_received_patch && _t_rendered_patch) {
+                            const networkMs = _t_received_patch - _t_sent_patch; // C - B
+                            const renderMs = _t_rendered_patch - _t_received_patch; // D - C
+                            try {
+                                console.log(
+                                    '[LATENCY] seq=%d gen=%s type=dom_patch network_ms=%.0f render_ms=%.0f',
+                                    message.seq || '?', message.gen || '?',
+                                    networkMs, renderMs);
+                            } catch (e) {}
+                        }
                         if (window.__SHF_DEBUG && latencyTiming
                             && Number.isFinite(latencyTiming.detected_at_ms)
                             && Number.isFinite(latencyTiming.sent_at_ms)) {

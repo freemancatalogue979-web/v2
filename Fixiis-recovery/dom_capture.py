@@ -4721,16 +4721,18 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                         buf.append((int(session._gen), doc_token, payload_text))
                     return
                 gen = int(session._gen)
+                session._seq += 1
+                session._last_detect_at = time.perf_counter()
                 doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
-                timing_json = ""
-                if DELTA_LATENCY_DIAGNOSTICS and detected_at is not None:
-                    sent_at_ms = time.time_ns() // 1_000_000
-                    timing_json = (
-                        ',"timing":{"detected_at_ms":' + str(detected_at)
-                        + ',"received_at_ms":' + str(received_at_ms)
-                        + ',"sent_at_ms":' + str(sent_at_ms) + '}'
-                    )
-                frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + timing_json + ',"ops":' + payload_text + '}'
+                t_sent = time.perf_counter()
+                # _t_sent stamped before send so client can compute capture (B-A)
+                # and network (C-B) delay for patch messages too.
+                frame = ('{"type":"dom_patch","gen":' + str(gen) + ',"seq":'
+                         + str(session._seq) + ',"_t_sent":' + repr(t_sent)
+                         + timing_json + ',"doc":' + doc_json + ',"ops":'
+                         + payload_text + '}')
+                session._stats["patches_sent"] += 1
+                session._stats["patch_bytes"] += len(frame)
                 await session.websocket.send_text(frame)
         except Exception as exc:
             logger.debug("delta relay failed: %s", exc)
@@ -5545,6 +5547,24 @@ class DOMCaptureSession:
             ]
             if assets_to_send:
                 msg["assets"] = assets_to_send
+            # ---- Backpressure (Section 6) ----
+            # Avoid letting a large snapshot block small DOM updates
+            # indefinitely.  If the websocket write buffer is already
+            # large, defer this capture and let the delta patch channel
+            # carry interim changes instead.
+            try:
+                buffered = getattr(self.websocket, "buffered_amount", 0)
+                if buffered > 2 * 1024 * 1024:  # > 2 MB buffered
+                    logger.debug(
+                        "dc backpressure: deferring send (buffered=%d bytes, reason=%s)",
+                        buffered, reason,
+                    )
+                    self._pending_reason = reason
+                    return None
+            except Exception:
+                # buffered_amount not available — proceed without backpressure.
+                pass
+
             t_send = time.perf_counter()
             # B timestamp: stamped just before the frame hits the wire so the
             # client can compute capture (B-A), network (C-B), rendering (D-C),
@@ -5665,9 +5685,11 @@ class DOMCaptureSession:
         for meta in new_assets:
             if meta.get("hash"):
                 self._sent_asset_digests.add(meta["hash"])
+        self._seq += 1
         msg: Dict[str, Any] = {
             "type": "asset_map",
             "gen": self._gen,
+            "seq": self._seq,
             "url": page_url,
             "swap": swap,
         }
@@ -5680,8 +5702,8 @@ class DOMCaptureSession:
         except Exception as exc:
             logger.debug("asset_map send failed: %s", exc)
             return False
-        logger.debug("dc asset_map swaps=%d assets=%d bytes=%d gen=%d",
-                     len(swap), len(new_assets), len(frame), self._gen)
+        logger.debug("dc asset_map swaps=%d assets=%d bytes=%d gen=%d seq=%d",
+                     len(swap), len(new_assets), len(frame), self._gen, self._seq)
         return True
 
     async def _send_asset_upgrade(self, deferred: Dict[str, Any],
