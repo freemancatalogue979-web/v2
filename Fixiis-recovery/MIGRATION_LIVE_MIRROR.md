@@ -934,9 +934,14 @@ Three changes:
    untouched: the ops JSON is still forwarded byte-exact, never parsed and
    re-serialized.
 
-3. **The mirror does not rewrite a stylesheet that already holds the text.**
-   `if (el.textContent !== cssText) el.textContent = cssText;` — the
-   stylesheet stays standing, so the transitions running on it survive.
+3. **The mirror now rewrites only the stylesheet whose CSS really changed.**
+   That is the same fix seen from the other side: with the aggregate
+   signature, EVERY stylesheet was rewritten on the mirror every time any
+   one of them changed — and rewriting a stylesheet's text tears the sheet
+   down and builds it again, which cancels the CSS transitions and
+   animations running on it.  Now one sheet changed means one sheet
+   rewritten, and the sheets that did not change keep their transitions
+   standing.
 
 A fourth, smaller one: the navigation announcement.  The trigger's
 `DOMContentLoaded` handler announced the document load even when the page
@@ -949,9 +954,9 @@ was failing on the branch this section describes (11 passed, 2 failed) and
 now passes.
 
 Verification: `tests/test_cssom_styles.cjs` grew to 34 checks (it now
-asserts that the *untouched* stylesheet is not re-shipped, and that the
-mirror does not rewrite an unchanged sheet); `tests/test_tab_identity.cjs`
-grew to 140 (the relay's framing contract: byte-exact, split, and a
-recorded drop); new `tests/test_delta_relay.py` (19 checks) pins the
-splitter's framing, ordering and payload-safety.  `test_live_navigation.cjs`
-passes 13/13 — it was failing before this section.
+asserts that the *untouched* stylesheet is not re-shipped);
+`tests/test_tab_identity.cjs` grew to 140 (the relay's framing contract:
+byte-exact, split, and a recorded drop); new `tests/test_delta_relay.py`
+(19 checks) pins the splitter's framing, ordering and payload-safety.
+`test_live_navigation.cjs` passes 13/13 — it was failing before this
+section.
