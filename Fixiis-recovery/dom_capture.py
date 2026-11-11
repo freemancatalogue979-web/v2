@@ -65,6 +65,38 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Session gateway (MIRROR_GATEWAY.md)
+# ---------------------------------------------------------------------------
+# The capture engine does not know or care who is watching: it hands finished
+# frames to ``mirror_gateway.MirrorHub``, which owns document identity, epoch,
+# sequence, the bounded delta tail and per-viewer fan-out.  The import is
+# optional by design — a capture session with ``hub=None`` (a test, an
+# embedded caller, a rollback) keeps writing straight to its websocket, so this
+# module never becomes unimportable because the distribution layer moved.
+
+try:
+    from mirror_gateway import (
+        KIND_ASSET as _GK_ASSET,
+        KIND_CHROME as _GK_CHROME,
+        KIND_DELTA as _GK_DELTA,
+        KIND_SNAPSHOT as _GK_SNAPSHOT,
+        new_document_id as _new_document_id,
+    )
+    _GATEWAY_AVAILABLE = True
+except Exception:                                          # pragma: no cover
+    _GK_ASSET = "asset"
+    _GK_CHROME = "chrome"
+    _GK_DELTA = "delta"
+    _GK_SNAPSHOT = "snapshot"
+
+    def _new_document_id() -> str:
+        import uuid
+        return uuid.uuid4().hex[:16]
+
+    _GATEWAY_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
 # Configuration (env-overridable)
 # ---------------------------------------------------------------------------
 
@@ -4353,10 +4385,35 @@ _DELTA_OBSERVER_JS = r"""
     pushCoalesced('t\\0' + c.key + '\\0' + index,
       c.shadow ? ['t', c.id, index, value, 's'] : ['t', c.id, index, value]);
   };
+  // Sensitive-field exclusion (capture policy, not a display choice).
+  //
+  // A password, one-time code or card credential is the page's own state, and
+  // the mirror has no legitimate reason to receive its text: the person typing
+  // it is looking at Browser B, whose local echo already shows the characters.
+  // Mirroring the value would put the secret on the wire and into whatever the
+  // viewer's DOM holds after the fact, so it is excluded at the source and the
+  // mirror keeps only the SHAPE of the field (its type, so the dots render).
+  // The checked state of a box/radio still ships — a tick is not a credential.
+  const SENSITIVE_TYPE = /^(password|current-password|new-password|cc-number|cc-csc|cc-exp|cc-exp-month|cc-exp-year|transaction-amount|one-time-code)$/i;
+  const SENSITIVE_NAME = /(pass(word)?|pwd|secret|otp|verificat|2fa|auth(ent)?icator|cc[-_]?(number|num|csc|cvv|exp)|card[-_]?(no|num|number|cvv|csc|exp)|security[-_]?code|social[-_]security|ssn|routing[-_]number|account[-_]number|pin)$/i;
+  const isSensitive = (el) => {
+    try {
+      const type = String(el.type || '').toLowerCase();
+      if (type === 'password' || SENSITIVE_TYPE.test(type)) return true;
+      if (el.autocomplete && SENSITIVE_TYPE.test(String(el.autocomplete))) return true;
+      const key = String(el.name || el.id || el.getAttribute('data-testid') || el.getAttribute('aria-label') || '');
+      return SENSITIVE_NAME.test(key.toLowerCase());
+    } catch (e) { return false; }
+  };
   const pushVal = (el) => {
     const id = midOf(el);
     if (!id) return;
     const checked = (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) ? !!el.checked : null;
+    if (isSensitive(el)) {
+      // Value deliberately omitted (empty string), checked state preserved.
+      pushCoalesced('v\\0' + id, ['v', id, '', checked, 1]);
+      return;
+    }
     pushCoalesced('v\\0' + id, ['v', id, (el.value == null ? '' : String(el.value)), checked]);
   };
   const mo = new MutationObserver((recs) => {
@@ -4653,8 +4710,18 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
             # pure CPU/memory churn.  The two control batches are exact strings
             # emitted by this observer and are handled before the fast path.
             payload_text = payload.strip()
-            if not payload_text.startswith("[[") or not payload_text.endswith(']]'):
+            if not payload_text.startswith("[[") or not payload_text.endswith("]]"):
                 return
+            # ---- document identity ----
+            # The observer stamps every batch with the page's own document token
+            # (href|timeOrigin), which changes when the tab becomes a different
+            # document and NOT on a pushState.  A change here is therefore the
+            # earliest signal a navigation gives us, and the one thing that lets
+            # the gateway refuse the previous page's in-flight mutations.
+            if doc_token is not None and str(doc_token) != session._doc_token:
+                if session._doc_token is not None and session.has_initial_capture:
+                    session._note_new_document("observer-doc-token")
+                session._doc_token = str(doc_token)
             if payload_text == '[["navigation"]]':
                 # The observer runs once per main document.  A reload can keep
                 # the same URL, so this control op is the navigation signal
@@ -4662,6 +4729,7 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                 # suppressed during initial bootstrap, when the initial sender
                 # owns the first document.
                 session._delta_active = False
+                session._note_new_document("navigation")
                 if (session.has_initial_capture
                         and not session._explicit_navigation_in_progress):
                     await session._capture_navigation_once("navigation")
@@ -4698,42 +4766,20 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
             # send finishes the buffer is drained in order before any new
             # mutations go out, so nothing is lost.
             if session._send_inflight:
-                buf = getattr(session, "_delta_pending_buf", None)
-                if buf is None:
-                    buf = []
-                    session._delta_pending_buf = buf
-                # Cap at 80k chars (~400 ops) to avoid unbounded memory on a
-                # wedged send; overflow is harmless because the follow-up
-                # full capture will repair any missed state.
-                if sum(len(b) for b in buf) < 80000:
-                    buf.append((int(session._gen), doc_token, payload_text))
+                session._buffer_delta(doc_token, payload_text)
                 return
 
             async with session._ws_send_lock:
                 if session._send_inflight:
                     # Lost the race — buffer (same logic as above) rather
                     # than drop.
-                    buf = getattr(session, "_delta_pending_buf", None)
-                    if buf is None:
-                        buf = []
-                        session._delta_pending_buf = buf
-                    if sum(len(b) for b in buf) < 80000:
-                        buf.append((int(session._gen), doc_token, payload_text))
+                    session._buffer_delta(doc_token, payload_text)
                     return
-                gen = int(session._gen)
-                session._seq += 1
                 session._last_detect_at = time.perf_counter()
-                doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
-                t_sent = time.perf_counter()
-                # _t_sent stamped before send so client can compute capture (B-A)
-                # and network (C-B) delay for patch messages too.
-                frame = ('{"type":"dom_patch","gen":' + str(gen) + ',"seq":'
-                         + str(session._seq) + ',"_t_sent":' + repr(t_sent)
-                         + timing_json + ',"doc":' + doc_json + ',"ops":'
-                         + payload_text + '}')
-                session._stats["patches_sent"] += 1
-                session._stats["patch_bytes"] += len(frame)
-                await session.websocket.send_text(frame)
+                await session._emit_delta(payload_text, doc_token,
+                                          gen=int(session._gen),
+                                          detected_at=detected_at,
+                                          timing_json=timing_json)
         except Exception as exc:
             logger.debug("delta relay failed: %s", exc)
 
@@ -4884,14 +4930,27 @@ class DOMCaptureSession:
     CAPTURE_STRATEGY: str = "single_capture"
 
     @classmethod
-    def for_url(cls, page: Any, url: str, websocket: Any = None, client_id: Optional[str] = None) -> "DOMCaptureSession":
-        return cls(page, websocket=websocket, client_id=client_id)
+    def for_url(cls, page: Any, url: str, websocket: Any = None, client_id: Optional[str] = None,
+                hub: Any = None) -> "DOMCaptureSession":
+        return cls(page, websocket=websocket, client_id=client_id, hub=hub)
 
-    def __init__(self, page: Any, websocket: Any = None, client_id: Optional[str] = None) -> None:
+    def __init__(self, page: Any, websocket: Any = None, client_id: Optional[str] = None,
+                 hub: Any = None) -> None:
         self.page = page
         self.websocket = websocket
         self.client_id = client_id
         self.capture_strategy: str = self.CAPTURE_STRATEGY
+        # ---- session gateway (MIRROR_GATEWAY.md) ----
+        # ``hub`` is the distribution layer: per-tab state, document identity,
+        # sequence numbers, bounded history, viewer fan-out.  ``document_id`` is
+        # this document's identity and is rotated on every new document, so a
+        # frame for the page that was replaced can be recognised as stale.
+        self.hub = hub
+        self.document_id: str = (getattr(hub, "document_id", "") or _new_document_id())
+        self._doc_generation: int = 0
+        # The page-side observer's own per-document token (href|timeOrigin).
+        # A change means "new document" even when the URL did not move.
+        self._doc_token: Optional[str] = None
 
         self.last_sent_url: Optional[str] = None
         self.last_sent_html: Optional[str] = None
@@ -5034,6 +5093,13 @@ class DOMCaptureSession:
         if page is self.page:
             return
         self.page = page
+        # A different tab is a different document: carrying the old identity
+        # would let the previous page's frames look admissible (and would let
+        # the hub's stale-document filter wave them through into a mirror that
+        # is showing something else).
+        self.document_id = _new_document_id()
+        self._doc_token = None
+        self._doc_generation += 1
         self._interaction_trigger_installed = False
         self._interaction_binding_installed = False
         self._interaction_init_script_installed = False
@@ -5051,6 +5117,259 @@ class DOMCaptureSession:
         # reset here (rebind/replace) is what keeps the client's cache honest.
         self._sent_asset_swaps.clear()
         self._assets_pending = False
+
+    # ------------------------------------------------------------------
+    # Session gateway (MIRROR_GATEWAY.md §2, §5, §6)
+    # ------------------------------------------------------------------
+    #
+    # Everything the mirror sends leaves through one of the four ``_emit_*``
+    # methods below.  With a hub attached they are three lines each — build the
+    # body, hand it over — and the hub supplies identity, order, history and
+    # fan-out.  Without one they do what this class always did: serialize and
+    # write to ``self.websocket``.  Keeping both paths in the same method is
+    # deliberate: the wire shape stays byte-compatible for a hub-less caller
+    # (tests, embedded use, rollback), so the gateway can be adopted per
+    # session instead of globally.
+
+    def _buffer_delta(self, doc_token: Any, ops_text: str) -> None:
+        """Hold a patch batch that arrived while a full document was in flight.
+
+        Carrying the document id is the point: the buffered batches are replayed
+        after the snapshot lands, and any of them that belongs to a document the
+        snapshot replaced is dropped by the gateway instead of being applied to
+        the wrong page.
+        """
+        buf = getattr(self, "_delta_pending_buf", None)
+        if buf is None:
+            buf = []
+            self._delta_pending_buf = buf
+        # Cap at 80k chars (~400 ops) to avoid unbounded memory on a wedged
+        # send; overflow is harmless because the follow-up full capture
+        # repairs any missed state.
+        if sum(len(b[2]) for b in buf) + len(ops_text) <= 80000:
+            buf.append((int(self._gen), doc_token, ops_text, self.document_id))
+
+    def _gateway(self) -> Any:
+        """The hub this session publishes to, or None for the direct path."""
+        hub = getattr(self, "hub", None)
+        if hub is None or getattr(hub, "_closed", False):
+            return None
+        return hub
+
+    def _nav_lane(self, reason: Any) -> str:
+        """Navigation is measured separately from ordinary DOM updates (§9)."""
+        text = str(reason or "")
+        if text.startswith(("navigation", "nav_", "goto", "back", "forward",
+                            "reload", "initial", "url_change", "tab_switch")):
+            return "nav"
+        return "update"
+
+    def _note_new_document(self, reason: str = "document-changed") -> str:
+        """Adopt a new document identity and stop the old one's frames.
+
+        Called when the page-side observer reports a document token we have not
+        seen, and by the navigation entry points.  With a hub, the hub mints the
+        id, tells viewers the tab is loading, and starts the snapshot request;
+        without one we still rotate the id so stale bookkeeping cannot survive a
+        reload that kept the URL.
+        """
+        hub = self._gateway()
+        if hub is None:
+            self.document_id = _new_document_id()
+            self._doc_generation += 1
+            return self.document_id
+        if getattr(hub, "pending_document_id", None):
+            # A navigation is already in progress; do not open a second one.
+            return hub.pending_document_id
+        try:
+            url = self.page.url if self.page is not None else ""
+        except Exception:
+            url = ""
+        doc_id = hub.begin_navigation(url or "")
+        self.document_id = doc_id
+        self._doc_generation += 1
+        logger.debug("dc new document=%s reason=%s", doc_id[:8], reason)
+        return doc_id
+
+    def _note_same_document_url(self, url: str, title: str = "") -> bool:
+        """A URL change inside the same document (SPA routing).
+
+        The mirror's DOM follows through the delta channel; only the address bar
+        (and the tab's title) needs updating.  Returning True means "the gateway
+        handled it, no rebuild".
+        """
+        hub = self._gateway()
+        if hub is None:
+            return False
+        hub.same_document_url(url or "", title=title or "")
+        return True
+
+    def _note_navigation_failed(self, url: str, exc: Any) -> None:
+        hub = self._gateway()
+        if hub is None:
+            return
+        hub.navigation_failed(url or "", str(exc or "")[:300])
+
+    def _note_navigation_done(self, url: str = "") -> None:
+        hub = self._gateway()
+        if hub is None:
+            return
+        hub.end_navigation(url=url)
+
+    async def _emit_snapshot(self, msg: Dict[str, Any], *, reason: str,
+                             capture_ms: float, rewrite_ms: float) -> Tuple[bool, float, int]:
+        """Ship a full document.  Returns ``(sent, send_ms, frame_bytes)``."""
+        hub = self._gateway()
+        if hub is None:
+            t_send = time.perf_counter()
+            msg["_t_sent"] = t_send
+            try:
+                frame = json.dumps(msg, ensure_ascii=False)
+                async with self._ws_send_lock:
+                    await self.websocket.send_text(frame)
+            except Exception as exc:
+                logger.debug("full_document send failed: %s", exc)
+                return False, 0.0, 0
+            return True, (time.perf_counter() - t_send) * 1000.0, len(frame)
+
+        # The hub owns ``type``/``gen``/``seq``/``epoch``/identity; the body
+        # fields travel under their existing names.
+        payload = {k: v for k, v in msg.items() if k not in ("type", "gen", "seq")}
+        lane = self._nav_lane(reason)
+        # Two clocks, each used only where it is valid.
+        #   _t_sent      wall clock, ms — the only quantity comparable with
+        #                something Browser B measured, so it is what the network
+        #                leg is computed from (skew-corrected by the client).
+        #   _capture_ms  measured on THIS machine with a monotonic clock, i.e. a
+        #                duration rather than a difference of two timestamps.
+        # The pre-gateway code subtracted a server perf_counter from a client
+        # performance.now and called the result network latency; that number was
+        # meaningless, and forwarding a duration is what replaces it.
+        payload["_t_sent"] = time.time() * 1000.0
+        payload["_capture_ms"] = round(capture_ms, 2)
+        payload["_rewrite_ms"] = round(rewrite_ms, 2)
+        # A navigation snapshot has no observer batch to take a detection time
+        # from, and ``_last_detect_at`` is a MONOTONIC reading from this machine —
+        # subtracting it from a wall clock produced a plausible-looking negative or
+        # astronomically large "capture" number.  Back-derive the detection instant
+        # from the measured duration instead, so the client's A→B leg is arithmetic
+        # that closes rather than a comparison of two unrelated clocks.
+        if isinstance(msg.get("_t_detect"), (int, float)):
+            payload["_t_detect"] = round(payload["_t_sent"] - (capture_ms + rewrite_ms), 2)
+        doc_bytes = len(str(payload.get("html") or ""))
+        t0 = time.perf_counter()
+        frame = hub.publish(_GK_SNAPSHOT, payload, document_id=self.document_id,
+                            lane=lane, event_count=1)
+        publish_ms = (time.perf_counter() - t0) * 1000.0
+        if frame is None:
+            logger.debug("dc snapshot refused by gateway (stale document)")
+            return False, 0.0, 0
+        self._gen = frame.epoch
+        self._seq = frame.seq
+        hub.metrics.stage("capture", capture_ms, lane=lane, bytes_=doc_bytes)
+        hub.metrics.stage("rewrite", rewrite_ms, lane=lane)
+        hub.metrics.bump("snapshot_bytes", doc_bytes)
+        return True, publish_ms, frame.size()
+
+    async def _emit_delta(self, ops_text: str, doc_token: Any, *,
+                          gen: int, detected_at: Optional[int] = None,
+                          timing_json: str = "",
+                          document_id: Optional[str] = None) -> bool:
+        """Ship one batch of mutation ops for the current document."""
+        hub = self._gateway()
+        if hub is None:
+            async with self._ws_send_lock:
+                if self._send_inflight:
+                    return False
+                self._seq += 1
+                t_sent = time.perf_counter()
+                doc_json = (_json.dumps(str(doc_token)[:256], ensure_ascii=False)
+                            if doc_token is not None else "null")
+                frame = ('{"type":"dom_patch","gen":' + str(int(gen)) + ',"seq":'
+                         + str(self._seq) + ',"_t_sent":' + repr(t_sent)
+                         + timing_json + ',"doc":' + doc_json + ',"ops":'
+                         + ops_text + '}')
+                self._stats["patches_sent"] += 1
+                self._stats["patch_bytes"] += len(frame)
+                await self.websocket.send_text(frame)
+            return True
+        payload: Dict[str, Any] = {
+            "doc": str(doc_token)[:256] if doc_token is not None else None,
+        }
+        # Wall clock on the gateway path (the viewer corrects for skew with the
+        # ping it echoes, so B→C is a real number rather than two unrelated
+        # monotonic origins subtracted from each other).
+        payload["_t_sent"] = time.time() * 1000.0
+        if detected_at is not None:
+            payload["_t_detect"] = detected_at
+        frame = hub.publish(_GK_DELTA, payload, raw={"ops": ops_text},
+                            document_id=document_id or self.document_id,
+                            event_count=self._ops_count(ops_text))
+        if frame is None:
+            return False
+        self._gen = frame.epoch
+        self._seq = frame.seq
+        self._stats["patches_sent"] += 1
+        self._stats["patch_bytes"] += frame.size()
+        hub.metrics.bump("patch_bytes", frame.size())
+        return True
+
+    @staticmethod
+    def _ops_count(ops_text: str) -> int:
+        """Count operations in a serialized batch without parsing it.
+
+        The observer emits ``[[...],[...]]``; counting the top-level ``],[``
+        separators plus one is exact for that shape and costs one C scan, where
+        ``json.loads`` would rebuild every op list just to throw it away.
+        """
+        if not ops_text or len(ops_text) < 4:
+            return 0
+        if ops_text in ("[[]]", "[[\"navigation\"]]", "[[\"overflow\"]]"):
+            return 0
+        try:
+            return ops_text.count("],[") + 1
+        except Exception:
+            return 1
+
+    async def _gateway_asset_send(self, msg: Dict[str, Any]) -> bool:
+        """Ship an asset_map through the gateway (see ``_emit_asset_map``)."""
+        hub = self._gateway()
+        if hub is None:
+            try:
+                frame = json.dumps(msg, ensure_ascii=False)
+                async with self._ws_send_lock:
+                    await self.websocket.send_text(frame)
+            except Exception as exc:
+                logger.debug("asset_map send failed: %s", exc)
+                return False
+            logger.debug("dc asset_map bytes=%d gen=%d seq=%d", len(frame),
+                         msg.get("gen"), msg.get("seq"))
+            return True
+        payload = {k: v for k, v in msg.items() if k not in ("type", "gen", "seq")}
+        frame = hub.publish(_GK_ASSET, payload, document_id=self.document_id,
+                            event_count=len(msg.get("swap") or []) or 1)
+        if frame is None:
+            return False
+        self._gen = frame.epoch
+        self._seq = frame.seq
+        return True
+
+    async def _emit_control(self, message: Dict[str, Any]) -> None:
+        """Non-mirror traffic (keyboard hints, permissions, page transitions).
+
+        With a hub this shares the viewer's bounded queue, so a wedged socket
+        cannot block the caller either; the socket is still written directly for
+        callers that expect an immediate send.
+        """
+        hub = self._gateway()
+        if hub is None or not getattr(hub, "viewers", None):
+            try:
+                if self.websocket is not None:
+                    await self.websocket.send_json(message)
+            except Exception as exc:
+                logger.debug("control send failed: %s", exc)
+            return
+        hub.send_control(message)
 
     async def start(self) -> None:
         """Install the generic interaction trigger.  Idempotent; safe
@@ -5111,13 +5430,35 @@ class DOMCaptureSession:
             # The adapter's cached URL can briefly lag the document event. Ask
             # the live document once on navigation so the full frame is labeled
             # with the page that was actually captured, not the previous URL.
+            # The same round trip returns the document token, which is what
+            # separates "new document" from "same document, new URL" — the
+            # distinction that decides whether the mirror rebuilds.
             if self.page is not None:
                 try:
-                    live_url = await self.page.evaluate("location.href")
-                    if isinstance(live_url, str) and live_url:
-                        current_url = live_url
+                    live = await self.page.evaluate(
+                        "(() => ({href: location.href,"
+                        " token: String(location.href||'') + '|' + String(performance.timeOrigin||0),"
+                        " title: document.title || ''}))()")
                 except Exception:
-                    pass
+                    live = None
+                if isinstance(live, dict):
+                    if isinstance(live.get("href"), str) and live["href"]:
+                        current_url = live["href"]
+                    token = live.get("token")
+                    title = live.get("title") or ""
+                    if (isinstance(token, str) and self._doc_token
+                            and token == self._doc_token
+                            and self._delta_active
+                            and reason in ("url_change", "nav_settle", "spa")):
+                        # Same document, healthy patch channel: the DOM already
+                        # followed.  Update the address bar and let the deltas
+                        # keep painting — no snapshot, no iframe rebuild.
+                        self._note_same_document_url(current_url or "", title)
+                        logger.debug("dc same-document url change — no rebuild (client %s)",
+                                     self.client_id)
+                        return current_url
+                elif isinstance(live, str) and live:
+                    current_url = live
             if current_url:
                 # The URL watcher is a fallback. If the observer/explicit
                 # navigation already sent this URL while it waited for the
@@ -5552,32 +5893,35 @@ class DOMCaptureSession:
             # indefinitely.  If the websocket write buffer is already
             # large, defer this capture and let the delta patch channel
             # carry interim changes instead.
-            try:
-                buffered = getattr(self.websocket, "buffered_amount", 0)
-                if buffered > 2 * 1024 * 1024:  # > 2 MB buffered
-                    logger.debug(
-                        "dc backpressure: deferring send (buffered=%d bytes, reason=%s)",
-                        buffered, reason,
-                    )
-                    self._pending_reason = reason
-                    return None
-            except Exception:
-                # buffered_amount not available — proceed without backpressure.
-                pass
+            #
+            # With a session gateway attached this check is skipped on
+            # purpose: publishing into the hub is O(1) memory and O(1) time
+            # (per-viewer bounded queues absorb the rest, and a viewer that
+            # cannot keep up is stalled and re-caught-up, not waited on), so
+            # deferring here would only make the DOCUMENT late for the healthiest
+            # viewer because of the slowest one.
+            if self._gateway() is None:
+                try:
+                    buffered = getattr(self.websocket, "buffered_amount", 0)
+                    if buffered > 2 * 1024 * 1024:  # > 2 MB buffered
+                        logger.debug(
+                            "dc backpressure: deferring send (buffered=%d bytes, reason=%s)",
+                            buffered, reason,
+                        )
+                        self._pending_reason = reason
+                        return None
+                except Exception:
+                    # buffered_amount not available — proceed without backpressure.
+                    pass
 
-            t_send = time.perf_counter()
-            # B timestamp: stamped just before the frame hits the wire so the
-            # client can compute capture (B-A), network (C-B), rendering (D-C),
-            # and total (D-A) delay.
-            msg["_t_sent"] = t_send
-            try:
-                frame = json.dumps(msg, ensure_ascii=False)
-                async with self._ws_send_lock:
-                    await self.websocket.send_text(frame)
-            except Exception as exc:
-                logger.debug("full_document send failed: %s", exc)
+            # B timestamp: stamped by the emitter (wall clock on the gateway
+            # path, perf counter on the legacy one) so the client can compute
+            # capture (B-A), network (C-B), rendering (D-C), and total (D-A).
+            sent, send_ms, frame_bytes = await self._emit_snapshot(
+                msg, reason=reason, capture_ms=capture_ms, rewrite_ms=rewrite_ms)
+            if not sent:
                 return None
-            send_ms = (time.perf_counter() - t_send) * 1000.0
+
             if not self._cold_logged:
                 # The number a visitor actually feels: from "the helper
                 # existed" to "a whole page is on their screen".
@@ -5641,23 +5985,22 @@ class DOMCaptureSession:
             self._pending_reason = None
             # Drain any delta patches that arrived during this send — they
             # were buffered rather than dropped so none of the 100-500ms of
-            # activity while the full doc serialized is lost. Send them
-            # under the ws lock, in arrival order, against the gen they
-            # were captured on.
+            # activity while the full doc serialized is lost.  They go out in
+            # arrival order, against the generation they were captured on, and
+            # through the same emitter as live patches so the gateway can drop
+            # any that belong to a document the snapshot just replaced.
             try:
                 buf = getattr(self, "_delta_pending_buf", None)
                 if buf:
                     self._delta_pending_buf = []
-                    async with self._ws_send_lock:
-                        for bgen, bdoc, bpayload in buf:
-                            try:
-                                doc_json = (_json.dumps(str(bdoc)[:256], ensure_ascii=False)
-                                            if bdoc is not None else "null")
-                                frame = ('{"type":"dom_patch","gen":' + str(bgen)
-                                         + ',"doc":' + doc_json + ',"ops":' + bpayload + '}')
-                                await self.websocket.send_text(frame)
-                            except Exception as exc:
-                                logger.debug("pending delta flush failed: %s", exc)
+                    for entry in buf:
+                        try:
+                            bgen, bdoc, bpayload = entry[0], entry[1], entry[2]
+                            bdoc_id = entry[3] if len(entry) > 3 else None
+                            await self._emit_delta(bpayload, bdoc, gen=bgen,
+                                                   document_id=bdoc_id)
+                        except Exception as exc:
+                            logger.debug("pending delta flush failed: %s", exc)
             except Exception as exc:
                 logger.debug("pending delta flush setup failed: %s", exc)
             if SEND_COALESCE and pending and not self._stopped:
@@ -5695,15 +6038,11 @@ class DOMCaptureSession:
         }
         if new_assets:
             msg["assets"] = new_assets
-        try:
-            frame = json.dumps(msg, ensure_ascii=False)
-            async with self._ws_send_lock:
-                await self.websocket.send_text(frame)
-        except Exception as exc:
-            logger.debug("asset_map send failed: %s", exc)
+        sent = await self._gateway_asset_send(msg)
+        if not sent:
             return False
-        logger.debug("dc asset_map swaps=%d assets=%d bytes=%d gen=%d seq=%d",
-                     len(swap), len(new_assets), len(frame), self._gen, self._seq)
+        logger.debug("dc asset_map swaps=%d assets=%d gen=%d seq=%d",
+                     len(swap), len(new_assets), self._gen, self._seq)
         return True
 
     async def _send_asset_upgrade(self, deferred: Dict[str, Any],
@@ -6002,6 +6341,10 @@ class DOMCaptureSession:
             return
         self._delta_active = False
         self._explicit_navigation_in_progress = True
+        # Tell the gateway BEFORE the load starts: the document that is about
+        # to be replaced stops being admissible, so a mutation or asset edit
+        # still in flight from the old page cannot land on the new one.
+        self._note_new_document("explicit-navigation")
         try:
             # Use "commit" wait_until so Playwright returns the MOMENT the
             # new document has started loading (response headers + first
@@ -6040,6 +6383,12 @@ class DOMCaptureSession:
                 await self._capture_navigation_once("navigation")
             except Exception as exc:
                 logger.debug("fast post-nav capture failed: %s", exc)
+            # The capture is what commits the new document identity in the
+            # gateway; if it failed (page detached, backend wedged) release the
+            # pending id so the next observer signal can recover the tab.
+            hub = self._gateway()
+            if hub is not None and hub.snapshot_frame is None:
+                self._note_navigation_failed(url, "navigation document did not arrive")
 
             # Schedule progressive follow-up captures so late-loading
             # content (images, fonts, client-side framework mounts, lazy
@@ -6048,8 +6397,13 @@ class DOMCaptureSession:
             # of the incremental changes in between; these full captures
             # are the consistency floor.
             self._schedule_post_navigation_followups()
+            self._note_navigation_done(url)
         except Exception as exc:
             logger.debug("handle_navigation failed: %s", exc)
+            # A failed navigation must not leave the mirror waiting on a
+            # document that never arrives: report the failure (the viewer keeps
+            # showing the page it has) and release the pending identity.
+            self._note_navigation_failed(url, exc)
         finally:
             self._explicit_navigation_in_progress = False
 

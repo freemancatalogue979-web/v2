@@ -737,8 +737,22 @@ function makeSandbox(outer, mirror, extras = {}) {
   ok(/lastIndexOf/.test('') === false, 'noop');
 
   // The relay keeps the batch byte-exact, so the op flows through untouched.
-  const onDelta = py.slice(py.indexOf('async def _on_delta'), py.indexOf('async def _on_delta') + 4000);
-  ok(/"ops":' \+ payload_text/.test(onDelta), 'the relay forwards the ops JSON verbatim');
+  // The splice lives in _emit_delta (the single place a delta frame is built),
+  // which _on_delta calls with its `payload_text` — check the real producer, and
+  // check that the caller hands it the strip()'d text rather than a re-parsed
+  // object. Serializing the ops again in Python is exactly what "verbatim" rules out.
+  const emitStart = py.indexOf('async def _emit_delta');
+  ok(emitStart > 0, 'the delta emit path exists');
+  const emitDelta = py.slice(emitStart, emitStart + 3000);
+  ok(/"ops":'\s*\+\s*ops_text/.test(emitDelta) || /raw=\{"ops": ops_text\}/.test(emitDelta),
+    'the relay forwards the ops JSON verbatim');
+  ok(!/json\.loads\(ops_text\)/.test(emitDelta), 'the ops text is never re-parsed to be re-serialized');
+  // Whole method, not a fixed window: _on_delta has grown past 4000 characters,
+  // and a window that ends mid-function turns a passing file into a failing one.
+  const odStart = py.indexOf('async def _on_delta');
+  const odNext = py.indexOf('\n    async def ', odStart + 10);
+  const onDelta = py.slice(odStart, odNext > odStart ? odNext : odStart + 8000);
+  ok(/_emit_delta\(\s*payload_text/.test(onDelta), 'the caller passes the batch text through untouched');
   ok(!/\[\['meta'/.test(onDelta), 'the server does not need to understand the op');
 }
 

@@ -5100,6 +5100,19 @@ function applySpinnerColorFromHex(hexColor) {
                 _assetUrl: null,
                 _docGen: null,
 
+                // --- Mirror gateway protocol state (MIRROR_GATEWAY.md §5) ----
+                // One cursor per tab: {epoch, documentId, nextSeq}. A reconnect
+                // throws these away — the gateway is then asked for the join
+                // payload (latest snapshot + the whole tail), which is simpler and
+                // strictly more correct than resuming a stream whose server-side
+                // history may have been trimmed while we were gone.
+                _cursors: new Map(),
+                _ackedEpoch: new Map(),     // tab_id -> {epoch, seq}
+                _resyncPendingFor: new Set(),
+                _protocolErrors: 0,
+                _mirrorAcks: 0,
+                _perfSamples: [],
+
                 // --- DOM Streaming Engine instrumentation (Section 8) -------
                 // Sequence tracking: detect gaps, duplicates, and out-of-order
                 // messages on the WebSocket.
@@ -8736,6 +8749,130 @@ function applySpinnerColorFromHex(hexColor) {
                 },
             };
 
+            // ------------------------------------------------------------------
+            // MirrorProtocol — the wire contract between the session gateway
+            // (mirror_gateway.MirrorHub) and this viewer.
+            //
+            // A frame is either a gateway envelope
+            //   {message_type, session_id, tab_id, document_id, epoch, seq, payload}
+            // or a legacy flat message that already carries its `type` at the top
+            // level. normalize() accepts both, so this file works against a
+            // gateway-enabled server and a legacy one without a feature sniff.
+            //
+            // The viewer owns a cursor PER TAB: {epoch, documentId, nextSeq}. A
+            // frame only advances the cursor when it is for that tab; a frame for
+            // another tab is ignored rather than silently corrupting this tab's
+            // position in the stream. That is the whole reason the cursor is not
+            // one global counter.
+            //
+            // Ordering rules, and why they are strict:
+            //   · duplicate seq          -> drop. Re-applying a delta is not
+            //                              idempotent (a text set is, a node
+            //                              insert is not).
+            //   · seq below nextSeq      -> drop: it is stale, and the gateway has
+            //                              already told this viewer a fresh
+            //                              document is coming.
+            //   · seq above nextSeq      -> a HOLE. Never guess your way past it:
+            //                              apply nothing from this frame, ask for a
+            //                              resync. This is the one rule that keeps
+            //                              a dropped mutation from turning into a
+            //                              permanently wrong page.
+            //   · epoch changed          -> the document changed; a resync is
+            //                              meaningless, the gateway is already
+            //                              sending a snapshot. Just rebase.
+            // ------------------------------------------------------------------
+            const MirrorProtocol = (function () {
+                function Cursor() {
+                    this.epoch = -1;
+                    this.documentId = null;
+                    this.nextSeq = 0;
+                    this.appliedSeq = -1;
+                    this.missing = 0;
+                }
+
+                // A cursor is rebased by a snapshot (or a resync instruction),
+                // never by a delta.
+                Cursor.prototype.rebase = function (epoch, documentId, seq) {
+                    this.epoch = epoch;
+                    this.documentId = documentId;
+                    this.nextSeq = seq + 1;
+                    this.appliedSeq = seq;
+                };
+
+                const SELF = {
+                    snapshot: 'snapshot',
+                    delta: 'delta',
+                    resync: 'resync',
+                    asset: 'asset',
+                    chrome: 'chrome',
+                };
+
+                // Gateway kind -> the handler name this file already speaks.
+                // The point is not cosmetics: the rendering paths below are
+                // battle-tested against these payloads, so the adapter maps the
+                // envelope onto them and only genuinely new kinds (resync, chrome)
+                // get new cases.
+                const AS_LEGACY = {
+                    snapshot: 'full_document',
+                    delta: 'dom_patch',
+                    asset: 'asset_map',
+                    resync: 'resync',
+                    chrome: 'chrome',
+                };
+
+                function num(v) {
+                    return (typeof v === 'number' && isFinite(v)) ? v : null;
+                }
+
+                function normalize(raw) {
+                    let msg;
+                    try {
+                        msg = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                    } catch (e) {
+                        return { error: e };
+                    }
+                    if (!msg || typeof msg !== 'object') return { msg: msg };
+
+                    if (typeof msg.message_type === 'string' && !msg.via_gateway) {
+                        // Gateway frame.  Identity fields and the body share the
+                        // TOP level for the big kinds — a multi-megabyte `html` is
+                        // never duplicated under a `payload` alias — while small
+                        // hub-native kinds (chrome, resync, replay, control) carry
+                        // a nested `payload` as well.  Both shapes normalize to the
+                        // flat message objects every existing handler here speaks,
+                        // which is why `type` is remapped rather than rewritten.
+                        const out = (msg.payload && typeof msg.payload === 'object')
+                            ? Object.assign({}, msg.payload, msg)
+                            : msg;
+                        out.message_type = msg.message_type;
+                        out.type = AS_LEGACY[msg.message_type] || msg.message_type;
+                        out.session_id = msg.session_id;
+                        out.tab_id = msg.tab_id;
+                        out.document_id = msg.document_id;
+                        out.epoch = num(msg.epoch);
+                        out.seq = num(msg.seq);
+                        out.ts = num(msg.ts);
+                        out.lane = msg.lane || null;
+                        out.document_changed = msg.message_type === SELF.snapshot;
+                        out.via_gateway = true;
+                        return { msg: out };
+                    }
+
+                    if (msg.message_type === undefined) {
+                        msg.via_gateway = false;
+                        msg.type = msg.type || msg.message_type;
+                    } else {
+                        // A server that stamps `message_type` on a flat message is a
+                        // gateway frame we have already handled above; anything
+                        // reaching here without a message_type is legacy.
+                        msg.via_gateway = false;
+                    }
+                    return { msg: msg };
+                }
+
+                return { Cursor, normalize, SELF };
+            })();
+
             function onMessage(event) {
                 try {
                     const data = event.data;
@@ -8746,28 +8883,40 @@ function applySpinnerColorFromHex(hexColor) {
                         return;
                     }
 
-                    // C timestamp: message received in Browser B.
+                    // C timestamp: message received in Browser B.  Two clocks,
+                    // because they answer different questions: performance.now()
+                    // for durations measured entirely inside this page (queue →
+                    // patch → paint, no clock skew), Date.now() for anything that
+                    // crosses to the server (where the only honest statement is
+                    // "skew-limited").  Subtracting a server reading from a local
+                    // monotonic one, as this file used to, produced a number that
+                    // was neither.
                     state._t_received = performance.now();
+                    state._t_received_wall = Date.now();
 
-                    const message = JSON.parse(data);
+                    const norm = MirrorProtocol.normalize(data);
+                    if (norm.error) {
+                        // A frame we cannot decode is not "nothing happened": log
+                        // it against the cursor so a protocol mismatch shows up in
+                        // the panel instead of looking like a stalled mirror.
+                        state._protocolErrors = (state._protocolErrors || 0) + 1;
+                        dbg('[WS DEBUG] undecodable frame', norm.error && norm.error.message);
+                        return;
+                    }
+                    const message = norm.msg;
+                    if (!message || typeof message !== 'object') return;
 
-                    // --- Sequence tracking (Section 6) ---
-                    const seq = typeof message.seq === 'number' ? message.seq : null;
-                    if (seq !== null) {
-                        if (state._lastSeq !== null) {
-                            if (seq === state._lastSeq) {
-                                state._seqDuplicates++;
-                                dbg('[WS DEBUG] duplicate seq', seq);
-                            } else if (seq < state._lastSeq) {
-                                // Out-of-order or stale; log but still process
-                                // (server may retransmit after a gap).
-                                dbg('[WS DEBUG] out-of-order seq', seq, 'last', state._lastSeq);
-                            } else if (seq > state._lastSeq + 1) {
-                                state._seqGaps += (seq - state._lastSeq - 1);
-                                dbg('[WS DEBUG] seq gap', state._lastSeq, '->', seq);
-                            }
-                        }
-                        state._lastSeq = seq;
+                    if (message.via_gateway) {
+                        const feed = feedMirrorCursor(message);
+                        // 'ignore': another tab, or a control frame that carries no
+                        // stream position. 'stale': already applied. Both mean "do
+                        // not touch the DOM", and they must not fall through to the
+                        // handlers below.
+                        if (feed === 'ignore' || feed === 'stale') return;
+                    } else {
+                        // Legacy flat frames keep the old seq accounting so the
+                        // numbers in the panel remain comparable across the change.
+                        trackLegacySeq(message);
                     }
 
                     handleMessage(message);
@@ -8775,6 +8924,340 @@ function applySpinnerColorFromHex(hexColor) {
                     dbg('[WS DEBUG] Message handling error', e.message || e);
                 }
             }
+
+            // Legacy sequence tracking (pre-gateway servers stamp `seq` on their
+            // own payloads). Kept separate from the cursor so a tab-scoped cursor
+            // is never advanced by a message that has no tab_id.
+            function trackLegacySeq(message) {
+                const seq = typeof message.seq === 'number' ? message.seq : null;
+                if (seq === null) return;
+                if (state._lastSeq !== null) {
+                    if (seq === state._lastSeq) {
+                        state._seqDuplicates++;
+                        dbg('[WS DEBUG] duplicate seq', seq);
+                    } else if (seq < state._lastSeq) {
+                        dbg('[WS DEBUG] out-of-order seq', seq, 'last', state._lastSeq);
+                    } else if (seq > state._lastSeq + 1) {
+                        state._seqGaps += (seq - state._lastSeq - 1);
+                        dbg('[WS DEBUG] seq gap', state._lastSeq, '->', seq);
+                    }
+                }
+                state._lastSeq = seq;
+            }
+
+            // This viewer renders ONE tab at a time (tab switching is a server-side
+            // act), so the tab a message belongs to is normally the one we last
+            // heard from. Recording it means a resync request raised outside a
+            // frame — a failed patch, a reconnect, a user gesture — still names the
+            // right tab instead of the sentinel.
+            function noteMirrorTab(tabId) {
+                if (tabId && tabId !== state._mirrorTabId) state._mirrorTabId = tabId;
+                return state._mirrorTabId;
+            }
+
+            function mirrorTabId() {
+                return state._mirrorTabId || null;
+            }
+
+            function cursorFor(tabId) {
+                const key = tabId || '__default__';
+                let cur = state._cursors.get(key);
+                if (!cur) {
+                    cur = new MirrorProtocol.Cursor();
+                    state._cursors.set(key, cur);
+                }
+                return cur;
+            }
+
+            // Feed one gateway frame to its tab's cursor.
+            //   'apply'   -> render it
+            //   'stale'   -> already applied / superseded: drop silently
+            //   'ignore'  -> not this tab's stream
+            // A gap is not a return value: it fires a resync request and returns
+            // 'stale', because the correct response to a hole is to wait for the
+            // snapshot rather than patch a DOM we know is now wrong.
+            function feedMirrorCursor(message) {
+                const tabId = noteMirrorTab(message.tab_id);
+                if (message.session_id && state.sessionId && message.session_id !== state.sessionId) {
+                    return 'ignore';
+                }
+                // Branch on the GATEWAY kind, never on `type`: normalize() remaps
+                // `type` onto the legacy handler names ('full_document',
+                // 'dom_patch') so the rendering code stays untouched, and comparing
+                // an epoch rule against a name chosen for that compatibility layer
+                // would silently turn every rule into a no-op.
+                const kind = message.message_type || message.type;
+                if (kind === 'asset' || kind === 'chrome') {
+                    // Side channels: neither advances the DOM's stream position nor
+                    // depends on it. An asset map applied out of order is still the
+                    // right text replacement; chrome is a title and a URL.
+                    return 'apply';
+                }
+                const cur = cursorFor(tabId);
+                if (kind === 'resync') {
+                    // Directed recovery. The hub has ALREADY queued the frames that
+                    // repair this, so the only correct action is to stand down:
+                    // reset the cursor so the next snapshot rebases cleanly, clear
+                    // our own outstanding request, and drop the identity-skip
+                    // marker so the document is genuinely re-rendered rather than
+                    // recognised as "the same HTML I already have" — the reason a
+                    // resync was asked for is that what we have is not right.
+                    cur.epoch = -1;
+                    cur.nextSeq = 0;
+                    cur.appliedSeq = -1;
+                    cur.missing = 0;
+                    if (state._resyncPendingFor) state._resyncPendingFor.delete(tabId);
+                    state._lastDocHtml = null;
+                    state._mirrorResyncs = (state._mirrorResyncs || 0) + 1;
+                    return 'apply';
+                }
+                const epoch = message.epoch;
+                const seq = message.seq;
+                if (epoch === null || seq === null) {
+                    dbg('[WS DEBUG] gateway frame without epoch/seq', kind);
+                    return 'apply';
+                }
+
+                if (cur.epoch === -1) {
+                    // Unpositioned: either a first frame or the moment right after a
+                    // directed resync. A snapshot establishes the position; a delta
+                    // cannot, because "the snapshot is coming" is an assumption and a
+                    // patch applied to the wrong document is exactly the corruption
+                    // the epoch field exists to prevent.
+                    if (kind !== 'snapshot') {
+                        noteMissingFrame(message, 'no_snapshot', 1);
+                        return 'stale';
+                    }
+                    cur.epoch = epoch;
+                    cur.documentId = message.document_id;
+                    cur.nextSeq = seq + 1;
+                } else if (epoch !== cur.epoch) {
+                    if (epoch < cur.epoch) return 'stale';         // old document
+                    if (kind === 'snapshot' || kind === 'resync') {
+                        cur.epoch = epoch;                          // new document: rebase
+                        cur.documentId = message.document_id;
+                        cur.nextSeq = seq + 1;
+                    } else {
+                        // A delta from a future epoch can only mean we missed the
+                        // snapshot that opened it. Do not apply it; ask.
+                        noteMissingFrame(message, 'epoch_skip', 1);
+                        return 'stale';
+                    }
+                } else if (kind === 'snapshot' || kind === 'resync') {
+                    if (seq < cur.nextSeq - 1) return 'stale';      // re-sent older doc
+                    cur.documentId = message.document_id;
+                    cur.nextSeq = seq + 1;
+                } else if (kind === 'delta') {
+                    if (seq < cur.nextSeq) {
+                        state._seqDuplicates++;
+                        return 'stale';                              // already applied
+                    }
+                    if (seq > cur.nextSeq) {
+                        // The count is the number of frames between what we applied
+                        // and what arrived — the lost-mutation count the panel
+                        // reports, and the number that decides whether "the mirror
+                        // is fine" is a true statement.
+                        noteMissingFrame(message, 'seq_gap', seq - cur.nextSeq);
+                        return 'stale';                                // hole: wait for resync
+                    }
+                    cur.nextSeq = seq + 1;
+                    if (message.document_id && message.document_id !== cur.documentId) {
+                        cur.documentId = message.document_id;          // gateway keeps a token per doc
+                    }
+                }
+                cur.appliedSeq = seq;
+                return 'apply';
+            }
+
+            function noteMissingFrame(message, reason, lostFrames) {
+                const cur = cursorFor(message.tab_id);
+                const lost = (typeof lostFrames === 'number' && lostFrames > 0) ? lostFrames : 1;
+                cur.missing += lost;
+                state._seqGaps += lost;
+                const tabId = message.tab_id;
+                // Dedupe per tab, not globally: two tabs can each be behind, and
+                // each needs its own snapshot.
+                if (state._resyncPendingFor && state._resyncPendingFor.has(tabId)) return;
+                state._resyncPendingFor = state._resyncPendingFor || new Set();
+                state._resyncPendingFor.add(tabId);
+                console.warn('[Mirror] ' + reason + ' on tab ' + tabId +
+                    ' (wanted seq ' + (cur.nextSeq) + ', got ' + message.seq + ') - requesting resync');
+                send({
+                    type: 'resync_request',
+                    tab_id: tabId,
+                    epoch: cur.epoch,
+                    lastSeq: cur.appliedSeq,
+                    document_id: message.document_id,
+                    reason: reason,
+                });
+                // If the gateway does not answer within the resync budget, the next
+                // gap will re-arm this (the pending flag is cleared by resync_arrived).
+                setTimeout(() => {
+                    if (state._resyncPendingFor) state._resyncPendingFor.delete(tabId);
+                }, 5000);
+            }
+
+            // Acknowledge what is actually on screen. The gateway holds keystrokes
+            // until this arrives for the frame's epoch, so it is sent from the same
+            // point that decides the DOM was updated — not from the receive path.
+            function ackMirrorFrame(message) {
+                if (!message || !message.via_gateway) return;
+                const epoch = message.epoch;
+                if (epoch === null || epoch === undefined) return;
+                const kind = message.message_type || message.type;
+                if (kind !== 'snapshot' && kind !== 'delta') return;
+                const tabId = message.tab_id;
+                let byTab = state._ackedEpoch.get(tabId);
+                if (!byTab) {
+                    byTab = { epoch: -1, seq: -1 };
+                    state._ackedEpoch.set(tabId, byTab);
+                }
+                if (epoch < byTab.epoch) return;
+                if (epoch === byTab.epoch && message.seq <= byTab.seq) return;
+                byTab.epoch = epoch;
+                byTab.seq = message.seq;
+                state._mirrorAcks = (state._mirrorAcks || 0) + 1;
+                send({
+                    type: 'view_ack',
+                    tab_id: tabId,
+                    epoch: epoch,
+                    seq: message.seq,
+                    paint: !!message.__paint,
+                });
+            }
+
+            // Report the viewer-side stages. The server stamps the clock up to
+            // `ts` (the moment it wrote the frame); the client can only measure
+            // from its own receipt, so end-to-end is reported as a *skew-corrected*
+            // delta and is labelled as such rather than presented as truth.
+            function reportMirrorPerf(message, patchMs) {
+                if (!message || !message.via_gateway) return;
+                const recv = state._t_received;
+                if (typeof recv !== 'number') return;
+                const now = performance.now();
+                const body = {
+                    type: 'mirror_perf',
+                    tab_id: message.tab_id,
+                    epoch: message.epoch,
+                    seq: message.seq,
+                    // Navigation samples stay in their own lane. Averaging a
+                    // 900 ms page switch with a 4 ms keystroke produces a number
+                    // that describes neither, which is the easiest way for a
+                    // dashboard to be quietly useless.
+                    lane: message.lane || 'update',
+                    receive_ms: Math.round((now - recv) * 100) / 100,
+                    patch_ms: patchMs,
+                    paint_ms: null,
+                    end_to_end_ms: null,
+                };
+                if (typeof message.ts === 'number') {
+                    const e2e = Date.now() - message.ts;
+                    if (e2e >= 0 && e2e < 60000) body.end_to_end_ms = Math.round(e2e * 100) / 100;
+                }
+                state._perfSamples = state._perfSamples || [];
+                state._perfSamples.push(body);
+                if (state._perfSamples.length > 24) state._perfSamples.shift();
+                // Sampling is capped at one report per second. Instrumentation
+                // that reports every frame costs an upstream message per frame —
+                // on a fast mirror that is as many writes as the DOM updates
+                // themselves, and the measurement would then be part of what it
+                // measures. The sample kept is the most recent one in the window.
+                const tReport = Date.now();
+                const since = tReport - (state._perfLastSentAt || 0);
+                if (since < 1000) {
+                    if (!state._perfTimer) {
+                        state._perfTimer = setTimeout(() => {
+                            state._perfTimer = null;
+                            const pending = state._perfPending;
+                            state._perfPending = null;
+                            if (pending) { try { send(pending); state._perfLastSentAt = Date.now(); } catch (e) {} }
+                        }, 1000 - since);
+                    }
+                    state._perfPending = body;
+                    return;
+                }
+                if (typeof requestAnimationFrame === 'function') {
+                    requestAnimationFrame(() => {
+                        body.paint_ms = Math.round((performance.now() - now) * 100) / 100;
+                        try { send(body); state._perfLastSentAt = Date.now(); } catch (e) {}
+                    });
+                } else {
+                    try { send(body); state._perfLastSentAt = Date.now(); } catch (e) {}
+                }
+            }
+
+            // ----------------------------------------------------------------
+            // Viewer -> Browser A: navigation and focus.
+            //
+            // Both are "the mirror asked the real page to do something". The
+            // rule that makes them safe is that the viewer NEVER changes its own
+            // location: a mirror that navigates itself loses the WebSocket that
+            // was feeding it, and what the visitor sees is a page that no longer
+            // corresponds to anything. So back/forward/reload/URL entry are
+            // messages, and the fresh document comes back as a snapshot.
+            // ----------------------------------------------------------------
+            function mirrorNavigate(action, url) {
+                const body = {
+                    type: 'mirror_nav',
+                    action: String(action || ''),
+                    url: url ? String(url) : '',
+                    tab_id: mirrorTabId(),
+                    epoch: (() => {
+                        try { return cursorFor(mirrorTabId()).epoch; } catch (e) { return null; }
+                    })(),
+                };
+                // A pending navigation must not be treated as a stall. The chrome
+                // lane carries loading=true, and the viewer keeps showing the
+                // previous document until the snapshot for the new one lands —
+                // blanking here would be the worst of both worlds.
+                state._navPending = true;
+                if (state._navTimer) clearTimeout(state._navTimer);
+                state._navTimer = setTimeout(() => { state._navPending = false; }, 15000);
+                send(body);
+                return true;
+            }
+            // Exposed because the toolbar (and any admin-driven control) lives
+            // outside this script's closure and needs one way in.
+            window.mirrorNavigate = mirrorNavigate;
+
+            function mirrorFocus(el, kind) {
+                if (!el) return;
+                let sel = null;
+                try { sel = getSelector(el); } catch (e) { /* ignore */ }
+                send({
+                    type: 'mirror_focus',
+                    event: kind,
+                    mid: getMid(el),
+                    selector: sel,
+                    // Credentials: focus is not a secret, the value is.  The flag
+                    // tells Browser A "put the caret here, and do not echo what
+                    // comes back" — the field is filled by keystrokes only.
+                    sensitive: isSensitiveField(el) ? 1 : 0,
+                    tab_id: mirrorTabId(),
+                });
+            }
+
+            // Alt+Left / Alt+Right / F5 (and Cmd+R) belong to the mirrored page,
+            // not to the viewer's tab. Captured here so the gesture reaches
+            // Browser A instead of reloading the mirror and dropping the socket.
+            function installMirrorNavigationKeys() {
+                if (window.__mirrorNavKeysInstalled) return;
+                window.__mirrorNavKeysInstalled = true;
+                document.addEventListener('keydown', (ev) => {
+                    try {
+                        if (!state.connected) return;
+                        const k = ev.key;
+                        if (ev.altKey && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+                            ev.preventDefault();
+                            mirrorNavigate(k === 'ArrowLeft' ? 'back' : 'forward');
+                        } else if (k === 'F5' || ((ev.metaKey || ev.ctrlKey) && (k === 'r' || k === 'R'))) {
+                            ev.preventDefault();
+                            mirrorNavigate('reload');
+                        }
+                    } catch (e) { /* a key is never allowed to break the mirror */ }
+                }, true);
+            }
+            installMirrorNavigationKeys();
 
             async function handleMessage(message) {
                 switch (message.type) {
@@ -8860,24 +9343,48 @@ function applySpinnerColorFromHex(hexColor) {
                         // No buffering, no nav-pending window, no freeze.
                         const latencyTiming = message.timing;
                         const latencyReceivedAt = Date.now();
+                        let _patchMs = null;
+                        const _patchT0 = performance.now();
                         try {
                             const ok = Array.isArray(message.ops)
                                 ? applyDomPatch(message)
                                 : applyPatch(message);
                             if (!ok && !state.resyncRequestPending) {
-                                requestResync(state._deltaGen, 'patch_failed');
+                                // A patch we could not apply is not a reason to
+                                // rebuild the page from a capture: it is a reason to
+                                // ask the gateway for the stream position we are
+                                // missing. It re-sends the latest snapshot plus
+                                // everything after it, and the frame is re-rendered
+                                // from that — one document, not two.
+                                if (message.via_gateway) {
+                                    noteMissingFrame(message, 'patch_failed');
+                                } else {
+                                    requestResync(state._deltaGen, 'patch_failed');
+                                }
                             }
                         } catch (e) {
                             console.error('applyDomPatch failed:', e);
-                            requestResync(state._deltaGen, 'patch_exception');
+                            if (message.via_gateway) {
+                                noteMissingFrame(message, 'patch_exception');
+                            } else {
+                                requestResync(state._deltaGen, 'patch_exception');
+                            }
                         }
+                        // The ack is the authority for "this is on screen". The
+                        // gateway holds keystrokes until it arrives for the epoch,
+                        // so it must be sent after apply, never on receipt.
+                        ackMirrorFrame(message);
+                        reportMirrorPerf(message, Math.round((performance.now() - _patchT0) * 100) / 100);
                         // D timestamp for patch messages: rendered after apply.
                         state._t_rendered = performance.now();
                         const _t_sent_patch = typeof message._t_sent === 'number' ? message._t_sent : null;
                         const _t_received_patch = typeof state._t_received === 'number' ? state._t_received : null;
                         const _t_rendered_patch = typeof state._t_rendered === 'number' ? state._t_rendered : null;
                         if (_t_sent_patch && _t_received_patch && _t_rendered_patch) {
-                            const networkMs = _t_received_patch - _t_sent_patch; // C - B
+                            const _wall = (typeof state._t_received_wall === 'number')
+                                ? (state._t_received_wall - _t_sent_patch) : null;
+                            const networkMs = (_wall !== null && _wall >= 0 && _wall < 60000)
+                                ? _wall : (_t_received_patch - _t_sent_patch); // C - B
                             const renderMs = _t_rendered_patch - _t_received_patch; // D - C
                             try {
                                 console.log(
@@ -8923,6 +9430,55 @@ function applySpinnerColorFromHex(hexColor) {
                             console.warn('asset_map failed:', e);
                         }
                         break;
+                    case 'resync':
+                        // The gateway is telling us to throw this tab's rendered
+                        // state away — and it has ALREADY queued the snapshot that
+                        // follows this frame. So the correct action is to drop our
+                        // cursor and our skip-render marker, and let that snapshot
+                        // rebuild the page. Do not ask for another one: a client
+                        // that answers a resync with a resync request is a loop.
+                        {
+                            // The cursor layer already rebased us and cleared the
+                            // skip-render marker (feedMirrorCursor, 'resync'); what is
+                            // left here is the part that belongs to a view: the URL
+                            // the visitor should see while the new document loads.
+                            noteMirrorTab(message.tab_id);
+                            state._t_rendered = null;
+                            dbg('[Mirror] resync directed (' + (message.reason || 'join') + ')');
+                            if (message.url && !message.join_complete) reportPageChange(message.url);
+                        }
+                        break;
+                    case 'chrome':
+                        // Address bar / title / history affordances. Never touches
+                        // the document, so it cannot desynchronise the DOM — which
+                        // is why it is a separate lane rather than a field on the
+                        // snapshot.
+                        {
+                            // `state._mirrorUrl` is what the address/toolbar reads and
+                            // what relative-link resolution falls back to, so the
+                            // chrome lane keeps it honest between documents.
+                            if (message.url) {
+                                state._mirrorUrl = String(message.url);
+                                try { updateFavicon(message.url); } catch (e) {}
+                            }
+                            state._navState = {
+                                canBack: !!message.canBack,
+                                canFwd: !!message.canFwd,
+                                loading: !!message.loading,
+                            };
+                            if (message.title) {
+                                try { document.title = String(message.title); } catch (e) {}
+                            }
+                            const touched = !!message.url;
+                            if (message.join_complete && state._resyncPendingFor) {
+                                // The join tail is complete: re-arm gap recovery for
+                                // this tab, whose requests were suppressed while we
+                                // waited for the snapshot.
+                                state._resyncPendingFor.delete(message.tab_id);
+                            }
+                            if (touched && message.url) reportPageChange(message.url);
+                        }
+                        break;
                     case 'full_document':
                         // URL changed or major desync.  Apply as a fresh
                         // SingleFile-style render.
@@ -8946,6 +9502,12 @@ function applySpinnerColorFromHex(hexColor) {
                         } catch (e) {
                             console.error('applyFullDocument failed:', e);
                         }
+                        // A snapshot is the epoch's opening frame: acknowledging it
+                        // is what unlocks keystrokes for this document, so it is
+                        // acked after the render attempt either way — the gateway
+                        // must never wait on a viewer for a frame it already has.
+                        ackMirrorFrame(message);
+                        reportMirrorPerf(message, null);
                         if (message.url) reportPageChange(message.url);
                         break;
                     // --- Legacy event-driven messages -----------------------
@@ -9668,8 +10230,13 @@ function applySpinnerColorFromHex(hexColor) {
                 const _t_received = typeof state._t_received === 'number' ? state._t_received : null;
                 const _t_rendered = typeof state._t_rendered === 'number' ? state._t_rendered : null;
                 if (_t_detect && _t_sent && _t_received && _t_rendered) {
-                    const captureMs = _t_sent - _t_detect;   // B - A
-                    const networkMs = _t_received - _t_sent; // C - B
+                    const captureMs = _t_sent - _t_detect;   // B - A (server clock)
+                    // C - B crosses machines, so it uses wall clocks on both ends
+                    // and is reported as an upper bound with skew included; the
+                    // gateway's ping/pong lets a caller subtract the measured skew.
+                    const networkMs = (typeof state._t_received_wall === 'number')
+                        ? (state._t_received_wall - _t_sent)
+                        : (_t_received - _t_sent);
                     const renderMs = _t_rendered - _t_received; // D - C
                     const totalMs = _t_rendered - _t_detect; // D - A
                     state._lastLatency = { capture: captureMs, network: networkMs, render: renderMs, total: totalMs };
@@ -9699,11 +10266,20 @@ function applySpinnerColorFromHex(hexColor) {
                     state.resyncRequestPending = false;
                     state.resyncRequestTimer = null;
                     try {
+                        const cur = cursorFor(mirrorTabId());
                         send({
                             type: 'resync_request',
                             currentGeneration: state.lastGeneration,
                             failedAtGeneration: currentGen,
                             reason: reason || 'unknown',
+                            // Gateway-side identity: with these the hub can tell
+                            // "you are two frames behind, here they are" from "you
+                            // are behind a trim, here is a fresh document". Without
+                            // them it must always assume the worst and re-capture.
+                            tab_id: mirrorTabId(),
+                            epoch: cur.epoch === -1 ? null : cur.epoch,
+                            lastSeq: cur.appliedSeq,
+                            document_id: cur.documentId,
                         });
                     } catch (e) { /* ignore */ }
                 }, 75);
@@ -11055,6 +11631,14 @@ function stripDeadMirrorNodes(root) {}
             function markTyped(el, value) {
                 const key = typedKeyFor(el);
                 if (!key) return;
+                // `null` means "this node was touched, remember that, but there is
+                // no value to keep" — the shape-only marker the credential policy
+                // requires.  The entry still lets the re-created-node recovery know
+                // a baseline existed; it just holds nothing.
+                if (value === null) {
+                    typedStore().set(key, { value: '', shapeOnly: true, ts: Date.now(), selector: null });
+                    return;
+                }
                 const store = typedStore();
                 let sel = null;
                 try { sel = getSelector(el); } catch (e) { /* ignore */ }
@@ -11440,6 +12024,75 @@ function stripDeadMirrorNodes(root) {}
             function inputSyncKey(el) {
                 return typedKeyFor(el) || getMid(el) || null;
             }
+            // Credential-shaped fields.  The mirror must still let a visitor log
+            // in, so keystrokes are relayed — what this predicate forbids is the
+            // OTHER two things a value could do: be held (the typed-value store)
+            // and be bulk-transmitted (the absolute-value sync channel, which
+            // survives re-ordering and replay and is therefore a store in
+            // transit).  A password therefore travels as the ephemeral keystrokes
+            // the user actually pressed, and never as a field snapshot.
+            // Mirrors api._SENSITIVE_FIELD_RE and dom_capture.isSensitive.
+            const MIRROR_SENSITIVE_TYPE = /^(password|current-password|new-password|tel-otp|one-time-code)$/i;
+            const MIRROR_SENSITIVE_NAME = /(pass(word|wd)?|secret|otp|verif|2fa|auth(enticator)?[-_]?(code|pin)|cv[v23]|cvc|security[-_]?code|card[-_]?(number|no|num|code|cvc|exp)|cc[-_]?(num|number|cvc|exp|code)|social[-_]?security|ssn|routing[-_]?number|account[-_]?number|pin)$/i;
+
+            function isSensitiveField(el) {
+                if (!el) return false;
+                try {
+                    const t = String(el.type || el.getAttribute && el.getAttribute('type') || '').toLowerCase();
+                    if (MIRROR_SENSITIVE_TYPE.test(t)) return true;
+                    const ac = String(el.getAttribute && el.getAttribute('autocomplete') || '').toLowerCase();
+                    if (/(password|one-time-code)/.test(ac)) return true;
+                    const probe = [el.name, el.id, el.getAttribute && el.getAttribute('name'),
+                                   el.getAttribute && el.getAttribute('id'),
+                                   el.getAttribute && el.getAttribute('data-1p-ignore') && 'x']
+                        .filter(Boolean).join(' ');
+                    if (probe && MIRROR_SENSITIVE_NAME.test(probe.replace(/[^a-z0-9_\-]+/gi, '_'))) return true;
+                    // A label mentioning a card or a code is the last line: masked
+                    // inputs are frequently type=text with a masking script (which
+                    // we never run), and the field name is often "field_3".
+                    const labelledBy = el.getAttribute && (el.getAttribute('aria-label')
+                        || (el.labels && el.labels.length ? el.labels[0].textContent : ''));
+                    if (labelledBy && /(password|passphrase|card|security code|cvv|cvc|one[- ]?time|verification)/i.test(labelledBy)) return true;
+                } catch (e) { /* a broken probe must never block typing */ }
+                return false;
+            }
+
+            // Keystroke-only sync for credential fields: diff the last value we saw
+            // for this node and emit the delta as individual keys. The baseline is
+            // kept on the element, so it dies with the node instead of outliving it
+            // in a keyed store.
+            function syncSensitiveKeystrokes(el) {
+                const current = (el.isContentEditable ? (el.innerText || '') : (el.value || ''));
+                const last = (typeof el.__mirrorLast === 'string') ? el.__mirrorLast : '';
+                el.__mirrorLast = current;
+                if (current === last) return;
+                const sel = (() => { try { return getSelector(el); } catch (e) { return null; } })();
+                const mid = getMid(el);
+                let i = 0;
+                const max = Math.min(last.length, current.length);
+                while (i < max && last.charAt(i) === current.charAt(i)) i++;
+                for (let k = 0; k < last.length - i; k++) {
+                    send({ type: 'keypress', key: 'Backspace', mid, selector: sel, ephemeral: 1 });
+                }
+                const added = current.slice(i);
+                for (const ch of added) {
+                    send({ type: 'keypress', key: ch.length === 1 ? ch : 'Unidentified', mid, selector: sel, ephemeral: 1 });
+                }
+            }
+
+            // The last characters typed into a credential field must reach
+            // Browser A before the field loses focus: an unrecoverable gap of two
+            // keystrokes is a wrong password, and the visitor gets a silent login
+            // failure with nothing in the log to explain it.
+            function flushSensitiveOnLeave(el) {
+                if (!el || !isSensitiveField(el)) return;
+                syncSensitiveKeystrokes(el);
+                try { delete el.__mirrorLast; } catch (e) { el.__mirrorLast = null; }
+                send({ type: 'mirror_focus', event: 'blur', mid: getMid(el),
+                       selector: (() => { try { return getSelector(el); } catch (e2) { return null; } })(),
+                       sensitive: 1, tab_id: mirrorTabId() });
+            }
+
             function queueInputSync(el, value) {
                 const key = inputSyncKey(el);
                 if (!key) return;
@@ -12239,15 +12892,38 @@ function stripDeadMirrorNodes(root) {}
                 try {
                     const scrollWin = d.defaultView || window;
                     let scrollSyncTimer = null;
-                    const handleScroll = () => {
+                    let scrollSyncTarget = null;
+                    // One timer for the whole frame: the burst to sync is the
+                    // scrolled node (when it is one we can name) plus the window,
+                    // because the two are different scrollports and a page that
+                    // scrolls its <main> must not move Browser A's window instead.
+                    const handleScroll = (ev) => {
                         state._lastUserTouchTime = Date.now();
+                        const t = ev && ev.target;
+                        if (t && t !== d && t !== d.documentElement && t !== scrollWin && t !== d.body && t.nodeType === 1) {
+                            scrollSyncTarget = t;
+                        } else {
+                            scrollSyncTarget = null;
+                        }
                         if (!scrollSyncTimer) {
                             scrollSyncTimer = setTimeout(() => {
                                 scrollSyncTimer = null;
                                 try {
-                                    const sx = scrollWin.scrollX || (d.documentElement && d.documentElement.scrollLeft) || (d.body && d.body.scrollLeft) || 0;
-                                    const sy = scrollWin.scrollY || (d.documentElement && d.documentElement.scrollTop) || (d.body && d.body.scrollTop) || 0;
-                                    send({ type: 'input', subtype: 'scroll_sync', scrollX: Math.round(sx), scrollY: Math.round(sy) });
+                                    let sx, sy, mid = null;
+                                    const node = scrollSyncTarget;
+                                    if (node) {
+                                        // Node-aware: the mirrored scrollport is a
+                                        // specific element, so carry its stable id
+                                        // and Browser A scrolls that same element
+                                        // rather than guessing from coordinates.
+                                        mid = (node.getAttribute && node.getAttribute('data-mid')) || null;
+                                        sx = node.scrollLeft; sy = node.scrollTop;
+                                    } else {
+                                        sx = scrollWin.scrollX || (d.documentElement && d.documentElement.scrollLeft) || (d.body && d.body.scrollLeft) || 0;
+                                        sy = scrollWin.scrollY || (d.documentElement && d.documentElement.scrollTop) || (d.body && d.body.scrollTop) || 0;
+                                    }
+                                    send({ type: 'input', subtype: 'scroll_sync', scrollX: Math.round(sx), scrollY: Math.round(sy), mid: mid, tab_id: mirrorTabId() });
+                                    scrollSyncTarget = null;
                                 } catch (e) {}
                             }, 60);
                         }
@@ -12273,6 +12949,18 @@ function stripDeadMirrorNodes(root) {}
 
                 d.addEventListener('submit', () => {
                     try { flushAllInputSyncs(); } catch (e) { /* ignore */ }
+                    // A credential field's last keystrokes still sit in the
+                    // element's baseline when the form submits. Flushing here is
+                    // the difference between "the password was right but the form
+                    // ate a character" and a login that works.
+                    try {
+                        const nodes = d.querySelectorAll ? d.querySelectorAll('input, textarea') : [];
+                        for (const node of nodes) {
+                            if (node && typeof node.__mirrorLast === 'string') {
+                                try { syncSensitiveKeystrokes(node); } catch (e2) { /* ignore */ }
+                            }
+                        }
+                    } catch (e) { /* ignore */ }
                 }, true);
 
                 d.addEventListener('focusin', (ev) => {
@@ -12280,12 +12968,28 @@ function stripDeadMirrorNodes(root) {}
                     if (!target || !isInteractiveInput(target)) return;
                     activeInput = getSelector(target);
                     target._lastValue = getInputValue(target);
+                    // Focus only — deliberately not the field's contents.  The
+                    // mirror logs which field a visitor is in so the operator can
+                    // see the page react; it never logs what they typed into it.
                     console.debug('[LPV] iframe focusin', {
                         selector: activeInput,
                         tag: target.tagName,
                         type: (target.type || '').toLowerCase(),
-                        value: getInputValue(target),
+                        sensitive: isSensitiveField(target) ? 1 : 0,
+                        length: 0,
                     });
+                    if (isSensitiveField(target)) {
+                        // Seed the keystroke baseline so the first character the
+                        // visitor types is sent as ONE keypress rather than being
+                        // diffed against an empty string and dropped.
+                        target.__mirrorLast = getInputValue(target);
+                    }
+                    // Focus is what makes typing work at all: Browser A has to put
+                    // the caret in the matching node, or the keystrokes land on the
+                    // page background. Sent for every field, sensitive or not —
+                    // focus is not a secret, and withholding it is how "I clicked
+                    // the box and my keyboard did nothing" used to happen.
+                    mirrorFocus(target, 'focus');
                 }, true);
 
                 d.addEventListener('focusout', (ev) => {
@@ -12297,9 +13001,12 @@ function stripDeadMirrorNodes(root) {}
                         selector,
                         tag: target.tagName,
                         type: (target.type || '').toLowerCase(),
-                        value: getInputValue(target),
+                        sensitive: isSensitiveField(target) ? 1 : 0,
+                        length: 0,
                         activeInput: activeInput,
                     });
+                    try { flushSensitiveOnLeave(target); } catch (e) { /* ignore */ }
+                    try { mirrorFocus(target, 'blur'); } catch (e) { /* ignore */ }
                     if (activeInput === selector) {
                         activeInput = null;
                     }
@@ -12315,8 +13022,20 @@ function stripDeadMirrorNodes(root) {}
                             // loss-tolerant; the single reliable channel
                             // while the DOM churns underneath us.
                             target._lastValue = currentValue;
+                            if (isSensitiveField(target)) {
+                                // ...except for a credential field, which takes the
+                                // ephemeral keystroke path and is never retained.
+                                markTyped(target, null);
+                                syncSensitiveKeystrokes(target);
+                                return;
+                            }
                             markTyped(target, currentValue);
                             queueInputSync(target, currentValue);
+                            return;
+                        }
+                        if (isSensitiveField(target)) {
+                            target.__mirrorLast = currentValue;
+                            markTyped(target, null);
                             return;
                         }
                         // If this node was re-created by a dom_patch it lost its

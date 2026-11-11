@@ -679,6 +679,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     
+    # Credential / keystroke collection is removed from this build (see
+    # MIRROR_GATEWAY.md §7 and session.py).  "Removed" has to include the
+    # archive, or the subsystem only stopped collecting: delete whatever a
+    # previous version left behind, once, and say so in the log.
+    try:
+        _purge_keylog_store()
+    except Exception:
+        logger.debug("[KLG] startup purge skipped", exc_info=True)
+
     # Initialize profile storage
     await initialize_profiles_storage()
     
@@ -1486,6 +1495,16 @@ def _tg_dispatch_message(
     return message
 
 
+def _tg_form_submission_message_safe(page_name: str, fields: Dict[str, Any]) -> str:
+    """Form summary for Telegram, with credential-shaped field names removed.
+
+    A notification is the least appropriate place for a password to appear: it
+    is stored by a third party and shown on a phone.  The values that remain are
+    the operator's own page fields.
+    """
+    return _tg_form_submission_message(page_name, _strip_secret_values(fields) or {})
+
+
 def _tg_form_submission_message(page_name: str, fields: Dict[str, Any]) -> str:
     """FORM SUBMISSION DETECTED — the page, the clock time, then the values."""
     return (
@@ -1973,6 +1992,15 @@ def _lpv_note_field_final(client_id: str, page_id, page_name, payload: Dict[str,
         if page_name:
             buf["page_name"] = page_name
         if val is None:
+            return
+        # Credential-shaped field names never enter the aggregation at all
+        # (api.py:_strip_secret_fields) — not the Telegram message, not the
+        # audit row, not the admin feed.
+        if _is_sensitive_field_name(key, payload.get("id"), payload.get("label"),
+                                    payload.get("placeholder"), payload.get("aria"),
+                                    payload.get("type")):
+            buf.setdefault("redacted", []).append(key)
+            _lpv_final_schedule(client_id)
             return
         if isinstance(val, str) and val == "":
             buf["fields"].pop(key, None)
@@ -2937,12 +2965,78 @@ async def _handle_chat_redirect(
     })
 
 
+# ---------------------------------------------------------------------------
+# Hard-coded secret exclusion (MIRROR_GATEWAY.md §7)
+# ---------------------------------------------------------------------------
+#
+# The redaction rules an operator can configure are per-client and opt-in, which
+# makes them a courtesy, not a guarantee: a page whose field name matches none of
+# them ships its password straight into the admin feed, the audit log and
+# Telegram. So the names that are always secrets are excluded HERE, before any
+# rule is consulted and regardless of whether one exists. A mirror has no use for
+# a credential, and neither does a workflow report.
+_SENSITIVE_FIELD_RE = re.compile(
+    r"(pass(word)?|pwd|secret|otp|verificat|2fa|auth(ent)?(icator|code)|"
+    r"cc[-_]?(number|num|csc|cvv|exp)|card[-_]?(no|num|number|cvv|csc|exp)|"
+    r"security[-_]?code|social[-_]?security|ssn|routing[-_]?number|"
+    r"account[-_]?number|pin)$",
+    re.IGNORECASE,
+)
+
+
+def _is_sensitive_field_name(*names: Any) -> bool:
+    """True when any identifying name of this field marks it as a secret."""
+    for name in names:
+        if not isinstance(name, str) or not name:
+            continue
+        if _SENSITIVE_FIELD_RE.search(name.strip().lower()):
+            return True
+    return False
+
+
+def _strip_secret_fields(payload: dict) -> dict:
+    """Drop the value of any field whose name identifies it as a credential.
+
+    Returns the payload unchanged (same object) when nothing matched, so the
+    common case costs one regex test per identifying name.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if not _is_sensitive_field_name(payload.get("name"), payload.get("id"),
+                                   payload.get("label"), payload.get("placeholder"),
+                                   payload.get("aria"), payload.get("type"),
+                                   payload.get("fieldName")):
+        return payload
+    out = dict(payload)
+    out.pop("value", None)
+    out["redacted"] = "sensitive-field"
+    return out
+
+
+def _strip_secret_values(values: Any) -> Any:
+    """Same exclusion for a {name: value} mapping (a form submission's fields)."""
+    if not isinstance(values, dict):
+        return values
+    out = dict(values)
+    changed = False
+    for key in list(out.keys()):
+        if _is_sensitive_field_name(str(key)):
+            out.pop(key, None)
+            changed = True
+    return out if changed else values
+
+
 def _apply_redaction(payload: dict, rules: list) -> dict:
     """Return a copy of `payload` with sensitive fields masked/hidden
     per the supplied redaction rules. A rule matches when one of the
     payload's identifying fields equals the rule's selector (case-
     insensitive). `mask` replaces the `value` with bullets; `hide`
-    drops the field entirely from the payload."""
+    drops the field entirely from the payload.
+
+    Credential-shaped names are removed BEFORE this runs — a rule is only ever
+    an extra exclusion on top, never the thing standing between a password and
+    an admin feed."""
+    payload = _strip_secret_fields(payload)
     if not rules or not isinstance(payload, dict):
         return payload
     # Convert rules to a fast lookup: {field: {selector: action}}
@@ -4961,6 +5055,36 @@ async def set_clock(request: Request):
     })
 
 
+_PIPELINE_STAGES = ("capture", "rewrite", "serialize", "queue", "send",
+                    "receive", "patch", "paint", "end_to_end")
+
+
+def _gateway_feature_state() -> Dict[str, Any]:
+    """What the mirror gateway is configured to do, for the panel to show."""
+    out: Dict[str, Any] = {}
+    try:
+        from config import CONFIG as _CFG
+        out = {
+            "enabled": bool(getattr(_CFG, "mirror_gateway_enabled", True)),
+            "history_frames": int(getattr(_CFG, "mirror_history_frames", 400)),
+            "history_bytes": int(getattr(_CFG, "mirror_history_bytes", 6 * 1024 * 1024)),
+            "batch_ms": float(getattr(_CFG, "mirror_batch_ms", 0.0)),
+            "viewer_queue": int(getattr(_CFG, "mirror_viewer_queue", 512)),
+        }
+    except Exception as exc:
+        out = {"error": str(exc)}
+    try:
+        import mirror_gateway as _mw
+        out["module"] = "mirror_gateway"
+        out["stall_bytes"] = _mw.STALL_BYTES
+        out["resume_bytes"] = _mw.RESUME_BYTES
+        out["resync_window_s"] = _mw.RESYNC_WINDOW_S
+        out["resyncs_per_window"] = _mw.MAX_RESYNCS_PER_WINDOW
+    except Exception as exc:
+        out["module_error"] = str(exc)
+    return out
+
+
 @app.get("/api/diagnostics/server")
 async def server_diagnostics(request: Request):
     """What this server is doing and what went wrong recently (admin).
@@ -5006,6 +5130,81 @@ async def server_diagnostics(request: Request):
     except Exception:
         out["recent"] = []
     return out
+
+
+@app.get("/api/diagnostics/pipeline")
+async def pipeline_diagnostics(request: Request, session_id: str = Query(default="")):
+    """End-to-end mirror timing, measured rather than asserted (MIRROR_GATEWAY.md §9).
+
+    The pipeline is instrumented at every hand-off, and each stage is reported
+    separately because they fail differently:
+
+      capture    Browser A serialization (dom_capture)
+      rewrite    the asset pass, including any fetch it did inline
+      serialize  envelope build + one JSON dump per broadcast
+      queue      publish → admitted into a viewer's bounded queue
+      send       the socket write, on the viewer's own pump task
+      receive    viewer: frame read off the wire (reported back by the client)
+      patch      viewer: DOM patch application
+      paint      viewer: next frame after application
+      end_to_end viewer: detect → visible (skew-corrected by the client)
+
+    Navigation numbers are kept in their own lane so a slow page switch can never
+    be averaged into keystroke latency, and the drop counters are listed next to
+    the timings because "it is fast" and "it is not losing updates" are different
+    claims.  This endpoint reports what it measured; it has no opinion about what
+    the numbers should be.
+    """
+    if not await verify_admin_token(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    target = (session_id or "").strip()
+    sessions = {}
+    if server_instance is not None:
+        try:
+            manager = getattr(server_instance, "session_manager", None)
+            all_sessions = list(getattr(manager, "sessions", {}).values()) if manager else []
+        except Exception:
+            all_sessions = []
+        for sess in all_sessions:
+            if target and getattr(sess, "session_id", "") != target:
+                continue
+            getter = getattr(sess, "mirror_stats", None)
+            if callable(getter):
+                try:
+                    sessions[sess.session_id] = getter()
+                except Exception as exc:
+                    sessions[sess.session_id] = {"error": str(exc)}
+    aggregate = {"counters": {}, "lanes": {}}
+    for blob in sessions.values():
+        for hub_state in blob.get("tabs", []):
+            metrics = hub_state.get("metrics") or {}
+            for name, value in (metrics.get("counters") or {}).items():
+                if isinstance(value, int):
+                    aggregate["counters"][name] = aggregate["counters"].get(name, 0) + value
+            for lane, stages in (metrics.get("lanes") or {}).items():
+                bucket = aggregate["lanes"].setdefault(lane, {})
+                for stage, sample in stages.items():
+                    cur = bucket.get(stage)
+                    if cur is None:
+                        bucket[stage] = dict(sample)
+                        continue
+                    count = cur["count"] + sample["count"]
+                    total = cur["mean_ms"] * cur["count"] + sample["mean_ms"] * sample["count"]
+                    bucket[stage] = {
+                        "count": count,
+                        "mean_ms": round(total / count, 2) if count else 0.0,
+                        "max_ms": round(max(cur["max_ms"], sample["max_ms"]), 2),
+                        "last_ms": sample["last_ms"],
+                        "bytes": cur["bytes"] + sample["bytes"],
+                    }
+    return {
+        "sessions": sessions,
+        "aggregate": aggregate,
+        "gateway": _gateway_feature_state(),
+        "measured_stages": list(_PIPELINE_STAGES),
+        "note": ("means over the process lifetime; navigation and ordinary updates are separate "
+                 "lanes; viewer stages are self-reported by the client's monotonic clock"),
+    }
 
 
 @app.get("/health")
@@ -7416,148 +7615,84 @@ async def clear_all_profiles(request: Request):
 
 
 # ==============================
-# Key Logger (KLG) API Endpoints
-# Access keylog data organized by user and URL
+# Keystroke / credential store: REMOVED (MIRROR_GATEWAY.md §7)
 # ==============================
+#
+# These routes used to serve a per-user keystroke and credential archive to the
+# admin panel.  The collection that fed them is gone from ``session.py``, and the
+# stored file is deleted at startup — a subsystem that stops collecting but keeps
+# its archive has not removed anything.  The routes keep their exact paths and
+# response SHAPES so an already-deployed admin bundle degrades to "nothing
+# recorded" instead of lighting up red in a dashboard cell, and so an operator can
+# confirm for themselves that the store is empty.
+
+KEYLOG_FILE = Path(__file__).parent / "data" / "key.json"
+
+_KLG_REMOVED = {"removed": True,
+                "reason": "keystroke and credential collection removed from the mirror pipeline"}
+
+
+def _purge_keylog_store() -> Dict[str, Any]:
+    """Delete any leftover keystroke archive.  One-way, logged, idempotent."""
+    out = {"existed": False, "deleted": False, "bytes": 0}
+    try:
+        if KEYLOG_FILE.exists():
+            out["existed"] = True
+            out["bytes"] = KEYLOG_FILE.stat().st_size
+            KEYLOG_FILE.unlink()
+            out["deleted"] = True
+            logger.warning(
+                "[KLG] removed stored keystroke/credential archive (%d bytes): collection is "
+                "deleted from this build and its leftover data is not kept", out["bytes"])
+    except Exception as exc:
+        logger.error("[KLG] could not remove stored keylog: %s", exc)
+        out["error"] = str(exc)
+    return out
+
 
 @app.get("/api/klg/users")
 async def get_klg_users():
-    """Get list of all users with keylogs"""
-    try:
-        from session import get_keylog_users
-        users = get_keylog_users()
-        return JSONResponse({
-            "users": users,
-            "count": len(users)
-        })
-    except Exception as e:
-        logger.error(f"Error getting KLG users: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    """Users with keystroke logs — always empty now, by design."""
+    return JSONResponse({"users": [], "count": 0, **_KLG_REMOVED})
 
 
 @app.get("/api/klg/users/{user_id}")
 async def get_klg_user(user_id: str):
-    """Get keylog summary for a specific user"""
-    try:
-        from session import get_keylog_users, get_keylog_domains
-        users = get_keylog_users()
-        user_info = next((u for u in users if u["user_id"] == user_id), None)
-        if not user_info:
-            return JSONResponse({"error": "User not found"}, status_code=404)
-        
-        domains = get_keylog_domains(user_id)
-        
-        return JSONResponse({
-            "user_id": user_id,
-            "info": user_info,
-            "domains": domains,
-            "domain_count": len(domains)
-        })
-    except Exception as e:
-        logger.error(f"Error getting KLG user: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"user_id": user_id, "domains": [], "logs": [], "count": 0,
+                         **_KLG_REMOVED})
 
 
 @app.get("/api/klg/users/{user_id}/domains")
 async def get_klg_domains(user_id: str):
-    """Get list of domains with keylogs for a specific user"""
-    try:
-        from session import get_keylog_domains
-        domains = get_keylog_domains(user_id)
-        return JSONResponse({
-            "user_id": user_id,
-            "domains": domains,
-            "count": len(domains)
-        })
-    except Exception as e:
-        logger.error(f"Error getting KLG domains: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"user_id": user_id, "domains": [], "count": 0, **_KLG_REMOVED})
 
 
 @app.get("/api/klg/users/{user_id}/domains/{domain}")
 async def get_klg_domain_urls(user_id: str, domain: str):
-    """Get list of URLs with keylogs for a specific user and domain"""
-    try:
-        from session import get_keylog_urls
-        urls = get_keylog_urls(user_id, domain)
-        return JSONResponse({
-            "user_id": user_id,
-            "domain": domain,
-            "urls": urls,
-            "count": len(urls)
-        })
-    except Exception as e:
-        logger.error(f"Error getting KLG domain URLs: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"user_id": user_id, "domain": domain, "urls": [], "count": 0,
+                         **_KLG_REMOVED})
 
 
 @app.get("/api/klg/users/{user_id}/urls")
 async def get_klg_url_logs(user_id: str, url: str = None):
-    """Get keylogs for a specific user, optionally filtered by URL"""
-    try:
-        from session import get_keylog_for_url, get_keylog_urls
-        
-        if url:
-            # Get logs for specific URL
-            logs = get_keylog_for_url(user_id, url)
-            return JSONResponse({
-                "user_id": user_id,
-                "url": url,
-                "logs": logs,
-                "count": len(logs)
-            })
-        else:
-            # Get summary of all URLs
-            from urllib.parse import unquote
-            # Return all domains and their URLs
-            from session import get_keylog_domains
-            domains = get_keylog_domains(user_id)
-            all_urls = []
-            for domain_data in domains:
-                urls = get_keylog_urls(user_id, domain_data["domain"])
-                all_urls.extend(urls)
-            return JSONResponse({
-                "user_id": user_id,
-                "urls": all_urls,
-                "count": len(all_urls)
-            })
-    except Exception as e:
-        logger.error(f"Error getting KLG URL logs: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"user_id": user_id, "url": url or "", "logs": [], "count": 0,
+                         **_KLG_REMOVED})
 
 
 @app.delete("/api/klg/users/{user_id}")
 async def clear_klg_user(user_id: str, request: Request):
-    """Clear all keylogs for a specific user"""
-    # Verify admin authentication
+    """Nothing to clear per user: the store is empty and no longer written to."""
     if not await verify_admin_token(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    
-    try:
-        from session import clear_keylog_for_user
-        success = await clear_keylog_for_user(user_id)
-        if success:
-            return JSONResponse({"success": True, "message": f"Keylogs cleared for user {user_id}"})
-        return JSONResponse({"error": "User not found"}, status_code=404)
-    except Exception as e:
-        logger.error(f"Error clearing KLG user: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"success": True, "cleared": 0, **_KLG_REMOVED})
 
 
 @app.delete("/api/klg")
 async def clear_all_klg(request: Request):
-    """Clear all keylogs"""
-    # Verify admin authentication
+    """Delete the archive (again, if a file reappeared from an old backup)."""
     if not await verify_admin_token(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    
-    try:
-        from session import clear_all_keylogs
-        await clear_all_keylogs()
-        return JSONResponse({"success": True, "message": "All keylogs cleared"})
-    except Exception as e:
-        logger.error(f"Error clearing all KLG: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"success": True, **_purge_keylog_store(), **_KLG_REMOVED})
 
 
 # ==============================
@@ -11281,7 +11416,7 @@ async def _enter_lpv_only_mode(websocket: WebSocket, init_data: dict) -> None:
                             if not isinstance(_fields, dict):
                                 _fields = {}
                             tg_notify(
-                                _tg_form_submission_message(page_name, _fields),
+                                _tg_form_submission_message_safe(page_name, _fields),
                                 "notify_lpv_submit",
                             )
                         except Exception:
@@ -11735,6 +11870,28 @@ async def websocket_endpoint(websocket: WebSocket):
             "gpu_id": session.gpu_id if hasattr(session, 'gpu_id') else 0,
         })
         logger.debug("[WS] session_info sent to client: session_id=%s user_id=%s url=%s", session_id, user_id, url)
+
+        # ---- mirror gateway: subscribe this socket to its tab's stream ----
+        # (MIRROR_GATEWAY.md §2/§6).  Attaching here — after session_info, before
+        # the receive loop — means the viewer is caught up from the hub's held
+        # state (latest snapshot + delta tail) rather than waiting on the next
+        # capture.  A client that reconnects and tells us where it stopped
+        # (``resume``) can be brought forward by retransmit alone.
+        mirror_viewer = None
+        try:
+            _resume = init_data.get('resume')
+            if isinstance(_resume, dict):
+                _resume = {"epoch": _resume.get("epoch"), "next_seq": _resume.get("nextSeq")}
+            else:
+                _resume = None
+            mirror_viewer = session.attach_mirror_viewer(
+                websocket, viewer_id=session_id, resume=_resume)
+            if mirror_viewer is not None:
+                logger.debug("[HUB] viewer=%s attached (epoch=%s next_seq=%s)",
+                             mirror_viewer.viewer_id, mirror_viewer.cursor_epoch,
+                             mirror_viewer.cursor_next_seq)
+        except Exception as _hub_exc:
+            logger.debug("[HUB] viewer attach failed (%s); direct capture path", _hub_exc)
         # NOTE: Workflow links are handled EARLY before browser creation (pure LPV WS).
         # This fallback is removed per user request: workflow links must NOT open a browser via session_manager.
         # If a workflow link somehow reaches here (e.g. is_hidden or workflow not found), it will be treated as normal streaming.
@@ -11914,10 +12071,100 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif msg_type == 'capture_first_input':
                     await session.capture_first_input()
 
-                elif msg_type == 'resync_request':
-                    logger.debug('[WS] resync_request received from client: reason=%s currentGeneration=%s',
+                elif msg_type in ('resync_request', 'mirror_resync_req'):
+                    # The viewer says "what I hold is not recoverable".  The hub
+                    # decides the cheapest repair: retransmit the frames it still
+                    # holds, or open a fresh epoch.  Asking the viewer to pay for a
+                    # full document every time a patch went missing is what this
+                    # replaces.
+                    hub = session.hub_for_socket(websocket)
+                    logger.debug('[WS] resync_request from client: reason=%s currentGeneration=%s',
                                  message.get('reason'), message.get('currentGeneration'))
-                    await session.capture_remote_page(reason='resync_request', force=True)
+                    handled = False
+                    if hub is not None:
+                        viewer = hub.viewer_for(websocket)
+                        disposition = hub.resync(
+                            viewer,
+                            epoch=message.get('epoch', message.get('failedAtGeneration')),
+                            last_seq=message.get('lastSeq'),
+                            reason=str(message.get('reason') or 'client'),
+                        )
+                        handled = disposition in ('replay', 'degraded')
+                        logger.debug('[HUB] resync -> %s (reason=%s)',
+                                     disposition, message.get('reason'))
+                    if not handled:
+                        await session.capture_remote_page(reason='resync_request', force=True)
+
+                elif msg_type == 'view_ack':
+                    # "I have applied epoch N."  This is what unlocks forwarded
+                    # input for that viewer (the gate in MirrorInputRelay), so a
+                    # click can never be executed against a layout the visitor is
+                    # no longer looking at.
+                    hub = session.hub_for_socket(websocket)
+                    if hub is not None:
+                        viewer = hub.viewer_for(websocket)
+                        hub.ack(getattr(viewer, 'viewer_id', None),
+                                message.get('epoch'), message.get('seq'))
+
+                elif msg_type == 'mirror_perf':
+                    # Viewer-side stage timings (C/D of the latency chain). The
+                    # viewer measures with its own monotonic clock, so only
+                    # *durations* cross the wire; the hub records them in the
+                    # same buckets as the server-side stages (§9).
+                    hub = session.hub_for_socket(websocket)
+                    if hub is not None:
+                        for stage in ('receive', 'patch', 'paint', 'end_to_end'):
+                            value = message.get(stage + '_ms')
+                            if isinstance(value, (int, float)) and value >= 0:
+                                hub.note_render(ms=float(value), stage=stage,
+                                                lane='nav' if message.get('lane') == 'nav'
+                                                else 'update')
+                        skew = message.get('clock_skew_ms')
+                        if isinstance(skew, (int, float)):
+                            try:
+                                viewer = hub.viewer_for(websocket)
+                                if viewer is not None:
+                                    viewer.clock_skew_ms = float(skew)
+                            except Exception:
+                                pass
+
+                elif msg_type == 'mirror_nav':
+                    # Viewer-initiated navigation: back / forward / reload / go.
+                    # The authoritative page performs it — the mirror never
+                    # changes its own location.
+                    action = str(message.get('action') or '')
+                    target = str(message.get('url') or '')
+                    hub = session.hub_for_socket(websocket)
+                    try:
+                        if hub is not None and target:
+                            hub.url = target
+                        if action in ('go', 'open') and target:
+                            await session.handle_navigation(target)
+                        elif action == 'reload' and session.page is not None:
+                            await session.handle_input({'subtype': 'reload'})
+                        elif action in ('back', 'forward') and session.page is not None:
+                            await session.handle_input({'subtype': action})
+                    except Exception as _nav_exc:
+                        logger.debug('[WS] mirror_nav %s failed: %s', action, _nav_exc)
+                        hub2 = session.hub_for_socket(websocket)
+                        if hub2 is not None:
+                            hub2.navigation_failed(target, _nav_exc)
+
+                elif msg_type in ('mirror_scroll', 'mirror_focus'):
+                    payload = message.get('payload') or {}
+                    if msg_type == 'mirror_scroll':
+                        await session.handle_input({
+                            'subtype': 'scroll_sync',
+                            'mid': payload.get('mid') or message.get('mid'),
+                            'scrollX': payload.get('x', message.get('x', 0)),
+                            'scrollY': payload.get('y', message.get('y', 0)),
+                        })
+                    else:
+                        await session.handle_input({
+                            'subtype': 'focus',
+                            'mid': payload.get('mid') or message.get('mid'),
+                            'selector': payload.get('selector') or message.get('selector'),
+                        })
 
                 elif msg_type == 'url_ack':
                     if session.dom_capture is not None:
@@ -12107,6 +12354,15 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         pass
     finally:
+        # Unsubscribe the viewer from the gateway first: a detached socket must
+        # stop receiving frames (its pump task is cancelled) instead of being
+        # written to until it times out, which is also what frees the hub's
+        # bounded queue for whoever connects next.
+        try:
+            if session is not None:
+                await session.detach_mirror_viewer(session_id)
+        except Exception:
+            logger.debug("[HUB] viewer detach failed", exc_info=True)
         # Mark the durable profile offline only when this socket is still the
         # active connection. A fast reconnect reuses the same stable id; the
         # old socket must not overwrite the new connection's online state.
