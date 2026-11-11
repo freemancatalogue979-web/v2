@@ -1339,12 +1339,24 @@ class MirrorInputRelay:
     capture path.  The mirror never executes a copied script.
     """
 
-    #: Actions whose target identity can be stale; geometry-only ones are not.
-    STRUCTURAL = frozenset({"click", "tap", "key", "text", "value", "submit",
-                            "nav", "focus", "form"})
+    #: Actions that may be DISCARDED when the viewer has not applied the current
+    #: epoch.  Deliberately narrower than STRUCTURAL, and it excludes two things
+    #: people would expect to see here:
+    #:
+    #:   * keystrokes — identity-bearing, but losing one is unrecoverable for the
+    #:     visitor while delivering it 120 ms late is invisible, so they wait and
+    #:     then run (SOFT below);
+    #:   * navigation — the target is a URL, not a node in a document, so there is
+    #:     nothing stale about it.  Blocking "Go" behind a page that is already
+    #:     loading only delays the load the visitor asked for, and Playwright
+    #:     serialises the two navigations itself.
+    # A pointer press against a replaced document can land on an arbitrary node,
+    # because our mids are per-document integers; a scroll, a mouse move or a
+    # keystroke into an already-focused field cannot.
+    GATED = frozenset({"click", "tap", "submit", "form"})
 
-    def __init__(self, hub: MirrorHub, *, gate_timeout_s: float = 0.6,
-                 wait_poll_s: float = 0.02) -> None:
+    def __init__(self, hub: MirrorHub, *, gate_timeout_s: float = 0.12,
+                 wait_poll_s: float = 0.01) -> None:
         self.hub = hub
         self.gate_timeout_s = float(gate_timeout_s)
         self.wait_poll_s = float(wait_poll_s)
@@ -1370,12 +1382,29 @@ class MirrorInputRelay:
         if not allowed:
             if force:
                 self.stats["forced"] += 1
-            else:
+            elif self._bucket(action) == "hard":
+                # The wait is for an ack that is almost certainly already in
+                # flight, not for the capture: `allows_input` already has a
+                # deadline (input_gate_s) so a lost ack cannot wedge the session,
+                # and a long wait here just makes the page feel unresponsive
+                # during a navigation.  120 ms covers a round trip on a real
+                # connection; past that the visitor has moved on.
                 self.stats["gated_wait"] += 1
                 if not await self._wait_for_gate(viewer_id):
-                    if action in self.STRUCTURAL:
-                        self.stats["dropped_stale"] += 1
-                        return "stale"
+                    self.stats["dropped_stale"] += 1
+                    self._report_dropped(action, viewer_id)
+                    return "stale"
+            elif self._bucket(action) == "soft":
+                # Wait briefly, then run regardless.  A keystroke that is dropped
+                # is a character the visitor typed and will never get back; a
+                # keystroke delivered 120 ms late is invisible.
+                self.stats["gated_wait"] += 1
+                await self._wait_for_gate(viewer_id)
+            else:
+                # Not gated at all: counted, and executed.  This is the difference
+                # between "the page is loading" and "the mirror is broken" for
+                # scroll and pointer moves, which are continuously re-sent anyway.
+                self.stats["gated_pass"] = self.stats.get("gated_pass", 0) + 1
         prev, self._tail = self._tail, None
 
         async def _run() -> None:
@@ -1396,6 +1425,43 @@ class MirrorInputRelay:
 
         self._tail = asyncio.ensure_future(_run())
         return "ok"
+
+    #: Suffixes that wait-then-run rather than wait-then-drop.
+    SOFT = frozenset({"key", "keypress", "text", "value", "input_sync", "focus",
+                      "blur", "keydown", "keyup"})
+
+    @classmethod
+    def _bucket(cls, action: str) -> str:
+        """`hard` (may drop), `soft` (wait then run), or `none` (never wait).
+
+        Session-side action names are shaped like ``input:scroll_sync`` or plain
+        ``click``; the decision belongs to the trailing verb, so callers can keep
+        descriptive action strings without re-declaring the policy.
+        """
+        verb = str(action).rsplit(":", 1)[-1]
+        if verb in cls.GATED or action in cls.GATED:
+            return "hard"
+        if verb in cls.SOFT or action in cls.SOFT:
+            return "soft"
+        return "none"
+
+    def _report_dropped(self, action: str, viewer_id: Optional[str]) -> None:
+        """Tell the viewer an action was discarded, and why.
+
+        Silently swallowing a click is the one outcome a visitor cannot
+        distinguish from a broken mirror.  A control frame costs nothing (the
+        control lane is separate from the DOM stream) and lets the viewer show
+        "page is loading" instead of wondering.
+        """
+        try:
+            self.hub.send_control({
+                "type": "mirror_input_dropped",
+                "action": str(action)[:40],
+                "reason": "epoch-unapplied",
+                "hint": "the page was still loading; try again",
+            })
+        except Exception:
+            pass
 
     async def _wait_for_gate(self, viewer_id: Optional[str]) -> bool:
         deadline = time.monotonic() + self.gate_timeout_s

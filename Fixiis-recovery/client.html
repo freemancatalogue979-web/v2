@@ -5110,6 +5110,12 @@ function applySpinnerColorFromHex(hexColor) {
                 _ackedEpoch: new Map(),     // tab_id -> {epoch, seq}
                 _resyncPendingFor: new Set(),
                 _protocolErrors: 0,
+                // Clock sampling against the server (see startClockSampling).
+                _clockOffsetMs: null,
+                _clockRttMs: null,
+                _clockSamples: [],
+                _clockTimer: null,
+                _clockAwaiting: 0,
                 _mirrorAcks: 0,
                 _perfSamples: [],
 
@@ -6039,6 +6045,7 @@ function applySpinnerColorFromHex(hexColor) {
                     clearInterval(state.heartbeatInterval);
                     state.heartbeatInterval = null;
                 }
+                stopClockSampling();
             }
             
             function stopPong() {
@@ -6174,6 +6181,11 @@ function applySpinnerColorFromHex(hexColor) {
 
                 state.reconnectPending = false;
                 startHeartbeat();
+                // Started here rather than at boot: an offset measured before the
+                // socket existed would be applied to frames from a different
+                // connection. Samples from the previous connection are kept — the
+                // offset is a property of the two clocks, not of the socket.
+                startClockSampling();
                 
                 // DOM-only mode: no frame polling
                 
@@ -9114,9 +9126,36 @@ function applySpinnerColorFromHex(hexColor) {
                 }
                 if (epoch < byTab.epoch) return;
                 if (epoch === byTab.epoch && message.seq <= byTab.seq) return;
+                const epochChanged = epoch !== byTab.epoch;
                 byTab.epoch = epoch;
                 byTab.seq = message.seq;
                 state._mirrorAcks = (state._mirrorAcks || 0) + 1;
+                // Coalesce. The gateway's gate is per EPOCH and its render metric
+                // wants the latest applied frame, so one ack per epoch plus a
+                // throttled trail is all the information it can use — whereas an
+                // ack per delta doubles the upstream message count on exactly the
+                // frames that are already arriving as fast as the page changes.
+                // A new epoch is never delayed: that is the ack the gate waits on.
+                const nowMs = Date.now();
+                if (!epochChanged && (nowMs - (byTab.sentAt || 0)) < 250) {
+                    if (!byTab.timer) {
+                        byTab.timer = setTimeout(() => {
+                            byTab.timer = null;
+                            try {
+                                send({
+                                    type: 'view_ack',
+                                    tab_id: tabId,
+                                    epoch: byTab.epoch,
+                                    seq: byTab.seq,
+                                    paint: true,
+                                });
+                                byTab.sentAt = Date.now();
+                            } catch (e) { /* ignore */ }
+                        }, 250);
+                    }
+                    return;
+                }
+                byTab.sentAt = nowMs;
                 send({
                     type: 'view_ack',
                     tab_id: tabId,
@@ -9150,9 +9189,20 @@ function applySpinnerColorFromHex(hexColor) {
                     paint_ms: null,
                     end_to_end_ms: null,
                 };
-                if (typeof message.ts === 'number') {
-                    const e2e = Date.now() - message.ts;
-                    if (e2e >= 0 && e2e < 60000) body.end_to_end_ms = Math.round(e2e * 100) / 100;
+                const wire = wireMs(typeof message.ts === 'number' ? message.ts : null);
+                if (wire !== null) body.end_to_end_ms = Math.round(wire * 100) / 100;
+                // The server stores this and subtracts it from its own view of the
+                // frame's life, so both ends describe the same interval in the same
+                // clock.  Absent until the first sample lands — reported as absent,
+                // not as zero.
+                if (typeof state._clockOffsetMs === 'number') {
+                    body.clock_skew_ms = Math.round(state._clockOffsetMs * 100) / 100;
+                    body.clock_rtt_ms = Math.round((state._clockRttMs || 0) * 100) / 100;
+                }
+                if (typeof message._t_sent === 'number') {
+                    const ser = message._t_sent;
+                    const q = (typeof message.ts === 'number') ? (message.ts - ser) : null;
+                    if (q !== null && q >= 0 && q < 120000) body.publish_ms = Math.round(q * 100) / 100;
                 }
                 state._perfSamples = state._perfSamples || [];
                 state._perfSamples.push(body);
@@ -9184,6 +9234,82 @@ function applySpinnerColorFromHex(hexColor) {
                 } else {
                     try { send(body); state._perfLastSentAt = Date.now(); } catch (e) {}
                 }
+            }
+
+            // ----------------------------------------------------------------
+            // Clock sampling.
+            //
+            // Every leg of the latency chain that crosses machines is a
+            // subtraction between two different computers' clocks.  Without an
+            // offset estimate that subtraction is not "noisy", it is arbitrary: a
+            // viewer whose clock is nine seconds behind reports a nine-second
+            // network delay for a frame that took 170 ms.  One sample every five
+            // seconds costs ~40 bytes and buys the whole chain its meaning back.
+            //
+            // offset = server_time + rtt/2 - local_now  (the usual two-point
+            // estimate; "server_time is assumed halfway through the round trip")
+            // is accurate to a fraction of the RTT, so it is reported as
+            // `clock_offset_ms` and `clock_rtt_ms` alongside anything derived from
+            // it.  That is the honest resolution of this pipeline, not a claim of
+            // synchronized clocks.
+            // ----------------------------------------------------------------
+            const CLOCK_SAMPLE_MS = 5000;
+
+            function startClockSampling() {
+                if (state._clockTimer) return;
+                const sample = () => {
+                    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+                    if (state._clockAwaiting) return;      // one in flight
+                    state._clockAwaiting = Date.now();
+                    state._clockReqMono = performance.now();
+                    send({ type: 'mirror_clock_req', t0: state._clockAwaiting });
+                };
+                sample();
+                state._clockTimer = setInterval(sample, CLOCK_SAMPLE_MS);
+            }
+
+            function stopClockSampling() {
+                if (state._clockTimer) { clearInterval(state._clockTimer); state._clockTimer = null; }
+                state._clockAwaiting = 0;
+            }
+
+            function applyClockSample(message) {
+                const t0 = message.t0;
+                const serverMs = message.server_time_ms;
+                if (typeof t0 !== 'number' || typeof serverMs !== 'number') return;
+                const now = Date.now();
+                const rtt = now - t0;
+                if (!(rtt >= 0) || rtt > 20000) return;    // a stalled tab, not a sample
+                const offset = serverMs + rtt / 2 - now;
+                const hist = state._clockSamples || (state._clockSamples = []);
+                hist.push({ offset, rtt });
+                if (hist.length > 8) hist.shift();
+                // Median of the recent window, not the latest value: one sample
+                // delayed by a GC pause or a background-tab throttle would otherwise
+                // shift every leg of the chain by that delay.
+                const sorted = hist.map(x => x.offset).sort((a, b) => a - b);
+                state._clockOffsetMs = sorted[Math.floor(sorted.length / 2)];
+                state._clockRttMs = rtt;
+                state._clockAwaiting = 0;
+            }
+
+            // Corrected wall-clock leg: server instant -> viewer instant, minus the
+            // estimated offset.  Returns null when there is no trustworthy number
+            // rather than inventing one — a missing measurement is recoverable from
+            // the panel, a fabricated one is not.
+            function wireMs(sentWallMs) {
+                if (typeof sentWallMs !== 'number' || typeof state._t_received_wall !== 'number') return null;
+                // The frame's stamp is on the SERVER's clock; the receipt is on this
+                // one. offset is defined as (server clock - local clock), so a server
+                // running 9400 ms ahead turns a raw -9000 into a real 400. Getting
+                // this sign backwards is what produced either a nine-second "network"
+                // delay or a negative one, depending on which way the clocks leaned.
+                const raw = state._t_received_wall - sentWallMs;
+                const offset = (typeof state._clockOffsetMs === 'number') ? state._clockOffsetMs : 0;
+                const corrected = raw + offset;
+                if (corrected < 0) return raw >= 0 ? 0 : null;   // skew estimate overshot
+                if (corrected > 120000) return null;             // clock stepped mid-frame
+                return corrected;
             }
 
             // ----------------------------------------------------------------
@@ -9270,6 +9396,9 @@ function applySpinnerColorFromHex(hexColor) {
                             timestamp: Date.now(),
                             ping_timestamp: message.timestamp || null
                         });
+                        break;
+                    case 'mirror_clock':
+                        applyClockSample(message);
                         break;
                     case 'session_info':
                         state.sessionId = message.session_id;
@@ -9381,16 +9510,19 @@ function applySpinnerColorFromHex(hexColor) {
                         const _t_received_patch = typeof state._t_received === 'number' ? state._t_received : null;
                         const _t_rendered_patch = typeof state._t_rendered === 'number' ? state._t_rendered : null;
                         if (_t_sent_patch && _t_received_patch && _t_rendered_patch) {
-                            const _wall = (typeof state._t_received_wall === 'number')
-                                ? (state._t_received_wall - _t_sent_patch) : null;
-                            const networkMs = (_wall !== null && _wall >= 0 && _wall < 60000)
-                                ? _wall : (_t_received_patch - _t_sent_patch); // C - B
+                            const wire = wireMs(_t_sent_patch);
+                            const publish = (typeof message.ts === 'number') ? (message.ts - _t_sent_patch) : null;
                             const renderMs = _t_rendered_patch - _t_received_patch; // D - C
+                            const detect = (typeof message._t_detect === 'number')
+                                ? (_t_sent_patch - message._t_detect) : null;
+                            const seg = [];
+                            if (detect !== null && detect >= 0 && detect < 120000) seg.push('capture=' + detect.toFixed(0) + 'ms');
+                            if (publish !== null && publish >= 0 && publish < 120000) seg.push('publish=' + publish.toFixed(0) + 'ms');
+                            seg.push(wire === null ? 'wire=?' : 'wire=' + wire.toFixed(0) + 'ms');
+                            seg.push('render=' + renderMs.toFixed(0) + 'ms');
                             try {
-                                console.log(
-                                    '[LATENCY] seq=%d gen=%s type=dom_patch network_ms=%.0f render_ms=%.0f',
-                                    message.seq || '?', message.gen || '?',
-                                    networkMs, renderMs);
+                                console.log('[LATENCY] seq=' + (message.seq || '?') + ' gen=' + (message.gen || '?')
+                                    + ' type=dom_patch ' + seg.join(' '));
                             } catch (e) {}
                         }
                         if (window.__SHF_DEBUG && latencyTiming
@@ -10229,22 +10361,58 @@ function applySpinnerColorFromHex(hexColor) {
                 const _t_sent = typeof message._t_sent === 'number' ? message._t_sent : null;
                 const _t_received = typeof state._t_received === 'number' ? state._t_received : null;
                 const _t_rendered = typeof state._t_rendered === 'number' ? state._t_rendered : null;
-                if (_t_detect && _t_sent && _t_received && _t_rendered) {
-                    const captureMs = _t_sent - _t_detect;   // B - A (server clock)
-                    // C - B crosses machines, so it uses wall clocks on both ends
-                    // and is reported as an upper bound with skew included; the
-                    // gateway's ping/pong lets a caller subtract the measured skew.
-                    const networkMs = (typeof state._t_received_wall === 'number')
-                        ? (state._t_received_wall - _t_sent)
-                        : (_t_received - _t_sent);
-                    const renderMs = _t_rendered - _t_received; // D - C
-                    const totalMs = _t_rendered - _t_detect; // D - A
-                    state._lastLatency = { capture: captureMs, network: networkMs, render: renderMs, total: totalMs };
+                if (_t_sent && _t_received && _t_rendered) {
+                    // Legs, each computed from the pair of stamps that share a
+                    // clock.  The previous version also printed `total_ms` as
+                    // (local monotonic - server epoch), which is how the panel
+                    // came to show -1.79e12 ms, and used %.0f in console.log —
+                    // an escape Chrome does not implement, so every number was
+                    // appended raw after an unformatted format string.
+                    // Prefer the legs the SERVER measured over a difference of its
+                    // two timestamps: on the gateway path `_capture_ms` is a
+                    // duration taken with one monotonic clock, and splitting it from
+                    // `_rewrite_ms` says whether 900 ms of "capture" was the DOM
+                    // serialization or the asset pass — two different fixes. The
+                    // A→B difference is kept as the fallback for legacy frames,
+                    // which carry no durations.
+                    const captureMs = (typeof message._capture_ms === 'number')
+                        ? message._capture_ms
+                        : ((typeof _t_detect === 'number') ? (_t_sent - _t_detect) : null);
+                    const rewriteMs = (typeof message._rewrite_ms === 'number') ? message._rewrite_ms : null;
+                    // `publish` is serialize + hub fan-out on this machine: the
+                    // span between the capture stamping the payload and the hub
+                    // finishing the frame.  It is NOT the viewer's queue depth —
+                    // naming it that would put a misleading label on a real number,
+                    // and the queue itself is visible per viewer in the hub stats.
+                    const publishMs = (typeof message.ts === 'number') ? (message.ts - _t_sent) : null;
+                    const wireMsVal = wireMs(_t_sent);
+                    const renderMs = _t_rendered - _t_received;
+                    const parts = [];
+                    if (captureMs !== null && captureMs >= 0 && captureMs < 120000) parts.push('capture=' + captureMs.toFixed(0) + 'ms');
+                    if (rewriteMs !== null && rewriteMs >= 0 && rewriteMs < 120000) parts.push('rewrite=' + rewriteMs.toFixed(0) + 'ms');
+                    if (publishMs !== null && publishMs >= 0 && publishMs < 120000) parts.push('publish=' + publishMs.toFixed(0) + 'ms');
+                    parts.push(wireMsVal === null
+                        ? 'wire=?'
+                        : 'wire=' + wireMsVal.toFixed(0) + 'ms');
+                    parts.push('render=' + renderMs.toFixed(0) + 'ms');
+                    // The total is a SUM of measured legs. It is never a
+                    // subtraction across clocks, which was the old bug.
+                    const known = [captureMs, rewriteMs, publishMs, wireMsVal, renderMs].filter(v => typeof v === 'number' && v >= 0);
+                    if (known.length === 5) parts.push('total=' + known.reduce((a, b) => a + b, 0).toFixed(0) + 'ms');
+                    if (typeof state._clockOffsetMs === 'number') {
+                        parts.push('skew=' + state._clockOffsetMs.toFixed(0) + 'ms');
+                        parts.push('rtt=' + (state._clockRttMs || 0).toFixed(0) + 'ms');
+                    } else {
+                        parts.push('skew=?');
+                    }
+                    state._lastLatency = {
+                        capture: captureMs, publish: publishMs, network: wireMsVal,
+                        render: renderMs,
+                        total: known.length === 4 ? known.reduce((a, b) => a + b, 0) : null,
+                    };
                     try {
-                        console.log(
-                            '[LATENCY] seq=%d gen=%s url=%s capture_ms=%.0f network_ms=%.0f render_ms=%.0f total_ms=%.0f (A=detect B=sent C=received D=rendered)',
-                            message.seq || '?', message.gen || '?', message.url || '—',
-                            captureMs, networkMs, renderMs, totalMs);
+                        console.log('[LATENCY] seq=' + (message.seq || '?') + ' gen=' + (message.gen || '?')
+                            + ' url=' + (message.url || '—') + ' ' + parts.join(' '));
                     } catch (e) {}
                 }
             }

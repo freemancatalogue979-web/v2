@@ -12014,6 +12014,26 @@ async def websocket_endpoint(websocket: WebSocket):
                         except Exception:
                             pass
                 
+                elif msg_type == 'mirror_clock_req':
+                    # Clock sampling for the latency chain (§9).  The viewer's
+                    # clock and this machine's differ by an unknown offset, and
+                    # every cross-machine timing leg is wrong by exactly that
+                    # offset — which is how a 170 ms capture came to be reported
+                    # as a nine-second "network" delay.  Echoing the server's read
+                    # of the instant the request *arrived* lets the viewer derive
+                    # offset = server_time + rtt/2 - local_now, the standard
+                    # two-point estimate: good to a few tens of ms, which is the
+                    # resolution this chain actually claims.
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "mirror_clock",
+                            "t0": message.get("t0"),
+                            "server_time_ms": time.time() * 1000.0,
+                            "server_mono_ms": time.monotonic() * 1000.0,
+                        }, separators=(",", ":")))
+                    except Exception:
+                        pass
+
                 elif msg_type == 'pong':
                     # Client pong response - update session timeout tracking (Part 3)
                     if hasattr(session, 'handle_pong'):
@@ -12113,6 +12133,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     # same buckets as the server-side stages (§9).
                     hub = session.hub_for_socket(websocket)
                     if hub is not None:
+                        # Only the viewer-measured legs are recorded here. capture /
+                        # rewrite / queue ride back in the same message for the
+                        # viewer's own overlay, but the hub already bucketed them
+                        # from the producer side — recording an echo would count one
+                        # stage twice and quietly inflate the mean.
                         for stage in ('receive', 'patch', 'paint', 'end_to_end'):
                             value = message.get(stage + '_ms')
                             if isinstance(value, (int, float)) and value >= 0:

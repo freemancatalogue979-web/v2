@@ -168,3 +168,60 @@ Known pre-existing failures in this checkout, unrelated to this work and verifie
 `client.html` in this recovery branch carries *stub* definitions for
 `ensureMirrorScrolling` / `pageScrolls` / `nudgeScrollRescue` / the font theming helper, so their
 tests cannot find the real block. Restoring those is a separate change.
+
+## 7. Latency reporting and the input gate (after the first live visit)
+
+The first real end-to-end visit produced:
+
+```
+[LATENCY] seq=3  gen=1 capture_ms=%.0f network_ms=%.0f ... 917.5 144.46 20.8 -1794440401020.1
+[LATENCY] seq=18 gen=3 capture_ms=%.0f network_ms=%.0f ... 172.6 8983.3 42.8 -1794440392904.8
+```
+
+Three separate defects were hiding in that output, and only one of them was page speed:
+
+1. **`%.0f` is not a `console.log` format specifier.** Chrome implements
+   `%s %d %i %f %o %O %j %c`; `%.0f` is emitted literally and the arguments are
+   appended at the end unformatted. The numbers were therefore not labelled by
+   their position in the string — the log was unreadable rather than wrong.
+   Format strings are gone from both `[LATENCY]` lines; numbers are rounded where
+   they are built (`toFixed(0)`) and concatenated.
+2. **`total_ms` subtracted two clocks that have nothing to do with each other** —
+   the viewer's `performance.now()` (ms since *that page* loaded) minus a
+   server-side timestamp. Hence `-1794440401020`. A total is now the **sum of the
+   measured legs**, and is omitted when a leg could not be measured.
+3. **`network_ms = 8983` was clock skew, not the network.** Once the send stamp
+   became a wall clock (so the viewer could compare it at all), the difference
+   between two machines' clocks entered that leg directly: a viewer whose clock is
+   9 s off reports a 9 s wire time. There was no skew sampler to subtract, so one
+   was added: `mirror_clock_req` → `{server_time_ms}` once every 5 s, giving
+   `offset = server + rtt/2 − local` (median of the last 8 samples, an absurd RTT
+   discarded). The legs are now `capture` / `rewrite` / `publish` / `wire` (offset
+   corrected) / `render`, `skew` and `rtt` are printed alongside anything derived
+   from them, and `wire=?` is printed rather than a number when no sample exists.
+
+What the numbers *do* say about speed: ~917 ms for the first full document of a
+real page, ~172 ms for the next, ~20–43 ms to render. Distribution contributed
+~0 — those are capture-side durations. The split is now reported as
+`capture=` vs `rewrite=` so the next optimization targets whichever is large
+instead of guessing.
+
+Two changes that affect felt latency, from the gateway side rather than the report:
+
+* **The input gate no longer holds everything.** It waited up to 600 ms for the
+  epoch ack on *every* action and then discarded a click. During a navigation that
+  reads as a dead page. The ceiling is now 120 ms (a round trip, not a capture),
+  and the wait is graded: pointer presses / submit may be dropped (a mid from a
+  superseded document can name a different node), keystrokes wait briefly and then
+  **run anyway** (a lost character is unrecoverable, a 120 ms-late one is
+  invisible), and scroll/wheel/mousemove never wait at all. A dropped press is
+  announced to the viewer on the control lane (`mirror_input_dropped`) so the UI
+  can say "page is loading" instead of appearing to eat the click.
+* **A capture no longer holds the relay tail.** The post-click and post-mouseup
+  recaptures were awaited inside the relayed handler, so every subsequent action
+  queued behind a full snapshot. They are now scheduled (`_schedule_capture`); the
+  capture session already coalesces concurrent requests, and ordering between
+  *actions* is unaffected because the action itself still runs on the tail.
+* `view_ack` is coalesced: immediate when the epoch changes (that is the ack the
+  gate waits for), otherwise at most one per 250 ms carrying the newest applied
+  frame. Previously the viewer sent one upstream message per applied patch.

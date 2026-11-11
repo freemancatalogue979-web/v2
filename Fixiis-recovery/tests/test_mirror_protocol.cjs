@@ -53,12 +53,14 @@ const block = [
   extract('function noteMissingFrame(', '\n            // Acknowledge what is actually on screen', 'noteMissingFrame'),
   extract('function ackMirrorFrame(message) {', '\n            // Report the viewer-side stages', 'ackMirrorFrame'),
   extract('function reportMirrorPerf(message, patchMs) {', '\n            // ---------------------------------------------------------------', 'reportMirrorPerf'),
+  extract('function wireMs(sentWallMs) {', '\n            // ------------------------------------------------------------', 'wireMs'),
+  extract('function applyClockSample(message) {', '\n            // Corrected wall-clock leg', 'applyClockSample'),
   // The mirror-frame helpers the feed calls, in the order they are declared.
   extract('function mirrorNavigate(action, url) {', '\n            // Exposed because the toolbar', 'mirrorNavigate'),
   extract('function mirrorFocus(el, kind) {', '\n            // Alt+Left', 'mirrorFocus'),
 ].join('\n') + `
 ;globalThis.__exports = { MirrorProtocol, feedMirrorCursor, noteMissingFrame, ackMirrorFrame,
-   reportMirrorPerf, cursorFor, noteMirrorTab, mirrorNavigate, mirrorFocus };
+   reportMirrorPerf, cursorFor, noteMirrorTab, mirrorNavigate, mirrorFocus, wireMs, applyClockSample };
 `;
 
 function makeFrame(overrides) {
@@ -72,6 +74,8 @@ function makeFrame(overrides) {
     payload: {},
   }, overrides || {});
 }
+
+const _realNow = () => Date.now();
 
 function newSandbox(opts) {
   const sent = [];
@@ -89,6 +93,9 @@ function newSandbox(opts) {
     _perfSamples: [],
     _t_received: 1000,
     _mirrorTabId: null,
+    _clockOffsetMs: null,
+    _clockRttMs: null,
+    _clockSamples: [],
     lastGeneration: 0,
     resyncRequestPending: false,
     _lastDocHtml: '<html></html>',
@@ -101,13 +108,15 @@ function newSandbox(opts) {
     Math,
     Set,
     Map,
-    Object,
+    // A stubbed Date, because the cross-clock legs are exactly the thing under
+    // test and they read Date.now(); leaving it real would make every synthetic
+    // timestamp differ by the age of the epoch.
+    Date: { now: () => (opts && typeof opts.wallNow === 'number' ? opts.wallNow : _realNow()) },
     Array,
     String,
     Number,
     isFinite,
     parseInt,
-    Date,
     performance: { now: () => (opts && opts.now ? opts.now() : 1500) },
     requestAnimationFrame: (fn) => { timers.push(fn); },
     // noteMissingFrame arms a re-arm timer; the sandbox must own it or the
@@ -116,6 +125,8 @@ function newSandbox(opts) {
     clearTimeout: () => {},
     state,
     send: (msg) => { sent.push(msg); },
+    clearInterval: () => {},
+    setInterval: () => 0,
     dbg: () => {},
     getSelector: () => 'input#x',
     getMid: () => '7',
@@ -332,6 +343,27 @@ function newSandbox(opts) {
   ackMirrorFrame.call(ctx.sandbox, makeFrame({ type: 'mirror_chrome', message_type: 'chrome', epoch: 2, seq: 12, via_gateway: true }));
   ok(ctx.sent.length === 1, 'chrome/asset lanes are acked implicitly — they are not gated');
 
+  // Ack traffic must not scale with frame traffic: the gateway needs the newest
+  // position per epoch, not one receipt per patch.
+  const co = newSandbox({ wallNow: 1000 });
+  const ack = co.sandbox.ackMirrorFrame;
+  ack.call(co.sandbox, makeFrame({ message_type: 'snapshot', type: 'full_document', epoch: 3, seq: 40, via_gateway: true }));
+  const afterEpoch = co.sent.length;
+  ok(afterEpoch === 1, 'the ack that opens an epoch is sent immediately');
+  for (let seq = 41; seq < 51; seq++) {
+    ack.call(co.sandbox, makeFrame({ message_type: 'delta', type: 'dom_patch', epoch: 3, seq, via_gateway: true }));
+  }
+  ok(co.sent.length === afterEpoch, 'ten deltas in the same epoch add no further acks');
+  ok(co.state._mirrorAcks === 11, 'but every applied frame is still counted');
+  co.runTimeouts();                                 // the deferred flush
+  ok(co.sent.length === afterEpoch + 1, 'one deferred ack carries the whole burst');
+  ok(co.sent[co.sent.length - 1].seq === 50, 'and it names the LAST applied frame, not the first');
+  // A new epoch inside the throttle window must not be delayed by it.
+  const before = co.sent.length;
+  ack.call(co.sandbox, makeFrame({ message_type: 'snapshot', type: 'full_document', epoch: 4, seq: 60, via_gateway: true }));
+  ok(co.sent.length === before + 1 && co.sent[before].epoch === 4,
+    'the gate-releasing ack is never held behind the throttle');
+
   // A legacy (non-gateway) message never acks: the hub has no idea what to do
   // with an ack for a frame it never stamped.
   ackMirrorFrame.call(ctx.sandbox, { type: 'dom_patch', seq: 3 });
@@ -350,6 +382,7 @@ function newSandbox(opts) {
   const ctx = newSandbox({ now: () => now });
   const { reportMirrorPerf } = ctx.sandbox;
   ctx.state._t_received = 1900;
+  ctx.state._t_received_wall = Date.now();
   reportMirrorPerf.call(ctx.sandbox, makeFrame({ type: 'dom_patch', epoch: 2, seq: 11, ts: Date.now() - 40, via_gateway: true }), 12.5);
   // The sample is only sent on the animation frame, which the sandbox owns.
   ok(ctx.sent.length === 0, 'the paint leg defers to the next frame instead of guessing it');
@@ -361,6 +394,55 @@ function newSandbox(opts) {
   ok(sample.paint_ms === 0, 'paint_ms is the deferred frame, not an estimate');
   ok(typeof sample.end_to_end_ms === 'number' && sample.end_to_end_ms >= 40 && sample.end_to_end_ms < 1000,
     'end_to_end uses wall clocks on both ends');
+  ok(sample.clock_skew_ms === undefined, 'no skew claim before the first sample (absent, not zero)');
+
+  // The nine-second ghost.  A viewer whose clock is 9 s behind the server used to
+  // report a 9 s network delay for a 170 ms capture, and that single artifact made
+  // a fast pipeline look broken.  With an offset estimate the same stamps produce
+  // the true number.
+  const skew = newSandbox({ now: () => 2000, wallNow: 100000 });
+  skew.state._t_received = 1900;
+  skew.state._t_received_wall = 100000;
+  skew.sandbox.applyClockSample({ t0: 99000, server_time_ms: 108900 });   // rtt 1000
+  // Request left at local 99000, arrived (by assumption) at 99500, where the
+  // server's clock read 108900 -> the server is 9400 ms ahead of this viewer.
+  ok(skew.state._clockOffsetMs === 9400, 'offset = server + rtt/2 - local');
+  ok(skew.state._clockRttMs === 1000, 'and the round trip is carried with it');
+  // The server stamped this frame at its 109000, which is local 99600 given the
+  // 9400 ms offset; the viewer received it at local 100000. So the honest answer
+  // is 400 ms of wire — where an uncorrected reading would have shown -9000 and
+  // an offset applied with the wrong sign would show -18400.
+  skew.sandbox.reportMirrorPerf(makeFrame({ type: 'dom_patch', epoch: 2, seq: 30, ts: 109000, via_gateway: true }), 3);
+  skew.flushRaf();
+  ok(skew.sent.length === 1 && skew.sent[0].end_to_end_ms === 400,
+    'a frame stamped 400 ms ago in server time reads as 400 ms, not -9000 ms');
+  ok(skew.sent[0].clock_skew_ms === 9400, 'and the correction is reported, so it can be audited');
+
+  // Median over the window: one GC-delayed sample must not move every leg.
+  const med = newSandbox({ wallNow: 5000 });
+  med.sandbox.applyClockSample({ t0: 4000, server_time_ms: 5000 });      // offset 500
+  med.sandbox.applyClockSample({ t0: 4000, server_time_ms: 5000 });      // offset 500
+  med.sandbox.applyClockSample({ t0: 4000, server_time_ms: 60000 });     // offset 55500
+  ok(med.state._clockSamples.length === 3, 'three samples held');
+  ok(med.state._clockOffsetMs === 500,
+    'the median survives one stalled sample (offset stays 500, not 55500)');
+  // A stalled sample is one whose round trip is absurd: 20 s is the ceiling, and
+  // past it the reading is discarded rather than folded into the estimate.
+  const stalled = newSandbox({ wallNow: 5000 });
+  stalled.sandbox.applyClockSample({ t0: 4000, server_time_ms: 5000 });
+  stalled.sandbox.applyClockSample({ t0: -20000, server_time_ms: 5000 });
+  ok(stalled.state._clockSamples.length === 1, 'an absurd round trip is not sampled');
+
+  // A frame stamped in the future (clock stepped) yields no number at all.
+  const future = newSandbox({ wallNow: 1000 });
+  future.state._t_received_wall = 1000;
+  future.sandbox.reportMirrorPerf(makeFrame({ type: 'dom_patch', ts: 900000, via_gateway: true }), 1);
+  future.flushRaf();
+  ok(future.sent.length === 1, 'the sample is still reported (the local legs are valid)');
+  ok(future.sent.length === 1 && future.sent[0].end_to_end_ms === null,
+    'an implausible cross-clock interval is reported as null — "not measured", not as a number');
+  ok(future.sent[0].receive_ms === 0 || typeof future.sent[0].receive_ms === 'number',
+    'the local legs survive a bad cross-clock leg (they are measured on one clock)');
   ok(sample.epoch === 2 && sample.seq === 11, 'the sample is attributable to one frame');
 
   // The cap: one report per second, holding the most recent sample. Without it,
@@ -445,6 +527,28 @@ function newSandbox(opts) {
                            source.indexOf("d.addEventListener('focusin'"));
   ok(/syncSensitiveKeystrokes\(node\)/.test(sub), 'a submit flushes the pending keystrokes first');
   ok(qis.indexOf('value: (typeof value') > 0, 'the ordinary field keeps its absolute-value sync');
+}
+
+// ---------------------------------------------------------------------------
+// 10. the log line itself (the artifact that started this)
+// ---------------------------------------------------------------------------
+{
+  // console.log implements %s %d %i %f %o %O %j %c — NOT %.0f. A format string
+  // with %.0f prints the specifier literally and appends every number at the
+  // end, which is what the operator saw as "[LATENCY] ... capture_ms=%.0f ...
+  // 917.5 144.46 20.8 -1794440401020.1401". The messages are now built by
+  // string concatenation with toFixed(), so assert the pattern cannot come back.
+  const latencyLines = source.match(/console\.log\([^\n]*\[LATENCY\][^\n]*/g) || [];
+  ok(latencyLines.length >= 2, `both latency lines are present (${latencyLines.length})`);
+  ok(!latencyLines.some(l => /%\.[0-9]f|%d|%s/.test(l)),
+    'no console.log format specifiers in a [LATENCY] line (Chrome does not implement %.0f)');
+  ok(!/_t_rendered - _t_detect/.test(source),
+    'total_ms is never a local-monotonic minus a server-epoch subtraction');
+  ok(/parts\.push\('total='/.test(source) && /reduce\(\(a, b\) => a \+ b, 0\)/.test(source),
+    'the total is the sum of the measured legs');
+  ok(/\[LATENCY\] seq=' \+ \(message\.seq/.test(source), 'the identifiers are concatenated too');
+  // And the numbers are rounded where they are built, not in a format string.
+  ok(/toFixed\(0\)/.test(source), 'toFixed is used for the printed legs');
 }
 
 console.log(`PASS  mirror protocol: ${checks} checks`);

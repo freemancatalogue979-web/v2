@@ -1974,7 +1974,11 @@ class NeoStreamingSession:
                 self.mouse_position = {'x': x, 'y': y}
                 await page.mouse.move(x, y)
                 await page.mouse.up(button=button_name)
-                await self.capture_remote_page(reason='mouseup')
+                # Scheduled, not awaited: see _schedule_capture. The pointer
+                # action is complete the moment the browser has taken it; holding
+                # the relay tail through a snapshot is what makes the next
+                # keystroke wait a second for a frame the visitor can already see.
+                self._schedule_capture(reason='mouseup')
 
             elif event in {'click', 'tap'}:
                 # ONE click path: resolve by data-mid then CSS selector,
@@ -2008,7 +2012,7 @@ class NeoStreamingSession:
                 # the page may have changed (navigation/SPA/toggle); if it
                 # missed, this send is the resync.  Navigation-signal
                 # ownership (delta observer) dedupes navigations.
-                await self.capture_remote_page(reason='click')
+                self._schedule_capture(reason='click')
 
             elif event == 'wheel':
                 x = _px(input_data.get('x', 0))
@@ -2298,6 +2302,27 @@ class NeoStreamingSession:
                     every=30.0,
                 )
 
+    def _schedule_capture(self, *, reason: str, force: bool = False) -> None:
+        """Ask for a fresh document without holding the input relay's tail.
+
+        The capture is what makes the next frame correct; it is NOT part of the
+        ordering between one action and the next.  Awaiting it inside a relayed
+        handler means every keystroke behind a click waits for the whole
+        snapshot — which on a page the size of a search result is a second of
+        dead keyboard, and is exactly how "the mirror feels slow after I click"
+        gets reported even though the frame arrived promptly.  The capture
+        session already coalesces concurrent requests, so scheduling is safe.
+        """
+        try:
+            task = asyncio.ensure_future(self.capture_remote_page(reason=reason, force=force))
+        except RuntimeError:
+            return
+        pending = getattr(self, "_capture_tasks", None)
+        if pending is None:
+            pending = self._capture_tasks = set()
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
     async def handle_click(self, selector: Optional[str] = None, mid: Optional[str] = None):
         async def _go():
             if self.dom_capture:
@@ -2306,8 +2331,9 @@ class NeoStreamingSession:
                     # The control the viewer pressed is not in the live DOM: the
                     # mirror is behind.  Ship the current document — the same
                     # "pressed something stale -> give them the page" contract
-                    # the coordinate path already has.
-                    await self.capture_remote_page(reason='click', force=True)
+                    # the coordinate path already has, scheduled so the next
+                    # action is not queued behind a full capture.
+                    self._schedule_capture(reason='click', force=True)
         return await self._relay_input('click', _go)
 
     async def handle_navigation(self, url: str):

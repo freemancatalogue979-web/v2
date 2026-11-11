@@ -585,7 +585,7 @@ async def test_relay_passes_geometry_actions_through_and_survives_failures():
     hub.publish(mg.KIND_SNAPSHOT, {"html": "a"}, document_id=doc, lane="nav")
     relay = mg.MirrorInputRelay(hub, gate_timeout_s=0.05, wait_poll_s=0.01)
     seen = []
-    # 'mousemove' is not in STRUCTURAL: no viewer ack is demanded for pointer
+    # 'mousemove' is not in GATED: no viewer ack is demanded for pointer
     # geometry, or the mirror would feel dead whenever a viewer is catching up.
     verdict = await relay.submit("mousemove", lambda: seen.append("move"), viewer_id="v1")
     await relay.drain(timeout_s=1.0)
@@ -613,6 +613,73 @@ async def test_relay_without_hub_executes_inline():
     ok(ran == [], "the relay itself did nothing")
     await hub.close()
 
+
+
+async def test_relay_gate_policy_by_action_class():
+    """Scroll/mousemove are never held; keystrokes wait briefly then run; clicks may drop.
+
+    A closed gate is a *navigation in progress*, which lasts as long as the page's
+    own capture. Holding every action behind it is what makes a mirror feel dead
+    for a second after each click, so the wait is graded by what losing the action
+    would cost — and the ceiling is one network round trip, not a capture.
+    """
+    hub = mg.MirrorHub(session_id="s", tab_id="t")
+    doc = hub.document_id
+    hub.publish(mg.KIND_SNAPSHOT, {"html": "a"}, document_id=doc, lane="nav")
+    sock = FakeSocket()
+    hub.attach_viewer(sock, "v1")
+    await wait_until(lambda: len(sock.frames) >= 1)
+    # Gate closed: open a newer epoch the viewer has not acked.
+    new_doc = hub.begin_navigation("https://b/")
+    hub.publish(mg.KIND_SNAPSHOT, {"html": "b"}, document_id=new_doc, lane="nav")
+    ok(hub.allows_input("v1")[0] is False, "gate is closed for the test")
+
+    relay = mg.MirrorInputRelay(hub, gate_timeout_s=0.25, wait_poll_s=0.01)
+    ran = []
+    t0 = time.monotonic()
+    await relay.submit("input:scroll_sync", lambda: ran.append("scroll"), viewer_id="v1")
+    elapsed = time.monotonic() - t0
+    await relay.drain(timeout_s=1.0)
+    ok(ran == ["scroll"] and elapsed < 0.05,
+       "a scroll does not wait for the ack at all (%.3fs)" % elapsed)
+    ok(relay.stats.get("gated_pass") == 1, "and the bypass is counted, not invisible")
+
+    t0 = time.monotonic()
+    verdict = await relay.submit("keypress", lambda: ran.append("key"), viewer_id="v1")
+    waited = time.monotonic() - t0
+    await relay.drain(timeout_s=1.0)
+    ok(verdict == "ok" and "key" in ran, "a keystroke is never dropped")
+    ok(0.1 < waited <= 0.5, "a keystroke waits at most the gate ceiling (%.3fs)" % waited)
+
+    t0 = time.monotonic()
+    verdict = await relay.submit("click", lambda: ran.append("click"), viewer_id="v1")
+    ok(verdict == "stale", "a click against an unapplied document is refused")
+    ok(0.1 < (time.monotonic() - t0) <= 0.5, "and the refusal is prompt, not a second of waiting")
+    await relay.drain(timeout_s=1.0)
+    ok("click" not in ran, "the refused click never reached the page")
+    # The viewer is told: a silently eaten click is indistinguishable from a
+    # broken mirror, which is the complaint this whole path exists to avoid.
+    controls = [d for d in sock.dicts() if d.get("type") == "mirror_input_dropped"]
+    ok(len(controls) >= 1, "the viewer is notified that its click was dropped")
+    ok(controls and controls[-1].get("reason") == "epoch-unapplied",
+       "with the reason, so the UI can say 'page is loading'")
+    await hub.close()
+
+
+async def test_relay_gate_ceiling_is_bounded_by_config_not_by_capture():
+    """The gate ceiling must stay small: it is paid on every gated action."""
+    hub = mg.MirrorHub(session_id="s", tab_id="t")
+    relay = mg.MirrorInputRelay(hub)
+    ok(relay.gate_timeout_s <= 0.2,
+       "default gate ceiling is a round trip, not a capture (%.3fs)" % relay.gate_timeout_s)
+    ok("click" in mg.MirrorInputRelay.GATED, "clicks remain droppable")
+    ok("keypress" not in mg.MirrorInputRelay.GATED, "keystrokes are never droppable")
+    ok(mg.MirrorInputRelay._bucket("input:wheel") == "none", "wheel traffic never waits")
+    ok(mg.MirrorInputRelay._bucket("navigate") == "none",
+       "a URL is never stale, so navigation is never held or dropped for the gate")
+    ok("nav" not in mg.MirrorInputRelay.GATED and "navigate" not in mg.MirrorInputRelay.GATED,
+       "and that is the declared policy, not an accident of naming")
+    await hub.close()
 
 
 async def main():
