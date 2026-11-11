@@ -91,6 +91,12 @@ SNAPSHOT_CAPTURE_MIN_INTERVAL_S: float = float(
 # so UI animations and transitions stream smoothly to the client.
 DELTA_FLUSH_MS: int = max(0, int(os.environ.get("DOM_DELTA_FLUSH_MS", "16")))
 
+# Add cross-process timestamps to live deltas for opt-in end-to-end latency
+# diagnostics. Use with the viewer's ?debug=1 console logging.
+DELTA_LATENCY_DIAGNOSTICS: bool = os.environ.get(
+    "DOM_DELTA_LATENCY_DIAGNOSTICS", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+
 # URL polling is local (page.url is cached on the adapters), so 100 ms catches
 # a navigation much sooner than the old 500 ms loop without a CDP round-trip.
 URL_WATCH_INTERVAL_S: float = max(
@@ -4256,6 +4262,7 @@ _DELTA_OBSERVER_JS = r"""
     // JS turn ends, not after a fixed 16ms timeout that adds latency.
     Promise.resolve().then(flush);
   };
+    let batchStartedAt = 0;
   const markOverflow = () => {
     if (overflowed) return;
     overflowed = true;
@@ -4276,15 +4283,18 @@ _DELTA_OBSERVER_JS = r"""
     }
     if (!ops.length) return;
     const batch = ops.splice(0, ops.length);
+        const detectedAt = batchStartedAt || Date.now();
+        batchStartedAt = 0;
     overflowed = false;
     try {
       if (typeof window.__domDelta === 'function') {
-        window.__domDelta(JSON.stringify(batch), DOC_TOKEN);
+                window.__domDelta(JSON.stringify(batch), DOC_TOKEN, detectedAt);
       }
     } catch (e) { /* binding not wired yet */ }
   };
   const push = (op) => {
     if (overflowed) return;
+        if (!ops.length) batchStartedAt = Date.now();
     ops.push(op);
     if (ops.length > OP_CAP) markOverflow();
     else schedule();
@@ -4627,7 +4637,9 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
     if not LIVE_DELTA or page is None or session is None:
         return False
 
-    async def _on_delta(payload: Any, doc_token: Any = None) -> None:
+    async def _on_delta(
+        payload: Any, doc_token: Any = None, detected_at_ms: Any = None
+    ) -> None:
         try:
             if session.page is not page:
                 return
@@ -4664,6 +4676,14 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                 return
             if not session._delta_active:
                 return  # current full-capture tier cannot carry safe mids
+
+            received_at_ms = time.time_ns() // 1_000_000
+            detected_at: Optional[int] = None
+            if DELTA_LATENCY_DIAGNOSTICS:
+                try:
+                    detected_at = int(detected_at_ms)
+                except (TypeError, ValueError, OverflowError):
+                    detected_at = None
 
             # The browser already paid for JSON.stringify(batch).  Wrap that
             # exact JSON text instead of parsing and serializing the operation
@@ -4702,7 +4722,15 @@ async def _install_delta_observer(page: Any, session: "DOMCaptureSession") -> bo
                     return
                 gen = int(session._gen)
                 doc_json = _json.dumps(str(doc_token)[:256], ensure_ascii=False) if doc_token is not None else "null"
-                frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + ',"ops":' + payload_text + '}'
+                timing_json = ""
+                if DELTA_LATENCY_DIAGNOSTICS and detected_at is not None:
+                    sent_at_ms = time.time_ns() // 1_000_000
+                    timing_json = (
+                        ',"timing":{"detected_at_ms":' + str(detected_at)
+                        + ',"received_at_ms":' + str(received_at_ms)
+                        + ',"sent_at_ms":' + str(sent_at_ms) + '}'
+                    )
+                frame = '{"type":"dom_patch","gen":' + str(gen) + ',"doc":' + doc_json + timing_json + ',"ops":' + payload_text + '}'
                 await session.websocket.send_text(frame)
         except Exception as exc:
             logger.debug("delta relay failed: %s", exc)

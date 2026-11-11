@@ -8824,6 +8824,8 @@ function applySpinnerColorFromHex(hexColor) {
                     case 'dom_patch':
                         // Plain path: apply patches the instant they arrive.
                         // No buffering, no nav-pending window, no freeze.
+                        const latencyTiming = message.timing;
+                        const latencyReceivedAt = Date.now();
                         try {
                             const ok = Array.isArray(message.ops)
                                 ? applyDomPatch(message)
@@ -8834,6 +8836,20 @@ function applySpinnerColorFromHex(hexColor) {
                         } catch (e) {
                             console.error('applyDomPatch failed:', e);
                             requestResync(state._deltaGen, 'patch_exception');
+                        }
+                        if (window.__SHF_DEBUG && latencyTiming
+                            && Number.isFinite(latencyTiming.detected_at_ms)
+                            && Number.isFinite(latencyTiming.sent_at_ms)) {
+                            requestAnimationFrame(() => requestAnimationFrame(() => {
+                                const renderedAt = Date.now();
+                                console.debug('[latency] dom_patch', {
+                                    capture_ms: latencyTiming.sent_at_ms - latencyTiming.detected_at_ms,
+                                    network_ms: latencyReceivedAt - latencyTiming.sent_at_ms,
+                                    render_ms: renderedAt - latencyReceivedAt,
+                                    total_ms: renderedAt - latencyTiming.detected_at_ms,
+                                    ops: Array.isArray(message.ops) ? message.ops.length : 0
+                                });
+                            }));
                         }
                         break;
                     case 'region_replace':
