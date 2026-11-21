@@ -995,6 +995,14 @@ class SBPage:
                 raise RuntimeError(f"wait_for_function timeout after {timeout}ms")
             await asyncio.sleep(max(0.05, polling))
 
+    async def wait_for_selector(self, selector: str, timeout: float = 30000,
+                                **_kw: Any) -> None:
+        """Wait for an element matching selector to appear in the DOM."""
+        await self.wait_for_function(
+            f"document.querySelector({json.dumps(selector)}) !== null",
+            timeout=timeout,
+        )
+
     async def wait_for_timeout(self, ms: float) -> None:
         await asyncio.sleep(ms / 1000.0)
 

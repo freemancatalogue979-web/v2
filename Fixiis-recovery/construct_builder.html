@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Construct Builder</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .header {
+            background: #1e293b;
+            padding: 12px 20px;
+            border-bottom: 1px solid #334155;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 { font-size: 18px; font-weight: 600; color: #f8fafc; }
+        .header-actions { display: flex; gap: 10px; }
+
+        .main {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 340px;
+            background: #1e293b;
+            border-right: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .sidebar-header {
+            padding: 16px;
+            border-bottom: 1px solid #334155;
+        }
+        .sidebar-header h2 { font-size: 14px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+        .search-box {
+            padding: 12px;
+            border-bottom: 1px solid #334155;
+        }
+        .search-box input {
+            width: 100%;
+            padding: 8px 12px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 13px;
+        }
+        .nav-section {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+        .nav-item {
+            padding: 10px 14px;
+            color: #94a3b8;
+            cursor: pointer;
+            border-radius: 6px;
+            margin: 2px 4px;
+            font-size: 13px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .nav-item:hover { background: #334155; color: #e2e8f0; }
+        .nav-item.active { background: #3b82f6; color: #ffffff; }
+        .nav-item .icon { width: 16px; }
+
+        .content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+        .content-section { display: none; }
+        .content-section.active { display: block; }
+
+        .form-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .form-card h3 { font-size: 16px; font-weight: 600; color: #f8fafc; margin-bottom: 16px; }
+        .form-group { margin-bottom: 16px; }
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: #94a3b8;
+            margin-bottom: 6px;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 13px;
+        }
+        .form-group textarea { min-height: 100px; font-family: inherit; }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-right: 10px;
+        }
+        .btn-primary { background: #3b82f6; color: #ffffff; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-secondary { background: #475569; color: #ffffff; }
+        .btn-secondary:hover { background: #334155; }
+        .btn-danger { background: #ef4444; color: #ffffff; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-success { background: #22c55e; color: #ffffff; }
+        .btn-success:hover { background: #16a34a; }
+
+        .workflow-list { display: flex; flex-direction: column; gap: 8px; }
+        .workflow-item {
+            padding: 12px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .workflow-item:hover { border-color: #3b82f6; background: #1e293b; }
+        .workflow-item.active { border-color: #3b82f6; background: #1e293b; }
+        .workflow-item h4 { font-size: 14px; color: #f8fafc; margin-bottom: 4px; }
+        .workflow-item p { font-size: 12px; color: #64748b; }
+
+        .step-list { display: flex; flex-direction: column; gap: 10px; }
+        .step-card {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 14px;
+        }
+        .step-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .step-title { font-size: 14px; font-weight: 600; color: #f8fafc; }
+        .step-type { font-size: 11px; padding: 2px 8px; background: #334155; border-radius: 4px; color: #94a3b8; }
+        .step-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .step-fields .form-group { margin-bottom: 10px; }
+
+        .archive-list { display: flex; flex-direction: column; gap: 8px; }
+        .archive-item {
+            padding: 12px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .archive-item h4 { font-size: 14px; color: #f8fafc; margin-bottom: 4px; }
+        .archive-item p { font-size: 12px; color: #64748b; margin-bottom: 8px; }
+        .archive-item .tags { font-size: 10px; color: #3b82f6; }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 6px;
+            color: #ffffff;
+            font-size: 13px;
+            display: none;
+            z-index: 1000;
+        }
+        .toast.show { display: block; }
+        .toast.success { background: #166534; }
+        .toast.error { background: #7f1d1d; }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>CONSTRUCT BUILDER</h1>
+        <div class="header-actions">
+            <button class="btn btn-secondary" onclick="app.refresh()">Refresh</button>
+            <button class="btn btn-primary" onclick="app.showSection('workflows')">Workflows</button>
+            <button class="btn btn-primary" onclick="app.showSection('archive')">Archive</button>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>Navigation</h2>
+            </div>
+            <div class="search-box">
+                <input type="text" placeholder="Search..." id="navSearch">
+            </div>
+            <div class="nav-section">
+                <div class="nav-item active" onclick="app.showSection('workflows')">
+                    <span class="icon">&#9654;</span> Workflows
+                </div>
+                <div class="nav-item" onclick="app.showSection('archive')">
+                    <span class="icon">&#128247;</span> Archive
+                </div>
+                <div class="nav-item" onclick="app.showSection('builder')">
+                    <span class="icon">&#128214;</span> Builder
+                </div>
+            </div>
+        </div>
+
+        <div class="content">
+            <!-- Workflows Section -->
+            <div class="content-section active" id="section-workflows">
+                <h2 style="margin-bottom: 16px; font-size: 18px; color: #f8fafc;">Workflows</h2>
+                <div style="display:flex;gap:10px;margin-bottom:16px;">
+                    <button class="btn btn-primary" onclick="app.newWorkflow()">+ New Workflow</button>
+                </div>
+                <div class="workflow-list" id="workflowList">
+                    <!-- Workflow items injected by JS -->
+                </div>
+            </div>
+
+            <!-- Archive Section -->
+            <div class="content-section hidden" id="section-archive">
+                <h2 style="margin-bottom: 16px; font-size: 18px; color: #f8fafc;">Construct Archive</h2>
+                <div class="form-card">
+                    <h3>Upload HTML Page</h3>
+                    <form id="archiveUploadForm">
+                        <div class="form-group">
+                            <label>Name</label>
+                            <input type="text" id="archiveName" placeholder="e.g. google.com.html">
+                        </div>
+                        <div class="form-group">
+                            <label>URL Mapping (comma-separated)</label>
+                            <input type="text" id="archiveUrlMapping" placeholder="https://google.com, https://accounts.google.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Description</label>
+                            <input type="text" id="archiveDescription" placeholder="Optional description">
+                        </div>
+                        <div class="form-group">
+                            <label>HTML file</label>
+                            <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                                <input type="file" id="archiveFilePicker" accept=".html,.htm,text/html" style="display:none;">
+                                <button type="button" class="btn btn-secondary" id="archivePickBtn">Choose HTML file</button>
+                                <span id="archiveFileName" style="font-size:11px; color:#94a3b8; font-family:monospace; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">No file chosen</span>
+                            </div>
+                            <textarea id="archiveHtml" placeholder="<!DOCTYPE html><html>...</textarea></div>
+                        <button class="btn btn-primary" type="submit">Save Page</button>
+                    </form>
+                </div>
+                <div class="archive-list" id="archiveList">
+                    <!-- Archive items injected by JS -->
+                </div>
+            </div>
+
+            <!-- Builder Section -->
+            <div class="content-section hidden" id="section-builder">
+                <h2 style="margin-bottom: 16px; font-size: 18px; color: #f8fafc;">Workflow Builder</h2>
+                <div class="form-card">
+                    <h3>Workflow Settings</h3>
+                    <div class="form-group">
+                        <label>Workflow Name</label>
+                        <input type="text" id="wfName" placeholder="My Construct Workflow">
+                    </div>
+                    <div class="form-group">
+                        <label>Target URL</label>
+                        <input type="text" id="wfTargetUrl" placeholder="https://example.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Description</label>
+                        <input type="text" id="wfDescription">
+                    </div>
+                    <button class="btn btn-success" onclick="app.saveWorkflow()">Save Workflow</button>
+                    <button class="btn btn-danger" onclick="app.deleteWorkflow()">Delete</button>
+                </div>
+
+                <div class="form-card">
+                    <h3>Steps</h3>
+                    <div class="step-list" id="stepList">
+                        <!-- Steps injected by JS -->
+                    </div>
+                    <button class="btn btn-primary" style="margin-top:16px;" onclick="app.addStep()">+ Add Step</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+    (function() {
+        'use strict';
+
+        const API_BASE = '';
+
+        function toast(msg, type = 'success') {
+            const el = document.getElementById('toast');
+            el.textContent = msg;
+            el.className = `toast show ${type}`;
+            setTimeout(() => el.className = 'toast', 3000);
+        }
+
+        async function api(path, opts = {}) {
+            const res = await fetch(API_BASE + path, {
+                headers: { 'Content-Type': 'application/json', ...opts.headers },
+                ...opts,
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            return res.json();
+        }
+
+        const app = {
+            currentWorkflowId: null,
+            workflows: [],
+            archive: [],
+
+            showSection(name) {
+                document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
+                document.querySelectorAll('.content-section').forEach(s => s.classList.add('hidden'));
+                const el = document.getElementById('section-' + name);
+                if (el) el.classList.remove('hidden');
+                document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+                // find and activate
+                if (name === 'workflows') {
+                    this.loadWorkflows();
+                } else if (name === 'archive') {
+                    this.loadArchive();
+                }
+            },
+
+            async loadWorkflows() {
+                try {
+                    const data = await api('/api/construct/workflows?limit=100');
+                    this.workflows = data.pages || data.workflows || [];
+                    this.renderWorkflows();
+                } catch(e) {
+                    toast('Failed to load workflows: ' + e.message, 'error');
+                }
+            },
+
+            renderWorkflows() {
+                const list = document.getElementById('workflowList');
+                list.innerHTML = '';
+                this.workflows.forEach(wf => {
+                    const item = document.createElement('div');
+                    item.className = `workflow-item ${this.currentWorkflowId === wf.id ? 'active' : ''}`;
+                    item.innerHTML = `
+                        <h4>${wf.name}</h4>
+                        <p>${wf.target_url || 'No target URL'} • ${wf.status || 'draft'}</p>
+                    `;
+                    item.onclick = () => this.selectWorkflow(wf.id);
+                    list.appendChild(item);
+                });
+            },
+
+            selectWorkflow(id) {
+                this.currentWorkflowId = id;
+                const wf = this.workflows.find(w => w.id === id);
+                if (!wf) return;
+                this.showSection('builder');
+                document.getElementById('wfName').value = wf.name || '';
+                document.getElementById('wfTargetUrl').value = wf.target_url || '';
+                document.getElementById('wfDescription').value = wf.description || '';
+                this.loadSteps();
+            },
+
+            async loadSteps() {
+                if (!this.currentWorkflowId) return;
+                try {
+                    const data = await api(`/api/construct/workflows/${this.currentWorkflowId}/steps`);
+                    this.renderSteps(data.steps || []);
+                } catch(e) {
+                    toast('Failed to load steps: ' + e.message, 'error');
+                }
+            },
+
+            renderSteps(steps) {
+                const list = document.getElementById('stepList');
+                list.innerHTML = '';
+                steps.forEach(step => {
+                    const card = document.createElement('div');
+                    card.className = 'step-card';
+                    card.innerHTML = `
+                        <div class="step-header">
+                            <div class="step-title">${step.step_name || 'Untitled'}</div>
+                            <div class="step-type">${step.action_type || 'action'}</div>
+                        </div>
+                        <div class="step-fields">
+                            <div class="form-group">
+                                <label>Browser Action</label>
+                                <input value="${step.browser_action || ''}" onchange="app.updateStep('${step.id}', 'browser_action', this.value)">
+                            </div>
+                            <div class="form-group">
+                                <label>Target Selector</label>
+                                <input value="${step.target_selector || ''}" onchange="app.updateStep('${step.id}', 'target_selector', this.value)">
+                            </div>
+                            <div class="form-group">
+                                <label>Attached Page</label>
+                                <input value="${step.attached_page_name || ''}" placeholder="Page name">
+                            </div>
+                            <div class="form-group">
+                                <label>Transition To</label>
+                                <input value="${step.transition_to || ''}" placeholder="Step ID">
+                            </div>
+                        </div>
+                    `;
+                    list.appendChild(card);
+                });
+            },
+
+            async newWorkflow() {
+                this.currentWorkflowId = null;
+                document.getElementById('wfName').value = '';
+                document.getElementById('wfTargetUrl').value = '';
+                document.getElementById('wfDescription').value = '';
+                document.getElementById('stepList').innerHTML = '';
+                this.showSection('builder');
+            },
+
+            async saveWorkflow() {
+                const name = document.getElementById('wfName').value.trim();
+                const targetUrl = document.getElementById('wfTargetUrl').value.trim();
+                const description = document.getElementById('wfDescription').value.trim();
+                if (!name) { toast('Workflow name required', 'error'); return; }
+                try {
+                    const wf = await api('/api/construct/workflows', {
+                        method: 'POST',
+                        body: JSON.stringify({ name, target_url: targetUrl, description }),
+                    });
+                    this.currentWorkflowId = wf.workflow.id;
+                    toast('Workflow saved');
+                    this.loadWorkflows();
+                } catch(e) {
+                    toast('Save failed: ' + e.message, 'error');
+                }
+            },
+
+            async deleteWorkflow() {
+                if (!this.currentWorkflowId) return;
+                if (!confirm('Delete this workflow?')) return;
+                try {
+                    await api(`/api/construct/workflows/${this.currentWorkflowId}`, { method: 'DELETE' });
+                    toast('Deleted');
+                    this.currentWorkflowId = null;
+                    this.loadWorkflows();
+                    this.showSection('workflows');
+                } catch(e) {
+                    toast('Delete failed: ' + e.message, 'error');
+                }
+            },
+
+            async addStep() {
+                if (!this.currentWorkflowId) { toast('Save workflow first', 'error'); return; }
+                const name = prompt('Step name:', 'New Step');
+                if (!name) return;
+                const type = prompt('Action type (navigate/click/input/wait):', 'navigate');
+                if (!type) return;
+                try {
+                    await api(`/api/construct/workflows/${this.currentWorkflowId}/steps`, {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            step_name: name,
+                            action_type: type,
+                            step_order: 0,
+                        }),
+                    });
+                    toast('Step added');
+                    this.loadSteps();
+                } catch(e) {
+                    toast('Failed: ' + e.message, 'error');
+                }
+            },
+
+            async updateStep(stepId, field, value) {
+                try {
+                    await api(`/api/construct/steps/${stepId}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ [field]: value }),
+                    });
+                } catch(e) {
+                    toast('Update failed: ' + e.message, 'error');
+                }
+            },
+
+            async loadArchive() {
+                try {
+                    const data = await api('/api/construct/archive?limit=100');
+                    this.archive = data.pages || [];
+                    this.renderArchive();
+                } catch(e) {
+                    toast('Failed to load archive: ' + e.message, 'error');
+                }
+            },
+
+            renderArchive() {
+                const list = document.getElementById('archiveList');
+                list.innerHTML = '';
+                this.archive.forEach(page => {
+                    const item = document.createElement('div');
+                    item.className = 'archive-item';
+                    item.innerHTML = `
+                        <h4>${page.name}</h4>
+                        <p>${page.description || ''}</p>
+                        <div class="tags">${(page.tags || []).join(', ')}</div>
+                    `;
+                    list.appendChild(item);
+                });
+            },
+
+            async refresh() {
+                if (document.getElementById('section-workflows').classList.contains('active')) {
+                    this.loadWorkflows();
+                } else if (document.getElementById('section-archive').classList.contains('active')) {
+                    this.loadArchive();
+                }
+                toast('Refreshed');
+            },
+
+            init() {
+                // File picker for archive HTML upload
+                document.getElementById('archivePickBtn')?.addEventListener('click', () => {
+                    document.getElementById('archiveFilePicker')?.click();
+                });
+                document.getElementById('archiveFilePicker')?.addEventListener('change', (e) => {
+                    const file = e.target.files?.[0] || null;
+                    if (file) {
+                        document.getElementById('archiveFileName').textContent = file.name;
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                            document.getElementById('archiveHtml').value = ev.target.result || '';
+                        };
+                        reader.onerror = () => {
+                            toast('Failed to read file', 'error');
+                        };
+                        reader.readAsText(file);
+                    } else {
+                        document.getElementById('archiveFileName').textContent = 'No file chosen';
+                    }
+                });
+
+                document.getElementById('archiveUploadForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const name = document.getElementById('archiveName').value.trim();
+                    const html = document.getElementById('archiveHtml').value.trim();
+                    const urlMapping = document.getElementById('archiveUrlMapping').value.split(',').map(s => s.trim()).filter(Boolean);
+                    const description = document.getElementById('archiveDescription').value.trim();
+                    if (!name || !html) { toast('Name and HTML required', 'error'); return; }
+                    try {
+                        await api('/api/construct/archive', {
+                            method: 'POST',
+                            body: JSON.stringify({ name, html, description, url_mapping: urlMapping }),
+                        });
+                        toast('Page saved');
+                        document.getElementById('archiveName').value = '';
+                        document.getElementById('archiveHtml').value = '';
+                        document.getElementById('archiveUrlMapping').value = '';
+                        document.getElementById('archiveDescription').value = '';
+                        document.getElementById('archiveFilePicker').value = '';
+                        document.getElementById('archiveFileName').textContent = 'No file chosen';
+                        this.loadArchive();
+                    } catch(e) {
+                        toast('Upload failed: ' + e.message, 'error');
+                    }
+                };
+                this.loadWorkflows();
+            }
+        };
+
+        window.app = app;
+        app.init();
+    })();
+    </script>
+</body>
+</html>

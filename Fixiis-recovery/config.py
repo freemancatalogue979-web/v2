@@ -592,12 +592,19 @@ LPV_DIR = BASE_DIR / "lpv"
 LPV_PAGES_DIR = LPV_DIR / "pages"
 LPV_DB_PATH = LPV_DIR / "lpv.sqlite3"
 
+# Construct — hybrid custom HTML + remote browser workflow storage
+CONSTRUCT_DIR = BASE_DIR / "construct"
+CONSTRUCT_ARCHIVE_DIR = CONSTRUCT_DIR / "archive"
+CONSTRUCT_DB_PATH = CONSTRUCT_DIR / "construct.sqlite3"
+
 # Ensure directories exist
 PROFILES_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
 CACHE_DIR.mkdir(exist_ok=True)
 LPV_DIR.mkdir(exist_ok=True)
 LPV_PAGES_DIR.mkdir(exist_ok=True)
+CONSTRUCT_DIR.mkdir(exist_ok=True)
+CONSTRUCT_ARCHIVE_DIR.mkdir(exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Bring an older install's root-level state files into data/ before any module

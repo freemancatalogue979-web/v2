@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Construct Client</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .header {
+            background: #1e293b;
+            padding: 12px 20px;
+            border-bottom: 1px solid #334155;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 { font-size: 16px; font-weight: 600; color: #f8fafc; }
+        .status-indicator {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 12px;
+        }
+        .status-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #22c55e;
+        }
+        .status-dot.connecting { background: #f59e0b; animation: pulse 2s infinite; }
+        .status-dot.disconnected { background: #ef4444; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        .status-text { color: #94a3b8; }
+        .status-text.connected { color: #22c55e; }
+
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .step-bar {
+            background: #1e293b;
+            padding: 10px 20px;
+            border-bottom: 1px solid #334155;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-shrink: 0;
+        }
+        .step-info { flex: 1; }
+        .step-name { font-size: 14px; font-weight: 600; color: #f8fafc; }
+        .step-action { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+        .step-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .page-container {
+            flex: 1;
+            background: #0f172a;
+            overflow: auto;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .page-frame {
+            width: 100%;
+            max-width: 1200px;
+            max-height: 100%;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            background: #ffffff;
+            overflow: hidden;
+        }
+
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #64748b;
+            text-align: center;
+        }
+        .empty-state h3 { color: #94a3b8; margin-bottom: 8px; }
+        .empty-state p { font-size: 14px; }
+
+        .loading {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(15, 23, 42, 0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+        .spinner {
+            width: 40px; height: 40px;
+            border: 3px solid #334155;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .result-banner {
+            position: absolute;
+            top: 20px; left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            z-index: 100;
+            display: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .result-banner.show { display: block; }
+        .result-banner.success { background: #166534; color: #dcfce7; }
+        .result-banner.error { background: #7f1d1d; color: #fecaca; }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #3b82f6; color: #ffffff; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-primary:disabled { background: #64748b; cursor: not-allowed; }
+        .btn-secondary { background: #475569; color: #ffffff; }
+        .btn-secondary:hover { background: #334155; }
+
+        .debug-panel {
+            background: #0f172a;
+            border-top: 1px solid #334155;
+            padding: 10px 20px;
+            font-size: 11px;
+            color: #94a3b8;
+            flex-shrink: 0;
+            max-height: 100px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+        .debug-line { margin: 2px 0; }
+        .debug-line.error { color: #f87171; }
+        .debug-line.success { color: #4ade80; }
+        .debug-line.info { color: #60a5fa; }
+
+        /* Injected page styles are isolated to the frame */
+        #page-content {
+            width: 100%;
+            min-height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>CONSTRUCT CLIENT</h1>
+        <div class="status-indicator">
+            <div class="status-dot connecting" id="statusDot"></div>
+            <span class="status-text connecting" id="statusText">Connecting...</span>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="step-bar">
+            <div class="step-info">
+                <div class="step-name" id="stepName">No active step</div>
+                <div class="step-action" id="stepAction">Waiting for workflow...</div>
+            </div>
+            <div class="step-actions" id="stepActions">
+                <!-- Action buttons injected by the engine -->
+            </div>
+        </div>
+
+        <div class="page-container">
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div>Loading step...</div>
+            </div>
+            <div class="page-frame" id="pageFrame" style="display:none;">
+                <iframe id="pageIframe" src="about:blank" style="width:100%;height:100%;border:none;"></iframe>
+            </div>
+            <div class="empty-state" id="emptyState" style="display:none;">
+                <h3>No Construct Active</h3>
+                <p>Connect to a workflow to begin.</p>
+            </div>
+        </div>
+
+        <div class="result-banner" id="resultBanner"></div>
+
+        <div class="debug-panel" id="debugPanel">
+            <div class="debug-line">Construct Client initialized</div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        'use strict';
+
+        const DEBUG = (function() {
+            try {
+                return /[?&](debug|verbose)=1(&|$)/.test(window.location.search);
+            } catch(e) { return false; }
+        })();
+
+        function debug(msg, type = 'info') {
+            if (!DEBUG) return;
+            const panel = document.getElementById('debugPanel');
+            const line = document.createElement('div');
+            line.className = `debug-line ${type}`;
+            const ts = new Date().toLocaleTimeString();
+            line.textContent = `[${ts}] ${msg}`;
+            panel.appendChild(line);
+            panel.scrollTop = panel.scrollHeight;
+            console.log(`[Construct] ${msg}`);
+        }
+
+        // DOM elements
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const stepName = document.getElementById('stepName');
+        const stepAction = document.getElementById('stepAction');
+        const stepActions = document.getElementById('stepActions');
+        const pageFrame = document.getElementById('pageFrame');
+        const pageIframe = document.getElementById('pageIframe');
+        const loading = document.getElementById('loading');
+        const emptyState = document.getElementById('emptyState');
+        const resultBanner = document.getElementById('resultBanner');
+
+        // WebSocket connection
+        let ws = null;
+        let wsUrl = '';
+        let currentSessionId = '';
+        let currentWorkflowId = '';
+        let currentStepId = '';
+        let currentPageHtml = '';
+        let elementMappings = [];
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT = 10;
+
+        function wsConnect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host;
+            const path = window.location.search.includes('session=')
+                ? `/ws/construct?${window.location.search.slice(1)}`
+                : '/ws/construct';
+            wsUrl = `${protocol}//${host}${path}`;
+
+            debug(`Connecting to ${wsUrl}`);
+            setStatus('connecting', 'Connecting...');
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                debug('WebSocket opened');
+                reconnectAttempts = 0;
+                setStatus('connected', 'Connected');
+                // Send init
+                const urlParams = new URLSearchParams(window.location.search);
+                ws.send(JSON.stringify({
+                    type: 'init',
+                    workflow_id: urlParams.get('workflow') || urlParams.get('workflow_id') || '',
+                    client_id: urlParams.get('client') || 'client-' + Math.random().toString(36).slice(2),
+                    remote_session_id: urlParams.get('remote') || '',
+                    session_id: urlParams.get('session') || '',
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleMessage(msg);
+                } catch(e) {
+                    debug('Failed to parse message: ' + e.message, 'error');
+                }
+            };
+
+            ws.onclose = () => {
+                debug('WebSocket closed');
+                setStatus('disconnected', 'Disconnected');
+                pageFrame.style.display = 'none';
+                emptyState.style.display = 'flex';
+                emptyState.querySelector('p').textContent = 'Disconnected from Construct engine. Reconnecting...';
+                if (reconnectAttempts < MAX_RECONNECT) {
+                    reconnectAttempts++;
+                    setTimeout(wsConnect, 1000 * Math.min(reconnectAttempts, 5));
+                }
+            };
+
+            ws.onerror = (err) => {
+                debug('WebSocket error: ' + err, 'error');
+            };
+        }
+
+        function setStatus(state, text) {
+            statusDot.className = 'status-dot ' + state;
+            statusText.className = 'status-text ' + state;
+            statusText.textContent = text;
+        }
+
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'construct_step':
+                    handleStep(msg);
+                    break;
+                case 'construct_action_result':
+                    handleActionResult(msg.result);
+                    break;
+                case 'construct_complete':
+                    handleComplete(msg);
+                    break;
+                case 'construct_state_sync':
+                    handleStateSync(msg);
+                    break;
+                case 'construct_shutdown':
+                    debug('Server shutdown requested', 'error');
+                    setStatus('disconnected', 'Server shutdown');
+                    break;
+                case 'construct_ack':
+                    debug(msg.message, 'info');
+                    break;
+                case 'error':
+                    debug(msg.message, 'error');
+                    break;
+                default:
+                    debug('Unknown message: ' + msg.type, 'info');
+            }
+        }
+
+        function handleStep(msg) {
+            currentStepId = msg.step_id;
+            currentWorkflowId = msg.workflow_id || currentWorkflowId;
+            currentPageHtml = msg.page_html || '';
+            elementMappings = msg.element_mappings || [];
+
+            stepName.textContent = msg.step_name || 'Untitled Step';
+            stepAction.textContent = `${msg.action_type || 'action'} - ${msg.browser_action || ''}`;
+
+            debug(`Step: ${msg.step_name} (${msg.action_type})`);
+
+            // Render the attached HTML page
+            if (currentPageHtml) {
+                renderPage(currentPageHtml);
+                emptyState.style.display = 'none';
+                pageFrame.style.display = 'block';
+                loading.style.display = 'none';
+            } else {
+                pageFrame.style.display = 'none';
+                loading.style.display = 'none';
+                emptyState.style.display = 'flex';
+                emptyState.querySelector('h3').textContent = 'No Interface';
+                emptyState.querySelector('p').textContent = 'This step has no custom HTML page attached.';
+            }
+
+            // Build action buttons from element mappings
+            buildActionButtons(elementMappings);
+        }
+
+        function handleActionResult(result) {
+            if (result.success) {
+                showResult('Action completed successfully', 'success');
+                debug('Action OK', 'success');
+            } else {
+                showResult('Action failed: ' + (result.error || 'unknown error'), 'error');
+                debug('Action failed: ' + (result.error || 'unknown error'), 'error');
+            }
+        }
+
+        function handleComplete(msg) {
+            debug('Workflow complete: ' + msg.status, 'success');
+            stepName.textContent = 'Workflow Complete';
+            stepAction.textContent = `Status: ${msg.status}`;
+            pageFrame.style.display = 'none';
+            emptyState.style.display = 'flex';
+            emptyState.querySelector('h3').textContent = 'Workflow Complete';
+            emptyState.querySelector('p').textContent = `Status: ${msg.status}`;
+            stepActions.innerHTML = '';
+        }
+
+        function handleStateSync(msg) {
+            currentSessionId = msg.session_id;
+            currentWorkflowId = msg.workflow_id;
+            currentStepId = msg.current_step_id;
+            debug('State synced: step ' + currentStepId, 'info');
+            // Re-request current step if we have a step id
+            if (currentStepId && ws) {
+                ws.send(JSON.stringify({
+                    type: 'construct_sync',
+                    step_id: currentStepId,
+                }));
+            }
+        }
+
+        function renderPage(html) {
+            const iframe = pageIframe;
+            const doc = iframe.contentDocument || iframe.contentWindow.document;
+            doc.open();
+            doc.write(html);
+            doc.close();
+
+            // Expose a bridge for the page to call back to the client
+            // The page can call window.constructBridge.onClick(id) etc.
+            setupBridge(iframe);
+        }
+
+        function setupBridge(iframe) {
+            const win = iframe.contentWindow;
+            win.constructBridge = {
+                onClick: (customId) => {
+                    sendClick(customId);
+                },
+                onInput: (customId, value) => {
+                    sendInput(customId, value);
+                },
+                onNavigate: (url) => {
+                    sendNavigate(url);
+                },
+                onStepAction: (value) => {
+                    sendStepAction(value);
+                },
+                getMappings: () => elementMappings,
+            };
+        }
+
+        function buildActionButtons(mappings) {
+            stepActions.innerHTML = '';
+            mappings.forEach(m => {
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-primary';
+                btn.textContent = m.label || m.custom_id || 'Action';
+                btn.onclick = () => sendClick(m.custom_id);
+                stepActions.appendChild(btn);
+            });
+            // Add a generic step action button if the step has an action type
+            // (this would be added by the step config)
+        }
+
+        function sendClick(customId) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            debug('Click: ' + customId);
+            ws.send(JSON.stringify({
+                type: 'construct_click',
+                custom_id: customId,
+                step_id: currentStepId,
+            }));
+        }
+
+        function sendInput(customId, value) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            debug('Input: ' + customId + ' = ' + value.substring(0, 30) + '...');
+            ws.send(JSON.stringify({
+                type: 'construct_input',
+                custom_id: customId,
+                value: value,
+                step_id: currentStepId,
+            }));
+        }
+
+        function sendNavigate(url) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            debug('Navigate: ' + url);
+            ws.send(JSON.stringify({
+                type: 'construct_navigate',
+                url: url,
+                step_id: currentStepId,
+            }));
+        }
+
+        function sendStepAction(value) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            debug('Step action');
+            ws.send(JSON.stringify({
+                type: 'construct_step_action',
+                step_id: currentStepId,
+                value: value,
+            }));
+        }
+
+        function showResult(text, type) {
+            resultBanner.textContent = text;
+            resultBanner.className = `result-banner show ${type}`;
+            setTimeout(() => {
+                resultBanner.className = 'result-banner';
+            }, 3000);
+        }
+
+        // Expose for debugging
+        window.__construct_debug = { debug, ws: () => ws };
+
+        // Start
+        wsConnect();
+
+    })();
+    </script>
+</body>
+</html>

@@ -38,8 +38,10 @@ from slowapi.util import get_remote_address
 from reconnect_utils import should_skip_previous_session_kick
 
 import lpv_store
+import construct_store
+import construct_engine
 import server_settings as srv_settings
-from config import stream_dpr, data_path, DATA_DIR
+from config import stream_dpr, data_path, DATA_DIR, CONSTRUCT_ARCHIVE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -4805,6 +4807,25 @@ async def client_page(request: Request):
 # /remote endpoints removed - clients should use `/client.html` and `/ws`
 
 
+@app.get("/construct")
+async def construct_builder_page(request: Request):
+    """Serve the Construct Builder UI."""
+    builder_path = get_base_path() / "construct_builder.html"
+    if builder_path.exists():
+        return FileResponse(builder_path, headers={"Cache-Control": "no-cache, must-revalidate"})
+    return HTMLResponse("<h1>Construct Builder not found</h1>")
+
+
+@app.get("/construct/client")
+async def construct_client_page(request: Request):
+    """Serve the Construct Client UI — reuses the existing client.html
+    iframe-based mirroring client with Construct workflow support."""
+    client_path = get_base_path() / "client.html"
+    if client_path.exists():
+        return FileResponse(client_path, headers={"Cache-Control": "no-cache, must-revalidate"})
+    return HTMLResponse("<h1>Construct Client not found</h1>")
+
+
 @app.get("/h264")
 async def h264_client_page(request: Request):
     """Serve H264 client page"""
@@ -8469,6 +8490,337 @@ async def lpv_archive_get(page_id: str):
     if not page:
         return JSONResponse({"error": "not found"}, status_code=404)
     return {"page": page}
+
+
+# ============================================================================
+# CONSTRUCT ARCHIVE — custom HTML pages for workflow steps
+# ============================================================================
+
+@app.get("/api/construct/archive")
+async def construct_archive_list(q: str = Query("", alias="q"), limit: int = Query(200, ge=1, le=500)):
+    """List Construct Archive pages."""
+    try:
+        return {"pages": construct_store.list_archive_pages(query=q, limit=limit)}
+    except Exception as e:
+        logger.error(f"construct archive list error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/construct/archive")
+async def construct_archive_upload(request: Request):
+    """Upload or update a Construct Archive HTML page."""
+    try:
+        ctype = (request.headers.get("content-type") or "").lower()
+        if "application/json" in ctype:
+            body = await request.json()
+            name = (body.get("name") or "").strip()
+            html = body.get("html") or ""
+            description = body.get("description") or ""
+            tags = body.get("tags") or []
+            url_mapping = body.get("url_mapping") or []
+        else:
+            form = await request.form()
+            name = (form.get("name") or "").strip()
+            html = form.get("html") or ""
+            description = form.get("description") or ""
+            raw_tags = form.get("tags") or ""
+            tags = [t.strip() for t in raw_tags.split(",") if t.strip()] if isinstance(raw_tags, str) else []
+            raw_mapping = form.get("url_mapping") or ""
+            url_mapping = [t.strip() for t in raw_mapping.split(",") if t.strip()] if isinstance(raw_mapping, str) else []
+
+        if not name:
+            return JSONResponse({"error": "name is required"}, status_code=400)
+        if not html:
+            return JSONResponse({"error": "html is required"}, status_code=400)
+
+        page = construct_store.save_archive_page(
+            name=name, html=html, description=description,
+            tags=tags, url_mapping=url_mapping,
+        )
+        return {"page": page}
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        logger.error(f"construct archive upload error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/construct/archive/{page_id}")
+async def construct_archive_get(page_id: str):
+    page = construct_store.get_archive_page(page_id)
+    if not page:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"page": page}
+
+
+@app.get("/api/construct/archive/{page_id}/html")
+async def construct_archive_html(page_id: str):
+    """Serve the raw HTML of an archive page for client-side rendering."""
+    html = construct_store.get_archive_page_html(page_id)
+    if html is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    page = construct_store.get_archive_page(page_id)
+    return HTMLResponse(content=html, headers={"X-Construct-Page-Name": page.get("name", "") if page else ""})
+
+
+@app.delete("/api/construct/archive/{page_id}")
+async def construct_archive_delete(page_id: str):
+    ok = construct_store.delete_archive_page(page_id)
+    if not ok:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"ok": True}
+
+
+# ============================================================================
+# CONSTRUCT WORKFLOWS — step-based programmable browser workflows
+# ============================================================================
+
+@app.get("/api/construct/workflows")
+async def construct_workflows_list(q: str = Query("", alias="q"), limit: int = Query(200, ge=1, le=500)):
+    """List Construct workflows."""
+    try:
+        return {"workflows": construct_store.list_workflows(query=q, limit=limit)}
+    except Exception as e:
+        logger.error(f"construct workflows list error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/construct/workflows")
+async def construct_workflow_create(request: Request):
+    """Create a new Construct workflow."""
+    try:
+        body = await request.json()
+        name = (body.get("name") or "").strip()
+        target_url = (body.get("target_url") or "").strip()
+        description = body.get("description") or ""
+        status = body.get("status") or "draft"
+
+        if not name:
+            return JSONResponse({"error": "name is required"}, status_code=400)
+
+        wf = construct_store.save_workflow(
+            name=name, target_url=target_url,
+            description=description, status=status,
+        )
+        return {"workflow": wf}
+    except Exception as e:
+        logger.error(f"construct workflow create error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/construct/workflows/{workflow_id}")
+async def construct_workflow_get(workflow_id: str):
+    wf = construct_store.get_workflow(workflow_id)
+    if not wf:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    steps = construct_store.list_steps(workflow_id)
+    wf["steps"] = steps
+    return {"workflow": wf}
+
+
+@app.put("/api/construct/workflows/{workflow_id}")
+async def construct_workflow_update(workflow_id: str, request: Request):
+    """Update a Construct workflow."""
+    try:
+        body = await request.json()
+        wf = construct_store.get_workflow(workflow_id)
+        if not wf:
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+        updated = construct_store.save_workflow(
+            name=body.get("name", wf.get("name", "")),
+            target_url=body.get("target_url", wf.get("target_url", "")),
+            description=body.get("description", wf.get("description", "")),
+            workflow_id=workflow_id,
+            status=body.get("status", wf.get("status", "draft")),
+        )
+        return {"workflow": updated}
+    except Exception as e:
+        logger.error(f"construct workflow update error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/construct/workflows/{workflow_id}")
+async def construct_workflow_delete(workflow_id: str):
+    ok = construct_store.delete_workflow(workflow_id)
+    if not ok:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"ok": True}
+
+
+# ============================================================================
+# CONSTRUCT STEPS — individual steps within a workflow
+# ============================================================================
+
+@app.get("/api/construct/workflows/{workflow_id}/steps")
+async def construct_steps_list(workflow_id: str):
+    """List all steps for a workflow."""
+    try:
+        steps = construct_store.list_steps(workflow_id)
+        return {"steps": steps}
+    except Exception as e:
+        logger.error(f"construct steps list error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/construct/workflows/{workflow_id}/steps")
+async def construct_step_create(workflow_id: str, request: Request):
+    """Create a new step in a workflow."""
+    try:
+        body = await request.json()
+        step = construct_store.save_step(
+            workflow_id=workflow_id,
+            step_name=body.get("step_name", ""),
+            action_type=body.get("action_type", "navigate"),
+            step_order=int(body.get("step_order", 0)),
+            browser_action=body.get("browser_action", ""),
+            target_selector=body.get("target_selector", ""),
+            attached_page_id=body.get("attached_page_id", ""),
+            attached_page_name=body.get("attached_page_name", ""),
+            element_mappings=body.get("element_mappings") or [],
+            input_values=body.get("input_values") or {},
+            wait_conditions=body.get("wait_conditions") or [],
+            transition_to=body.get("transition_to", ""),
+            transition_on_failure=body.get("transition_on_failure", ""),
+            is_entry_point=bool(body.get("is_entry_point", False)),
+            is_identical=bool(body.get("is_identical", False)),
+        )
+        return {"step": step}
+    except Exception as e:
+        logger.error(f"construct step create error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/construct/steps/{step_id}")
+async def construct_step_get(step_id: str):
+    step = construct_store.get_step(step_id)
+    if not step:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"step": step}
+
+
+@app.put("/api/construct/steps/{step_id}")
+async def construct_step_update(step_id: str, request: Request):
+    """Update a workflow step."""
+    try:
+        body = await request.json()
+        step = construct_store.get_step(step_id)
+        if not step:
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+        updated = construct_store.save_step(
+            workflow_id=step.get("workflow_id", ""),
+            step_id=step_id,
+            step_name=body.get("step_name", step.get("step_name", "")),
+            action_type=body.get("action_type", step.get("action_type", "navigate")),
+            step_order=int(body.get("step_order", step.get("step_order", 0))),
+            browser_action=body.get("browser_action", step.get("browser_action", "")),
+            target_selector=body.get("target_selector", step.get("target_selector", "")),
+            attached_page_id=body.get("attached_page_id", step.get("attached_page_id", "")),
+            attached_page_name=body.get("attached_page_name", step.get("attached_page_name", "")),
+            element_mappings=body.get("element_mappings") or (step.get("element_mappings") or []),
+            input_values=body.get("input_values") or (step.get("input_values") or {}),
+            wait_conditions=body.get("wait_conditions") or (step.get("wait_conditions") or []),
+            transition_to=body.get("transition_to", step.get("transition_to", "")),
+            transition_on_failure=body.get("transition_on_failure", step.get("transition_on_failure", "")),
+            is_entry_point=bool(body.get("is_entry_point", step.get("is_entry_point", False))),
+            is_identical=bool(body.get("is_identical", step.get("is_identical", False))),
+        )
+        return {"step": updated}
+    except Exception as e:
+        logger.error(f"construct step update error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/construct/steps/{step_id}")
+async def construct_step_delete(step_id: str):
+    ok = construct_store.delete_step(step_id)
+    if not ok:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"ok": True}
+
+
+@app.post("/api/construct/workflows/{workflow_id}/steps/{step_id}/move/up")
+async def construct_step_move_up(workflow_id: str, step_id: str):
+    ok = construct_store.move_step(workflow_id, step_id, "up")
+    if not ok:
+        return JSONResponse({"error": "cannot move up"}, status_code=400)
+    return {"ok": True}
+
+
+@app.post("/api/construct/workflows/{workflow_id}/steps/{step_id}/move/down")
+async def construct_step_move_down(workflow_id: str, step_id: str):
+    ok = construct_store.move_step(workflow_id, step_id, "down")
+    if not ok:
+        return JSONResponse({"error": "cannot move down"}, status_code=400)
+    return {"ok": True}
+
+
+# ============================================================================
+# CONSTRUCT SESSIONS — runtime sessions connecting client to remote browser
+# ============================================================================
+
+@app.post("/api/construct/sessions")
+async def construct_session_create(request: Request):
+    """Create a new Construct session bound to a workflow."""
+    try:
+        body = await request.json()
+        workflow_id = body.get("workflow_id", "")
+        client_id = body.get("client_id", "")
+
+        if not workflow_id:
+            return JSONResponse({"error": "workflow_id is required"}, status_code=400)
+
+        wf = construct_store.get_workflow(workflow_id)
+        if not wf:
+            return JSONResponse({"error": "workflow not found"}, status_code=404)
+
+        session_id = str(uuid.uuid4())
+        construct_store.save_session(
+            session_id, workflow_id, client_id=client_id, status="initializing",
+        )
+        return {"session_id": session_id, "workflow_id": workflow_id, "status": "initializing"}
+    except Exception as e:
+        logger.error(f"construct session create error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/construct/sessions")
+async def construct_sessions_list():
+    """List active Construct sessions."""
+    try:
+        sessions = await construct_engine.list_active_sessions()
+        return {"sessions": sessions}
+    except Exception as e:
+        logger.error(f"construct sessions list error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/construct/sessions/{session_id}")
+async def construct_session_get(session_id: str):
+    sess = await construct_engine.get_session(session_id)
+    if not sess:
+        # Fall back to stored session
+        stored = construct_store.get_session(session_id)
+        if not stored:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return {"session": stored}
+    return {
+        "session": {
+            "session_id": sess.session_id,
+            "workflow_id": sess.workflow_id,
+            "client_id": sess.client_id,
+            "remote_session_id": sess.remote_session_id,
+            "current_step_id": sess.current_step_id,
+            "status": sess.status,
+        }
+    }
+
+
+@app.delete("/api/construct/sessions/{session_id}")
+async def construct_session_delete(session_id: str):
+    await construct_engine.remove_session(session_id)
+    return {"ok": True}
 
 
 def _page_actions(page_id: str, page: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -12157,6 +12509,162 @@ async def websocket_endpoint(websocket: WebSocket):
             _lpv_spinner_signal(session_id)
             try:
                 await _cancel_workflow_for_client(session_id, "ws disconnect")
+            except Exception:
+                pass
+
+
+@app.websocket("/ws/construct")
+async def construct_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for Construct hybrid sessions.
+
+    Connects a client running custom HTML to the Construct engine,
+    which bridges to a remote browser session. Message types:
+
+    Client -> Engine:
+      - {type: "init", workflow_id, client_id, remote_session_id}
+      - {type: "construct_click", custom_id, step_id}
+      - {type: "construct_input", custom_id, value, step_id}
+      - {type: "construct_navigate", url, step_id}
+      - {type: "construct_step_action", step_id, value?}
+      - {type: "construct_sync"}  (request state sync after reconnect)
+
+    Engine -> Client:
+      - {type: "construct_step", step_id, step_name, action_type, page_html, ...}
+      - {type: "construct_action_result", step_id, result}
+      - {type: "construct_complete", status, session_id}
+      - {type: "construct_state_sync", ...}
+      - {type: "construct_shutdown"}
+    """
+    await websocket.accept()
+
+    session_id = None
+    workflow_id = None
+    construct_sess = None
+
+    try:
+        data = await websocket.receive_text()
+        init = json.loads(data)
+
+        if init.get("type") != "init":
+            await websocket.send_json({"type": "error", "message": "Expected init message"})
+            await websocket.close(code=1008, reason="expected_init")
+            return
+
+        workflow_id = init.get("workflow_id", "")
+        client_id = init.get("client_id", "")
+        remote_session_id = init.get("remote_session_id", "")
+        session_id = init.get("session_id") or str(uuid.uuid4())
+
+        if not workflow_id:
+            await websocket.send_json({"type": "error", "message": "workflow_id is required"})
+            await websocket.close(code=1008, reason="missing_workflow")
+            return
+
+        wf = construct_store.get_workflow(workflow_id)
+        if not wf:
+            await websocket.send_json({"type": "error", "message": "Workflow not found"})
+            await websocket.close(code=1008, reason="workflow_not_found")
+            return
+
+        # Create or resume the construct session
+        construct_sess = await construct_engine.get_or_create_session(
+            session_id, workflow_id, websocket, client_id,
+        )
+
+        # Bind remote browser session if provided, or create one automatically
+        if remote_session_id:
+            await construct_sess.bind_remote_session(remote_session_id)
+        else:
+            # Auto-create a lightweight remote browser page for this construct workflow.
+            # Construct mode is standalone — no NeoStreamingSession, no DOM capture,
+            # no /ws streaming pipeline, no session_manager dependency. Just an SB
+            # page for executing click/input/navigate/wait actions on the real site.
+            # No NeoStreamingSession, no DOM capture, no /ws streaming pipeline —
+            # construct mode is standalone like LPV. Just a Playwright page for
+            # executing click/input/navigate/wait actions on the real website.
+            wf = construct_store.get_workflow(workflow_id)
+            target_url = wf.get("target_url", "") if wf else ""
+
+            remote_session_id = str(uuid.uuid4())
+            try:
+                from sb_backend import launch_for_session
+                viewport = init.get("viewport", {"width": 1280, "height": 720})
+                pixel_ratio = float(init.get("viewport", {}).get("pixelRatio", 1.0) or 1.0)
+                user_agent = init.get("userAgent", "")
+                is_mobile = bool(init.get("is_mobile", False))
+
+                # Use SB (SeleniumBase UC) browser for construct mode — no DOM
+                # capture, no streaming pipeline, just a remote page for action
+                # execution (click, input, navigate, wait).
+                sb_browser = await launch_for_session(
+                    remote_session_id,
+                    viewport,
+                    pixel_ratio,
+                    client_id,  # user_id
+                    user_agent,
+                    is_mobile,
+                    None,  # profile_dir
+                    None,  # proxy_url
+                    headless=False,
+                )
+                context = sb_browser.contexts[0]
+                page = await context.new_page()
+                # Navigate to the workflow's target URL immediately so the remote
+                # browser is on the designated site before any workflow step runs
+                if target_url:
+                    try:
+                        await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                        logger.info(
+                            "[construct WS] remote SB page %s navigated to %s",
+                            remote_session_id, target_url,
+                        )
+                    except Exception as nav_exc:
+                        logger.error(
+                            "[construct WS] remote SB page %s failed to navigate to %s: %s",
+                            remote_session_id, target_url, nav_exc,
+                        )
+                await construct_engine.register_remote_page(
+                    remote_session_id, page,
+                    context=context, browser=sb_browser,
+                    target_url=target_url,
+                )
+                await construct_sess.bind_remote_session(remote_session_id)
+                logger.info(
+                    "[construct WS] auto-created remote SB page %s for workflow %s",
+                    remote_session_id, workflow_id,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[construct WS] failed to auto-create remote SB page: %s", exc
+                )
+
+        # Send initial state sync
+        await construct_sess.send_state_sync()
+
+        # Start the workflow if not already started
+        if construct_sess.status == "initializing":
+            await construct_sess.start_workflow()
+
+        # Message loop
+        while True:
+            try:
+                raw = await websocket.receive_text()
+            except Exception:
+                break
+
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            await construct_sess.handle_client_event(event)
+
+    except Exception as exc:
+        logger.error(f"[construct WS] error: {exc}")
+    finally:
+        if session_id:
+            try:
+                await construct_engine.remove_session(session_id)
             except Exception:
                 pass
 
