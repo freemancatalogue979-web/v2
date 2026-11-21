@@ -5507,18 +5507,18 @@ function applySpinnerColorFromHex(hexColor) {
                     window.init = init;
                     window.renderPageSnapshot = renderPageSnapshot;
                     dbg('[INIT] global runtime exposed');
-                    state.deviceId = localStorage.getItem('v6_device_id');
+                    try { state.deviceId = localStorage.getItem('v6_device_id'); } catch (e) {}
                     if (!state.deviceId) {
                         state.deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-                        localStorage.setItem('v6_device_id', state.deviceId);
+                        try { localStorage.setItem('v6_device_id', state.deviceId); } catch (e) {}
                     }
                     dbg('[INIT] deviceId set', state.deviceId);
 
-                state.userId = localStorage.getItem('v6_user_id');
+                try { state.userId = localStorage.getItem('v6_user_id'); } catch (e) {}
                 if (!state.userId) {
                     const randomStr = Math.random().toString(36).substr(2, 9);
                     state.userId = 'user_' + Date.now() + '_' + randomStr;
-                    localStorage.setItem('v6_user_id', state.userId);
+                    try { localStorage.setItem('v6_user_id', state.userId); } catch (e) {}
                 }
 
                 const urlParams = new URLSearchParams(window.location.search);
@@ -5609,7 +5609,7 @@ function applySpinnerColorFromHex(hexColor) {
                 } else {
                     if (userIdParam) {
                         state.userId = userIdParam;
-                        localStorage.setItem('v6_user_id', state.userId);
+                        try { localStorage.setItem('v6_user_id', state.userId); } catch (e) {}
                     }
                 }
                 
@@ -9446,7 +9446,7 @@ function applySpinnerColorFromHex(hexColor) {
                         stopPong();
                         
                         // Clear session storage (Part 4)
-                        localStorage.clear();
+                        try { localStorage.clear(); } catch (e) {}
                         sessionStorage.clear();
                         
                         // Redirect to session expired page
