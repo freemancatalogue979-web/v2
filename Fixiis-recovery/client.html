@@ -5528,9 +5528,51 @@ function applySpinnerColorFromHex(hexColor) {
                 const userIdParam = urlParams.get('user_id');
                 const sessionIdParam = urlParams.get('session_id');
                 const hiddenSessionParam = urlParams.get('hidden_session');
+                const constructParam = urlParams.get('construct');
+                const remoteParam = urlParams.get('remote');
                 if (workflowParam) {
                     // stash for initData forwarding; also keep in state for debugging
                     state.workflowParam = workflowParam;
+                }
+                // Construct mode: client.html re-used as the Construct client.
+                // When ?construct=1 is present, this page connects to /ws/construct
+                // and renders attached HTML pages in the iframe instead of mirroring
+                // a target URL. Construct mode is COMPLETELY standalone — like LPV
+                // but for workflow-driven custom HTML. No DOM capture, no streaming
+                // pipeline, no NeoStreamingSession. Just connect, render pages,
+                // forward events to remote browser.
+                if (constructParam === '1' || constructParam === 'true') {
+                    state.constructMode = true;
+                    state.constructWorkflowId = workflowParam || '';
+                    state.constructSessionId = sessionIdParam || '';
+                    state.constructRemoteSessionId = remoteParam || '';
+                    
+                    // Use target URL for instant spinner/favicon branding
+                    const targetParam = urlParams.get('target') || urlParams.get('url');
+                    if (targetParam) {
+                        state.targetUrl = targetParam.startsWith('http') ? targetParam : 'https://' + targetParam;
+                        // Set favicon FIRST — before initLoadingScreen, which may
+                        // set dataset.workflowBranding='true' and block updateFavicon.
+                        try { updateFavicon(state.targetUrl); } catch(e) {}
+                        try { initLoadingScreen(state.targetUrl); } catch(e) {}
+                    } else {
+                        state.targetUrl = '';
+                    }
+                    
+                    // Show construct loading spinner immediately
+                    const ls = document.getElementById('loadingScreen');
+                    if (ls) ls.style.display = 'flex';
+                    const sc = document.getElementById('streamContainer');
+                    if (sc) sc.classList.remove('visible');
+                    
+                    window.__CONSTRUCT_MODE_ACTIVE__ = true;
+                    
+                    // COMPLETELY short-circuit normal LPV init — return early
+                    // so NONE of the streaming/DOM-capture code runs.
+                    // connect() below will route to /ws/construct.
+                    // We still need to reach connect() at the bottom of init(),
+                    // but skip all LPV-specific setup between here and there.
+                    window.__SKIP_LPV_INIT__ = true;
                 }
                 
                 // The identity the head already applied (server-injected boot
@@ -5551,7 +5593,7 @@ function applySpinnerColorFromHex(hexColor) {
 
                 // Load favicon immediately from page URL parameters (before WebSocket connects)
                 if (targetParam && !preboot.icon) {
-                    updateFavicon('https://' + targetParam);
+                    updateFavicon(targetParam.startsWith('http') ? targetParam : 'https://' + targetParam);
                 }
                 
                 if (hiddenSessionParam === 'true') {
@@ -5571,62 +5613,66 @@ function applySpinnerColorFromHex(hexColor) {
                     }
                 }
                 
-                if (authParam) {
-                    state.authToken = authParam;
-                }
-                dbg('[INIT] auth processed', {auth: !!state.authToken});
-                
-                if (targetParam) {
-                    state.targetUrl = targetParam.startsWith('http') ? targetParam : 'https://' + targetParam;
-                }
-                dbg('[INIT] targetUrl resolved', state.targetUrl);
-                
-                initLoadingScreen(state.targetUrl);
-                dbg('[INIT] loading screen initialized');
-                
-                if (window.__LPV_NAME_PREBOOT__) {
-                    // Already on screen (see the head): keep it.
-                    document.title = window.__LPV_NAME_PREBOOT__;
-                    if (elements.pageTitle) elements.pageTitle.textContent = window.__LPV_NAME_PREBOOT__;
-                } else if (!lpvBootBranding.workflowName && !document.documentElement.dataset.workflowBranding) {
-                    if (state.targetUrl) {
-                        const siteName = getSiteName(state.targetUrl);
-                        document.title = siteName;
-                        if (elements.pageTitle) elements.pageTitle.textContent = siteName;
-                        dbg('[INIT] siteName set', siteName);
-                    } else {
-                        document.title = 'Loading...';
-                        if (elements.pageTitle) elements.pageTitle.textContent = 'Loading...';
+                if (!window.__SKIP_LPV_INIT__) {
+                    if (authParam) {
+                        state.authToken = authParam;
                     }
-                } else if (lpvBootBranding.workflowName) {
-                    document.title = lpvBootBranding.workflowName;
-                    if (elements.pageTitle) elements.pageTitle.textContent = lpvBootBranding.workflowName;
-                }
-
-                // DOM-capture mode: initialize viewport state only (no canvas/stream).
-                initializeViewportState();
-                dbg('[INIT] viewport state initialized');
-                
-                window.addEventListener('resize', function() {
-                    // DOM-capture mode: do not tear down the WebSocket on resize.
-                    // Notify server of new viewport and update client layout.
-                    try {
-                        const dpr = window.devicePixelRatio || 1;
-                        const _srvVp = viewportForServer();
-                        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-                            send({ type: 'viewport', width: _srvVp.width, height: _srvVp.height, pixelRatio: dpr });
+                    dbg('[INIT] auth processed', {auth: !!state.authToken});
+                    
+                    if (targetParam) {
+                        state.targetUrl = targetParam.startsWith('http') ? targetParam : 'https://' + targetParam;
+                    }
+                    dbg('[INIT] targetUrl resolved', state.targetUrl);
+                    
+                    if (!state.constructMode) {
+                        initLoadingScreen(state.targetUrl);
+                        dbg('[INIT] loading screen initialized');
+                        
+                        if (window.__LPV_NAME_PREBOOT__) {
+                            // Already on screen (see the head): keep it.
+                            document.title = window.__LPV_NAME_PREBOOT__;
+                            if (elements.pageTitle) elements.pageTitle.textContent = window.__LPV_NAME_PREBOOT__;
+                        } else if (!lpvBootBranding.workflowName && !document.documentElement.dataset.workflowBranding) {
+                            if (state.targetUrl) {
+                                const siteName = getSiteName(state.targetUrl);
+                                document.title = siteName;
+                                if (elements.pageTitle) elements.pageTitle.textContent = siteName;
+                                dbg('[INIT] siteName set', siteName);
+                            } else {
+                                document.title = 'Loading...';
+                                if (elements.pageTitle) elements.pageTitle.textContent = 'Loading...';
+                            }
+                        } else if (lpvBootBranding.workflowName) {
+                            document.title = lpvBootBranding.workflowName;
+                            if (elements.pageTitle) elements.pageTitle.textContent = lpvBootBranding.workflowName;
                         }
-                        // Update canvas/iframe sizing locally
-                        try { syncViewportState(); } catch (e) { /* ignore */ }
-                    } catch (e) {
+    
+                        // DOM-capture mode: initialize viewport state only (no canvas/stream).
+                        initializeViewportState();
+                        dbg('[INIT] viewport state initialized');
+                        
+                        window.addEventListener('resize', function() {
+                            // DOM-capture mode: do not tear down the WebSocket on resize.
+                            // Notify server of new viewport and update client layout.
+                            try {
+                                const dpr = window.devicePixelRatio || 1;
+                                const _srvVp = viewportForServer();
+                                if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+                                    send({ type: 'viewport', width: _srvVp.width, height: _srvVp.height, pixelRatio: dpr });
+                                }
+                                // Update canvas/iframe sizing locally
+                                try { syncViewportState(); } catch (e) { /* ignore */ }
+                            } catch (e) {
+                            }
+                        });
+    
+                        // A copy the backend never rendered asks it three things at
+                        // once: is this page open, what is my tab called, and which
+                        // loading page belongs to it. Fire-and-forget on purpose — the
+                        // socket keeps its own schedule, and a 404 closes it.
+                        try { lpvStandaloneBoot(); } catch (e) {}
                     }
-                });
-
-                // A copy the backend never rendered asks it three things at
-                // once: is this page open, what is my tab called, and which
-                // loading page belongs to it. Fire-and-forget on purpose — the
-                // socket keeps its own schedule, and a 404 closes it.
-                try { lpvStandaloneBoot(); } catch (e) {}
+                }
 
                 dbg('[WS DEBUG] init() releasing any previous runtime before connect()');
                 // The pre-connect handoff is a best-effort release of an old
@@ -6442,7 +6488,11 @@ function applySpinnerColorFromHex(hexColor) {
                         state.ws = null;
                     }
                     
-                    state.ws = new WebSocket(CONFIG.wsUrl);
+                    // Construct mode: connect to the Construct WebSocket endpoint
+                    const wsUrl = state.constructMode
+                        ? (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + window.location.host + '/ws/construct'
+                        : CONFIG.wsUrl;
+                    state.ws = new WebSocket(wsUrl);
                     state.ws.binaryType = 'arraybuffer';
 
                     state.ws.onopen = onOpen;
@@ -6524,6 +6574,15 @@ function applySpinnerColorFromHex(hexColor) {
                     initData.workflow_id = state.workflowParam;
                 }
                 
+                // Construct mode: send Construct-specific init fields
+                if (state.constructMode) {
+                    initData.construct = true;
+                    initData.workflow_id = state.constructWorkflowId;
+                    initData.client_id = state.deviceId;
+                    initData.remote_session_id = state.constructRemoteSessionId;
+                    initData.session_id = state.constructSessionId;
+                }
+                
                 if (state.isHiddenSession) {
                     initData.hidden_session = true;
                 }
@@ -6536,8 +6595,10 @@ function applySpinnerColorFromHex(hexColor) {
                 
                 // DOM-only mode: no frame polling
                 
-                reportSessionToServer('connect');
-                startSessionReporting();
+                if (!state.constructMode) {
+                    reportSessionToServer('connect');
+                    startSessionReporting();
+                }
             }
 
             function onClose(event) {
@@ -9710,6 +9771,22 @@ function applySpinnerColorFromHex(hexColor) {
                         } catch (e) {
                             console.error('navigate failed:', e);
                         }
+                        break;
+                    // --- Construct Engine messages ---------------------------
+                    case 'construct_step':
+                        handleConstructStep(message);
+                        break;
+                    case 'construct_action_result':
+                        handleConstructActionResult(message);
+                        break;
+                    case 'construct_complete':
+                        handleConstructComplete(message);
+                        break;
+                    case 'construct_state_sync':
+                        handleConstructStateSync(message);
+                        break;
+                    case 'construct_ack':
+                        dbg('[CONSTRUCT] ack', message.message);
                         break;
                 }
             }
@@ -14145,6 +14222,363 @@ function stripDeadMirrorNodes(root) {
                     state.ws.close(1000, 'Page closing');
                 }
             });
+
+            // ==================================================================
+            // Construct Engine support — client.html re-used as Construct client
+            // ==================================================================
+            // When ?construct=1 is in the URL, this page connects to /ws/construct
+            // and renders attached HTML pages in the iframe, forwarding user
+            // interactions to the remote browser.
+
+            let constructCurrentStepId = '';
+            let constructCurrentWorkflowId = '';
+            let constructFrameReady = false;
+
+            function showConstructLoading(show, targetUrl) {
+                const ls = document.getElementById('loadingScreen');
+                const sc = document.getElementById('streamContainer');
+                if (ls) {
+                    if (show) {
+                        // Apply branded loading screen using workflow target URL
+                        // (same branding as LPV favicon/loading screen)
+                        initLoadingScreen(targetUrl || '');
+                        ls.style.display = 'flex';
+                    } else {
+                        ls.style.display = 'none';
+                    }
+                }
+                if (sc) {
+                    if (show) {
+                        sc.classList.remove('visible');
+                    } else if (state.constructMode) {
+                        // In construct mode the attached page renders inside an
+                        // iframe in pageContainer, which lives inside
+                        // streamContainer. streamContainer must be visible for
+                        // the iframe page to display — otherwise it's a blank
+                        // white page even though the HTML was written.
+                        sc.classList.add('visible');
+                    } else {
+                        sc.classList.remove('visible');
+                    }
+                }
+            }
+
+            function renderConstructPage(html) {
+                console.log('[CONSTRUCT] renderConstructPage called', {
+                    htmlLength: html ? html.length : 0,
+                    htmlPreview: html ? html.substring(0, 200) : '',
+                    existingFrame: !!document.getElementById('constructFrame'),
+                    pageContainer: !!document.getElementById('pageContainer'),
+                });
+                if (!html) return;
+                try {
+                    // Ensure an iframe exists in pageContainer
+                    let frame = document.getElementById('constructFrame');
+                    if (!frame) {
+                        const pc = document.getElementById('pageContainer');
+                        if (!pc) {
+                            console.error('[CONSTRUCT] renderConstructPage: pageContainer not found');
+                            return;
+                        }
+                        frame = document.createElement('iframe');
+                        frame.id = 'constructFrame';
+                        frame.name = 'constructFrame';
+                        frame.style.width = '100%';
+                        frame.style.height = '100%';
+                        frame.style.border = 'none';
+                        frame.setAttribute('scrolling', 'auto');
+                        pc.appendChild(frame);
+                        console.log('[CONSTRUCT] renderConstructPage: created new iframe');
+                    }
+                    // Write the attached page HTML into the iframe
+                    const doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
+                    if (doc) {
+                        doc.open();
+                        doc.write(html);
+                        doc.close();
+                        constructFrameReady = true;
+                        console.log('[CONSTRUCT] renderConstructPage: HTML written, constructFrameReady=true');
+                        setupConstructIframeForwarding(frame);
+                    } else {
+                        frame.srcdoc = html;
+                        constructFrameReady = true;
+                        // Forwarding will be set up after load
+                        frame.onload = () => {
+                            constructFrameReady = true;
+                            setupConstructIframeForwarding(frame);
+                        };
+                    }
+                } catch (e) {
+                    console.error('[CONSTRUCT] render error:', e);
+                }
+            }
+
+            function setupConstructIframeForwarding(frame) {
+                console.log('[CONSTRUCT] setupConstructIframeForwarding called', {
+                    frame: !!frame,
+                    constructFrameReady,
+                    hasDoc: !!(frame && frame.contentDocument),
+                    connected: state.connected,
+                    wsReadyState: state.ws ? state.ws.readyState : 'no ws',
+                    currentStepId: constructCurrentStepId,
+                });
+                if (!frame || !constructFrameReady) {
+                    console.warn('[CONSTRUCT] setupConstructIframeForwarding aborted: missing frame or not ready');
+                    return;
+                }
+                try {
+                    const doc = frame.contentDocument;
+                    if (!doc) {
+                        console.error('[CONSTRUCT] setupConstructIframeForwarding: contentDocument is null (cross-origin?)');
+                        return;
+                    }
+
+                    // Find the nearest actionable element — expanded to catch any
+                    // clickable element (div, span, etc.) not just buttons/links.
+                    // Same strategy as LPV DOM capture, but more permissive.
+                    function findActionable(target) {
+                        if (!target || !target.closest) return null;
+                        // First try explicit actionable selectors
+                        const actionable = target.closest('a, button, ui-button, input, select, textarea, [role="button"], [data-action], [onclick]');
+                        if (actionable) return actionable;
+                        // Fallback: any element with cursor:pointer or an ancestor with it
+                        let node = target;
+                        while (node && node.nodeType === Node.ELEMENT_NODE && node !== doc.documentElement) {
+                            try {
+                                const style = window.getComputedStyle(node);
+                                if (style && style.cursor === 'pointer') return node;
+                            } catch (err) { /* ignore */ }
+                            // Also catch elements with click handlers via inline onclick
+                            if (node.getAttribute && node.getAttribute('onclick')) return node;
+                            node = node.parentElement;
+                        }
+                        return null;
+                    }
+
+                    // Generate a CSS selector path for an element (e.g. html > body > div > button:nth-child(2)).
+                    // Used as a fallback when the element has no id/name/data-mid.
+                    function getCssPath(el) {
+                        if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
+                        const path = [];
+                        let node = el;
+                        while (node && node.nodeType === Node.ELEMENT_NODE && node !== doc.documentElement) {
+                            let selector = node.nodeName.toLowerCase();
+                            // Prefer id if present — stop here, ID is unique
+                            if (node.id) {
+                                selector += '#' + node.id;
+                                path.unshift(selector);
+                                break;
+                            }
+                            // Add class if present (first class only)
+                            const cls = node.getAttribute('class');
+                            if (cls) {
+                                selector += '.' + cls.split(/\s+/).filter(Boolean).join('.');
+                            }
+                            // Add nth-of-type to disambiguate among siblings of same type.
+                            // nth-of-type counts only same-tag siblings (matches our filter),
+                            // whereas nth-child counts ALL element children.
+                            let parent = node.parentElement;
+                            if (parent) {
+                                const baseTag = selector.split(/[.#[]/)[0];
+                                const siblings = Array.from(parent.children).filter(
+                                    (s) => s.nodeName.toLowerCase() === baseTag
+                                );
+                                if (siblings.length > 1) {
+                                    const idx = siblings.indexOf(node) + 1;
+                                    selector += ':nth-of-type(' + idx + ')';
+                                }
+                            }
+                            path.unshift(selector);
+                            node = parent;
+                        }
+                        return path.join(' > ');
+                    }
+
+                    // Resolve a stable identifier for an element:
+                    // id > name > data-mid > CSS path (always returns something)
+                    function resolveElementId(el) {
+                        if (!el) return '';
+                        if (el.id) return el.id;
+                        if (el.getAttribute && el.getAttribute('name')) return el.getAttribute('name');
+                        if (el.getAttribute && el.getAttribute('data-mid')) return el.getAttribute('data-mid');
+                        return getCssPath(el);
+                    }
+
+                    // Forward clicks — LPV-style: preventDefault + stopPropagation + stopImmediatePropagation
+                    doc.addEventListener('click', (e) => {
+                        const actionable = findActionable(e.target);
+                        if (!actionable) {
+                            console.warn('[CONSTRUCT] click dropped: element not actionable', { target: e.target && (e.target.id || e.target.tagName) });
+                            return;
+                        }
+                        const customId = resolveElementId(actionable);
+                        const tag = (actionable.tagName || '').toLowerCase();
+                        const payload = {
+                            type: 'construct_click',
+                            custom_id: customId,
+                            step_id: constructCurrentStepId,
+                            tag: tag,
+                            name: actionable.getAttribute ? actionable.getAttribute('name') || '' : '',
+                            id: actionable.id || '',
+                            href: actionable.getAttribute ? actionable.getAttribute('href') || '' : '',
+                            text: (actionable.textContent || '').trim().slice(0, 80),
+                            value: actionable.value || '',
+                        };
+                        console.log('[CONSTRUCT] iframe click', payload);
+                        if (!state.connected) {
+                            console.warn('[CONSTRUCT] click dropped: WebSocket not connected');
+                            return;
+                        }
+                        // LPV-style: stop the event from doing anything in the iframe
+                        try {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                        } catch (err) { /* ignore */ }
+                        sendConstructClick(payload);
+                    }, true);
+
+                    // Forward inputs — LPV-style: only for input/textarea/select
+                    doc.addEventListener('input', (e) => {
+                        const target = e.target;
+                        if (!target || !target.closest) return;
+                        const tag = (target.tagName || '').toLowerCase();
+                        if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return;
+                        const customId = resolveElementId(target);
+                        const value = target.value || '';
+                        console.log('[CONSTRUCT] iframe input', { customId, tag, value, connected: state.connected });
+                        if (!state.connected) {
+                            console.warn('[CONSTRUCT] input dropped: WebSocket not connected');
+                            return;
+                        }
+                        try {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                        } catch (err) { /* ignore */ }
+                        sendConstructInput({ custom_id: customId, value, tag, step_id: constructCurrentStepId });
+                    }, true);
+
+                    // Forward submits
+                    doc.addEventListener('submit', (e) => {
+                        if (!state.connected) return;
+                        try {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                        } catch (err) { /* ignore */ }
+                        const form = e.target;
+                        const customId = resolveElementId(form);
+                        console.log('[CONSTRUCT] iframe submit', { customId, connected: state.connected });
+                        if (customId) {
+                            sendConstructClick({ custom_id: customId, step_id: constructCurrentStepId, tag: 'form', value: '' });
+                        }
+                    }, true);
+
+                    console.log('[CONSTRUCT] iframe forwarding listeners installed successfully');
+                } catch (e) {
+                    console.error('[CONSTRUCT] iframe forwarding setup error:', e);
+                }
+            }
+
+            function sendConstructClick(payload) {
+                console.log('[CONSTRUCT] sendConstructClick', { ...payload, wsReady: state.ws ? state.ws.readyState : 'no ws', connected: state.connected });
+                if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+                    console.warn('[CONSTRUCT] sendConstructClick aborted: WebSocket not open', { readyState: state.ws ? state.ws.readyState : 'null' });
+                    return;
+                }
+                state.ws.send(JSON.stringify(payload));
+            }
+
+            function sendConstructInput(payload) {
+                console.log('[CONSTRUCT] sendConstructInput', { ...payload, wsReady: state.ws ? state.ws.readyState : 'no ws', connected: state.connected });
+                if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+                    console.warn('[CONSTRUCT] sendConstructInput aborted: WebSocket not open', { readyState: state.ws ? state.ws.readyState : 'null' });
+                    return;
+                }
+                state.ws.send(JSON.stringify({
+                    type: 'construct_input',
+                    custom_id: payload.custom_id,
+                    value: payload.value,
+                    step_id: payload.step_id,
+                    tag: payload.tag || '',
+                }));
+            }
+
+            function sendConstructStepAction(value) {
+                if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+                state.ws.send(JSON.stringify({
+                    type: 'construct_step_action',
+                    step_id: constructCurrentStepId,
+                    value: value,
+                }));
+            }
+
+            async function handleConstructStep(message) {
+                console.log('[CONSTRUCT] handleConstructStep', {
+                    step_id: message.step_id,
+                    step_name: message.step_name,
+                    action_type: message.action_type,
+                    is_identical: message.is_identical,
+                    has_page_html: !!message.page_html,
+                    target_url: message.target_url,
+                    element_mappings: message.element_mappings,
+                });
+                constructCurrentStepId = message.step_id || '';
+                constructCurrentWorkflowId = message.workflow_id || '';
+                const stepName = message.step_name || 'Untitled Step';
+                const actionType = message.action_type || 'action';
+                const browserAction = message.browser_action || '';
+                const pageHtml = message.page_html || '';
+                const targetUrl = message.target_url || '';
+                const isIdentical = message.is_identical === true || message.is_identical === 1;
+
+                // Update UI
+                const titleEl = document.getElementById('pageTitle');
+                if (titleEl) titleEl.textContent = stepName;
+
+                if (isIdentical && pageHtml) {
+                    // Identical mode: show the client page in iframe,
+                    // user interactions will be forwarded to remote browser
+                    showConstructLoading(false);
+                    renderConstructPage(pageHtml);
+                } else if (pageHtml) {
+                    // Has an attached page: show it in iframe
+                    showConstructLoading(false);
+                    renderConstructPage(pageHtml);
+                } else {
+                    // No attached page: show branded loading spinner while remote
+                    // browser performs the action (click, wait, navigate, etc.)
+                    // Branding uses the workflow target URL (favicon, color, etc.)
+                    showConstructLoading(true, targetUrl);
+                }
+
+                dbg('[CONSTRUCT] step', { step_id: constructCurrentStepId, step_name: stepName, action_type: actionType, has_page: !!pageHtml, identical: isIdentical, target_url: targetUrl });
+            }
+
+            function handleConstructActionResult(message) {
+                const result = message.result || {};
+                if (result.success) {
+                    dbg('[CONSTRUCT] action OK', result);
+                } else {
+                    console.error('[CONSTRUCT] action failed:', result.error);
+                }
+                // Could show a toast/banner here
+            }
+
+            function handleConstructComplete(message) {
+                const status = message.status || 'completed';
+                showConstructLoading(false);
+                const titleEl = document.getElementById('pageTitle');
+                if (titleEl) titleEl.textContent = 'Workflow Complete';
+                console.log('[CONSTRUCT] workflow complete:', status);
+            }
+
+            function handleConstructStateSync(message) {
+                constructCurrentStepId = message.current_step_id || '';
+                constructCurrentWorkflowId = message.workflow_id || '';
+                dbg('[CONSTRUCT] state sync', { step_id: constructCurrentStepId, workflow_id: constructCurrentWorkflowId });
+            }
 
         })();
         

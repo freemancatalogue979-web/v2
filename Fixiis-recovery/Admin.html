@@ -7216,6 +7216,259 @@
         .screenshot-panel.cdp-mode #screenshot-status { color: #22c55e; }
         .screenshot-panel.cdp-mode .stream-image { image-rendering: auto; }
 
+        /* ===========================================
+           CONSTRUCT tab styles
+           =========================================== */
+        .construct-header { margin-bottom: 16px; }
+        .construct-title {
+            display: flex; align-items: center; gap: 10px;
+            font-size: 18px; font-weight: 600; color: var(--text-primary);
+        }
+        .construct-sub {
+            margin-top: 6px; font-size: 12px; color: var(--text-muted);
+            letter-spacing: 0.02em;
+        }
+        .construct-subtabs {
+            display: flex; gap: 4px; margin-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 8px;
+        }
+        .construct-subtab {
+            background: var(--bg-input); color: var(--text-secondary);
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 8px 14px; font-size: 12px; cursor: pointer;
+            font-family: inherit; font-weight: 500;
+            border-bottom: none;
+            transition: all 0.15s ease;
+        }
+        .construct-subtab:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .construct-subtab.active {
+            background: var(--bg-card); color: var(--text-primary);
+            border-color: var(--border); border-bottom-color: var(--bg-card);
+        }
+        .construct-panel {
+            border: 1px solid var(--border); border-radius: 10px;
+            background: var(--bg-card); padding: 16px;
+            display: flex; flex-direction: column; gap: 14px;
+            margin-bottom: 16px;
+        }
+        .construct-panel-title {
+            font-size: 13px; font-weight: 600; color: var(--text-primary);
+        }
+        .construct-label {
+            font-size: 11px; text-transform: uppercase;
+            color: var(--text-muted); letter-spacing: 0.06em;
+            margin-bottom: 6px; display: block;
+        }
+        .construct-input,
+        .construct-select,
+        .construct-textarea {
+            background: var(--bg-input); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 8px 10px; font-size: 13px; outline: none;
+            font-family: inherit;
+            width: 100%;
+        }
+        .construct-input:focus,
+        .construct-select:focus,
+        .construct-textarea:focus {
+            border-color: #3b82f6;
+        }
+        .construct-textarea { min-height: 140px; resize: vertical; font-family: 'Space Grotesk', sans-serif; font-size: 12px; }
+        .construct-btn {
+            background: var(--bg-input); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 8px 14px; font-size: 12px; cursor: pointer;
+            font-family: inherit; font-weight: 500;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .construct-btn:hover { background: var(--bg-hover); }
+        .construct-btn.primary {
+            background: var(--text-primary); color: var(--bg-primary);
+            border-color: var(--text-primary);
+        }
+        .construct-btn.primary:hover { background: #3b82f6; border-color: #3b82f6; }
+        .construct-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .construct-archive-search {
+            display: flex; gap: 8px; margin-bottom: 12px;
+        }
+        .construct-archive-list {
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .construct-archive-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 12px; background: var(--bg-input);
+            border: 1px solid var(--border); border-radius: 6px;
+        }
+        .construct-archive-upload {
+            padding: 12px; background: var(--bg-input);
+            border: 1px solid var(--border); border-radius: 6px;
+        }
+        .construct-upload-form {
+            display: flex; flex-direction: column; gap: 10px;
+        }
+        .construct-upload-status {
+            font-size: 11px; margin-top: 6px;
+        }
+        .construct-file-picker {
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .construct-file-display {
+            display: flex; gap: 8px; align-items: center;
+        }
+        .construct-file-name {
+            font-size: 11px; color: var(--text-muted);
+            font-family: 'Space Grotesk', ui-monospace, monospace;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 6px 10px;
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .construct-wf-list,
+        .construct-step-list,
+        .construct-session-list {
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .construct-workflow-item,
+        .construct-step-item,
+        .construct-session-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 12px; background: var(--bg-input);
+            border: 1px solid var(--border); border-radius: 6px;
+            cursor: pointer; transition: all 0.15s ease;
+        }
+        .construct-workflow-item:hover,
+        .construct-step-item:hover,
+        .construct-session-item:hover {
+            border-color: #3b82f6; background: var(--bg-hover);
+        }
+        .construct-workflow-item.active,
+        .construct-step-item.active {
+            border-color: #3b82f6; background: rgba(59, 130, 246, 0.15);
+        }
+        .construct-builder-header {
+            display: flex; justify-content: space-between; align-items: flex-start;
+            gap: 16px; margin-bottom: 12px;
+        }
+        .construct-empty {
+            font-size: 12px; color: var(--text-muted);
+            padding: 20px; text-align: center;
+            border: 1px dashed var(--border); border-radius: 8px;
+            background: var(--bg-input);
+        }
+
+        /* ===========================================
+           CONSTRUCT flow canvas styles
+           =========================================== */
+        .construct-flow-canvas {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 12px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            min-height: 200px;
+        }
+        .construct-flow-empty {
+            font-size: 12px;
+            color: var(--text-muted);
+            padding: 30px 20px;
+            text-align: center;
+            border: 1px dashed var(--border);
+            border-radius: 8px;
+            background: var(--bg-card);
+        }
+        .construct-step-card {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            position: relative;
+            transition: all 0.15s ease;
+        }
+        .construct-step-card:hover {
+            border-color: #3b82f6;
+            background: var(--bg-hover);
+        }
+        .construct-step-card.active {
+            border-color: #3b82f6;
+            background: rgba(59, 130, 246, 0.15);
+        }
+        .construct-step-card .step-handle {
+            width: 24px;
+            height: 24px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+        .construct-step-card .step-handle:active {
+            cursor: grabbing;
+        }
+        .construct-step-card .step-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .construct-step-card .step-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .construct-step-card .step-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .construct-step-card .step-entry-badge {
+            font-size: 10px;
+            padding: 2px 8px;
+            background: rgba(59, 130, 246, 0.15);
+            color: #3b82f6;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 999px;
+            margin-left: auto;
+            white-space: nowrap;
+        }
+        .construct-step-card .step-actions {
+            display: flex;
+            gap: 6px;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+        .construct-step-card:hover .step-actions {
+            opacity: 1;
+        }
+        .construct-step-card .step-actions .construct-btn {
+            padding: 4px 8px;
+            font-size: 11px;
+        }
+        .construct-flow-arrow {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 14px;
+            margin: 4px 0;
+        }
 
         /* ==========================================================
            MOBILE  (<= 768px)
@@ -8196,6 +8449,10 @@
                 <button class="top-tab" data-tab="pcm">
                     <svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/><path d="M12 8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.66 0-3 1.34-3 3v2h6v-2c0-1.66-1.34-3-3-3z"/></svg>
                     <span>PCM</span>
+                </button>
+                <button class="top-tab" data-tab="construct">
+                    <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zm0 9l9-5H3l9 5z"/></svg>
+                    <span>Construct</span>
                 </button>
 
                 <!-- Hidden monitor-menu - functionality moved to dropdown -->
@@ -9838,6 +10095,352 @@
 
             <!-- LPV preview modal (lazy, appended to body by JS) -->
             <div id="lpv-modal-host"></div>
+
+            <!-- CONSTRUCT tab content -->
+            <div class="tab-content" id="construct-content">
+                <div class="construct-header">
+                    <div class="construct-title">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zm0 9l9-5H3l9 5z"/></svg>
+                        <span>Construct Builder</span>
+                    </div>
+                    <div class="construct-sub">
+                        Hybrid custom HTML + remote browser workflows. Build step-based constructs that connect custom client interfaces to real browser sessions.
+                    </div>
+                </div>
+
+                <div class="construct-subtabs">
+                    <button class="construct-subtab active" data-construct-sub="archive">Archive</button>
+                    <button class="construct-subtab" data-construct-sub="workflows">Workflows</button>
+                    <button class="construct-subtab" data-construct-sub="builder">Builder</button>
+                    <button class="construct-subtab" data-construct-sub="sessions">Sessions</button>
+                    <button class="construct-subtab" data-construct-sub="client">Client</button>
+                </div>
+
+                <!-- ARCHIVE sub-pane -->
+                <div class="construct-subpane active" id="construct-sub-archive">
+                    <div class="construct-panel">
+                        <div class="construct-panel-title">Construct Archive</div>
+                        <div class="construct-sub">
+                            Custom HTML pages attached to workflow steps. Each page can be mapped to one or more real website URLs.
+                        </div>
+
+                        <div class="construct-archive-search">
+                            <input type="text" id="construct-archive-q" placeholder="Search by name, description, tag, or URL mapping..." class="construct-input" />
+                            <button class="construct-btn" id="construct-archive-refresh">Refresh</button>
+                        </div>
+
+                        <div class="construct-archive-list" id="construct-archive-list">
+                            <div class="construct-empty">No pages in archive yet</div>
+                        </div>
+
+                        <div class="construct-archive-upload">
+                            <details>
+                                <summary>+ Upload new archive page</summary>
+                                <div class="construct-upload-form">
+                                    <input type="text" id="construct-upload-name" placeholder="Page name (e.g. google.com.html)" class="construct-input" />
+                                    <input type="text" id="construct-url-mapping" placeholder="URL mapping (comma-separated, e.g. https://google.com, https://accounts.google.com)" class="construct-input" />
+                                    <input type="text" id="construct-upload-desc" placeholder="Description (optional)" class="construct-input" />
+                                    <div class="construct-file-picker">
+                                        <label class="construct-label">HTML file</label>
+                                        <input type="file" id="construct-upload-file" accept=".html,.htm,text/html" style="display:none;">
+                                        <div class="construct-file-display">
+                                            <button type="button" class="construct-btn" id="construct-upload-pick">Choose HTML file</button>
+                                            <span class="construct-file-name" id="construct-upload-filename">No file chosen</span>
+                                        </div>
+                                        <textarea id="construct-upload-html" class="construct-textarea" placeholder="&lt;!DOCTYPE html&gt;&lt;html&gt;...&lt;/html&gt;"></textarea>
+                                    </div>
+                                    <button class="construct-btn primary" id="construct-upload-btn">Save Page</button>
+                                    <span class="construct-upload-status" id="construct-upload-status"></span>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- WORKFLOWS sub-pane -->
+                <div class="construct-subpane" id="construct-sub-workflows">
+                    <div class="construct-panel">
+                        <div class="construct-panel-title">Workflows</div>
+                        <div class="construct-sub">
+                            Step-based programs that connect custom HTML interfaces to remote browser actions.
+                        </div>
+
+                        <div style="display:flex; gap:8px; margin-bottom: 12px; flex-wrap: wrap;">
+                            <button class="construct-btn primary" id="construct-wf-new">+ New Workflow</button>
+                            <button class="construct-btn" id="construct-wf-refresh">Refresh</button>
+                        </div>
+
+                        <div class="construct-wf-list" id="construct-wf-list">
+                            <div class="construct-empty">No workflows yet</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BUILDER sub-pane -->
+                <div class="construct-subpane" id="construct-sub-builder">
+                    <div class="construct-panel">
+                        <div class="construct-panel-title">Workflow Builder</div>
+
+                        <div class="construct-builder-header">
+                            <div>
+                                <div id="construct-wf-name-display" style="font-weight: 600; color: var(--text-primary); font-size: 15px;">Select a workflow</div>
+                                <div id="construct-wf-target-display" style="font-size: 11px; color: var(--text-muted);">Target URL: none</div>
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:flex-end;">
+                                <button class="construct-btn primary" id="construct-wf-save">Save Workflow</button>
+                                <button class="construct-btn" id="construct-wf-delete" style="color:#ef4444; background:rgba(239,68,68,0.15);">Delete</button>
+                            </div>
+                        </div>
+
+                        <!-- Workflow Construct URL for users -->
+                        <div id="construct-wf-url-host" style="margin: 12px 0; padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; display: none;">
+                            <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+                                <label class="construct-label" style="font-size:11px;">Construct Client URL (share with users):</label>
+                            </div>
+                            <div style="display:flex; gap:6px;">
+                                <input type="text" id="construct-wf-url" class="construct-input" readonly style="flex:1;" placeholder="Save workflow first to generate URL" />
+                                <button class="construct-btn" id="construct-wf-url-copy" style="padding:6px 12px; font-size:11px;">Copy</button>
+                            </div>
+                            <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">
+                                Users open this link to interact with your custom HTML pages via the remote browser.
+                            </div>
+                        </div>
+
+                        <div style="margin: 12px 0;">
+                            <label class="construct-label">Workflow Name</label>
+                            <input type="text" id="construct-edit-name" class="construct-input" placeholder="My Construct Workflow" />
+                        </div>
+                        <div style="margin: 12px 0;">
+                            <label class="construct-label">Target URL</label>
+                            <input type="text" id="construct-edit-target" class="construct-input" placeholder="https://example.com" />
+                        </div>
+                        <div style="margin: 12px 0;">
+                            <label class="construct-label">Description</label>
+                            <input type="text" id="construct-edit-desc" class="construct-input" placeholder="What this construct does" />
+                        </div>
+
+                        <!-- Visual flow canvas -->
+                        <div style="margin: 16px 0;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px;">
+                                <div class="construct-label">Flow</div>
+                                <button class="construct-btn primary" id="construct-add-step">+ Add Step</button>
+                            </div>
+                            <div class="construct-flow-canvas" id="construct-flow-canvas">
+                                <div class="construct-flow-empty">No steps yet. Add a step to begin building your workflow.</div>
+                            </div>
+
+                            <!-- Step list -->
+                            <div style="margin: 16px 0;">
+                                <div class="construct-label">Steps</div>
+                                <div class="construct-step-list" id="construct-step-list">
+                                    <div class="construct-empty">Select a workflow to see its steps</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Inline add step form (shown when "Add Step" clicked) -->
+                        <div id="construct-add-step-host" style="margin-top: 12px; display:none;">
+                            <div class="construct-panel">
+                                <div class="construct-panel-title">Add New Step</div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Step Name</label>
+                                    <input type="text" id="new-step-name" class="construct-input" placeholder="e.g. Open Google" />
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Action Type</label>
+                                    <select id="new-step-action" class="construct-input" onchange="constructUpdateActionField('new-step')">
+                                        <option value="show">Show Only</option>
+                                        <option value="navigate">Navigate</option>
+                                        <option value="click">Click</option>
+                                        <option value="input">Input</option>
+                                        <option value="wait">Wait</option>
+                                        <option value="navigate_and_wait">Navigate & Wait</option>
+                                        <option value="custom">Custom JS</option>
+                                    </select>
+                                </div>
+                                <!-- Single action value field — label changes based on action type -->
+                                <div style="margin: 12px 0;" id="new-step-action-value-row">
+                                    <label class="construct-label" id="new-step-action-value-label">URL to navigate to</label>
+                                    <input type="text" id="new-step-action-value" class="construct-input" placeholder="https://example.com" />
+                                </div>
+                                <!-- Input value (only for Input type) -->
+                                <div style="margin: 12px 0; display:none;" id="new-step-input-value-row">
+                                    <label class="construct-label">Value to type</label>
+                                    <input type="text" id="new-step-input-value" class="construct-input" placeholder="hello world" />
+                                </div>
+                                <!-- Wait seconds (only for Wait and Navigate & Wait) -->
+                                <div style="margin: 12px 0; display:none;" id="new-step-wait-seconds-row">
+                                    <label class="construct-label">Seconds to wait</label>
+                                    <input type="number" id="new-step-wait-seconds" class="construct-input" placeholder="5" min="1" />
+                                </div>
+                                <!-- Transition To (next step picker) -->
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Transition To (next step)</label>
+                                    <select id="new-step-transition" class="construct-input">
+                                        <option value="">— end of workflow —</option>
+                                    </select>
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Attached Archive Page</label>
+                                    <select id="new-step-page" class="construct-input">
+                                        <option value="">— no page attached —</option>
+                                    </select>
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Identical Mode</label>
+                                    <div style="font-size:11px; color:var(--text-muted); margin-bottom:6px;">
+                                        When on, your custom HTML page matches the remote browser exactly —
+                                        inputs and clicks auto-forward without element mappings.
+                                    </div>
+                                    <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+                                        <input type="checkbox" id="new-step-identical" style="accent-color:#3b82f6; width:16px; height:16px;" />
+                                        Identical page (auto-forward to remote browser)
+                                    </label>
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Element Mappings</label>
+                                    <div style="font-size:11px; color:var(--text-muted); margin-bottom:6px;">
+                                        Map custom HTML element IDs to real website selectors so typing/clicking in your custom page reflects in the remote browser.
+                                    </div>
+                                    <div id="new-step-mappings" style="display:flex; flex-direction:column; gap:6px;">
+                                        <!-- Mapping rows added dynamically -->
+                                    </div>
+                                    <button type="button" id="new-step-add-mapping" class="construct-btn" style="font-size:11px; padding:4px 10px; align-self:flex-start;">+ Add Mapping</button>
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Entry Point (start of workflow)</label>
+                                    <input type="checkbox" id="new-step-entry" style="accent-color:#3b82f6; width:16px; height:16px;" />
+                                </div>
+                                <div style="display:flex; gap:8px; margin-top: 16px;">
+                                    <button class="construct-btn primary" id="new-step-save-btn">Create Step</button>
+                                    <button class="construct-btn" id="new-step-cancel-btn">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Inline edit step form (shown when editing a step) -->
+                        <div id="construct-edit-step-host" style="margin-top: 12px; display:none;">
+                            <div class="construct-panel">
+                                <div class="construct-panel-title">Edit Step</div>
+                                <input type="hidden" id="edit-step-id" />
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Step Name</label>
+                                    <input type="text" id="edit-step-name" class="construct-input" />
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Action Type</label>
+                                    <select id="edit-step-action" class="construct-input" onchange="constructUpdateActionField('edit-step')">
+                                        <option value="show">Show Only</option>
+                                        <option value="navigate">Navigate</option>
+                                        <option value="click">Click</option>
+                                        <option value="input">Input</option>
+                                        <option value="wait">Wait</option>
+                                        <option value="navigate_and_wait">Navigate & Wait</option>
+                                        <option value="custom">Custom JS</option>
+                                    </select>
+                                </div>
+                                <!-- Single action value field — label changes based on action type -->
+                                <div style="margin: 12px 0;" id="edit-step-action-value-row">
+                                    <label class="construct-label" id="edit-step-action-value-label">URL to navigate to</label>
+                                    <input type="text" id="edit-step-action-value" class="construct-input" placeholder="https://example.com" />
+                                </div>
+                                <!-- Input value (only for Input type) -->
+                                <div style="margin: 12px 0; display:none;" id="edit-step-input-value-row">
+                                    <label class="construct-label">Value to type</label>
+                                    <input type="text" id="edit-step-input-value" class="construct-input" placeholder="hello world" />
+                                </div>
+                                <!-- Wait seconds (only for Wait and Navigate & Wait) -->
+                                <div style="margin: 12px 0; display:none;" id="edit-step-wait-seconds-row">
+                                    <label class="construct-label">Seconds to wait</label>
+                                    <input type="number" id="edit-step-wait-seconds" class="construct-input" placeholder="5" min="1" />
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Attached Archive Page</label>
+                                    <select id="edit-step-page" class="construct-input">
+                                        <option value="">— no page attached —</option>
+                                    </select>
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Identical Mode</label>
+                                    <div style="font-size:11px; color:var(--text-muted); margin-bottom:6px;">
+                                        When on, your custom HTML page matches the remote browser exactly —
+                                        inputs and clicks auto-forward without element mappings.
+                                    </div>
+                                    <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+                                        <input type="checkbox" id="edit-step-identical" style="accent-color:#3b82f6; width:16px; height:16px;" />
+                                        Identical page (auto-forward to remote browser)
+                                    </label>
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Element Mappings</label>
+                                    <div style="font-size:11px; color:var(--text-muted); margin-bottom:6px;">
+                                        Map custom HTML element IDs to real website selectors so typing/clicking in your custom page reflects in the remote browser.
+                                    </div>
+                                    <div id="edit-step-mappings" style="display:flex; flex-direction:column; gap:6px;">
+                                        <!-- Mapping rows added dynamically -->
+                                    </div>
+                                    <button type="button" id="edit-step-add-mapping" class="construct-btn" style="font-size:11px; padding:4px 10px; align-self:flex-start;">+ Add Mapping</button>
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Transition To (next step)</label>
+                                    <select id="edit-step-transition" class="construct-input">
+                                        <option value="">— end of workflow —</option>
+                                    </select>
+                                </div>
+                                <div style="margin: 12px 0;">
+                                    <label class="construct-label">Entry Point</label>
+                                    <input type="checkbox" id="edit-step-entry" style="accent-color:#3b82f6; width:16px; height:16px;" />
+                                </div>
+                                <div style="display:flex; gap:8px; margin-top: 16px;">
+                                    <button class="construct-btn primary" id="edit-step-save-btn">Save Changes</button>
+                                    <button class="construct-btn" id="edit-step-cancel-btn">Cancel</button>
+                                    <button class="construct-btn" id="edit-step-delete-btn" style="color:#ef4444; background:rgba(239,68,68,0.15);">Delete Step</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SESSIONS sub-pane -->
+                <div class="construct-subpane" id="construct-sub-sessions">
+                    <div class="construct-panel">
+                        <div class="construct-panel-title">Active Sessions</div>
+                        <div class="construct-sub">
+                            Runtime sessions connecting client HTML interfaces to remote browser sessions.
+                        </div>
+                        <div style="display:flex; gap:8px; margin-bottom: 12px;">
+                            <button class="construct-btn" id="construct-sessions-refresh">Refresh</button>
+                        </div>
+                        <div class="construct-session-list" id="construct-session-list">
+                            <div class="construct-empty">No active sessions</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- CLIENT sub-pane -->
+                <div class="construct-subpane" id="construct-sub-client">
+                    <div class="construct-panel">
+                        <div class="construct-panel-title">Construct Client</div>
+                        <div class="construct-sub">
+                            The client interface that renders attached HTML pages and sends user actions to the engine.
+                        </div>
+                        <div style="margin: 20px 0; padding: 20px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
+                            <div style="font-weight: 600; margin-bottom: 12px;">Open Construct Client</div>
+                            <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">
+                                The client renders custom HTML pages (not the original website) and connects to the Construct engine via WebSocket.
+                            </p>
+                            <div style="display:flex; gap:8px; flex-wrap: wrap;">
+                                <input type="text" id="construct-client-workflow" class="construct-input" placeholder="Workflow ID" style="flex: 1;" />
+                                <input type="text" id="construct-client-remote" class="construct-input" placeholder="Remote session ID (optional)" style="flex: 1;" />
+                                <button class="construct-btn primary" id="construct-client-open">Open Client</button>
+                            </div>
+                            <div style="margin-top: 10px; font-size: 11px; color: var(--text-muted);">
+                                URL: <code id="construct-client-url" style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px;">/construct/client?workflow=...</code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </main>
 
         
@@ -11389,6 +11992,10 @@
             if (tabId === 'domains') {
                 domainsWire();
                 domainsLoad();
+            }
+
+            if (tabId === 'construct') {
+                window.constructInit && window.constructInit();
             }
 
             // Close monitor panel when switching tabs
@@ -22340,7 +22947,918 @@ function lpvFormatBytes(n) {
         window.addEventListener('resize', function () {
             if (window.innerWidth > 768) closeAll();
         });
-    })();
+
+    // ========================================================================
+    // CONSTRUCT — Admin integration
+    // ========================================================================
+    (function() {
+        'use strict';
+
+        let currentWorkflowId = null;
+        let currentStepId = null;
+        let workflows = [];
+        let archivePages = [];
+        let activeSessions = [];
+        let selectedHtmlFile = null;
+
+        async function capi(path, opts = {}) {
+            const res = await fetch(path, {
+                headers: { 'Content-Type': 'application/json', ...opts.headers },
+                ...opts,
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            return res.json();
+        }
+
+        function cToast(msg, type = 'success') {
+            const el = document.getElementById('construct-upload-status');
+            if (el) {
+                el.textContent = msg;
+                el.style.color = type === 'success' ? '#22c55e' : '#ef4444';
+                setTimeout(() => { el.textContent = ''; }, 3000);
+            }
+        }
+
+        async function constructInit() {
+            // Set up event handlers FIRST so the file picker works even if
+            // API calls fail (e.g. server not running, network error).
+            constructSetupEventHandlers();
+
+            try {
+                await constructLoadArchive();
+            } catch (e) {
+                console.error('construct archive load error', e);
+            }
+            try {
+                await constructLoadWorkflows();
+            } catch (e) {
+                console.error('construct workflows load error', e);
+            }
+            try {
+                await constructLoadSessions();
+            } catch (e) {
+                console.error('construct sessions load error', e);
+            }
+        }
+
+        function constructSetupEventHandlers() {
+            // Archive sub-tab
+            document.getElementById('construct-archive-refresh')?.addEventListener('click', constructLoadArchive);
+            document.getElementById('construct-upload-btn')?.addEventListener('click', constructUploadPage);
+            document.getElementById('construct-upload-pick')?.addEventListener('click', () => {
+                document.getElementById('construct-upload-file')?.click();
+            });
+            document.getElementById('construct-upload-file')?.addEventListener('change', constructHandleFilePick);
+            document.getElementById('construct-archive-q')?.addEventListener('input', (e) => {
+                constructRenderArchive(e.target.value);
+            });
+
+            // Workflows sub-tab
+            document.getElementById('construct-wf-new')?.addEventListener('click', constructNewWorkflow);
+            document.getElementById('construct-wf-refresh')?.addEventListener('click', constructLoadWorkflows);
+            document.getElementById('construct-wf-save')?.addEventListener('click', constructSaveWorkflow);
+            document.getElementById('construct-wf-delete')?.addEventListener('click', constructDeleteWorkflow);
+            document.getElementById('construct-wf-url-copy')?.addEventListener('click', constructCopyWorkflowUrl);
+
+            // Builder
+            document.getElementById('construct-add-step')?.addEventListener('click', constructAddStep);
+            document.getElementById('new-step-save-btn')?.addEventListener('click', constructSaveNewStep);
+            document.getElementById('new-step-cancel-btn')?.addEventListener('click', constructCancelNewStep);
+            document.getElementById('new-step-add-mapping')?.addEventListener('click', () => constructAddMappingRow('new-step-mappings'));
+            document.getElementById('edit-step-save-btn')?.addEventListener('click', constructSaveEditedStep);
+            document.getElementById('edit-step-cancel-btn')?.addEventListener('click', constructCancelEditStep);
+            document.getElementById('edit-step-delete-btn')?.addEventListener('click', () => constructDeleteStepFromFlow(currentStepId));
+            document.getElementById('edit-step-add-mapping')?.addEventListener('click', () => constructAddMappingRow('edit-step-mappings'));
+
+            // Sessions
+            document.getElementById('construct-sessions-refresh')?.addEventListener('click', constructLoadSessions);
+
+            // Client
+            document.getElementById('construct-client-open')?.addEventListener('click', constructOpenClient);
+            document.getElementById('construct-client-workflow')?.addEventListener('input', constructUpdateClientUrl);
+
+            // Sub-tab switching
+            document.querySelectorAll('.construct-subtab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    document.querySelectorAll('.construct-subtab').forEach(t => t.classList.remove('active'));
+                    document.querySelectorAll('.construct-subpane').forEach(p => p.classList.remove('active'));
+                    this.classList.add('active');
+                    const sub = this.dataset.constructSub;
+                    document.getElementById('construct-sub-' + sub).classList.add('active');
+                });
+            });
+        }
+
+        async function constructLoadArchive() {
+            try {
+                const q = document.getElementById('construct-archive-q')?.value || '';
+                const data = await capi('/api/construct/archive?q=' + encodeURIComponent(q) + '&limit=200');
+                archivePages = data.pages || [];
+                constructRenderArchive(q);
+            } catch(e) {
+                console.error('construct archive load error', e);
+                document.getElementById('construct-archive-list').innerHTML = '<div class="construct-empty">Error loading archive</div>';
+            }
+        }
+
+        function constructRenderArchive(q) {
+            const list = document.getElementById('construct-archive-list');
+            const filtered = archivePages.filter(p => {
+                const query = (q || '').toLowerCase();
+                if (!query) return true;
+                const haystack = ((p.name || '') + ' ' + (p.description || '') + ' ' + (p.tags || []).join(' ') + ' ' + (p.url_mapping || []).join(' ')).toLowerCase();
+                return haystack.includes(query);
+            });
+
+            if (filtered.length === 0) {
+                list.innerHTML = '<div class="construct-empty">No matching pages</div>';
+                return;
+            }
+
+            list.innerHTML = '';
+            filtered.forEach(page => {
+                const el = document.createElement('div');
+                el.className = 'construct-archive-item';
+                el.innerHTML = `
+                    <div style="flex:1;">
+                        <div style="font-weight:600; color:var(--text-primary);">${escapeHtml(page.name)}</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${escapeHtml(page.description || '')}</div>
+                        <div style="font-size:10px; color:#3b82f6; margin-top:4px; font-family:monospace;">${(page.url_mapping || []).join(', ') || '—'}</div>
+                    </div>
+                    <div style="display:flex; gap:4px;">
+                        <button class="construct-btn" onclick="constructEditArchivePage('${page.id}')" style="padding:4px 8px; font-size:11px;">Edit</button>
+                        <button class="construct-btn" onclick="constructDeleteArchivePage('${page.id}')" style="padding:4px 8px; font-size:11px; color:#ef4444; background:rgba(239,68,68,0.15);">Delete</button>
+                    </div>
+                `;
+                list.appendChild(el);
+            });
+        }
+
+        function constructHandleFilePick(e) {
+            const file = e.target.files?.[0] || null;
+            selectedHtmlFile = file;
+            if (file) {
+                document.getElementById('construct-upload-filename').textContent = file.name;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    document.getElementById('construct-upload-html').value = ev.target.result || '';
+                };
+                reader.onerror = () => {
+                    cToast('Failed to read file', 'error');
+                };
+                reader.readAsText(file);
+            } else {
+                document.getElementById('construct-upload-filename').textContent = 'No file chosen';
+            }
+        }
+
+        async function constructUploadPage() {
+            const name = document.getElementById('construct-upload-name').value.trim();
+            const html = document.getElementById('construct-upload-html').value.trim();
+            const desc = document.getElementById('construct-upload-desc').value.trim();
+            const urlMappingRaw = document.getElementById('construct-url-mapping').value.trim();
+            const urlMapping = urlMappingRaw ? urlMappingRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+            if (!name || !html) {
+                cToast('Name and HTML are required', 'error');
+                return;
+            }
+
+            try {
+                await capi('/api/construct/archive', {
+                    method: 'POST',
+                    body: JSON.stringify({ name, html, description: desc, url_mapping: urlMapping }),
+                });
+                cToast('Page saved');
+                document.getElementById('construct-upload-name').value = '';
+                document.getElementById('construct-upload-html').value = '';
+                document.getElementById('construct-upload-desc').value = '';
+                document.getElementById('construct-url-mapping').value = '';
+                document.getElementById('construct-upload-file').value = '';
+                document.getElementById('construct-upload-filename').textContent = 'No file chosen';
+                selectedHtmlFile = null;
+                await constructLoadArchive();
+            } catch(e) {
+                cToast('Upload failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructDeleteArchivePage(id) {
+            if (!confirm('Delete this archive page?')) return;
+            try {
+                await capi('/api/construct/archive/' + id, { method: 'DELETE' });
+                await constructLoadArchive();
+            } catch(e) {
+                cToast('Delete failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructEditArchivePage(id) {
+            const page = archivePages.find(p => p.id === id);
+            if (!page) return;
+            document.getElementById('construct-upload-name').value = page.name || '';
+            document.getElementById('construct-upload-html').value = page.html || '';
+            document.getElementById('construct-upload-desc').value = page.description || '';
+            document.getElementById('construct-url-mapping').value = (page.url_mapping || []).join(', ');
+            document.getElementById('construct-upload-file').value = '';
+            document.getElementById('construct-upload-filename').textContent = 'No file chosen';
+            selectedHtmlFile = null;
+            // Scroll to upload form
+            document.getElementById('construct-upload-btn').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function constructLoadWorkflows() {
+            try {
+                const data = await capi('/api/construct/workflows?limit=200');
+                workflows = data.workflows || [];
+                constructRenderWorkflows();
+            } catch(e) {
+                console.error('construct workflows load error', e);
+            }
+        }
+
+        function constructRenderWorkflows() {
+            const list = document.getElementById('construct-wf-list');
+            if (workflows.length === 0) {
+                list.innerHTML = '<div class="construct-empty">No workflows yet</div>';
+                return;
+            }
+            list.innerHTML = '';
+            workflows.forEach(wf => {
+                const el = document.createElement('div');
+                el.className = 'construct-workflow-item ' + (currentWorkflowId === wf.id ? 'active' : '');
+                el.innerHTML = `
+                    <div style="flex:1;">
+                        <div style="font-weight:600; color:var(--text-primary);">${escapeHtml(wf.name)}</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${wf.target_url || 'No target URL'} • ${wf.status || 'draft'}</div>
+                    </div>
+                    <div style="display:flex; gap:4px;">
+                        <button class="construct-btn" onclick="event.stopPropagation(); constructSelectWorkflow('${wf.id}')" style="padding:4px 8px; font-size:11px;">Edit</button>
+                        <button class="construct-btn" onclick="event.stopPropagation(); constructDeleteWorkflowFromList('${wf.id}')" style="padding:4px 8px; font-size:11px; color:#ef4444; background:rgba(239,68,68,0.15);">Delete</button>
+                    </div>
+                `;
+                el.onclick = () => constructSelectWorkflow(wf.id);
+                list.appendChild(el);
+            });
+        }
+
+        async function constructSelectWorkflow(id) {
+            currentWorkflowId = id;
+            const wf = workflows.find(w => w.id === id);
+            if (!wf) return;
+
+            // Switch to builder sub-pane
+            document.querySelectorAll('.construct-subtab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.construct-subpane').forEach(p => p.classList.remove('active'));
+            const builderTab = document.querySelector('.construct-subtab[data-construct-sub="builder"]');
+            const builderPane = document.getElementById('construct-sub-builder');
+            if (builderTab) builderTab.classList.add('active');
+            if (builderPane) builderPane.classList.add('active');
+
+            document.getElementById('construct-wf-name-display').textContent = wf.name;
+            document.getElementById('construct-wf-target-display').textContent = 'Target URL: ' + (wf.target_url || 'none');
+            document.getElementById('construct-edit-name').value = wf.name || '';
+            document.getElementById('construct-edit-target').value = wf.target_url || '';
+            document.getElementById('construct-edit-desc').value = wf.description || '';
+
+            const steps = await constructLoadSteps();
+            await constructRenderFlow(steps);
+            constructRenderWorkflows();
+            constructUpdateWorkflowUrl();
+        }
+
+        function constructUpdateWorkflowUrl() {
+            const urlHost = document.getElementById('construct-wf-url-host');
+            const urlInput = document.getElementById('construct-wf-url');
+            if (!currentWorkflowId) {
+                urlHost.style.display = 'none';
+                return;
+            }
+            const clientUrl = new URL(window.location.origin + '/construct/client');
+            clientUrl.searchParams.set('workflow', currentWorkflowId);
+            clientUrl.searchParams.set('construct', '1');
+            // Pass target URL so client.html instantly shows branded spinner/favicon
+            const wf = workflows.find(w => w.id === currentWorkflowId);
+            if (wf && wf.target_url) {
+                clientUrl.searchParams.set('target', wf.target_url);
+            }
+            urlInput.value = clientUrl.toString();
+            urlHost.style.display = 'block';
+        }
+
+        async function constructCopyWorkflowUrl() {
+            const urlInput = document.getElementById('construct-wf-url');
+            if (!urlInput || !urlInput.value) return;
+            try {
+                await navigator.clipboard.writeText(urlInput.value);
+                cToast('Workflow URL copied to clipboard', 'success');
+            } catch(e) {
+                // Fallback for older browsers
+                urlInput.select();
+                document.execCommand('copy');
+                cToast('Workflow URL copied to clipboard', 'success');
+            }
+        }
+
+        async function constructLoadSteps() {
+            if (!currentWorkflowId) return [];
+            try {
+                const data = await capi('/api/construct/workflows/' + currentWorkflowId + '/steps');
+                constructRenderSteps(data.steps || []);
+                return data.steps || [];
+            } catch(e) {
+                console.error('construct steps load error', e);
+                return [];
+            }
+        }
+
+        function constructRenderSteps(steps) {
+            const list = document.getElementById('construct-step-list');
+            if (!list) return;
+            if (steps.length === 0) {
+                list.innerHTML = '<div class="construct-empty">Add steps to build your workflow</div>';
+                return;
+            }
+            list.innerHTML = '';
+            steps.forEach(step => {
+                const el = document.createElement('div');
+                el.className = 'construct-step-item ' + (currentStepId === step.id ? 'active' : '');
+                el.innerHTML = `
+                    <div style="flex:1;">
+                        <div style="font-weight:600; color:var(--text-primary);">${escapeHtml(step.step_name || 'Untitled')}</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${step.action_type || 'action'} • ${(step.action_type === 'custom' ? step.browser_action : step.target_selector) || ''}</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${step.attached_page_name || 'No page'} • ${step.transition_to || '—'}</div>
+                    </div>
+                    <div style="display:flex; gap:4px;">
+                        <button class="construct-btn" onclick="event.stopPropagation(); constructEditStepFromFlow('${step.id}')" style="padding:4px 8px; font-size:11px;">Edit</button>
+                        <button class="construct-btn" onclick="event.stopPropagation(); constructDeleteStepFromFlow('${step.id}')" style="padding:4px 8px; font-size:11px; color:#ef4444; background:rgba(239,68,68,0.15);">Delete</button>
+                    </div>
+                `;
+                el.onclick = () => constructEditStepFromFlow(step.id);
+                list.appendChild(el);
+            });
+        }
+
+        async function constructNewWorkflow() {
+            currentWorkflowId = null;
+            currentStepId = null;
+            document.getElementById('construct-wf-name-display').textContent = 'New Workflow';
+            document.getElementById('construct-wf-target-display').textContent = 'Target URL: none';
+            document.getElementById('construct-edit-name').value = '';
+            document.getElementById('construct-edit-target').value = '';
+            document.getElementById('construct-edit-desc').value = '';
+            document.getElementById('construct-step-list').innerHTML = '<div class="construct-empty">Save workflow first, then add steps</div>';
+            document.getElementById('construct-edit-step-host').style.display = 'none';
+        }
+
+        async function constructSaveWorkflow() {
+            const name = document.getElementById('construct-edit-name').value.trim();
+            const targetUrl = document.getElementById('construct-edit-target').value.trim();
+            const desc = document.getElementById('construct-edit-desc').value.trim();
+            if (!name) { cToast('Workflow name required', 'error'); return; }
+
+            try {
+                const wf = await capi('/api/construct/workflows', {
+                    method: 'POST',
+                    body: JSON.stringify({ name, target_url: targetUrl, description: desc }),
+                });
+                currentWorkflowId = wf.workflow.id;
+                cToast('Workflow saved');
+                await constructLoadWorkflows();
+                constructSelectWorkflow(currentWorkflowId);
+            } catch(e) {
+                cToast('Save failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructDeleteWorkflowFromList(wfId) {
+            if (!confirm('Delete this workflow?')) return;
+            try {
+                await capi('/api/construct/workflows/' + wfId, { method: 'DELETE' });
+                cToast('Deleted');
+                if (currentWorkflowId === wfId) {
+                    currentWorkflowId = null;
+                    constructNewWorkflow();
+                }
+                await constructLoadWorkflows();
+            } catch(e) {
+                cToast('Delete failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructDeleteWorkflow() {
+            if (!currentWorkflowId) return;
+            if (!confirm('Delete this workflow?')) return;
+            try {
+                await capi('/api/construct/workflows/' + currentWorkflowId, { method: 'DELETE' });
+                cToast('Deleted');
+                currentWorkflowId = null;
+                constructNewWorkflow();
+                await constructLoadWorkflows();
+            } catch(e) {
+                cToast('Delete failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructAddStep() {
+            if (!currentWorkflowId) { cToast('Save workflow first', 'error'); return; }
+            // Show inline add step form
+            document.getElementById('construct-add-step-host').style.display = 'block';
+            document.getElementById('construct-edit-step-host').style.display = 'none';
+            document.getElementById('new-step-name').value = '';
+            document.getElementById('new-step-action').value = 'navigate';
+            document.getElementById('new-step-action-value').value = '';
+            document.getElementById('new-step-input-value').value = '';
+            document.getElementById('new-step-wait-seconds').value = '';
+            document.getElementById('new-step-page').value = '';
+            document.getElementById('new-step-entry').checked = false;
+            // Show/hide action-specific fields for the default 'navigate' action
+            constructUpdateActionField('new-step');
+            // Reset element mappings
+            const mappingsContainer = document.getElementById('new-step-mappings');
+            mappingsContainer.innerHTML = '';
+            await constructLoadArchivePagesForSelector('new-step-page');
+            await constructLoadStepsForTransitionSelect('new-step-transition');
+            document.getElementById('construct-add-step-host').scrollIntoView({ behavior: 'smooth' });
+
+            // Set up "Add Mapping" button
+            const addBtn = document.getElementById('new-step-add-mapping');
+            addBtn.onclick = () => constructAddMappingRow('new-step-mappings');
+        }
+
+        // Update the action value field label and show/hide extra fields based on action type
+        function constructUpdateActionField(prefix) {
+            const action = document.getElementById(prefix + '-action').value;
+            const labelEl = document.getElementById(prefix + '-action-value-label');
+            const inputRow = document.getElementById(prefix + '-input-value-row');
+            const waitRow = document.getElementById(prefix + '-wait-seconds-row');
+            const valueInput = document.getElementById(prefix + '-action-value');
+
+            if (labelEl) {
+                if (action === 'navigate') {
+                    labelEl.textContent = 'URL to navigate to';
+                    valueInput.placeholder = 'https://example.com';
+                } else if (action === 'click') {
+                    labelEl.textContent = 'CSS selector to click';
+                    valueInput.placeholder = '#signin-button';
+                } else if (action === 'input') {
+                    labelEl.textContent = 'CSS selector to fill';
+                    valueInput.placeholder = '#email-field';
+                } else if (action === 'wait') {
+                    labelEl.textContent = 'Seconds to wait';
+                    valueInput.placeholder = '5';
+                } else if (action === 'navigate_and_wait') {
+                    labelEl.textContent = 'URL to navigate to';
+                    valueInput.placeholder = 'https://example.com';
+                } else if (action === 'custom') {
+                    labelEl.textContent = 'JavaScript code';
+                    valueInput.placeholder = 'console.log("hello")';
+                } else if (action === 'show') {
+                    labelEl.textContent = 'No value needed — page shows in iframe';
+                    valueInput.placeholder = '';
+                    valueInput.value = '';
+                    valueInput.readOnly = true;
+                } else {
+                    valueInput.readOnly = false;
+                }
+            }
+
+            // Show/hide extra rows
+            if (inputRow) inputRow.style.display = (action === 'input') ? 'block' : 'none';
+            if (waitRow) waitRow.style.display = (action === 'wait' || action === 'navigate_and_wait') ? 'block' : 'none';
+        }
+
+        function constructAddMappingRow(containerId, customId = '', browserSelector = '', action = 'input') {
+            const container = document.getElementById(containerId);
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.gap = '6px';
+            row.style.alignItems = 'center';
+            row.innerHTML = `
+                <input type="text" class="construct-input mapping-custom-id" placeholder="custom element id (e.g. quantity)" value="${escapeHtml(customId)}" style="flex:1;" />
+                <input type="text" class="construct-input mapping-browser-selector" placeholder="browser selector (e.g. #qty-field)" value="${escapeHtml(browserSelector)}" style="flex:1;" />
+                <select class="construct-input mapping-action" style="width:110px;">
+                    <option value="input" ${action === 'input' ? 'selected' : ''}>input</option>
+                    <option value="click" ${action === 'click' ? 'selected' : ''}>click</option>
+                </select>
+                <button type="button" class="construct-btn" style="font-size:10px; padding:2px 8px; color:#ef4444;" onclick="this.closest('div').remove()">✕</button>
+            `;
+            container.appendChild(row);
+            return row;
+        }
+
+        async function constructSaveNewStep() {
+            if (!currentWorkflowId) return;
+            const name = document.getElementById('new-step-name').value.trim();
+            if (!name) { cToast('Step name is required', 'error'); return; }
+            const actionType = document.getElementById('new-step-action').value;
+            const actionValue = document.getElementById('new-step-action-value').value.trim();
+            const inputValue = document.getElementById('new-step-input-value')?.value.trim() || '';
+            const waitSeconds = document.getElementById('new-step-wait-seconds')?.value.trim() || '';
+            const transitionTo = document.getElementById('new-step-transition')?.value.trim() || '';
+            const mappings = constructCollectMappings('new-step-mappings');
+            // Assign step_order = current step count + 1 so steps are ordered
+            let stepOrder = 0;
+            try {
+                const existing = await capi('/api/construct/workflows/' + currentWorkflowId + '/steps');
+                stepOrder = (existing.steps || []).length;
+            } catch(e) { stepOrder = 0; }
+            // Build payload based on action type — simple, no confusing Browser Action field
+            let targetSelector = '';
+            let inputValues = {};
+            let browserAction = '';
+            if (actionType === 'show') {
+                // Show Only — no browser action, just display the attached page
+            } else if (actionType === 'navigate') {
+                targetSelector = actionValue;
+            } else if (actionType === 'click') {
+                targetSelector = actionValue;
+            } else if (actionType === 'input') {
+                targetSelector = actionValue;
+                if (inputValue) inputValues = { value: inputValue };
+            } else if (actionType === 'wait') {
+                targetSelector = waitSeconds || actionValue;
+            } else if (actionType === 'navigate_and_wait') {
+                targetSelector = actionValue;
+                if (waitSeconds) inputValues = { seconds: waitSeconds };
+            } else if (actionType === 'custom') {
+                browserAction = actionValue;
+            }
+            try {
+                await capi('/api/construct/workflows/' + currentWorkflowId + '/steps', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        step_name: name,
+                        action_type: actionType,
+                        browser_action: browserAction,
+                        target_selector: targetSelector,
+                        attached_page_id: document.getElementById('new-step-page').value || null,
+                        attached_page_name: (() => {
+                            const sel = document.getElementById('new-step-page');
+                            return sel.value ? sel.options[sel.selectedIndex].text : '';
+                        })(),
+                        input_values: inputValues,
+                        wait_conditions: [],
+                        element_mappings: mappings,
+                        step_order: stepOrder,
+                        transition_to: transitionTo,
+                        is_entry_point: document.getElementById('new-step-entry').checked,
+                        is_identical: document.getElementById('new-step-identical').checked,
+                    }),
+                });
+                document.getElementById('construct-add-step-host').style.display = 'none';
+                await constructLoadSteps();
+                await constructRenderFlow();
+            } catch(e) {
+                cToast('Failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructCancelNewStep() {
+            document.getElementById('construct-add-step-host').style.display = 'none';
+        }
+
+        function constructCollectMappings(containerId) {
+            const container = document.getElementById(containerId);
+            const mappings = [];
+            container.querySelectorAll('.mapping-custom-id').forEach((el, i) => {
+                const customId = el.value.trim();
+                const browserSelector = container.querySelectorAll('.mapping-browser-selector')[i]?.value.trim() || '';
+                const action = container.querySelectorAll('.mapping-action')[i]?.value || 'input';
+                if (customId && browserSelector) {
+                    mappings.push({ custom_id: customId, browser_selector: browserSelector, action });
+                }
+            });
+            return mappings;
+        }
+
+        async function constructEditStepFromFlow(stepId) {
+            currentStepId = stepId;
+            const step = (await capi('/api/construct/steps/' + stepId)).step;
+            if (!step) return;
+
+            document.getElementById('edit-step-id').value = step.id;
+            document.getElementById('edit-step-name').value = step.step_name || '';
+            document.getElementById('edit-step-action').value = step.action_type || 'navigate';
+            // Update label and show/hide extra fields for the stored action type
+            constructUpdateActionField('edit-step');
+
+            const actionType = step.action_type || 'navigate';
+            const targetSelector = step.target_selector || '';
+            const inputValues = step.input_values || {};
+            const browserAction = step.browser_action || '';
+
+            // Populate the simplified action value field based on action type
+            if (actionType === 'navigate') {
+                document.getElementById('edit-step-action-value').value = targetSelector;
+            } else if (actionType === 'click') {
+                document.getElementById('edit-step-action-value').value = targetSelector;
+            } else if (actionType === 'input') {
+                document.getElementById('edit-step-action-value').value = targetSelector;
+                document.getElementById('edit-step-input-value').value = inputValues.value || '';
+            } else if (actionType === 'wait') {
+                document.getElementById('edit-step-action-value').value = targetSelector;
+            } else if (actionType === 'navigate_and_wait') {
+                document.getElementById('edit-step-action-value').value = targetSelector;
+                document.getElementById('edit-step-wait-seconds').value = inputValues.seconds || '';
+            } else if (actionType === 'custom') {
+                document.getElementById('edit-step-action-value').value = browserAction;
+            }
+
+            await constructLoadStepsForTransitionSelect('edit-step-transition', step.transition_to || '');
+            document.getElementById('edit-step-page').value = step.attached_page_id || '';
+            document.getElementById('edit-step-entry').checked = step.is_entry_point === true || step.is_entry_point === 1;
+            document.getElementById('edit-step-identical').checked = step.is_identical === true || step.is_identical === 1;
+
+            // Populate element mappings
+            const mappingsContainer = document.getElementById('edit-step-mappings');
+            mappingsContainer.innerHTML = '';
+            const mappings = step.element_mappings || [];
+            mappings.forEach(m => {
+                constructAddMappingRow('edit-step-mappings', m.custom_id || '', m.browser_selector || '', m.action || 'input');
+            });
+
+            document.getElementById('construct-add-step-host').style.display = 'none';
+            document.getElementById('construct-edit-step-host').style.display = 'block';
+            await constructLoadArchivePagesForSelector('edit-step-page');
+            document.getElementById('construct-edit-step-host').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function constructSaveEditedStep() {
+            if (!currentStepId || !currentWorkflowId) return;
+            const actionType = document.getElementById('edit-step-action').value;
+            const actionValue = document.getElementById('edit-step-action-value').value.trim();
+            const inputValue = document.getElementById('edit-step-input-value')?.value.trim() || '';
+            const waitSeconds = document.getElementById('edit-step-wait-seconds')?.value.trim() || '';
+            const mappings = constructCollectMappings('edit-step-mappings');
+
+            // Build payload based on action type — simple, no confusing Browser Action field
+            let targetSelector = '';
+            let inputValues = {};
+            let browserAction = '';
+            if (actionType === 'navigate') {
+                targetSelector = actionValue;
+            } else if (actionType === 'click') {
+                targetSelector = actionValue;
+            } else if (actionType === 'input') {
+                targetSelector = actionValue;
+                if (inputValue) inputValues = { value: inputValue };
+            } else if (actionType === 'wait') {
+                targetSelector = waitSeconds || actionValue;
+            } else if (actionType === 'navigate_and_wait') {
+                targetSelector = actionValue;
+                if (waitSeconds) inputValues = { seconds: waitSeconds };
+            } else if (actionType === 'custom') {
+                browserAction = actionValue;
+            }
+
+            try {
+                await capi('/api/construct/steps/' + currentStepId, {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        step_name: document.getElementById('edit-step-name').value,
+                        action_type: actionType,
+                        browser_action: browserAction,
+                        target_selector: targetSelector,
+                        attached_page_id: document.getElementById('edit-step-page').value || null,
+                        attached_page_name: (() => {
+                            const sel = document.getElementById('edit-step-page');
+                            return sel.value ? sel.options[sel.selectedIndex].text : '';
+                        })(),
+                        input_values: inputValues,
+                        element_mappings: mappings,
+                        transition_to: document.getElementById('edit-step-transition').value,
+                        is_entry_point: document.getElementById('edit-step-entry').checked,
+                        is_identical: document.getElementById('edit-step-identical').checked,
+                    }),
+                });
+                document.getElementById('construct-edit-step-host').style.display = 'none';
+                currentStepId = null;
+                await constructLoadSteps();
+                await constructRenderFlow();
+            } catch(e) {
+                cToast('Save failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructCancelEditStep() {
+            document.getElementById('construct-edit-step-host').style.display = 'none';
+            currentStepId = null;
+        }
+
+        async function constructDeleteStepFromFlow(stepId) {
+            if (!confirm('Delete this step?')) return;
+            try {
+                await capi('/api/construct/steps/' + stepId, { method: 'DELETE' });
+                if (currentStepId === stepId) currentStepId = null;
+                document.getElementById('construct-edit-step-host').style.display = 'none';
+                await constructLoadSteps();
+                await constructRenderFlow();
+            } catch(e) {
+                cToast('Delete failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructMoveStepUp(stepId) {
+            if (!currentWorkflowId) return;
+            try {
+                await capi('/api/construct/workflows/' + currentWorkflowId + '/steps/' + stepId + '/move/up', {
+                    method: 'POST',
+                });
+                await constructLoadSteps();
+                await constructRenderFlow();
+            } catch(e) {
+                cToast('Move failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructMoveStepDown(stepId) {
+            if (!currentWorkflowId) return;
+            try {
+                await capi('/api/construct/workflows/' + currentWorkflowId + '/steps/' + stepId + '/move/down', {
+                    method: 'POST',
+                });
+                await constructLoadSteps();
+                await constructRenderFlow();
+            } catch(e) {
+                cToast('Move failed: ' + e.message, 'error');
+            }
+        }
+
+        async function constructRenderFlow(steps) {
+            if (!currentWorkflowId) {
+                document.getElementById('construct-flow-canvas').innerHTML = '<div class="construct-flow-empty">Select a workflow to build its flow</div>';
+                return;
+            }
+            if (!steps) {
+                try {
+                    const data = await capi('/api/construct/workflows/' + currentWorkflowId + '/steps');
+                    steps = data.steps || [];
+                } catch(e) {
+                    console.error('construct flow load error', e);
+                    steps = [];
+                }
+            }
+            const canvas = document.getElementById('construct-flow-canvas');
+            if (!steps || steps.length === 0) {
+                canvas.innerHTML = '<div class="construct-flow-empty">No steps yet. Add a step to begin building your workflow.</div>';
+                return;
+            }
+
+            canvas.innerHTML = '';
+            steps.forEach((step, index) => {
+                const card = document.createElement('div');
+                card.className = 'construct-step-card ' + (currentStepId === step.id ? 'active' : '');
+                const entryBadge = step.is_entry_point ? '<span class="step-entry-badge">ENTRY</span>' : '';
+                const pageName = step.attached_page_name ? ' • Page: ' + escapeHtml(step.attached_page_name) : '';
+                card.innerHTML = `
+                    <div class="step-handle" title="Reorder">⠿</div>
+                    <div class="step-info">
+                        <div class="step-name">${escapeHtml(step.step_name || 'Untitled')}</div>
+                        <div class="step-meta">${escapeHtml(step.action_type || 'action')} ${escapeHtml(step.browser_action || '')}${pageName} → ${escapeHtml(step.transition_to || 'end')}</div>
+                    </div>
+                    ${entryBadge}
+                    <div class="step-actions">
+                        <button class="construct-btn" onclick="event.stopPropagation(); constructEditStepFromFlow('${step.id}')" title="Edit" style="padding:4px 8px; font-size:11px;">Edit</button>
+                        <button class="construct-btn" onclick="event.stopPropagation(); constructMoveStepUp('${step.id}')" title="Move up" style="padding:4px 8px; font-size:11px;">↑</button>
+                        <button class="construct-btn" onclick="event.stopPropagation(); constructMoveStepDown('${step.id}')" title="Move down" style="padding:4px 8px; font-size:11px;">↓</button>
+                        <button class="construct-btn" onclick="event.stopPropagation(); constructDeleteStepFromFlow('${step.id}')" title="Delete" style="padding:4px 8px; font-size:11px; color:#ef4444; background:rgba(239,68,68,0.15);">🗑</button>
+                    </div>
+                `;
+                canvas.appendChild(card);
+
+                // Add arrow between steps (except after last)
+                if (index < steps.length - 1) {
+                    const arrow = document.createElement('div');
+                    arrow.className = 'construct-flow-arrow';
+                    arrow.innerHTML = '↓';
+                    canvas.appendChild(arrow);
+                }
+            });
+        }
+
+        async function constructLoadArchivePagesForSelector(selectId) {
+            try {
+                const data = await capi('/api/construct/archive?limit=500');
+                const pages = data.pages || [];
+                const select = document.getElementById(selectId);
+                if (!select) return;
+                select.innerHTML = '<option value="">— no page attached —</option>';
+                pages.forEach(page => {
+                    const opt = document.createElement('option');
+                    opt.value = page.id;
+                    opt.textContent = page.name || 'Untitled';
+                    select.appendChild(opt);
+                });
+            } catch(e) {
+                console.error('Failed to load archive pages for selector', e);
+            }
+        }
+
+        // Populate a Transition To dropdown with the current workflow's steps
+        async function constructLoadStepsForTransitionSelect(selectId, selectedStepId = '') {
+            try {
+                const data = await capi('/api/construct/workflows/' + currentWorkflowId + '/steps');
+                const steps = data.steps || [];
+                const select = document.getElementById(selectId);
+                if (!select) return;
+                select.innerHTML = '<option value="">— end of workflow —</option>';
+                steps.forEach(step => {
+                    const opt = document.createElement('option');
+                    opt.value = step.id;
+                    opt.textContent = (step.step_name || 'Untitled') + ' (' + (step.action_type || 'action') + ')';
+                    if (step.id === selectedStepId) opt.selected = true;
+                    select.appendChild(opt);
+                });
+            } catch(e) {
+                console.error('Failed to load steps for transition select', e);
+            }
+        }
+
+        async function constructLoadSessions() {
+            try {
+                const data = await capi('/api/construct/sessions');
+                activeSessions = data.sessions || [];
+                constructRenderSessions();
+            } catch(e) {
+                console.error('construct sessions load error', e);
+            }
+        }
+
+        function constructRenderSessions() {
+            const list = document.getElementById('construct-session-list');
+            if (activeSessions.length === 0) {
+                list.innerHTML = '<div class="construct-empty">No active sessions</div>';
+                return;
+            }
+            list.innerHTML = '';
+            activeSessions.forEach(s => {
+                const el = document.createElement('div');
+                el.className = 'construct-session-item';
+                el.innerHTML = `
+                    <div style="flex:1;">
+                        <div style="font-weight:600; color:var(--text-primary);">${s.session_id}</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Workflow: ${s.workflow_id} • Status: ${s.status} • Step: ${s.current_step_id || '—'}</div>
+                    </div>
+                    <div style="font-size:10px; color:var(--text-muted); font-family:monospace;">${s.remote_session_id || '—'}</div>
+                `;
+                list.appendChild(el);
+            });
+        }
+
+        function constructOpenClient() {
+            const workflowId = document.getElementById('construct-client-workflow').value.trim();
+            const targetUrl = document.getElementById('construct-client-remote').value.trim();
+            if (!workflowId) { cToast('Workflow ID required', 'error'); return; }
+
+            const url = new URL(window.location.origin + '/construct/client');
+            url.searchParams.set('workflow', workflowId);
+            url.searchParams.set('construct', '1');
+            if (targetUrl) url.searchParams.set('target', targetUrl);
+            document.getElementById('construct-client-url').textContent = url.pathname + '?' + url.searchParams.toString();
+
+            window.open(url.toString(), '_blank');
+        }
+
+        function constructUpdateClientUrl() {
+            const workflowId = document.getElementById('construct-client-workflow').value.trim();
+            const targetUrl = document.getElementById('construct-client-remote').value.trim();
+            const url = new URL(window.location.origin + '/construct/client');
+            if (workflowId) url.searchParams.set('workflow', workflowId);
+            url.searchParams.set('construct', '1');
+            if (targetUrl) url.searchParams.set('target', targetUrl);
+            document.getElementById('construct-client-url').textContent = url.pathname + '?' + url.searchParams.toString();
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Expose globally for inline onclick handlers
+        window.constructInit = constructInit;
+        window.constructSelectWorkflow = constructSelectWorkflow;
+        window.constructEditArchivePage = constructEditArchivePage;
+        window.constructDeleteArchivePage = constructDeleteArchivePage;
+        window.constructEditStepFromFlow = constructEditStepFromFlow;
+        window.constructDeleteStepFromFlow = constructDeleteStepFromFlow;
+        window.constructDeleteWorkflowFromList = constructDeleteWorkflowFromList;
+        window.constructMoveStepUp = constructMoveStepUp;
+        window.constructMoveStepDown = constructMoveStepDown;
+        window.constructAddMappingRow = constructAddMappingRow;
+        window.constructLoadArchive = constructLoadArchive;
+        window.constructLoadWorkflows = constructLoadWorkflows;
+        window.constructLoadSessions = constructLoadSessions;
+        window.constructRenderArchive = constructRenderArchive;
+        window.constructUpdateActionField = constructUpdateActionField;
+
+    })();  // close construct IIFE
+    })();  // close outer IIFE
     </script>
 </body>
 </html>
