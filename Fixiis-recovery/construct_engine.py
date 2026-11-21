@@ -743,38 +743,13 @@ class ConstructSession:
         return "".join(out)
 
     async def _apply_input_value(self, page: Any, selector: str, value: str) -> None:
-        """Apply an input value using the native prototype setter + events,
-        mirroring the streaming path's handle_input_sync so React-style
-        value trackers stay in sync.
-
-        Rejects file/button/submit/reset/image inputs and focuses the field
-        first so the page reacts as it would to a real click.
-        """
-        script = """
-        (args) => {
-            const [sel, val] = args;
-            const el = document.querySelector(sel);
-            if (!el) throw new Error('input: selector not found: ' + sel);
-            if (el.type === 'file' || el.type === 'button' || el.type === 'submit' ||
-                el.type === 'reset' || el.type === 'image') {
-                throw new Error('input: cannot fill ' + el.type + ' element');
-            }
-            el.focus();
-            const descriptor =
-                Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
-                Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value') ||
-                Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value');
-            if (descriptor && descriptor.set) {
-                descriptor.set.call(el, val);
-            } else {
-                el.value = val;
-            }
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return true;
-        }
-        """
-        await page.evaluate(script, [selector, str(value)])
+        """Apply an input value using SBPage.fill, which internally uses
+        el.value + input/change events (same as the streaming path's
+        handle_input_sync). Rejects file/button/submit/reset/image inputs."""
+        # Only prepend '#' for bare tokens (no CSS structure like [, ., #)
+        if selector and selector[0] not in "#.[" and "[" not in selector and "." not in selector and "#" not in selector:
+            selector = "#" + selector
+        await page.fill(selector, value)
 
     def _event_selectors(self, event: Dict[str, Any]) -> List[str]:
         """Build a fallback selector list from a client event's addressing tuple.
@@ -799,9 +774,9 @@ class ConstructSession:
             selectors.append("#" + escaped)
             selectors.append('[id="' + cid + '"]')
         if name:
-            selectors.append('[name="' + name + '"]')
             if tag:
                 selectors.append(tag + '[name="' + name + '"]')
+            selectors.append('[name="' + name + '"]')
         if path and " > " in path:
             selectors.append(path)
         if href:
