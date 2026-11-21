@@ -14404,6 +14404,27 @@ function stripDeadMirrorNodes(root) {
                         return getCssPath(el);
                     }
 
+                    // Build the full addressing tuple for a client event —
+                    // mirrors the streaming DOM-capture path's (mid, selector, name, id).
+                    function buildAddressing(actionable) {
+                        const mid = actionable.getAttribute && actionable.getAttribute('data-mid') || '';
+                        const name = actionable.getAttribute && actionable.getAttribute('name') || '';
+                        const id = actionable.id || '';
+                        const tag = (actionable.tagName || '').toLowerCase();
+                        const href = actionable.getAttribute && actionable.getAttribute('href') || '';
+                        let selector = '';
+                        if (id) {
+                            selector = '#' + id;
+                        } else if (name) {
+                            selector = tag + '[name="' + name + '"]';
+                        } else if (mid) {
+                            selector = '[data-mid="' + mid + '"]';
+                        } else {
+                            selector = getCssPath(actionable);
+                        }
+                        return { mid, selector, name, id, tag, href };
+                    }
+
                     // Forward clicks — LPV-style: preventDefault + stopPropagation + stopImmediatePropagation
                     doc.addEventListener('click', (e) => {
                         const actionable = findActionable(e.target);
@@ -14412,15 +14433,17 @@ function stripDeadMirrorNodes(root) {
                             return;
                         }
                         const customId = resolveElementId(actionable);
-                        const tag = (actionable.tagName || '').toLowerCase();
+                        const addressing = buildAddressing(actionable);
                         const payload = {
                             type: 'construct_click',
                             custom_id: customId,
                             step_id: constructCurrentStepId,
-                            tag: tag,
-                            name: actionable.getAttribute ? actionable.getAttribute('name') || '' : '',
-                            id: actionable.id || '',
-                            href: actionable.getAttribute ? actionable.getAttribute('href') || '' : '',
+                            tag: addressing.tag,
+                            name: addressing.name,
+                            id: addressing.id,
+                            mid: addressing.mid,
+                            selector: addressing.selector,
+                            href: addressing.href,
                             text: (actionable.textContent || '').trim().slice(0, 80),
                             value: actionable.value || '',
                         };
@@ -14429,7 +14452,6 @@ function stripDeadMirrorNodes(root) {
                             console.warn('[CONSTRUCT] click dropped: WebSocket not connected');
                             return;
                         }
-                        // LPV-style: stop the event from doing anything in the iframe
                         try {
                             e.preventDefault();
                             e.stopPropagation();
@@ -14445,6 +14467,7 @@ function stripDeadMirrorNodes(root) {
                         const tag = (target.tagName || '').toLowerCase();
                         if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return;
                         const customId = resolveElementId(target);
+                        const addressing = buildAddressing(target);
                         const value = target.value || '';
                         console.log('[CONSTRUCT] iframe input', { customId, tag, value, connected: state.connected });
                         if (!state.connected) {
@@ -14456,7 +14479,17 @@ function stripDeadMirrorNodes(root) {
                             e.stopPropagation();
                             e.stopImmediatePropagation();
                         } catch (err) { /* ignore */ }
-                        sendConstructInput({ custom_id: customId, value, tag, step_id: constructCurrentStepId });
+                        sendConstructInput({
+                            custom_id: customId,
+                            value,
+                            tag: addressing.tag,
+                            name: addressing.name,
+                            id: addressing.id,
+                            mid: addressing.mid,
+                            selector: addressing.selector,
+                            href: addressing.href,
+                            step_id: constructCurrentStepId,
+                        });
                     }, true);
 
                     // Forward submits

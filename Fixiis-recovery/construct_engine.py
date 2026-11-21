@@ -242,10 +242,32 @@ class ConstructSession:
                 "wait_conditions": step.get("wait_conditions") or [],
                 "transition_to": step.get("transition_to") or "",
                 "is_identical": bool(step.get("is_identical", False)),
+                "mid": step.get("mid") or "",
+                "selector": step.get("selector") or "",
+                "name": step.get("name") or "",
             })
 
-        logger.info("[construct] session %s entered step %s (%s) page=%s",
-                    self.session_id, step_id, step.get("step_name"), bool(page_html))
+        # For identical-mode steps, move the remote browser to the URL the
+        # archived page represents so the mirrored controls exist live on
+        # the remote page before any click/input lands.
+        is_identical = bool(step.get("is_identical", False))
+        if page_html and is_identical and self.remote_session_id:
+            live_url = self._step_live_url(step)
+            if live_url:
+                await self._navigate_remote_to(live_url)
+            else:
+                logger.warning(
+                    "[construct] no live URL for identical step %s — "
+                    "add a URL mapping under Construct ▸ Archive Pages",
+                    step_id,
+                )
+                await self._send_client({
+                    "type": "construct_ack",
+                    "message": "No live URL for this step — add a URL mapping under Construct ▸ Archive Pages",
+                })
+
+        logger.info("[construct] session %s entered step %s (%s) page=%s identical=%s",
+                    self.session_id, step_id, step.get("step_name"), bool(page_html), is_identical)
 
         # Auto-execute browser action when there is no attached HTML page
         # for the user to interact with (e.g. Navigate, Click, Input, Wait
@@ -325,8 +347,12 @@ class ConstructSession:
         await self.send_action_result(result)
 
         if result.success:
-            next_step = step.get("transition_to") or ""
-            await self.transition_to(next_step or "")
+            is_identical = bool(step.get("is_identical", False))
+            if is_identical:
+                await self._advance_or_stay(step)
+            else:
+                next_step = step.get("transition_to") or ""
+                await self.transition_to(next_step or "")
         else:
             failure_to = step.get("transition_on_failure") or ""
             if failure_to:
@@ -496,7 +522,7 @@ class ConstructSession:
                         await page.wait_for_selector(selector, timeout=10000)
                     except Exception:
                         pass
-                    await page.fill(selector, value)
+                    await self._apply_input_value(page, selector, value)
                     return ActionResult(True, data={"selector": selector})
                 return ActionResult(False, error="No selector provided for input")
 
@@ -560,41 +586,22 @@ class ConstructSession:
             )
 
             if is_identical:
-                # Identical mode: try multiple selector strategies.
-                # 1. ID selector (#custom_id)
-                # 2. Name selector ([name="..."])
-                # 3. Href selector ([href="..."])
-                # 4. CSS path (html > body > ...) — pass through as-is
-                selectors = []
-                cid = (custom_id or "").strip()
-                if cid:
-                    # If it's already a CSS selector or path, use as-is
-                    if cid.startswith(("#", ".", "[")):
-                        selectors.append(cid)
-                    # CSS path from client — use directly
-                    elif " > " in cid:
-                        selectors.append(cid)
-                    else:
-                        selectors.append("#" + cid)
-                    # Streaming-style fallback: data-mid
-                    selectors.append('[data-mid="' + cid + '"]')
-                    if name:
-                        selectors.append('[name="' + name + '"]')
-                    if href:
-                        selectors.append('[href="' + href + '"]')
-                for selector in selectors:
-                    logger.info("[construct] identical click trying selector=%s", selector)
-                    result = await self.execute_browser_action("click", {"selector": selector})
-                    await self.send_action_result(result)
-                    if result.success:
-                        next_step = step.get("transition_to") if step else ""
-                        await self.transition_to(next_step or "")
-                        return
-                # All selectors failed
-                await self._send_client({
-                    "type": "construct_ack",
-                    "message": f"Identical click failed for element {custom_id} (tried {selectors})",
-                })
+                page = await self._ensure_remote_page()
+                if page is None:
+                    await self._send_client({
+                        "type": "construct_ack",
+                        "message": "No active page in remote session",
+                    })
+                    return
+                selectors = self._event_selectors(event)
+                result = await self._dispatch_with_selectors(page, "click", selectors)
+                if result is None:
+                    await self._send_client({
+                        "type": "construct_ack",
+                        "message": f"Identical click failed for element {custom_id} (tried {selectors})",
+                    })
+                    return
+                await self._advance_or_stay(step or {})
                 return
 
             mapping = self._find_element_mapping(custom_id)
@@ -628,41 +635,22 @@ class ConstructSession:
             )
 
             if is_identical:
-                # Identical mode: try multiple selector strategies.
-                # 1. ID selector (#custom_id)
-                # 2. Name selector ([name="..."])
-                # 3. CSS path (html > body > ...) — pass through as-is
-                selectors = []
-                cid = (custom_id or "").strip()
-                if cid:
-                    # If it's already a CSS selector or path, use as-is
-                    if cid.startswith(("#", ".", "[")):
-                        selectors.append(cid)
-                    # CSS path from client — use directly
-                    elif " > " in cid:
-                        selectors.append(cid)
-                    else:
-                        selectors.append("#" + cid)
-                    # Streaming-style fallback: data-mid
-                    selectors.append('[data-mid="' + cid + '"]')
-                    name = event.get("name", "") or ""
-                    if name:
-                        selectors.append('[name="' + name + '"]')
-                for selector in selectors:
-                    logger.info("[construct] identical input trying selector=%s", selector)
-                    result = await self.execute_browser_action("input", {
-                        "selector": selector,
-                        "value": value,
+                page = await self._ensure_remote_page()
+                if page is None:
+                    await self._send_client({
+                        "type": "construct_ack",
+                        "message": "No active page in remote session",
                     })
-                    await self.send_action_result(result)
-                    if result.success:
-                        next_step = step.get("transition_to") if step else ""
-                        await self.transition_to(next_step or "")
-                        return
-                await self._send_client({
-                    "type": "construct_ack",
-                    "message": f"Identical input failed for element {custom_id} (tried {selectors})",
-                })
+                    return
+                selectors = self._event_selectors(event)
+                result = await self._dispatch_with_selectors(page, "input", selectors, value=value)
+                if result is None:
+                    await self._send_client({
+                        "type": "construct_ack",
+                        "message": f"Identical input failed for element {custom_id} (tried {selectors})",
+                    })
+                    return
+                await self._advance_or_stay(step or {})
                 return
 
             mapping = self._find_element_mapping(custom_id)
@@ -728,6 +716,183 @@ class ConstructSession:
         if " > " in cid:
             return cid
         return "#" + cid
+
+    @staticmethod
+    def _css_escape_ident(ident: str) -> str:
+        """CSS-escape an identifier for use inside a selector.
+
+        Escapes characters that are not valid in a CSS identifier so an id
+        starting with a digit or containing ':'/'.' does not produce an
+        invalid selector that is silently dropped.
+        """
+        if not ident:
+            return ""
+        out: List[str] = []
+        for ch in ident:
+            code = ord(ch)
+            if (
+                (48 <= code <= 57)
+                or (65 <= code <= 90)
+                or (97 <= code <= 122)
+                or code == 45
+                or code == 95
+            ):
+                out.append(ch)
+            else:
+                out.append("\\" + format(code, "X") + " ")
+        return "".join(out)
+
+    async def _apply_input_value(self, page: Any, selector: str, value: str) -> None:
+        """Apply an input value using the native prototype setter + events,
+        mirroring the streaming path's handle_input_sync so React-style
+        value trackers stay in sync.
+
+        Rejects file/button/submit/reset/image inputs and focuses the field
+        first so the page reacts as it would to a real click.
+        """
+        script = """
+        (args) => {
+            const [sel, val] = args;
+            const el = document.querySelector(sel);
+            if (!el) throw new Error('input: selector not found: ' + sel);
+            if (el.type === 'file' || el.type === 'button' || el.type === 'submit' ||
+                el.type === 'reset' || el.type === 'image') {
+                throw new Error('input: cannot fill ' + el.type + ' element');
+            }
+            el.focus();
+            const descriptor =
+                Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
+                Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value') ||
+                Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value');
+            if (descriptor && descriptor.set) {
+                descriptor.set.call(el, val);
+            } else {
+                el.value = val;
+            }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }
+        """
+        await page.evaluate(script, [selector, str(value)])
+
+    def _event_selectors(self, event: Dict[str, Any]) -> List[str]:
+        """Build a fallback selector list from a client event's addressing tuple.
+
+        Same chain the streaming DOM-capture path uses:
+        data-mid → escaped id → name → CSS path → href → legacy #custom_id.
+        Each candidate is tried until one dispatches successfully.
+        """
+        selectors: List[str] = []
+        mid = (event.get("mid") or "").strip()
+        cid = (event.get("id") or "").strip()
+        name = (event.get("name") or "").strip()
+        path = (event.get("selector") or "").strip()
+        href = (event.get("href") or "").strip()
+        legacy = (event.get("custom_id") or "").strip()
+        tag = (event.get("tag") or "").strip()
+
+        if mid:
+            selectors.append('[data-mid="' + mid + '"]')
+        if cid:
+            escaped = self._css_escape_ident(cid)
+            selectors.append("#" + escaped)
+            selectors.append('[id="' + cid + '"]')
+        if name:
+            selectors.append('[name="' + name + '"]')
+            if tag:
+                selectors.append(tag + '[name="' + name + '"]')
+        if path and " > " in path:
+            selectors.append(path)
+        if href:
+            selectors.append('[href="' + href + '"]')
+        if legacy:
+            if legacy.startswith(("#", ".", "[")):
+                selectors.append(legacy)
+            elif " > " in legacy:
+                selectors.append(legacy)
+            else:
+                selectors.append("#" + legacy)
+
+        # De-duplicate while preserving order
+        seen: set = set()
+        unique: List[str] = []
+        for s in selectors:
+            if s and s not in seen:
+                seen.add(s)
+                unique.append(s)
+        return unique
+
+    async def _dispatch_with_selectors(
+        self, page: Any, action_type: str, selectors: List[str],
+        value: Optional[str] = None,
+    ) -> Optional[ActionResult]:
+        """Try each selector until one dispatches successfully.
+
+        Returns the first successful result, or None if all failed.
+        """
+        last_error = ""
+        for selector in selectors:
+            logger.info("[construct] trying selector=%s action=%s", selector, action_type)
+            if action_type == "click":
+                result = await self.execute_browser_action("click", {"selector": selector})
+            elif action_type == "input":
+                result = await self.execute_browser_action("input", {"selector": selector, "value": value or ""})
+            else:
+                result = ActionResult(False, error="unknown action type")
+            await self.send_action_result(result)
+            if result.success:
+                return result
+            last_error = result.error or "unknown error"
+        logger.warning("[construct] all selectors failed; last error: %s", last_error)
+        return None
+
+    def _step_live_url(self, step: Dict[str, Any]) -> str:
+        """Resolve the URL the remote browser should be on for this step.
+
+        Priority: archive page url_mapping → step target_selector (absolute URL)
+        → workflow target_url.
+        """
+        attached_page_id = step.get("attached_page_id") or ""
+        if attached_page_id:
+            page = construct_store.get_archive_page(attached_page_id)
+            if page:
+                mappings = page.get("url_mapping") or []
+                if isinstance(mappings, list) and mappings:
+                    return str(mappings[0])
+        target_selector = (step.get("target_selector") or "").strip()
+        if target_selector.startswith(("http://", "https://")):
+            return target_selector
+        workflow = construct_store.get_workflow(self.workflow_id) or {}
+        return workflow.get("target_url", "") or ""
+
+    async def _navigate_remote_to(self, url: str) -> bool:
+        """Move the remote browser to the given URL so mirrored controls exist live."""
+        if not url:
+            return False
+        page = await self._ensure_remote_page()
+        if page is None:
+            return False
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            logger.info("[construct] remote browser navigated to %s", url)
+            return True
+        except Exception as exc:
+            logger.error("[construct] remote browser failed to navigate to %s: %s", url, exc)
+            return False
+
+    async def _advance_or_stay(self, step: Dict[str, Any]) -> None:
+        """After a successful identical-mode action, either advance or stay.
+
+        With no transition_to, an identical step keeps the session alive and
+        re-syncs state instead of completing the workflow. Non-identical steps
+        keep their previous behaviour."""
+        next_step = step.get("transition_to") or ""
+        if not next_step:
+            logger.info("[construct] transition_to empty — staying on step %s", self.current_step_id)
+            await self.send_state_sync()
+            return
+        await self.transition_to(next_step)
 
     # -- lifecycle ---------------------------------------------------------
 
