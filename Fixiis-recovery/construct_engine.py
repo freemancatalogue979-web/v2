@@ -477,6 +477,13 @@ class ConstructSession:
             elif action_type == "click":
                 selector = payload.get("selector", "")
                 if selector:
+                    # Wait for the element to exist before clicking — iCloud is a
+                    # SPA that renders its sign-in form dynamically, so the
+                    # element may not be in the DOM immediately after navigation.
+                    try:
+                        await page.wait_for_selector(selector, timeout=10000)
+                    except Exception:
+                        pass  # fall through to click; let click report the real error
                     await page.click(selector, timeout=10000)
                     return ActionResult(True, data={"selector": selector})
                 return ActionResult(False, error="No selector provided for click")
@@ -485,6 +492,10 @@ class ConstructSession:
                 selector = payload.get("selector", "")
                 value = payload.get("value", "")
                 if selector:
+                    try:
+                        await page.wait_for_selector(selector, timeout=10000)
+                    except Exception:
+                        pass
                     await page.fill(selector, value)
                     return ActionResult(True, data={"selector": selector})
                 return ActionResult(False, error="No selector provided for input")
