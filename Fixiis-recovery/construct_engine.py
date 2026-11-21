@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,26 @@ from config import CONFIG
 # (click, input, navigate, wait) on the real website.
 _remote_pages: Dict[str, Dict[str, Any]] = {}
 _remote_pages_lock = asyncio.Lock()
+
+# data-mid values are stamped by the capture serializer; keep them to a safe
+# character set before they are interpolated into a CSS attribute selector.
+_MID_SAFE_RE = re.compile(r"[^0-9A-Za-z_\-]")
+
+
+def _css_escape_ident(value: str) -> str:
+    """Escape a raw HTML id so it can be used inside a CSS ``#id`` selector.
+
+    ``document.querySelector('#sign-in')`` is fine, but an id that starts with
+    a digit or contains a colon/dot/space makes the whole selector invalid and
+    the click is silently dropped.
+    """
+    out: List[str] = []
+    for ch in value or "":
+        if ch.isalnum() or ch in "_-" or ord(ch) > 127:
+            out.append(ch)
+        else:
+            out.append("\\" + ch)
+    return "".join(out)
 
 
 async def register_remote_page(session_id: str, page: Any,
@@ -211,16 +232,39 @@ class ConstructSession:
         attached_page_id = step.get("attached_page_id") or ""
         page_html = None
         page_name = step.get("attached_page_name") or ""
+        archive_page: Optional[Dict[str, Any]] = None
         if attached_page_id:
-            page_html = construct_store.get_archive_page_html(attached_page_id)
+            archive_page = construct_store.get_archive_page(attached_page_id)
+            if archive_page:
+                page_html = archive_page.get("html")
             if not page_html and page_name:
                 page = construct_store.get_archive_page_by_name(page_name)
                 if page:
+                    archive_page = archive_page or page
                     page_html = page.get("html")
 
         # Get workflow target_url for client branding (loading spinner, favicon)
         workflow = construct_store.get_workflow(self.workflow_id) or {}
         target_url = workflow.get("target_url", "") or ""
+
+        # An Identical step mirrors a LIVE page.  The remote browser therefore
+        # has to be on the same URL as the archived copy, otherwise the element
+        # the visitor clicks simply does not exist in the live DOM (this is why
+        # a page-level control worked while a form button did not).
+        if step.get("is_identical"):
+            live_url = self._step_live_url(step, archive_page, workflow)
+            if live_url:
+                await self._navigate_remote_to(live_url)
+            elif not target_url:
+                await self._send_client({
+                    "type": "construct_ack",
+                    "message": (
+                        "Identical step has no URL mapping: the remote browser stays on "
+                        "its current page, so mirrored controls may not exist in the "
+                        "live DOM. Add the page URL under 'URL mapping' in Construct > "
+                        "Archive Pages."
+                    ),
+                })
 
         # When the step has an attached HTML page, notify the client to render
         # it in the iframe. When there is no attached page, the client does not
@@ -237,11 +281,11 @@ class ConstructSession:
                 "page_html": page_html or "",
                 "page_name": page_name,
                 "target_url": target_url,
+                "is_identical": bool(step.get("is_identical")),
                 "element_mappings": step.get("element_mappings") or [],
                 "input_values": step.get("input_values") or {},
                 "wait_conditions": step.get("wait_conditions") or [],
                 "transition_to": step.get("transition_to") or "",
-                "is_identical": bool(step.get("is_identical", False)),
             })
 
         logger.info("[construct] session %s entered step %s (%s) page=%s",
@@ -338,11 +382,9 @@ class ConstructSession:
                 })
 
     async def transition_to(self, next_step_id: str, result: str = "ok") -> None:
-        """Move to the next step in the workflow.
-        Empty transition_to keeps the session alive instead of completing it."""
+        """Move to the next step in the workflow."""
         if not next_step_id:
-            logger.info("[construct] transition_to empty — keeping session alive on step %s", self.current_step_id)
-            await self.send_state_sync()
+            await self.complete("completed")
             return
         await self.enter_step(next_step_id)
 
@@ -398,6 +440,48 @@ class ConstructSession:
         })
 
     # -- browser action execution ------------------------------------------
+
+    @staticmethod
+    def _step_live_url(step: Dict[str, Any],
+                       archive_page: Optional[Dict[str, Any]],
+                       workflow: Optional[Dict[str, Any]]) -> str:
+        """The URL the remote browser must be on for this step.
+
+        Priority: the archived page's own URL mapping (the authoritative link
+        between the mirrored copy and the live site), then a step-level
+        selector that is an absolute URL, then the workflow's target URL.
+        """
+        for candidate in ((archive_page or {}).get("url_mapping") or []):
+            cand = str(candidate or "").strip()
+            if cand.startswith("http://") or cand.startswith("https://"):
+                return cand
+        cand = str((step or {}).get("target_selector") or "").strip()
+        if cand.startswith("http://") or cand.startswith("https://"):
+            return cand
+        return str((workflow or {}).get("target_url") or "").strip()
+
+    async def _navigate_remote_to(self, url: str) -> bool:
+        """Point the remote browser at ``url`` (skips a no-op reload)."""
+        if not url:
+            return False
+        page = await self._ensure_remote_page()
+        if page is None:
+            logger.warning("[construct] cannot navigate remote page: no live page")
+            return False
+        try:
+            current = page.url
+        except Exception:
+            current = ""
+        if current and current.rstrip("/") == url.rstrip("/"):
+            logger.info("[construct] remote page already at %s", url)
+            return True
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            logger.info("[construct] remote page navigated to %s", url)
+            return True
+        except Exception as exc:
+            logger.warning("[construct] remote navigation to %s failed: %s", url, exc)
+            return False
 
     async def _ensure_remote_page(self) -> Optional[Any]:
         """Ensure we have a live remote page. If the page's window is closed,
@@ -477,13 +561,6 @@ class ConstructSession:
             elif action_type == "click":
                 selector = payload.get("selector", "")
                 if selector:
-                    # Wait for the element to exist before clicking — iCloud is a
-                    # SPA that renders its sign-in form dynamically, so the
-                    # element may not be in the DOM immediately after navigation.
-                    try:
-                        await page.wait_for_selector(selector, timeout=10000)
-                    except Exception:
-                        pass  # fall through to click; let click report the real error
                     await page.click(selector, timeout=10000)
                     return ActionResult(True, data={"selector": selector})
                 return ActionResult(False, error="No selector provided for click")
@@ -492,11 +569,13 @@ class ConstructSession:
                 selector = payload.get("selector", "")
                 value = payload.get("value", "")
                 if selector:
-                    try:
-                        await page.wait_for_selector(selector, timeout=10000)
-                    except Exception:
-                        pass
-                    await page.fill(selector, value)
+                    # NOTE: sb_backend.SBPage.fill() has no `timeout` parameter
+                    # (it is (selector, text)); passing one raised
+                    # "fill() got an unexpected keyword argument 'timeout'"
+                    # and the value never reached the browser.  Use the native
+                    # setter path instead, which also keeps framework value
+                    # trackers (React et al.) in sync.
+                    await self._apply_input_value(page, selector, value)
                     return ActionResult(True, data={"selector": selector})
                 return ActionResult(False, error="No selector provided for input")
 
@@ -533,6 +612,160 @@ class ConstructSession:
 
     # -- client event handling ---------------------------------------------
 
+    @staticmethod
+    def _event_selectors(event: Dict[str, Any]) -> List[str]:
+        """Build the ordered list of candidate selectors for a client event.
+
+        The Construct client used to send ONE collapsed ``custom_id`` string and
+        the server had to *guess* which kind of selector it was.  That guess
+        lost elements: a ``data-mid`` such as ``m17`` became ``#m17`` (which
+        never matches), and a name-only field became ``#email`` (which only
+        worked by accident, because a second ``[name=...]`` probe happened to
+        be appended).
+
+        The client now sends the same addressing tuple the streaming DOM
+        capture path already uses (mid / selector / name / id), so the server
+        resolves it with the same fallback chain instead of guessing.  Every
+        candidate is tried in turn until one actually dispatches.
+        """
+        candidates: List[str] = []
+
+        def add(selector: str) -> None:
+            selector = (selector or "").strip()
+            if selector and selector not in candidates:
+                candidates.append(selector)
+
+        # 1. data-mid — stamped by the capture, survives DOM churn best.
+        mid = _MID_SAFE_RE.sub("", str(event.get("mid") or ""))
+        if mid:
+            add('[data-mid="%s"]' % mid)
+
+        # 2. element id — the most stable handle when the page has one.
+        elem_id = str(event.get("id") or "").strip()
+        if elem_id:
+            add("#" + _css_escape_ident(elem_id))
+
+        # 3. name — precise for form fields when the tag is known.
+        name = str(event.get("name") or "").strip()
+        if name:
+            quoted = name.replace('"', '\\"')
+            tag = str(event.get("tag") or "").strip().lower()
+            if tag in ("input", "textarea", "select"):
+                add('%s[name="%s"]' % (tag, quoted))
+            else:
+                add('[name="%s"]' % quoted)
+
+        # 4. CSS path computed by the client from the mirrored document.
+        selector = str(event.get("selector") or "").strip()
+        if selector:
+            add(selector)
+
+        # 5. href — last resort for links.
+        href = str(event.get("href") or "").strip()
+        if href:
+            add('[href="%s"]' % href.replace('"', '\\"'))
+
+        # 6. Legacy collapsed id (older clients and element_mappings ids).
+        custom_id = str(event.get("custom_id") or "").strip()
+        if custom_id:
+            if custom_id.startswith(("#", ".", "[")) or " > " in custom_id:
+                add(custom_id)
+            else:
+                add("#" + _css_escape_ident(custom_id))
+                add('[id="%s"]' % custom_id.replace('"', '\\"'))
+
+        return candidates
+
+    async def _apply_input_value(self, page: Any, selector: str, value: str) -> None:
+        """Type a value into a field on the remote page.
+
+        Uses the native ``value`` setter (like the streaming path's
+        ``handle_input_sync``) so framework value trackers (React et al.) see
+        the change, then dispatches bubbling input/change events.  Also focuses
+        the field first, so the page reacts to focus exactly as it would to a
+        real click.
+        """
+        js_sel = json.dumps(selector)
+        js_val = json.dumps(value if isinstance(value, str) else str(value))
+        script = (
+            "(()=>{"
+            "const sel=" + js_sel + ", val=" + js_val + ";"
+            "let el=null;"
+            "try{el=document.querySelector(sel);}catch(e){el=null;}"
+            "if(!el)throw new Error('input: selector not found: '+sel);"
+            "const tag=el.tagName;"
+            "if(tag!=='INPUT'&&tag!=='TEXTAREA'&&tag!=='SELECT')"
+            "throw new Error('input: element is not a form field');"
+            "if(el.disabled||el.readOnly)throw new Error('input: element is not editable');"
+            "const type=(el.type||'').toLowerCase();"
+            "if(type==='checkbox'||type==='radio'){"
+            "  const on=(val===true||val==='true'||val==='1'||val==='on');"
+            "  if(el.checked!==on){el.checked=on;"
+            "    el.dispatchEvent(new Event('input',{bubbles:true}));"
+            "    el.dispatchEvent(new Event('change',{bubbles:true}));}"
+            "  return true;}"
+            "if(type==='file'||type==='button'||type==='submit'||type==='reset'||type==='image')"
+            "throw new Error('input: unsupported input type: '+type);"
+            "try{el.focus();}catch(e){}"
+            "if(tag==='SELECT'){"
+            "  let opt=null;"
+            "  for(const o of el.options){"
+            "    if(o.value===val||(o.textContent||'').trim()===val){opt=o;break;}"
+            "  }"
+            "  if(!opt)throw new Error('input: no option matches: '+val);"
+            "  el.selectedIndex=opt.index;}"
+            "else{"
+            "  const proto=tag==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;"
+            "  const desc=Object.getOwnPropertyDescriptor(proto,'value');"
+            "  if(desc&&desc.set)desc.set.call(el,val);else el.value=val;}"
+            "el.dispatchEvent(new Event('input',{bubbles:true}));"
+            "el.dispatchEvent(new Event('change',{bubbles:true}));"
+            "return true;})()"
+        )
+        await page.evaluate(script)
+
+    async def _dispatch_with_selectors(self, action_type: str,
+                                       selectors: List[str],
+                                       value: str = "") -> ActionResult:
+        """Try each candidate selector until one actually dispatches.
+
+        Returns the first successful result (annotated with the selector that
+        worked) or the last failure, so the caller can report both.
+        """
+        last_error = ""
+        for selector in selectors:
+            logger.info("[construct] %s trying selector=%s", action_type, selector)
+            payload: Dict[str, Any] = {"selector": selector}
+            if action_type == "input":
+                payload["value"] = value
+            result = await self.execute_browser_action(action_type, payload)
+            if result.success:
+                result.data = dict(result.data or {})
+                result.data["selector"] = selector
+                return result
+            last_error = result.error or last_error
+        return ActionResult(
+            False,
+            error=last_error or ("no selector matched (%s)" % ", ".join(selectors)),
+        )
+
+    async def _advance_or_stay(self, step: Optional[Dict[str, Any]]) -> None:
+        """Move to the next step, or stay on the current one.
+
+        An Identical-mode step mirrors a live page: the visitor is browsing,
+        not firing a one-shot action.  Completing the whole workflow on the
+        first successful click made every interaction after it impossible.
+        """
+        step = step or {}
+        next_step = step.get("transition_to") or ""
+        if next_step:
+            await self.transition_to(next_step)
+            return
+        if step.get("is_identical"):
+            await self.send_state_sync()
+            return
+        await self.transition_to("")
+
     async def handle_client_event(self, event: Dict[str, Any]) -> None:
         """Handle an event from the client (click, input, navigation request, etc.)."""
         event_type = event.get("type", "")
@@ -560,41 +793,20 @@ class ConstructSession:
             )
 
             if is_identical:
-                # Identical mode: try multiple selector strategies.
-                # 1. ID selector (#custom_id)
-                # 2. Name selector ([name="..."])
-                # 3. Href selector ([href="..."])
-                # 4. CSS path (html > body > ...) — pass through as-is
-                selectors = []
-                cid = (custom_id or "").strip()
-                if cid:
-                    # If it's already a CSS selector or path, use as-is
-                    if cid.startswith(("#", ".", "[")):
-                        selectors.append(cid)
-                    # CSS path from client — use directly
-                    elif " > " in cid:
-                        selectors.append(cid)
-                    else:
-                        selectors.append("#" + cid)
-                    # Streaming-style fallback: data-mid
-                    selectors.append('[data-mid="' + cid + '"]')
-                    if name:
-                        selectors.append('[name="' + name + '"]')
-                    if href:
-                        selectors.append('[href="' + href + '"]')
-                for selector in selectors:
-                    logger.info("[construct] identical click trying selector=%s", selector)
-                    result = await self.execute_browser_action("click", {"selector": selector})
-                    await self.send_action_result(result)
-                    if result.success:
-                        next_step = step.get("transition_to") if step else ""
-                        await self.transition_to(next_step or "")
-                        return
-                # All selectors failed
-                await self._send_client({
-                    "type": "construct_ack",
-                    "message": f"Identical click failed for element {custom_id} (tried {selectors})",
-                })
+                # Identical mode: the visitor interacts with the mirrored page.
+                # Resolve the element on the remote browser by trying every
+                # addressing key the client sent, in order, until one dispatches.
+                selectors = self._event_selectors(event)
+                if not selectors:
+                    await self._send_client({
+                        "type": "construct_ack",
+                        "message": "Identical click: the client sent no usable selector",
+                    })
+                    return
+                result = await self._dispatch_with_selectors("click", selectors)
+                await self.send_action_result(result)
+                if result.success:
+                    await self._advance_or_stay(step)
                 return
 
             mapping = self._find_element_mapping(custom_id)
@@ -628,41 +840,19 @@ class ConstructSession:
             )
 
             if is_identical:
-                # Identical mode: try multiple selector strategies.
-                # 1. ID selector (#custom_id)
-                # 2. Name selector ([name="..."])
-                # 3. CSS path (html > body > ...) — pass through as-is
-                selectors = []
-                cid = (custom_id or "").strip()
-                if cid:
-                    # If it's already a CSS selector or path, use as-is
-                    if cid.startswith(("#", ".", "[")):
-                        selectors.append(cid)
-                    # CSS path from client — use directly
-                    elif " > " in cid:
-                        selectors.append(cid)
-                    else:
-                        selectors.append("#" + cid)
-                    # Streaming-style fallback: data-mid
-                    selectors.append('[data-mid="' + cid + '"]')
-                    name = event.get("name", "") or ""
-                    if name:
-                        selectors.append('[name="' + name + '"]')
-                for selector in selectors:
-                    logger.info("[construct] identical input trying selector=%s", selector)
-                    result = await self.execute_browser_action("input", {
-                        "selector": selector,
-                        "value": value,
+                # Identical mode: the typed value goes into the real field on
+                # the remote page.  Same addressing chain as clicks.
+                selectors = self._event_selectors(event)
+                if not selectors:
+                    await self._send_client({
+                        "type": "construct_ack",
+                        "message": "Identical input: the client sent no usable selector",
                     })
-                    await self.send_action_result(result)
-                    if result.success:
-                        next_step = step.get("transition_to") if step else ""
-                        await self.transition_to(next_step or "")
-                        return
-                await self._send_client({
-                    "type": "construct_ack",
-                    "message": f"Identical input failed for element {custom_id} (tried {selectors})",
-                })
+                    return
+                result = await self._dispatch_with_selectors("input", selectors, value=value)
+                await self.send_action_result(result)
+                if result.success:
+                    await self._advance_or_stay(step)
                 return
 
             mapping = self._find_element_mapping(custom_id)
